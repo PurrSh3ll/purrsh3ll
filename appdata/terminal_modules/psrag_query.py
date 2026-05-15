@@ -13,6 +13,8 @@ import re
 import select
 import subprocess
 import sys
+import urllib.request
+import urllib.error
 
 # Strip ANSI escape codes that ollama outputs (spinner, colors, cursor movement)
 _ANSI_RE = re.compile(rb'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -42,8 +44,20 @@ def _embedding_model(config: dict) -> str:
     )
 
 
-def _ollama_model(config: dict) -> str:
-    """Return Ollama model: explicit setting → cli_custom_cmd parse → fallback."""
+def _active_profile(config: dict) -> dict:
+    """Return the active API provider profile, or {} if none configured."""
+    prov_cfg = config.get("api_providers", {})
+    active_name = prov_cfg.get("active", "")
+    if not active_name:
+        return {}
+    for profile in prov_cfg.get("profiles", []):
+        if profile.get("name") == active_name:
+            return profile
+    return {}
+
+
+def _ollama_model_fallback(config: dict) -> str:
+    """Fallback: read model from llama.ollama_model or cli_custom_cmd."""
     llama = config.get("llama", {})
     explicit = llama.get("ollama_model", "")
     if explicit:
@@ -217,6 +231,108 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
         print()
 
 
+# ── OpenAI-compatible runner ───────────────────────────────────────────────────
+
+def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str):
+    """
+    Call an OpenAI-compatible /v1/chat/completions endpoint (openai, groq, etc.)
+    and stream the response to stdout.
+    """
+    url = base_url.rstrip("/") + "/v1/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True,
+    }).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        sys.stdout.write(delta)
+                        sys.stdout.flush()
+                except Exception:
+                    pass
+        print()
+    except urllib.error.HTTPError as e:
+        _err(f"HTTP {e.code} from {url}: {e.read().decode('utf-8', errors='replace')}")
+        sys.exit(1)
+    except Exception as e:
+        _err(f"Request failed: {e}")
+        sys.exit(1)
+
+
+# ── Anthropic runner ───────────────────────────────────────────────────────────
+
+def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str):
+    """
+    Call the Anthropic messages API and stream the response to stdout.
+    base_url defaults to https://api.anthropic.com if empty.
+    """
+    url = (base_url.rstrip("/") if base_url else "https://api.anthropic.com") + "/v1/messages"
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True,
+    }).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                try:
+                    event = json.loads(data_str)
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {}).get("text", "")
+                        if delta:
+                            sys.stdout.write(delta)
+                            sys.stdout.flush()
+                except Exception:
+                    pass
+        print()
+    except urllib.error.HTTPError as e:
+        _err(f"HTTP {e.code} from Anthropic: {e.read().decode('utf-8', errors='replace')}")
+        sys.exit(1)
+    except Exception as e:
+        _err(f"Request failed: {e}")
+        sys.exit(1)
+
+
+def _run_llm(provider: str, model: str, prompt: str,
+             url: str, api_key: str,
+             disable_thinking: bool = False):
+    """Dispatch to the correct runner based on provider."""
+    if provider == "ollama":
+        _run_ollama(model, prompt, disable_thinking, url)
+    elif provider == "anthropic":
+        _run_anthropic(model, prompt, url, api_key)
+    else:
+        # openai, groq, and any other OpenAI-compatible provider
+        _run_openai_compat(model, prompt, url, api_key)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _info(msg: str):
@@ -247,9 +363,9 @@ def main():
             "Usage: psask [options] <query>\n\n"
             "Options:\n"
             "  -n N             Context chunks to retrieve (default: 5)\n"
-            "  -m MODEL         Ollama model (default: from app config)\n"
-            "  --host URL       Ollama host (e.g. http://192.168.1.10:11434)\n"
-            "  --no-context     Query Ollama directly without RAG context\n"
+            "  -m MODEL         Model override (default: from active API profile)\n"
+            "  --host URL       Provider host/base URL override\n"
+            "  --no-context     Query the model directly without RAG context\n"
             "  --show-sources   Print source files and scores before answer\n"
             "  -h, --help       Show this help\n\n"
             "Examples:\n"
@@ -268,11 +384,26 @@ def main():
 
     config            = _load_config(base_dir)
     llama_cfg         = config.get("llama", {})
-    ollama_model      = args.model or _ollama_model(config)
+    profile           = _active_profile(config)
+    provider          = profile.get("provider", "ollama")
+    model             = args.model or profile.get("model") or _ollama_model_fallback(config)
+    profile_url       = profile.get("url", "")
+    host              = args.host or (profile_url if provider == "ollama" else "")
+    api_url           = args.host or profile_url
     embed_model       = _embedding_model(config)
     cache_dir         = os.path.join(base_dir, "appdata", "rag", "models")
-    disable_thinking  = bool(llama_cfg.get("ollama_disable_thinking", False))
+    disable_thinking  = bool(llama_cfg.get("ollama_disable_thinking", False)) if provider == "ollama" else False
     fast_answers      = bool(llama_cfg.get("ollama_fast_answers", False))
+
+    # Load API key for non-ollama providers
+    api_key = ""
+    if provider != "ollama" and profile.get("name"):
+        try:
+            keys_path = os.path.join(base_dir, "appdata", "api_keys.json")
+            with open(keys_path, encoding="utf-8") as _f:
+                api_key = json.load(_f).get(profile["name"], "")
+        except Exception:
+            pass
 
     _FAST_SUFFIX = (
         "\n\nAnswer as briefly as possible. "
@@ -280,9 +411,12 @@ def main():
     )
 
     if args.no_context:
-        _info(f"Querying {ollama_model} (no context)…")
+        _info(f"Querying {model} via {provider} (no context)…")
         q = query + _FAST_SUFFIX if fast_answers else query
-        _run_ollama(ollama_model, q, disable_thinking, args.host)
+        if provider == "ollama":
+            _run_ollama(model, q, disable_thinking, host)
+        else:
+            _run_llm(provider, model, q, api_url, api_key)
         return
 
     _info("Embedding query…")
@@ -309,8 +443,8 @@ def main():
     prompt = _build_prompt(query, chunks)
     if fast_answers:
         prompt += _FAST_SUFFIX
-    _info(f"Querying {ollama_model}…\n")
-    _run_ollama(ollama_model, prompt, disable_thinking, args.host)
+    _info(f"Querying {model} via {provider}…\n")
+    _run_llm(provider, model, prompt, api_url, api_key, disable_thinking)
 
 
 if __name__ == "__main__":

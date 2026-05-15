@@ -971,7 +971,7 @@ def build_menu(main_window):
         import urllib.error
         import stat
 
-        _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "custom"]
+        _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq"]
         _PROVIDER_BASE_URL = {
             "ollama":    "http://localhost:11434",
             "openai":    "https://api.openai.com/v1",
