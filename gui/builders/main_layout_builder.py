@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QSplitter, QGroupBox, QHBoxLayout, QVBoxLayout, QWidget,
     QLabel, QPushButton, QDialog, QToolButton, QMenu, QSizePolicy,
-    QTextEdit, QDialogButtonBox, QFileDialog,
+    QTextEdit, QDialogButtonBox, QFileDialog, QComboBox,
 )
 from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtCore import QSize, Qt
@@ -342,6 +342,56 @@ def build_main_layout(main_window):
         c.register_widget("welcome_tab_text", container)
         c.register_widget("gif_label", gif_label)
 
+    def create_active_profile_combo():
+        central_widget = c.widgets["central_widget"]
+        combo = QComboBox(central_widget)
+        combo.setFixedHeight(22)
+        combo.setFixedWidth(170)
+        combo.setToolTip("Active API profile")
+        combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        def _reload(keep=None):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("— none —", "")
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                prov = cfg.get("api_providers", {})
+                active = keep if keep is not None else prov.get("active", "")
+                for p in prov.get("profiles", []):
+                    combo.addItem(p["name"], p["name"])
+                idx = combo.findData(active)
+                combo.setCurrentIndex(max(0, idx))
+            except Exception:
+                pass
+            combo.blockSignals(False)
+
+        def _on_changed():
+            name = combo.currentData() or ""
+            # save to config
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                cfg.setdefault("api_providers", {})["active"] = name
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+            # sync AI Settings combo if open
+            ai_combo = c.widgets.get("ai_active_profile_combo")
+            if ai_combo is not None:
+                ai_combo.blockSignals(True)
+                idx = ai_combo.findText(name if name else "— none —")
+                if idx >= 0:
+                    ai_combo.setCurrentIndex(idx)
+                ai_combo.blockSignals(False)
+
+        _reload()
+        combo.currentIndexChanged.connect(_on_changed)
+        c.register_widget("global_active_profile_combo", combo)
+        c.register_widget("global_active_profile_combo_reload", _reload)
+
     def dropdown_menu_button():
         dropdown_button = QToolButton()
         dropdown_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -379,5 +429,6 @@ def build_main_layout(main_window):
     create_notes_button()
     create_mode_button()
     create_snippet_button()
+    create_active_profile_combo()
     dropdown_menu_button()
     add_widgets_to_layout_and_setup()

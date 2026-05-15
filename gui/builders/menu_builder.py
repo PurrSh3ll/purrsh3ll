@@ -1026,6 +1026,11 @@ def build_menu(main_window):
             if active == "— none —":
                 active = ""
             _save_providers_to_config(_collect_profiles_from_table(), active)
+            # sync global combo in main window
+            global_combo = c.widgets.get("global_active_profile_combo")
+            reload_fn = c.widgets.get("global_active_profile_combo_reload")
+            if global_combo is not None and reload_fn is not None:
+                reload_fn(keep=active)
 
         # ── model fetch helper ────────────────────────────────────────────────
         def _fetch_provider_models(provider, url, key):
@@ -1078,6 +1083,7 @@ def build_menu(main_window):
         active_row.addWidget(active_profile_combo)
         active_row.addStretch(1)
         grp_providers_layout.addLayout(active_row)
+        c.register_widget("ai_active_profile_combo", active_profile_combo)
 
         # Profiles table
         providers_table = QTableWidget(0, 4)

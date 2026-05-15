@@ -228,6 +228,7 @@ class MainWindow(QMainWindow):
         self.filter = GlobalFilter()
         QApplication.instance().installEventFilter(self.filter)
         QTimer.singleShot(0, self.c.center_welcome_text)
+        QTimer.singleShot(0, self.c.set_position_active_profile_combo)
         QTimer.singleShot(0, self.c.restore_session)
 
     def resizeEvent(self, event):
@@ -248,6 +249,7 @@ class MainWindow(QMainWindow):
         self.c.set_position_snippet_button()
         self.c.update_dropdown_visibility()
         self.c.update_dropdown_terminals()
+        self.c.set_position_active_profile_combo()
 
     def closeEvent(self, event):
         msg = QMessageBox(self)

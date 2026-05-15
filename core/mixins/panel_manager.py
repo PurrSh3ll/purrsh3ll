@@ -119,6 +119,16 @@ class PanelManagerMixin:
             new_y = slide_button.y() + (4 * snippet_button.height())
             snippet_button.move(new_x, new_y)
 
+    def set_position_active_profile_combo(self):
+        combo = self.widgets.get("global_active_profile_combo")
+        if combo is None:
+            return
+        main_window = self.widgets["main_window"]
+        new_x = main_window.width() - combo.width() - 8
+        new_y = main_window.height() - combo.height() - 8
+        combo.move(new_x, new_y)
+        combo.raise_()
+
     def _toggle_panel(self, panel_key, button_key, visible_attr, icon_closed, button_y_fn, anim_prefix):
         button = self.widgets[button_key]
         panel = self.widgets[panel_key]
