@@ -390,7 +390,13 @@ def main():
         )
         sys.exit(1)
 
-    profile_url       = profile.get("url", "")
+    _DEFAULT_URLS = {
+        "ollama":    "http://localhost:11434",
+        "openai":    "https://api.openai.com/v1",
+        "anthropic": "https://api.anthropic.com",
+        "groq":      "https://api.groq.com/openai/v1",
+    }
+    profile_url       = profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
     host              = args.host or (profile_url if provider == "ollama" else "")
     api_url           = args.host or profile_url
     embed_model       = _embedding_model(config)
