@@ -1,0 +1,23 @@
+# ==============================================================================
+# Log Systemowy: WebApp-Server-01
+# Data startu: 2025-10-22 08:00:00
+# Poziom: DEBUG
+# ==============================================================================
+
+2025-10-22 10:15:30.123 [INFO]  [StartupManager] System initialization complete. Listening on port 8080.
+2025-10-22 10:15:35.456 [INFO]  [DatabaseConnector] Successfully connected to primary DB: jdbc:mysql://db-prod/main_db
+2025-10-22 10:16:10.789 [DEBUG] [SessionMonitor] User 'john.doe' logged in (Session ID: ABC-123-XYZ).
+2025-10-22 10:17:05.111 [INFO]  [APIHandler] Processing request GET /api/v1/users/status from 192.168.1.5
+2025-10-22 10:17:06.222 [WARN]  [CacheService] Cache miss for key 'user_data_456'. Fetching from database.
+2025-10-22 10:17:08.333 [INFO]  [APIHandler] Request GET /api/v1/users/status completed successfully in 3.222s (Status 200).
+2025-10-22 10:18:40.444 [INFO]  [Scheduler] Running scheduled task: CleanTemporaryFiles.
+2025-10-22 10:18:41.555 [ERROR] [FileCleanup] Failed to delete file C:\temp\lockfile.tmp. Permission denied.
+2025-10-22 10:20:01.666 [INFO]  [APIHandler] Processing request POST /api/v1/orders/create from 10.0.0.12
+2025-10-22 10:20:02.777 [WARN]  [InputValidator] Invalid date format received for 'delivery_date'. Using default value.
+2025-10-22 10:20:04.888 [ERROR] [DatabaseConnector] SQL Exception: Column 'price' cannot be null. Query failed.
+2025-10-22 10:20:04.900 [INFO]  [APIHandler] Request POST /api/v1/orders/create failed (Status 500). Reason: Database Error.
+2025-10-22 10:22:15.010 [INFO]  [SessionMonitor] User 'john.doe' logged out.
+2025-10-22 10:25:50.111 [INFO]  [HealthCheck] System health status: OK. CPU Load: 45%.
+2025-10-22 10:28:00.222 [CRITICAL] [MemoryManager] OutOfMemoryError detected! Heap usage reached 98%. Attempting emergency garbage collection.
+2025-10-22 10:28:05.333 [INFO]  [SystemMonitor] Service restart initiated due to critical error.
+2025-10-22 10:28:05.400 [FATAL] [System] Application process terminated unexpectedly. Exit code: 1.

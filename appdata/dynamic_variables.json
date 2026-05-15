@@ -1,0 +1,134 @@
+{
+    "user_variables_types": [
+        "python",
+        "bash"
+    ],
+    "user_variables": [
+        {
+            "name": "IP_DEF",
+            "type": "bash",
+            "expression": "ip route get 1.1.1.1 | grep -oP 'src \\K\\S+'",
+            "description": "Returns the primary local IP address used for the default route."
+        },
+        {
+            "name": "DNS_DEF",
+            "type": "bash",
+            "expression": "grep nameserver /etc/resolv.conf | head -n 1 | awk '{print $2}'",
+            "description": "Returns the first configured DNS nameserver from resolv.conf."
+        },
+        {
+            "name": "MAC_DEF",
+            "type": "bash",
+            "expression": "cat /sys/class/net/$(ip route show default | awk '/default/ {print $5}')/address",
+            "description": "Returns the MAC address of the default network interface."
+        },
+        {
+            "name": "GW_DEF",
+            "type": "bash",
+            "expression": "ip route show default | awk '/default/ {print $3}'",
+            "description": "Returns the default gateway IP address."
+        },
+        {
+            "name": "IP_PUBLIC",
+            "type": "bash",
+            "expression": "curl -s https://ifconfig.me",
+            "description": "Returns the public (WAN) IP address using an external service."
+        },
+        {
+            "name": "IP_ETH0",
+            "type": "bash",
+            "expression": "ip -4 addr show eth0 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for eth0 interface."
+        },
+        {
+            "name": "IP_ETH1",
+            "type": "bash",
+            "expression": "ip -4 addr show eth1 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for eth1 interface."
+        },
+        {
+            "name": "IP_ETH2",
+            "type": "bash",
+            "expression": "ip -4 addr show eth2 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for eth2 interface."
+        },
+        {
+            "name": "IP_WLAN0",
+            "type": "bash",
+            "expression": "ip -4 addr show wlan0 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for wlan0 interface."
+        },
+        {
+            "name": "IP_WLAN1",
+            "type": "bash",
+            "expression": "ip -4 addr show wlan1 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for wlan1 interface."
+        },
+        {
+            "name": "IP_WLAN2",
+            "type": "bash",
+            "expression": "ip -4 addr show wlan2 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for wlan2 interface."
+        },
+        {
+            "name": "IP_TUN0",
+            "type": "bash",
+            "expression": "ip -4 addr show tun0 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for tun0 (VPN) interface."
+        },
+        {
+            "name": "IP_TUN1",
+            "type": "bash",
+            "expression": "ip -4 addr show tun1 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for tun1 (VPN) interface."
+        },
+        {
+            "name": "IP_TUN2",
+            "type": "bash",
+            "expression": "ip -4 addr show tun2 | awk '/inet / {print $2}' | cut -d/ -f1",
+            "description": "Returns the IPv4 address for tun2 (VPN) interface."
+        },
+        {
+            "name": "PORT_SOCKS5",
+            "type": "bash",
+            "expression": "grep -E 'socks[45]' /etc/proxychains4.conf | head -n 1 | awk '{print $NF}'",
+            "description": "Returns the first SOCKS port defined in proxychains configuration."
+        },
+        {
+            "name": "RAND_USER",
+            "type": "bash",
+            "expression": "echo \"user_$(openssl rand -hex 4)\"",
+            "description": "Generates a random username string with a hex suffix."
+        },
+        {
+            "name": "RAND_PASS",
+            "type": "bash",
+            "expression": "openssl rand -base64 12",
+            "description": "Generates a random 12-character password string."
+        },
+        {
+            "name": "AD_DOMAIN",
+            "type": "bash",
+            "expression": "dig +short _ldap._tcp.dc._msdcs 2>/dev/null | awk '{print $NF}' | sed 's/\\.$//' | head -n 1 | cut -d'.' -f2-",
+            "description": "Attempts to automatically detect the Active Directory domain using DNS SRV lookup."
+        },
+        {
+            "name": "AD_DC_LIST",
+            "type": "bash",
+            "expression": "dig +short _ldap._tcp.dc._msdcs 2>/dev/null | awk '{print $NF}' | sed 's/\\.$//' | sort -u | tr '\\n' ' '",
+            "description": "Returns a space-separated list of detected Domain Controllers via DNS SRV query."
+        },
+        {
+            "name": "AD_KDC",
+            "type": "bash",
+            "expression": "dig +short _kerberos._tcp 2>/dev/null | awk '{print $NF}' | sed 's/\\.$//' | head -n 1",
+            "description": "Returns the detected Kerberos KDC server using DNS SRV lookup."
+        },
+        {
+            "name": "LOG_USER",
+            "type": "python",
+            "expression": "import os; print(os.environ.get(\"USER\"))",
+            "description": "Returns name of currently logged user"
+        }
+    ]
+}

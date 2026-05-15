@@ -1,0 +1,292 @@
+import pygame
+import random
+import sys
+import math
+
+# Initialize Pygame
+pygame.init()
+
+# Screen dimensions
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+FPS = 60
+
+# Colors
+BLACK = (0, 0, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+RED = (255, 0, 0)
+PINK = (255, 105, 180)
+CYAN = (0, 255, 255)
+ORANGE = (255, 165, 0)
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+
+# Speeds
+PLAYER_SPEED = 4
+CHASER_SPEED = 2
+RANDOM_SPEED = 3
+
+# Entity sizes
+PLAYER_SIZE = 32
+GHOST_SIZE = 28
+COLLECTIBLE_SIZE = 10
+
+COLLECTIBLE_COLORS = [GREEN, WHITE]
+
+def draw_ghost(screen, rect, color):
+    w, h = rect.width, rect.height
+    r = w // 2
+    head_center = (rect.x + r, rect.y + r)
+    pygame.draw.circle(screen, color, head_center, r)
+    body_rect = pygame.Rect(rect.x, rect.y + r, w, r)
+    pygame.draw.rect(screen, color, body_rect)
+    scallop_radius = w // 6
+    for i in range(3):
+        cx = rect.x + scallop_radius + i * (2 * scallop_radius)
+        cy = rect.y + h
+        pygame.draw.circle(screen, color, (cx, cy), scallop_radius)
+    eye_offset_x = r // 2
+    eye_offset_y = r // 2
+    eye_radius = r // 4
+    pupil_radius = r // 8
+    left_eye = (head_center[0] - eye_offset_x, head_center[1] - eye_offset_y)
+    right_eye = (head_center[0] + eye_offset_x, head_center[1] - eye_offset_y)
+    pygame.draw.circle(screen, WHITE, left_eye, eye_radius)
+    pygame.draw.circle(screen, WHITE, right_eye, eye_radius)
+    pygame.draw.circle(screen, BLUE, left_eye, pupil_radius)
+    pygame.draw.circle(screen, BLUE, right_eye, pupil_radius)
+
+def draw_title_screen(screen, font):
+    screen.fill(BLACK)
+    title_text = font.render("PACMAN LITE", True, YELLOW)
+    instruction_text = font.render("Press ENTER to Start", True, WHITE)
+    screen.blit(title_text, (SCREEN_WIDTH // 2 - title_text.get_width() // 2, SCREEN_HEIGHT // 3))
+    screen.blit(instruction_text, (SCREEN_WIDTH // 2 - instruction_text.get_width() // 2, SCREEN_HEIGHT // 2))
+    pygame.display.flip()
+
+class Player:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x, y, PLAYER_SIZE, PLAYER_SIZE)
+        self.vx = 0
+        self.vy = 0
+
+    def handle_event(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_LEFT:
+                self.vx, self.vy = -PLAYER_SPEED, 0
+            elif event.key == pygame.K_RIGHT:
+                self.vx, self.vy = PLAYER_SPEED, 0
+            elif event.key == pygame.K_UP:
+                self.vy, self.vx = -PLAYER_SPEED, 0
+            elif event.key == pygame.K_DOWN:
+                self.vy, self.vx = PLAYER_SPEED, 0
+
+    def update(self):
+        self.rect.x += self.vx
+        self.rect.y += self.vy
+        self.rect.clamp_ip(pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT))
+
+    def draw(self, screen):
+        center = self.rect.center
+        radius = self.rect.width // 2
+        current_time = pygame.time.get_ticks()
+
+        max_opening = 45  # stopnie
+        mouth_angle_deg = max_opening * (0.5 + 0.5 * math.sin(current_time * 0.005))
+        mouth_opening = math.radians(mouth_angle_deg)
+
+        if self.vx > 0:
+            direction_angle = 0
+        elif self.vx < 0:
+            direction_angle = 180
+        elif self.vy < 0:
+            direction_angle = 90
+        elif self.vy > 0:
+            direction_angle = 270
+        else:
+            direction_angle = 0
+
+        direction_rad = math.radians(direction_angle)
+
+        start_angle = direction_rad - mouth_opening / 2
+        end_angle = direction_rad + mouth_opening / 2
+
+        pygame.draw.circle(screen, YELLOW, center, radius)
+
+        extend_factor = 1.2  # wydłuż trójkąt, aby zakryć żółty pasek
+        point1 = center
+        point2 = (
+            center[0] + radius * extend_factor * math.cos(start_angle),
+            center[1] - radius * extend_factor * math.sin(start_angle)
+        )
+        point3 = (
+            center[0] + radius * extend_factor * math.cos(end_angle),
+            center[1] - radius * extend_factor * math.sin(end_angle)
+        )
+        pygame.draw.polygon(screen, (0, 0, 0), [point1, point2, point3])
+
+
+class Ghost:
+    def __init__(self, x, y, color, speed):
+        self.start_pos = (x, y)
+        self.rect = pygame.Rect(x, y, GHOST_SIZE, GHOST_SIZE)
+        self.color = color
+        self.speed = speed
+        self.vx = 0
+        self.vy = 0
+
+    def reset(self):
+        self.rect.topleft = self.start_pos
+        self.vx, self.vy = 0, 0
+
+    def update(self, player_rect):
+        pass
+
+    def draw(self, screen, override_color=None):
+        draw_ghost(screen, self.rect, override_color if override_color is not None else self.color)
+
+class ChaserGhost(Ghost):
+    def update(self, player_rect):
+        dx = player_rect.centerx - self.rect.centerx
+        dy = player_rect.centery - self.rect.centery
+        if abs(dx) > abs(dy):
+            self.vx, self.vy = CHASER_SPEED * (1 if dx > 0 else -1), 0
+        else:
+            self.vy, self.vx = CHASER_SPEED * (1 if dy > 0 else -1), 0
+        self.rect.x += self.vx
+        self.rect.y += self.vy
+        self.rect.clamp_ip(pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT))
+
+class RandomGhost(Ghost):
+    def __init__(self, x, y, color, speed):
+        super().__init__(x, y, color, speed)
+        self.change_dir_time = pygame.time.get_ticks()
+        self._set_random_direction()
+
+    def _set_random_direction(self):
+        dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+        dx, dy = random.choice(dirs)
+        self.vx, self.vy = dx * self.speed, dy * self.speed
+
+    def update(self, player_rect=None):
+        now = pygame.time.get_ticks()
+        if now - self.change_dir_time > 2000:
+            self.change_dir_time = now
+            self._set_random_direction()
+        self.rect.x += self.vx
+        self.rect.y += self.vy
+        if self.rect.left < 0 or self.rect.right > SCREEN_WIDTH:
+            self.vx = -self.vx
+        if self.rect.top < 0 or self.rect.bottom > SCREEN_HEIGHT:
+            self.vy = -self.vy
+        self.rect.clamp_ip(pygame.Rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT))
+
+def create_entities():
+    player = Player(SCREEN_WIDTH//2 - PLAYER_SIZE//2, SCREEN_HEIGHT//2 - PLAYER_SIZE//2)
+    ghosts = [
+        ChaserGhost(0, 0, RED, CHASER_SPEED),
+        RandomGhost(SCREEN_WIDTH-GHOST_SIZE, 0, PINK, RANDOM_SPEED),
+        RandomGhost(0, SCREEN_HEIGHT-GHOST_SIZE, CYAN, RANDOM_SPEED),
+        RandomGhost(SCREEN_WIDTH-GHOST_SIZE, SCREEN_HEIGHT-GHOST_SIZE, ORANGE, RANDOM_SPEED)
+    ]
+    return player, ghosts
+def main():
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("Pacman Lite")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont(None, 36)
+
+    player, ghosts = create_entities()
+    game_over = False
+    score = 0
+
+    collectibles = []
+    collectible_lifetime = 3000
+    next_spawn_time = pygame.time.get_ticks() + random.randint(1000, 5000)
+    ghosts_flash_until = 0
+
+    running = True
+    while running:
+        now = pygame.time.get_ticks()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN and game_over and event.key == pygame.K_RETURN:
+                # restart gry
+                player, ghosts = create_entities()
+                collectibles.clear()
+                score = 0
+                game_over = False
+            elif not game_over:
+                player.handle_event(event)
+
+        if not game_over:
+            player.update()
+            for ghost in ghosts:
+                ghost.update(player.rect)
+
+            # zarządzanie zbieralnymi
+            if now >= next_spawn_time:
+                collectibles.clear()
+                for color in COLLECTIBLE_COLORS:
+                    x = random.randint(0, SCREEN_WIDTH - COLLECTIBLE_SIZE)
+                    y = random.randint(0, SCREEN_HEIGHT - COLLECTIBLE_SIZE)
+                    collectibles.append(((x, y, color), now))
+                next_spawn_time = now + random.randint(5000, 8000)
+
+            collectibles = [c for c in collectibles if now - c[1] <= collectible_lifetime]
+
+            # kolizje z pyszni (zbieralnymi)
+            for (x, y, color), spawn_time in collectibles[:]:
+                if player.rect.colliderect(pygame.Rect(x, y, COLLECTIBLE_SIZE, COLLECTIBLE_SIZE)):
+                    if color == GREEN:
+                        score += 10
+                    elif color == WHITE:
+                        ghosts_flash_until = now + 3000
+                    collectibles.remove(((x, y, color), spawn_time))
+
+            # **NOWA LOGIKA KOLIZJI Z DUCHAMI**
+            for ghost in ghosts:
+                if player.rect.colliderect(ghost.rect):
+                    if now < ghosts_flash_until:
+                        # duch jest w trybie „jadalnym” → reset pozycji + +50 pkt
+                        ghost.reset()
+                        score += 50
+                    else:
+                        # normalna kolizja → game over
+                        game_over = True
+
+        # rysowanie
+        screen.fill(BLACK)
+        player.draw(screen)
+
+        for ghost in ghosts:
+            # flash białym kolorem przez 3s po zjedzeniu Power‑pigu
+            if now < ghosts_flash_until:
+                ghost.draw(screen, WHITE)
+            else:
+                ghost.draw(screen)
+
+        for (x, y, color), _ in collectibles:
+            pygame.draw.circle(screen, color,
+                               (x + COLLECTIBLE_SIZE//2, y + COLLECTIBLE_SIZE//2),
+                               COLLECTIBLE_SIZE//2)
+
+        score_text = font.render(f"Score: {score}", True, WHITE)
+        screen.blit(score_text, (10, 10))
+
+        if game_over:
+            text = font.render("GAME OVER - Press Enter to Restart", True, RED)
+            rect = text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2))
+            screen.blit(text, rect)
+
+        pygame.display.flip()
+        clock.tick(FPS)
+
+    pygame.quit()
+    sys.exit()
+
+
+if __name__ == "__main__":
+    main()

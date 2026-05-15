@@ -1,0 +1,156 @@
+import pygame
+import sys
+import random
+
+# Initialize Pygame
+game_width, game_height = 800, 600
+pygame.init()
+screen = pygame.display.set_mode((game_width, game_height))
+pygame.display.set_caption('Pong vs CPU')
+clock = pygame.time.Clock()
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+
+# Game variables
+paddle_width, paddle_height = 10, 100
+ball_size = 20
+player_speed = 7
+cpu_speed = 6
+ball_speed_x = 7 * random.choice((1, -1))
+ball_speed_y = 7 * random.choice((1, -1))
+
+# Initial colors
+dynamic_ball_color = WHITE
+player_color = WHITE
+cpu_color = WHITE
+
+# Score
+player_score = 0
+cpu_score = 0
+font = pygame.font.SysFont('Consolas', 30)
+large_font = pygame.font.SysFont('Consolas', 60)
+start_font = pygame.font.SysFont('Consolas', 40)
+
+# Paddles and Ball
+player_paddle = pygame.Rect(10, (game_height - paddle_height) // 2, paddle_width, paddle_height)
+cpu_paddle = pygame.Rect(game_width - 20, (game_height - paddle_height) // 2, paddle_width, paddle_height)
+ball = pygame.Rect((game_width - ball_size) // 2, (game_height - ball_size) // 2, ball_size, ball_size)
+
+# Game state
+game_active = False
+paused = False
+
+# Functions
+def reset_ball():
+    global ball_speed_x, ball_speed_y
+    ball.center = (game_width // 2, game_height // 2)
+    ball_speed_x = 7 * random.choice((1, -1))
+    ball_speed_y = 7 * random.choice((1, -1))
+
+def draw_objects():
+    screen.fill(BLACK)
+    # Draw paddles with their current colors
+    pygame.draw.rect(screen, player_color, player_paddle)
+    pygame.draw.rect(screen, cpu_color, cpu_paddle)
+    # If player is leading, ball is green, else dynamic
+    ball_draw_color = GREEN if player_score > cpu_score else dynamic_ball_color
+    pygame.draw.ellipse(screen, ball_draw_color, ball)
+    pygame.draw.aaline(screen, WHITE, (game_width // 2, 0), (game_width // 2, game_height))
+
+    player_text = font.render(f'Player: {player_score}', True, WHITE)
+    cpu_text = font.render(f'CPU: {cpu_score}', True, WHITE)
+    screen.blit(player_text, (20, 20))
+    screen.blit(cpu_text, (game_width - cpu_text.get_width() - 20, 20))
+
+def cpu_ai():
+    if cpu_paddle.centery < ball.centery:
+        cpu_paddle.y += cpu_speed
+    elif cpu_paddle.centery > ball.centery:
+        cpu_paddle.y -= cpu_speed
+    # Keep paddle on screen
+    if cpu_paddle.top < 0:
+        cpu_paddle.top = 0
+    if cpu_paddle.bottom > game_height:
+        cpu_paddle.bottom = game_height
+
+# Main game loop
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE and not game_active:
+                game_active = True
+            elif event.key == pygame.K_p and game_active:
+                paused = not paused
+
+    # Start screen
+    if not game_active:
+        screen.fill(BLACK)
+        start_text = start_font.render('PRESS SPACE', True, WHITE)
+        start_text2 = start_font.render('TO START', True, WHITE)
+        screen.blit(start_text, ((game_width - start_text.get_width()) // 2, game_height // 2 - 40))
+        screen.blit(start_text2, ((game_width - start_text2.get_width()) // 2, game_height // 2 + 10))
+        pygame.display.flip()
+        clock.tick(60)
+        continue
+
+    # Pause overlay
+    if paused:
+        pause_text = large_font.render('PAUSED', True, WHITE)
+        instruction = font.render('Press P to resume', True, WHITE)
+        screen.blit(pause_text, ((game_width - pause_text.get_width()) // 2, (game_height - pause_text.get_height()) // 2 - 30))
+        screen.blit(instruction, ((game_width - instruction.get_width()) // 2, (game_height - instruction.get_height()) // 2 + 30))
+        pygame.display.flip()
+        clock.tick(60)
+        continue
+
+    # Player input
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_w] and player_paddle.top > 0:
+        player_paddle.y -= player_speed
+    if keys[pygame.K_s] and player_paddle.bottom < game_height:
+        player_paddle.y += player_speed
+
+    # Move ball
+    ball.x += ball_speed_x
+    ball.y += ball_speed_y
+
+    # Ball collision with top/bottom
+    if ball.top <= 0 or ball.bottom >= game_height:
+        ball_speed_y *= -1
+
+    # Ball collision with paddles
+    if ball.colliderect(player_paddle) and ball_speed_x < 0:
+        ball_speed_x *= -1
+    if ball.colliderect(cpu_paddle) and ball_speed_x > 0:
+        ball_speed_x *= -1
+
+    # Score check
+    if ball.left <= 0:
+        cpu_score += 1
+        # Change ball and CPU paddle colors when CPU scores
+        dynamic_ball_color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+        cpu_color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+        reset_ball()
+    if ball.right >= game_width:
+        player_score += 1
+        # Change ball and Player paddle colors when Player scores
+        dynamic_ball_color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+        player_color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+        reset_ball()
+
+    # CPU movement
+    cpu_ai()
+
+    # Draw everything
+    draw_objects()
+
+    # Update display and tick
+    pygame.display.flip()
+    clock.tick(60)

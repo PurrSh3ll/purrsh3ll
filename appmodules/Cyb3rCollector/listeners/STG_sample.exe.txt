@@ -1,0 +1,13 @@
+{
+  "CATEGORY": "stager",
+  "OS": "windows",
+  "ARCH": "x86",
+  "STAGE": "meterpreter",
+  "TYPE": "reverse_tcp",
+  "ENCODER": "x86/shikata_ga_nai",
+  "ITER": "0",
+  "FORMAT": "exe",
+  "LHOST": "127.0.0.1",
+  "LPORT": "4444",
+  "OUTPUT": "STG_sample"
+}

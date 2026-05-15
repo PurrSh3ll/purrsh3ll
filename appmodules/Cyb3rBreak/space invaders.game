@@ -1,0 +1,125 @@
+import pygame
+import random
+import math
+
+# Inicjalizacja Pygame
+pygame.init()
+
+# Ustawienia okna
+screen = pygame.display.set_mode((800, 600))
+pygame.display.set_caption("Space Invaders")
+clock = pygame.time.Clock()
+
+# Gracz
+player_x = 370
+player_y = 480
+player_x_change = 0
+
+# Pocisk
+bullet_x = 0
+bullet_y = 480
+bullet_y_change = 10
+bullet_state = "ready"  # ready - nie widać, fire - porusza się
+
+# Wróg
+enemy_x = []
+enemy_y = []
+enemy_x_change = []
+enemy_y_change = []
+num_of_enemies = 6
+for _ in range(num_of_enemies):
+    enemy_x.append(random.randint(0, 736))
+    enemy_y.append(random.randint(50, 150))
+    enemy_x_change.append(2)
+    enemy_y_change.append(40)
+
+# Wynik
+score_value = 0
+font = pygame.font.Font(None, 32)
+text_x = 10
+text_y = 10
+
+def show_score(x, y):
+    score = font.render("Score : " + str(score_value), True, (255, 255, 255))
+    screen.blit(score, (x, y))
+
+# Kolizja
+def is_collision(enemy_x, enemy_y, bullet_x, bullet_y):
+    distance = math.hypot(enemy_x - bullet_x, enemy_y - bullet_y)
+    return distance < 27
+
+# Funkcje rysujące
+def draw_player(x, y):
+    pygame.draw.rect(screen, (0, 255, 0), (x, y, 40, 40))
+
+def draw_enemy(x, y):
+    pygame.draw.rect(screen, (255, 0, 0), (x, y, 40, 40))
+
+def fire_bullet(x, y):
+    global bullet_state
+    bullet_state = "fire"
+    pygame.draw.rect(screen, (255, 255, 0), (x + 18, y, 4, 20))
+
+# Pętla gry
+running = True
+while running:
+    clock.tick(60)  # 60 klatek na sekundę
+    screen.fill((0, 0, 30))
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_LEFT:
+                player_x_change = -5
+            if event.key == pygame.K_RIGHT:
+                player_x_change = 5
+            if event.key == pygame.K_SPACE and bullet_state == "ready":
+                bullet_x = player_x
+                fire_bullet(bullet_x, bullet_y)
+
+        if event.type == pygame.KEYUP:
+            if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                player_x_change = 0
+
+    # Ruch gracza
+    player_x += player_x_change
+    player_x = max(0, min(player_x, 760))
+
+    # Ruch wroga
+    for i in range(num_of_enemies):
+        if enemy_y[i] > 440:
+            for j in range(num_of_enemies):
+                enemy_y[j] = 2000
+            running = False
+            break
+
+        enemy_x[i] += enemy_x_change[i]
+        if enemy_x[i] <= 0 or enemy_x[i] >= 760:
+            enemy_x_change[i] *= -1
+            enemy_y[i] += enemy_y_change[i]
+
+        # Kolizja
+        if is_collision(enemy_x[i], enemy_y[i], bullet_x, bullet_y):
+            bullet_y = 480
+            bullet_state = "ready"
+            score_value += 1
+            enemy_x[i] = random.randint(0, 736)
+            enemy_y[i] = random.randint(50, 150)
+
+        draw_enemy(enemy_x[i], enemy_y[i])
+
+    # Ruch pocisku
+    if bullet_state == "fire":
+        fire_bullet(bullet_x, bullet_y)
+        bullet_y -= bullet_y_change
+        if bullet_y <= 0:
+            bullet_y = 480
+            bullet_state = "ready"
+
+    draw_player(player_x, player_y)
+    show_score(text_x, text_y)
+    pygame.display.update()
+
+pygame.quit()

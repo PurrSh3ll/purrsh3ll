@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtualenv
+venv/
+.venv/
+
+# PyCharm
+.idea/
+
+# Archiwa
+*.tar.gz
+*.zip
+
+# Claude
+.claude/
+
+# Projekt
+psc2.purr
+requirements.txt
+requirements_old.txt
+todo.txt
+
+# Appdata — dane runtime (nie wersjonujemy)
+appdata/logs/
+appdata/rag/
+appdata/api_keys.json
+appdata/session.json
+appdata/psnotes.txt
+appdata/ob_panel_state.json
+appdata/terminal_fifos/
+
+# Skills — zewnętrzne repozytoria git
+appdata/agent_modes/skills/awesome-claude-skills-security/
+appdata/agent_modes/skills/claude-code-pentest/

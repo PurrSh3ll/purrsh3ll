@@ -1,0 +1,166 @@
+import pygame
+import random
+
+pygame.init()
+
+WIDTH, HEIGHT = 800, 600
+
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Breakout")
+clock = pygame.time.Clock()
+
+# Colors
+WHITE = (255, 255, 255)
+BLUE = (0, 0, 255)
+RED = (255, 0, 0)
+BLACK = (0, 0, 0)
+GREEN = (0, 255, 0)
+GRAY = (200, 200, 200)
+
+# Paddle
+paddle = pygame.Rect(WIDTH // 2 - 60, HEIGHT - 30, 120, 10)
+paddle_speed = 7
+
+# Ball
+balls = [pygame.Rect(WIDTH // 2, HEIGHT // 2, 10, 10)]
+ball_speed = [[4, -4]]
+
+# Bricks
+brick_rows = 5
+brick_cols = 10
+brick_width = WIDTH // brick_cols - 6
+brick_height = 20
+bricks = []
+for row in range(brick_rows):
+    for col in range(brick_cols):
+        brick_x = col * (brick_width + 6) + 3
+        brick_y = row * (brick_height + 6) + 30
+        bricks.append(pygame.Rect(brick_x, brick_y, brick_width, brick_height))
+
+# Powerups
+powerups = []
+powerup_chance = 0.2
+
+# Font
+font = pygame.font.SysFont("Arial", 30)
+
+# Game State
+running = True
+paused = False
+game_started = False
+game_over = False
+win = False
+
+while running:
+    screen.fill(BLACK)
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if not game_started and event.key == pygame.K_SPACE:
+                game_started = True
+            elif game_started and event.key == pygame.K_p:
+                paused = not paused
+            elif game_over or win:
+                if event.key == pygame.K_r:
+                    # Reset game
+                    paddle.x = WIDTH // 2 - 60
+                    balls = [pygame.Rect(WIDTH // 2, HEIGHT // 2, 10, 10)]
+                    ball_speed = [[4, -4]]
+                    bricks.clear()
+                    for row in range(brick_rows):
+                        for col in range(brick_cols):
+                            brick_x = col * (brick_width + 6) + 3
+                            brick_y = row * (brick_height + 6) + 30
+                            bricks.append(pygame.Rect(brick_x, brick_y, brick_width, brick_height))
+                    powerups.clear()
+                    game_over = False
+                    game_started = False
+                    win = False
+
+    keys = pygame.key.get_pressed()
+    if game_started and not paused and not game_over and not win:
+        if keys[pygame.K_LEFT] and paddle.left > 0:
+            paddle.x -= paddle_speed
+        if keys[pygame.K_RIGHT] and paddle.right < WIDTH:
+            paddle.x += paddle_speed
+
+        # Move balls
+        for i, ball in enumerate(balls):
+            ball.x += ball_speed[i][0]
+            ball.y += ball_speed[i][1]
+
+            if ball.left <= 0 or ball.right >= WIDTH:
+                ball_speed[i][0] *= -1
+            if ball.top <= 0:
+                ball_speed[i][1] *= -1
+            if ball.colliderect(paddle):
+                ball_speed[i][1] *= -1
+
+            # Ball falls below screen
+            if ball.top > HEIGHT:
+                balls.pop(i)
+                ball_speed.pop(i)
+                break
+
+            # Brick collisions
+            hit_index = ball.collidelist(bricks)
+            if hit_index != -1:
+                ball_speed[i][1] *= -1
+                brick = bricks.pop(hit_index)
+                if random.random() < powerup_chance:
+                    powerups.append([pygame.Rect(brick.centerx, brick.centery, 10, 10), 3])
+                break
+
+        # Move powerups
+        for p in powerups[:]:
+            p[0].y += p[1]
+            if p[0].colliderect(paddle):
+                # Add one new ball
+                new_ball = pygame.Rect(paddle.centerx + random.randint(-40, 40), paddle.y - 10, 10, 10)
+                balls.append(new_ball)
+                ball_speed.append([random.choice([-4, 4]), -4])
+                powerups.remove(p)
+            elif p[0].top > HEIGHT:
+                powerups.remove(p)
+
+        if len(balls) == 0:
+            game_over = True
+
+        if len(bricks) == 0:
+            win = True
+
+    # Draw paddle
+    pygame.draw.rect(screen, BLUE, paddle)
+
+    # Draw balls
+    for ball in balls:
+        pygame.draw.ellipse(screen, WHITE, ball)
+
+    # Draw bricks
+    for brick in bricks:
+        pygame.draw.rect(screen, RED, brick)
+
+    # Draw powerups
+    for p in powerups:
+        pygame.draw.rect(screen, GREEN, p[0])
+
+    # Messages
+    if not game_started:
+        text = font.render("Press SPACE to start", True, WHITE)
+        screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
+    elif paused:
+        text = font.render("Paused - Press P to resume", True, GRAY)
+        screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
+    elif game_over:
+        text = font.render("Game Over - Press R to restart", True, RED)
+        screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
+    elif win:
+        text = font.render("You Win! - Press R to restart", True, GREEN)
+        screen.blit(text, (WIDTH // 2 - text.get_width() // 2, HEIGHT // 2))
+
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()

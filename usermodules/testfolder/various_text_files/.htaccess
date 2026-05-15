@@ -1,0 +1,150 @@
+##########################################
+# Example .htaccess configuration file
+# Demonstrates directives, sections, strings, regex, flags, etc.
+##########################################
+
+# --- SECTION: GENERAL SETTINGS ---
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase "/"
+
+    # Redirect old URLs
+    RewriteRule "^old-page\.html$" "new-page.html" [R=301,L]
+
+    # Remove trailing slash
+    RewriteCond "%{REQUEST_FILENAME}" !-d
+    RewriteRule "^(.*)/$" "$1" [R=301,L]
+
+    # Force HTTPS
+    RewriteCond "%{HTTPS}" !=on
+    RewriteRule "^(.*)$" "https://%{HTTP_HOST}/$1" [R=301,L]
+</IfModule>
+
+# --- SECTION: AUTHENTICATION ---
+<IfModule mod_auth.c>
+    AuthType Basic
+    AuthName "Restricted Area"
+    AuthUserFile "/var/www/html/.htpasswd"
+    Require valid-user
+</IfModule>
+
+# --- SECTION: DIRECTORY SETTINGS ---
+<Directory "/var/www/html/private">
+    Options None
+    AllowOverride None
+    Order deny,allow
+    Deny from all
+</Directory>
+323232
+# --- SECTION: CUSTOM ERROR PAGES ---
+ErrorDocument 404 "/errors/404.html" 2323232
+ErrorDocument 403 "/errors/403.html"
+ErrorDocument 500 "/errors/500.html"
+
+# --- SECTION: MIME TYPES ---
+AddType "application/javascript" ".js"
+AddType "text/css" ".css"
+AddType "image/webp" ".webp"
+
+# --- SECTION: CACHE CONTROL ---
+<IfModule mod_headers.c>
+    Header set Cache-Control "max-age=2592000, public"
+</IfModule>
+
+# --- SECTION: FILE ACCESS CONTROL ---
+<FilesMatch "\.(htaccess|htpasswd|ini|log|conf)$">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# --- SECTION: REDIRECTS AND REWRITES ---
+RewriteCond "%{REQUEST_FILENAME}" !-f
+RewriteCond "%{REQUEST_FILENAME}" !-d
+RewriteRule "^(.*)$" "index.php?route=$1" [QSA,L]
+
+# --- SECTION: VARIABLES AND REGEX ---
+RewriteCond "%{QUERY_STRING}" "id=([0-9]+)"
+RewriteRule "^product\.php$" "item.php?id=%1" [R=301,L]
+
+# Example of using environment variables
+SetEnvIfNoCase "User-Agent" "Googlebot" is_googlebot=1
+SetEnvIfNoCase "User-Agent" "bingbot" is_bingbot=1
+
+# Example condition with variable and regex
+RewriteCond "%{HTTP_USER_AGENT}" ".*(bot|crawler|spider).*" [NC]
+RewriteRule ".*" "-" [E=IS_ROBOT:true]
+
+# --- SECTION: CUSTOM HEADERS ---
+Header always set X-Frame-Options "SAMEORIGIN"
+Header always set X-XSS-Protection "1; mode=block"
+Header always set X-Content-Type-Options "nosniff"
+
+# --- SECTION: LIMITING METHODS ---
+<Limit GET POST>
+    Order allow,deny
+    Allow from all
+</Limit>
+
+<LimitExcept GET POST>
+    Order deny,allow
+    Deny from all
+</LimitExcept>
+
+# --- SECTION: GZIP COMPRESSION ---
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css application/javascript
+</IfModule>
+
+# --- SECTION: CUSTOM REWRITE FOR IMAGES ---
+RewriteCond "%{REQUEST_URI}" "\.(jpg|jpeg|png|gif|webp)$"
+RewriteCond "%{HTTP_REFERER}" "!^https://(www\.)?mydomain\.com" [NC]
+RewriteRule ".*" "/images/nohotlink.png" [R,L]
+
+# --- SECTION: MULTIPLE FLAGS ---
+RewriteRule "^downloads/(.*)$" "/files/$1" [R=301,L,NC,QSA]
+
+# --- SECTION: PATH AND ARGUMENT EXAMPLES ---
+Redirect 301 "/blog" "/articles/"
+RedirectMatch 403 "\.git"
+
+# This section shows different path forms and variables
+SetEnv APP_PATH "/var/www/html/app"
+SetEnv LOG_PATH "C:/Apache24/logs/access.log"
+
+# --- SECTION: STRINGS AND ARGUMENTS ---
+RewriteRule "^hello/(.*)$" "welcome.php?name=$1" [QSA,L]
+RewriteRule "^goodbye/(.*)$" "farewell.php?user=$1" [QSA,L]
+
+# --- SECTION: NUMBERS ---
+# These are example numerical conditions
+RewriteCond "%{REMOTE_PORT}" ^80$
+RewriteCond "%{TIME_YEAR}" 2025
+RewriteCond "%{TIME_MIN}" <10
+RewriteRule ".*" "-" [E=EARLY_REQUEST:true]
+
+# --- SECTION: FLAGS AND VARIABLES ---
+RewriteCond "%{REQUEST_METHOD}" =POST
+RewriteRule ".*" "-" [E=POST_REQUEST:true]
+
+# Complex flag example
+RewriteRule "^api/(.*)$" "/backend/api/$1" [QSA,L,NC,E=API_CALL:true]
+
+# --- SECTION: REGEX COMPLEX EXAMPLES ---
+RewriteRule "^user/([a-zA-Z0-9_-]+)/profile$" "profile.php?user=$1" [L]
+RewriteRule "^page/([0-9]{1,3})$" "view.php?id=$1" [L,QSA]
+
+# --- SECTION: LOGGING EXAMPLES ---
+<IfModule mod_log_config.c>
+    LogLevel warn
+    CustomLog "/var/log/apache2/access.log" combined
+    ErrorLog "/var/log/apache2/error.log"
+</IfModule>
+
+# --- SECTION: END COMMENTS ---
+# This is a comment showing how comments are highlighted.
+# Numbers: 404, 500, 301
+# Variables: %{REQUEST_URI}, %{HTTP_HOST}, %{QUERY_STRING}
+# Regex: ^/products/[a-z]+/?$
+# Flags: [L,R=301,NC,QSA,E=FLAG:1]
+# Strings: "Restricted Area", "text/css"
+# Paths: /var/www/html/, /images/, /logs/

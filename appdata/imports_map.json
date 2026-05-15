@@ -1,0 +1,360 @@
+{
+    "PIL": [
+        "pillow"
+    ],
+    "bs4": [
+        "beautifulsoup4"
+    ],
+  "faker": [
+        "Faker"
+    ],
+    "yaml": [
+        "pyyaml"
+    ],
+    "sklearn": [
+        "scikit-learn"
+    ],
+    "skimage": [
+        "scikit-image"
+    ],
+    "cv2": [
+        "opencv-python"
+    ],
+    "MySQLdb": [
+        "mysqlclient"
+    ],
+    "imblearn": [
+        "imbalanced-learn"
+    ],
+    "Crypto": [
+        "pycrypto",
+        "pycryptodome"
+    ],
+    "dateutil": [
+        "python-dateutil"
+    ],
+    "dotenv": [
+        "python-dotenv"
+    ],
+    "google.cloud": [
+        "google-cloud-storage",
+        "google-cloud-firestore"
+    ],
+    "googleapiclient": [
+        "google-api-python-client"
+    ],
+    "magic": [
+        "python-magic",
+        "python-magic-bin"
+    ],
+    "serial": [
+        "pyserial"
+    ],
+    "google_auth_oauthlib.flow": [
+        "google-auth-oauthlib"
+    ],
+    "websocket": [
+        "websocket-client"
+    ],
+    "grpc": [
+        "grpcio"
+    ],
+    "passlib.context": [
+        "passlib"
+    ],
+    "readline": [
+        "pyreadline3"
+    ],
+    "PySide6": [
+        "pyside6"
+    ],
+    "PyQt5": [
+        "pyqt5"
+    ],
+    "sseclient": [
+        "sseclient-py"
+    ],
+    "rapidjson": [
+        "python-rapidjson"
+    ],
+    "mysql.connector": [
+        "mysql-connector-python"
+    ],
+    "telegram": [
+        "python-telegram-bot"
+    ],
+    "statsmodels.api": [
+        "statsmodels"
+    ],
+    "jupyter": [
+        "jupyterlab"
+    ],
+    "Levenshtein": [
+        "python-levenshtein",
+        "python-Levenshtein",
+        "python-levenshtein-wheels",
+        "levenshtein"
+    ],
+    "sgmllib": [
+        "sgmllib3k"
+    ],
+    "jnius": [
+        "pyjnius"
+    ],
+    "gnupg": [
+        "python-gnupg"
+    ],
+    "gflags": [
+        "python-gflags"
+    ],
+    "box": [
+        "python-box"
+    ],
+    "memcache": [
+        "python-memcached"
+    ],
+    "django_filters": [
+        "django-filter"
+    ],
+    "allauth": [
+        "django-allauth"
+    ],
+    "crispy_forms": [
+        "django-crispy-forms"
+    ],
+    "rest_framework": [
+        "django-rest-framework"
+    ],
+    "benedict": [
+        "python-benedict"
+    ],
+    "fitz": [
+        "pymupdf"
+    ],
+    "jwt": [
+        "python-jwt"
+    ],
+    "socketio": [
+        "python-socketio"
+    ],
+    "slugify": [
+        "python-slugify"
+    ],
+    "firebase_admin": [
+        "firebase-admin"
+    ],
+    "vlc": [
+        "python-vlc"
+    ],
+    "dns": [
+        "dnspython"
+    ],
+    "fastapi_jwt_auth": [
+        "fastapi-jwt-auth"
+    ],
+    "pandas_datareader": [
+        "pandas-datareader"
+    ],
+    "faiss": [
+        "faiss-cpu",
+        "faiss-gpu"
+    ],
+    "nacl": [
+        "pynacl"
+    ],
+    "Bio": [
+        "biopython"
+    ],
+    "vcf": [
+        "pyvcf3"
+    ],
+    "dna_features_viewer": [
+        "dna-features-viewer"
+    ],
+    "scapy.all": [
+        "scapy"
+    ],
+    "paho.mqtt.client": [
+        "paho-mqtt"
+    ],
+    "argon2": [
+        "argon2-cffi"
+    ],
+    "azure.storage.blob": [
+        "azure-storage-blob"
+    ],
+    "progress.spinner": [
+        "progress"
+    ],
+    "cassandra": [
+        "cassandra-driver"
+    ],
+    "clickhouse_driver": [
+        "clickhouse-driver"
+    ],
+    "keystone": [
+        "keystone-engine"
+    ],
+    "pwn": [
+        "pwntools"
+    ],
+    "whois": [
+        "python-whois"
+    ],
+    "masscan": [
+        "python-masscan"
+    ],
+    "nmap": [
+        "python-nmap"
+    ],
+    "Wappalyzer": [
+        "wappalyzer",
+        "python-wappalyzer"
+    ],
+    "zapv2": [
+        "python-owasp-zap-v2.4"
+    ],
+    "pcap": [
+        "pypcap"
+    ],
+    "virustotal_python": [
+        "virustotal-python"
+    ],
+    "msoffcrypto": [
+        "msoffcrypto-tool"
+    ],
+    "afl": [
+        "afl-wrapped"
+    ],
+    "theHarvester": [
+        "theharvester"
+    ],
+    "OpenSSL": [
+        "pyOpenSSL",
+        "pyopenssl"
+    ],
+    "metasploit": [
+        "pymetasploit3"
+    ],
+    "ares": [
+        "pycares"
+    ],
+    "smb": [
+        "pysmb"
+    ],
+    "yara": [
+        "yara-python"
+    ],
+    "emailahoy": [
+        "python-emailahoy"
+    ],
+    "socketIO_client": [
+        "socketIO-client"
+    ],
+    "requests_html": [
+        "requests-html"
+    ],
+    "netfilterqueue": [
+        "python-netfilterqueue"
+    ],
+    "GeoIP": [
+        "python-geoip",
+        "python-geoip-geolite2"
+    ],
+    "minizip": [
+        "pyminizip"
+    ],
+    "deezer": [
+        "py-deezer"
+    ],
+    "ptrace": [
+        "python-ptrace"
+    ],
+    "frida_tools": [
+        "frida-tools"
+    ],
+    "git": [
+        "gitpython"
+    ],
+    "regex": [
+        "python-regex"
+    ],
+    "hachoir.core": [
+        "hachoir-core"
+    ],
+    "hachoir.parser": [
+        "hachoir-parser"
+    ],
+    "M2Crypto": [
+        "m2crypto"
+    ],
+    "libarchive": [
+        "libarchive-c"
+    ],
+    "brother": [
+        "python-brother"
+    ],
+    "google.protobuf": [
+        "protobuf"
+    ],
+    "grpc_tools": [
+        "grpcio-tools"
+    ],
+    "Crypto.SelfTest": [
+        "pycryptodome-test-vectors"
+    ],
+    "pybloomfilter": [
+        "pybloomfiltermmap3"
+    ],
+    "lzma": [
+        "pylzma"
+    ],
+    "zbar": [
+        "python-zbar"
+    ],
+    "can": [
+        "python-can"
+    ],
+    "win32api, win32com, win32security": [
+        "pywin32"
+    ],
+    "lz4": [
+        "python-lz4"
+    ],
+    "snappy": [
+        "python-snappy"
+    ],
+    "brotli": [
+        "python-brotli"
+    ],
+    "fastjsonschema": [
+        "python-fastjsonschema"
+    ],
+    "Evtx": [
+        "python-evtx"
+    ],
+    "evt": [
+        "python-evt"
+    ],
+    "dpkt": [
+        "python-dpkt"
+    ],
+    "netaddr": [
+        "python-netaddr"
+    ],
+    "KismetRest": [
+        "pykismet"
+    ],
+    "pychromedevtools": [
+        "python-chromedevtools"
+    ],
+    "http_parser": [
+        "py-http-parser"
+    ],
+    "pefile": [
+        "python-pefile2"
+    ],
+    "ahocorasick": [
+        "pyahocorasick"
+    ]
+}

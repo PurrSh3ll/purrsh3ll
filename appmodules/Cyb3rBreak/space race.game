@@ -1,0 +1,176 @@
+import pygame
+import sys
+import random
+import math
+
+# Initialize Pygame
+pygame.init()
+WIDTH, HEIGHT = 800, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption('Space Race')
+clock = pygame.time.Clock()
+
+# Colors
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+RED = (220, 20, 60)
+GRAY = (100, 100, 100)
+YELLOW = (255, 215, 0)
+ORANGE = (255, 140, 0)
+DARK_GRAY = (60, 60, 60)
+
+# Player variables
+grace_speed = 5
+player_width, player_height = 30, 60
+player_x = WIDTH // 2
+player_y = HEIGHT - player_height - 20
+
+# Asteroid variables
+num_asteroids = 8
+asteroids = []
+asteroid_speed = 3
+for _ in range(num_asteroids):
+    x = random.randint(0, WIDTH)
+    y = random.randint(-600, -50)
+    r = random.randint(15, 40)
+    craters = []
+    for _ in range(3):
+        dx = random.randint(-r//2, r//2)
+        dy = random.randint(-r//2, r//2)
+        cr = random.randint(r//8, r//5)
+        craters.append((dx, dy, cr))
+    asteroids.append({'x': x, 'y': y, 'r': r, 'craters': craters})
+
+# Score
+total_score = 0
+font = pygame.font.SysFont('Arial', 24)
+
+# Game state
+game_started = False
+paused = False
+game_over = False
+
+# Draw star field once per frame
+def draw_stars():
+    for _ in range(40):
+        sx = random.randint(0, WIDTH)
+        sy = random.randint(0, HEIGHT)
+        screen.set_at((sx, sy), WHITE)
+
+# Draw a more detailed rocket
+def draw_player(x, y):
+    body_rect = pygame.Rect(x - player_width//2, y, player_width, player_height)
+    pygame.draw.rect(screen, RED, body_rect)
+    cone = [(x - player_width//2, y), (x + player_width//2, y), (x, y - player_height//2)]
+    pygame.draw.polygon(screen, ORANGE, cone)
+    fin_height = player_height // 4
+    fin_l = [(x - player_width//2, y + player_height),
+             (x - player_width, y + player_height + fin_height),
+             (x - player_width//2, y + player_height - fin_height)]
+    pygame.draw.polygon(screen, ORANGE, fin_l)
+    fin_r = [(x + player_width//2, y + player_height),
+             (x + player_width, y + player_height + fin_height),
+             (x + player_width//2, y + player_height - fin_height)]
+    pygame.draw.polygon(screen, ORANGE, fin_r)
+    window_center = (x, y + player_height//4)
+    pygame.draw.circle(screen, YELLOW, window_center, player_width//6)
+    pygame.draw.circle(screen, BLACK, window_center, player_width//8)
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_LEFT] or keys[pygame.K_RIGHT]:
+        flame = [(x - player_width//4, y + player_height),
+                 (x + player_width//4, y + player_height),
+                 (x, y + player_height + 30)]
+        pygame.draw.polygon(screen, YELLOW, flame)
+        inner_flame = [(x - player_width//8, y + player_height),
+                       (x + player_width//8, y + player_height),
+                       (x, y + player_height + 20)]
+        pygame.draw.polygon(screen, ORANGE, inner_flame)
+
+# Draw asteroids with static craters and shading
+def draw_asteroid(a):
+    x, y, r = int(a['x']), int(a['y']), a['r']
+    pygame.draw.circle(screen, DARK_GRAY, (x, y), r)
+    pygame.draw.circle(screen, GRAY, (x, y), int(r * 0.8))
+    for dx, dy, cr in a['craters']:
+        cx = x + dx
+        cy = y + dy
+        pygame.draw.circle(screen, DARK_GRAY, (cx, cy), int(cr * 1.2))
+        pygame.draw.circle(screen, BLACK, (cx, cy), cr)
+
+# Main game loop
+running = True
+while running:
+    clock.tick(60)
+    screen.fill(BLACK)
+    draw_stars()
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN:
+            if not game_started and event.key == pygame.K_SPACE:
+                game_started = True
+            elif event.key == pygame.K_p:
+                paused = not paused
+            elif game_over and event.key == pygame.K_r:
+                player_x = WIDTH // 2
+                total_score = 0
+                game_started = False
+                paused = False
+                game_over = False
+                asteroids.clear()
+                for _ in range(num_asteroids):
+                    x = random.randint(0, WIDTH)
+                    y = random.randint(-600, -50)
+                    r = random.randint(15, 40)
+                    craters = []
+                    for _ in range(3):
+                        dx = random.randint(-r//2, r//2)
+                        dy = random.randint(-r//2, r//2)
+                        cr = random.randint(r//8, r//5)
+                        craters.append((dx, dy, cr))
+                    asteroids.append({'x': x, 'y': y, 'r': r, 'craters': craters})
+
+    if game_over:
+        over_text = font.render('Game Over - Press R to Restart', True, WHITE)
+        screen.blit(over_text, (WIDTH//2 - over_text.get_width()//2, HEIGHT//2))
+    elif not game_started:
+        title = font.render('Press SPACE to Start', True, WHITE)
+        screen.blit(title, (WIDTH//2 - title.get_width()//2, HEIGHT//2))
+    elif paused:
+        pause_text = font.render('Paused - Press P to Resume', True, WHITE)
+        screen.blit(pause_text, (WIDTH//2 - pause_text.get_width()//2, HEIGHT//2))
+    else:
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_LEFT] and player_x - player_width // 2 > 0:
+            player_x -= grace_speed
+        if keys[pygame.K_RIGHT] and player_x + player_width // 2 < WIDTH:
+            player_x += grace_speed
+
+        draw_player(player_x, player_y)
+
+        for a in asteroids:
+            a['y'] += asteroid_speed
+            if a['y'] - a['r'] > HEIGHT:
+                a['x'] = random.randint(0, WIDTH)
+                a['y'] = random.randint(-600, -50)
+                a['r'] = random.randint(15, 40)
+                new_craters = []
+                for _ in range(3):
+                    dx = random.randint(-a['r'] // 2, a['r'] // 2)
+                    dy = random.randint(-a['r'] // 2, a['r'] // 2)
+                    cr = random.randint(a['r'] // 8, a['r'] // 5)
+                    new_craters.append((dx, dy, cr))
+                a['craters'] = new_craters
+                total_score += 1
+            draw_asteroid(a)
+            if math.hypot(player_x - a['x'], player_y - a['y']) < a['r'] + player_width // 2:
+                game_over = True
+
+        sc = font.render(f'Score: {total_score}', True, WHITE)
+        screen.blit(sc, (10, 10))
+
+    pygame.display.flip()
+
+pygame.quit()
+sys.exit()

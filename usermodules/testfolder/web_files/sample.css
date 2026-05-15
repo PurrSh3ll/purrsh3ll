@@ -1,0 +1,130 @@
+/* ==============================================================================
+   Plik CSS: style.css
+   Opis: Podstawowe style dla strony internetowej
+   Data: 2025-10-22
+   ============================================================================== */
+
+/* 1. Ustawienia globalne i resetowanie styli */
+body {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f4;
+    color: #333;
+}
+
+/* 2. Selektory dla nagłówka i stopki */
+header {
+    background-color: #2c3e50; /* Ciemny, elegancki kolor */
+    color: white;
+    padding: 20px 0;
+    text-align: center;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+    margin: 0;
+    font-size: 2.5em;
+}
+
+footer {
+    background-color: #34495e;
+    color: #ecf0f1;
+    text-align: center;
+    padding: 10px 0;
+    margin-top: 40px;
+}
+
+/* 3. Stylowanie nawigacji */
+nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 10px 0 0 0;
+}
+
+nav ul li {
+    display: inline-block;
+    margin: 0 15px;
+}
+
+nav ul li a {
+    color: white;
+    text-decoration: none;
+    font-weight: bold;
+    transition: color 0.3s;
+}
+
+nav ul li a:hover {
+    color: #1abc9c; /* Zielony akcent przy najechaniu */
+}
+
+/* 4. Stylowanie sekcji głównej i kontenera */
+.container {
+    width: 80%;
+    margin: auto;
+    overflow: hidden; /* Czyszczenie floatów */
+    padding: 20px 0;
+}
+
+section {
+    padding: 20px;
+    margin-bottom: 20px;
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* 5. Stylowanie specyficznych elementów (ID i klasy) */
+#main-content h2 {
+    color: #2980b9; /* Jasny niebieski */
+    border-bottom: 1px dashed #2980b9;
+    padding-bottom: 5px;
+}
+
+.button-primary {
+    display: inline-block;
+    background-color: #e74c3c; /* Czerwony kolor akcji */
+    color: white;
+    padding: 10px 20px;
+    text-decoration: none;
+    border-radius: 5px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.button-primary:hover {
+    background-color: #c0392b;
+}
+
+/* 6. Stylowanie formularza */
+form label {
+    display: block;
+    margin-top: 10px;
+    font-weight: 500;
+}
+
+form input[type="text"],
+form textarea {
+    width: 100%;
+    padding: 10px;
+    margin-top: 5px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box; /* Ważne, by padding nie zwiększał szerokości */
+}
+
+/* 7. Zapytanie medialne (Responsywność dla małych ekranów) */
+@media (max-width: 768px) {
+    .container {
+        width: 95%;
+    }
+    header h1 {
+        font-size: 2em;
+    }
+    nav ul li {
+        display: block;
+        margin: 5px 0;
+    }
+}

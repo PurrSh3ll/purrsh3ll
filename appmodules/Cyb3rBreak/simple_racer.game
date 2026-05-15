@@ -1,0 +1,194 @@
+import pygame
+import sys
+import random
+
+# Constants
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+FPS = 60
+
+TRACK_COLOR = (50, 50, 50)
+LINE_COLOR = (255, 255, 255)
+GRASS_COLOR = (34, 139, 34)
+CAR_COLOR = (0, 0, 255)
+OBSTACLE_COLOR = (139, 0, 0)
+
+class Track:
+    def __init__(self, screen):
+        self.screen = screen
+        self.line_height = 40
+        self.scroll_speed = 5
+        self.offset = 0
+
+    def update(self):
+        self.offset = (self.offset + self.scroll_speed) % self.line_height
+
+    def draw(self):
+        # Draw grass
+        self.screen.fill(GRASS_COLOR)
+        # Draw track
+        pygame.draw.rect(self.screen, TRACK_COLOR, (150, 0, 500, SCREEN_HEIGHT))
+        # Draw dividing lines
+        y = -self.line_height + self.offset
+        while y < SCREEN_HEIGHT:
+            pygame.draw.line(self.screen, LINE_COLOR, (400, y), (400, y + self.line_height // 2), 5)
+            y += self.line_height
+
+class Car:
+    def __init__(self, x, y):
+        self.width = 50
+        self.height = 100
+        self.rect = pygame.Rect(x - self.width//2, y - self.height//2, self.width, self.height)
+        self.speed = 0
+        self.max_speed = 10
+        self.acceleration = 0.2
+        self.deceleration = 0.1
+        self.turn_speed = 5
+
+    def update(self):
+        keys = pygame.key.get_pressed()
+        # Accelerate & decelerate
+        if keys[pygame.K_UP]:
+            self.speed = min(self.speed + self.acceleration, self.max_speed)
+        elif keys[pygame.K_DOWN]:
+            self.speed = max(self.speed - self.deceleration, -self.max_speed/2)
+        else:
+            # natural deceleration
+            if self.speed > 0:
+                self.speed = max(self.speed - self.deceleration, 0)
+            elif self.speed < 0:
+                self.speed = min(self.speed + self.deceleration, 0)
+
+        # Turn
+        if keys[pygame.K_LEFT] and self.rect.left > 150:
+            self.rect.x -= self.turn_speed
+        if keys[pygame.K_RIGHT] and self.rect.right < 650:
+            self.rect.x += self.turn_speed
+
+        # Move car vertically for sensation of movement
+        self.rect.y -= self.speed
+        self.rect.y = max(0, min(self.rect.y, SCREEN_HEIGHT - self.height))
+
+    def draw(self, screen):
+        # Tło samochodu - prostokąt
+        pygame.draw.rect(screen, CAR_COLOR, self.rect)
+
+        # Szyba - prostokąt na górze auta (kolor jaśniejszy)
+        glass_rect = pygame.Rect(self.rect.x + 10, self.rect.y + 10, self.width - 20, 30)
+        pygame.draw.rect(screen, (135, 206, 235), glass_rect)  # jasnoniebieski kolor szyby
+
+        # Koła - czarne elipsy po bokach, 4 koła: po 2 na przód i tył
+        wheel_width, wheel_height = 12, 20
+        # Lewa strona koła
+        left_front_wheel = pygame.Rect(self.rect.x - 6, self.rect.y + 15, wheel_width, wheel_height)
+        left_rear_wheel = pygame.Rect(self.rect.x - 6, self.rect.y + self.height - 35, wheel_width, wheel_height)
+        # Prawa strona koła
+        right_front_wheel = pygame.Rect(self.rect.right - 6, self.rect.y + 15, wheel_width, wheel_height)
+        right_rear_wheel = pygame.Rect(self.rect.right - 6, self.rect.y + self.height - 35, wheel_width, wheel_height)
+
+        pygame.draw.ellipse(screen, (0, 0, 0), left_front_wheel)
+        pygame.draw.ellipse(screen, (0, 0, 0), left_rear_wheel)
+        pygame.draw.ellipse(screen, (0, 0, 0), right_front_wheel)
+        pygame.draw.ellipse(screen, (0, 0, 0), right_rear_wheel)
+
+class Obstacle(pygame.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.Surface((40, 40))
+        self.image.fill(OBSTACLE_COLOR)
+        self.rect = self.image.get_rect(center=(x, y))
+        self.speed = 5
+
+    def update(self):
+        self.rect.y += self.speed
+        if self.rect.top > SCREEN_HEIGHT:
+            self.kill()
+
+class Game:
+    def __init__(self):
+        pygame.init()
+        pygame.display.set_caption("2D Racing Showcase")
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont('Arial', 36)
+        self.small_font = pygame.font.SysFont('Arial', 24)
+        self.reset()
+        self.running = True
+
+    def reset(self):
+        # Game objects
+        self.track = Track(self.screen)
+        self.player = Car(SCREEN_WIDTH // 2, SCREEN_HEIGHT - 120)
+        self.obstacles = pygame.sprite.Group()
+        self.spawn_timer = 0
+        self.score = 0
+        self.game_over = False
+
+    def spawn_obstacle(self):
+        x = random.randint(170, 630)
+        y = -50
+        obstacle = Obstacle(x, y)
+        self.obstacles.add(obstacle)
+
+    def draw_ui(self):
+        score_text = self.small_font.render(f"Score: {self.score}", True, (255, 255, 255))
+        self.screen.blit(score_text, (10, 40))
+
+    def show_game_over(self):
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(200)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        go_text = self.font.render("GAME OVER", True, (255, 0, 0))
+        restart_text = self.small_font.render("Press R to Restart or Q to Quit", True, (255, 255, 255))
+        self.screen.blit(go_text, go_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 - 20)))
+        self.screen.blit(restart_text, restart_text.get_rect(center=(SCREEN_WIDTH//2, SCREEN_HEIGHT//2 + 20)))
+        pygame.display.flip()
+
+    def run(self):
+        while self.running:
+            dt = self.clock.tick(FPS)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                if self.game_over and event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_r:
+                        self.reset()
+                    if event.key == pygame.K_q:
+                        self.running = False
+
+            if not self.game_over:
+                # Update
+                self.track.update()
+                self.player.update()
+                self.obstacles.update()
+
+                # Spawn obstacles
+                self.spawn_timer += 1
+                if self.spawn_timer > 90:
+                    self.spawn_obstacle()
+                    self.spawn_timer = 0
+
+                # Check collisions
+                for obs in self.obstacles:
+                    if self.player.rect.colliderect(obs.rect):
+                        self.game_over = True
+
+                # Update score
+                self.score += 1
+
+                # Draw
+                self.track.draw()
+                self.player.draw(self.screen)
+                self.obstacles.draw(self.screen)
+                self.draw_ui()
+
+                pygame.display.flip()
+            else:
+                self.show_game_over()
+
+        pygame.quit()
+        sys.exit()
+
+if __name__ == '__main__':
+    Game().run()

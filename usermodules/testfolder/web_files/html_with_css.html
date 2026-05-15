@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strona HTML z CSS - Stylowanie Podstawowe</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+
+        header, footer {
+            background: #333;
+            color: white;
+            padding: 10px 0;
+            text-align: center;
+        }
+
+        h1 {
+            color: #007bff;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 5px;
+        }
+
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+
+        /* Styl dla sekcji nawigacji */
+        nav ul {
+            list-style: none;
+            padding: 0;
+        }
+        nav ul li {
+            display: inline;
+            margin: 0 10px;
+        }
+        nav ul li a {
+            color: white;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        nav ul li a:hover {
+            color: #f0f0f0;
+            text-decoration: underline;
+        }
+
+        /* Stylowanie formularza */
+        form {
+            background: white;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+        }
+        fieldset {
+            margin-bottom: 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        /* Stylowanie tabeli */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #007bff;
+            color: white;
+        }
+
+        /* Klasa dla alertu/ostrzeżenia */
+        .alert-warning {
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 15px;
+            border-left: 5px solid #ffeeba;
+            margin-bottom: 15px;
+        }
+
+        /* Styl dla bloku kodu */
+        code {
+            background-color: #eee;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+        
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Główny Tytuł Strony (H1)</h1>
+        <p>Strona ze zintegrowanym CSS dla lepszego wyglądu.</p>
+        <nav>
+            <ul>
+                <li><a href="#produkty">Produkty</a></li>
+                <li><a href="#kontakt">Formularz</a></li>
+                <li><a href="#tabela">Tabela</a></li>
+                <li><a href="#stopka">Stopka</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <hr>
+
+    <main>
+        <section id="produkty">
+            <h2>Artykuł: Wprowadzenie do Podstaw HTML</h2>
+            <article>
+                <h3>Czym jest tag &lt;article&gt;?</h3>
+                <p>Element **&lt;article&gt;** reprezentuje samodzielną, niezależną treść. Dodany CSS sprawia, że strona jest czytelniejsza i bardziej atrakcyjna wizualnie. Bez stylów, elementy są po prostu układane jeden pod drugim, używając domyślnej czcionki przeglądarki.</p>
+
+                <div class="alert-warning">
+                    To jest przykładowy element z użyciem klasy **.alert-warning** dla wizualnego ostrzeżenia.
+                </div>
+
+                <blockquote>
+                    "HTML5 to język znaczników używany do strukturyzowania i prezentowania treści w sieci World Wide Web."
+                    <footer>— Źródło: Książka o HTML</footer>
+                </blockquote>
+
+                <aside>
+                    <h4>Dodatkowa Informacja (Aside)</h4>
+                    <p>Ta treść jest dodatkowa i ma styl domyślny, ale mogłaby być łatwo wystylizowana.</p>
+                </aside>
+
+            </article>
+        </section>
+
+        <hr>
+
+        <section>
+            <h2>Różne Typy List i Formatowanie Tekstu</h2>
+
+            <h3>Lista nieuporządkowana (&lt;ul&gt;)</h3>
+            <ul>
+                <li>Pierwszy element listy</li>
+                <li>Drugi element listy:
+                    <ul>
+                        <li>Podpunkt A</li>
+                        <li>Podpunkt B</li>
+                    </ul>
+                </li>
+            </ul>
+
+            <h3>Przykłady formatowania</h3>
+            <p>
+                To jest tekst **pogrubiony**.
+                To jest tekst <mark>zaznaczony</mark> (mark).
+                Wstawiamy też <del>przekreślenie</del> i <ins>podkreślenie</ins>.
+            </p>
+
+        </section>
+
+        <hr>
+
+        <section id="kontakt">
+            <h2>Formularz Kontaktowy (&lt;form&gt;)</h2>
+            <form action="/submit_form" method="post">
+                <fieldset>
+                    <legend>Dane Użytkownika</legend>
+                    
+                    <div>
+                        <label for="imie">Imię:</label>
+                        <input type="text" id="imie" name="imie" required>
+                    </div>
+
+                    <div>
+                        <label for="wiadomosc">Wiadomość:</label>
+                        <textarea id="wiadomosc" name="wiadomosc" rows="5" cols="40"></textarea>
+                    </div>
+                </fieldset>
+
+                <div>
+                    <input type="submit" value="Wyślij Formularz">
+                    <button type="reset">Wyczyść</button>
+                </div>
+            </form>
+        </section>
+
+        <hr>
+
+        <section id="tabela">
+            <h2>Tabela Danych (&lt;table&gt;)</h2>
+            <table>
+                <caption>Statystyki Produktów</caption>
+                <thead>
+                    <tr>
+                        <th>ID Produktu</th>
+                        <th>Nazwa</th>
+                        <th>Cena (PLN)</th>
+                        <th>Dostępność</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>001</td>
+                        <td>Monitor Ultra HD</td>
+                        <td>999.99</td>
+                        <td>Tak</td>
+                    </tr>
+                    <tr>
+                        <td>002</td>
+                        <td>Mysz Gamingowa</td>
+                        <td>150.00</td>
+                        <td>Nie</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <hr>
+
+    <footer id="stopka">
+        <address>
+            Kontakt: <a href="mailto:info@example.com">info@example.com</a>
+        </address>
+        <small>Prawa autorskie &copy; 2025.</small>
+    </footer>
+
+</body>
+</html>

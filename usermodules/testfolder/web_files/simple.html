@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prosta Strona HTML - Wiele Elementów</title>
+</head>
+<body>
+
+    <header>
+        <h1>Główny Tytuł Strony (H1)</h1>
+        <p>To jest akapit wprowadzający. Poniżej znajduje się nawigacja po naszej prostej strukturze.</p>
+        <nav>
+            <ul>
+                <li><a href="#sekcja1">Sekcja o Produktach</a></li>
+                <li><a href="#sekcja2">Formularz Kontaktowy</a></li>
+                <li><a href="#sekcja3">Tabela Danych</a></li>
+                <li><a href="#stopka">Stopka</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <hr>
+
+    <main>
+        <section id="sekcja1">
+            <h2>Artykuł: Wprowadzenie do Podstaw HTML</h2>
+            <article>
+                <h3>Czym jest tag &lt;article&gt;?</h3>
+                <p>Element **&lt;article&gt;** reprezentuje samodzielną, niezależną treść w dokumencie. Może to być wpis na blogu, post na forum, komentarz użytkownika lub dowolna inna niezależna część treści.</p>
+
+                <figure>
+                    <figcaption>Rysunek 1: Ilustracja prostej struktury dokumentu.</figcaption>
+                </figure>
+
+                <p>W tym miejscu używamy elementu **&lt;blockquote&gt;** dla dłuższego cytatu:</p>
+                <blockquote>
+                    "HTML5 to język znaczników używany do strukturyzowania i prezentowania treści w sieci World Wide Web. Jest to piąta i obecna główna wersja standardu HTML."
+                    <footer>— Źródło: Książka o HTML</footer>
+                </blockquote>
+
+                <aside>
+                    <h4>Dodatkowa Informacja (Aside)</h4>
+                    <p>Ta treść jest powiązana z artykułem, ale może być od niego niezależnie renderowana (np. jako pasek boczny).</p>
+                </aside>
+
+            </article>
+        </section>
+
+        <hr>
+
+        <section>
+            <h2>Różne Typy List i Formatowanie Tekstu</h2>
+
+            <h3>Lista nieuporządkowana (&lt;ul&gt;)</h3>
+            <ul>
+                <li>Pierwszy element listy</li>
+                <li>Drugi element listy:
+                    <ul>
+                        <li>Podpunkt A</li>
+                        <li>Podpunkt B</li>
+                    </ul>
+                </li>
+                <li>Trzeci element listy</li>
+            </ul>
+
+            <h3>Lista uporządkowana (&lt;ol&gt;)</h3>
+            <ol>
+                <li>Krok pierwszy</li>
+                <li>Krok drugi</li>
+                <li>Krok trzeci</li>
+            </ol>
+
+            <h3>Lista definicji (&lt;dl&gt;)</h3>
+            <dl>
+                <dt>HTML</dt>
+                <dd>HyperText Markup Language</dd>
+                <dt>URL</dt>
+                <dd>Uniform Resource Locator</dd>
+            </dl>
+
+            <h3>Przykłady formatowania</h3>
+            <p>
+                To jest tekst **pogrubiony** za pomocą <code>&lt;strong&gt;</code>.
+                To jest tekst *pochylony* za pomocą <code>&lt;em&gt;</code>.
+                To jest tekst <mark>zaznaczony</mark> (mark).
+                To jest tekst <small>mały</small>.
+                To jest tekst <sub>indeks dolny</sub> i <sup>indeks górny</sup>.
+                Wstawiamy też <del>przekreślenie</del> i <ins>podkreślenie</ins>.
+            </p>
+
+        </section>
+
+        <hr>
+
+        <section id="sekcja2">
+            <h2>Formularz Kontaktowy (&lt;form&gt;)</h2>
+            <form action="/submit_form" method="post">
+                <fieldset>
+                    <legend>Dane Użytkownika</legend>
+                    
+                    <div>
+                        <label for="imie">Imię:</label>
+                        <input type="text" id="imie" name="imie" required>
+                    </div>
+
+                    <div>
+                        <label for="email">Email:</label>
+                        <input type="email" id="email" name="email">
+                    </div>
+
+                    <div>
+                        <label for="haslo">Hasło (tylko w celach demonstracyjnych):</label>
+                        <input type="password" id="haslo" name="haslo">
+                    </div>
+                </fieldset>
+
+                <fieldset>
+                    <legend>Wybory</legend>
+                    
+                    <p>Typ pytania:</p>
+                    <div>
+                        <input type="radio" id="pyt1" name="typ_pytania" value="ogolne" checked>
+                        <label for="pyt1">Ogólne</label>
+                    </div>
+                    <div>
+                        <input type="radio" id="pyt2" name="typ_pytania" value="techniczne">
+                        <label for="pyt2">Techniczne</label>
+                    </div>
+
+                    <p>Preferowane kanały komunikacji:</p>
+                    <div>
+                        <input type="checkbox" id="kan1" name="kanal" value="email">
+                        <label for="kan1">Email</label>
+                    </div>
+                    <div>
+                        <input type="checkbox" id="kan2" name="kanal" value="telefon">
+                        <label for="kan2">Telefon</label>
+                    </div>
+
+                    <div>
+                        <label for="kraj">Kraj:</label>
+                        <select id="kraj" name="kraj">
+                            <option value="pl">Polska</option>
+                            <option value="de">Niemcy</option>
+                            <option value="inny">Inny</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="wiadomosc">Wiadomość:</label>
+                        <textarea id="wiadomosc" name="wiadomosc" rows="5" cols="40"></textarea>
+                    </div>
+                </fieldset>
+
+                <div>
+                    <input type="submit" value="Wyślij Formularz">
+                    <button type="reset">Wyczyść</button>
+                </div>
+            </form>
+        </section>
+
+        <hr>
+
+        <section id="sekcja3">
+            <h2>Tabela Danych (&lt;table&gt;)</h2>
+            <table>
+                <caption>Statystyki Produktów</caption>
+                <thead>
+                    <tr>
+                        <th>ID Produktu</th>
+                        <th>Nazwa</th>
+                        <th>Cena (PLN)</th>
+                        <th>Dostępność</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>001</td>
+                        <td>Monitor</td>
+                        <td>999.99</td>
+                        <td>Tak</td>
+                    </tr>
+                    <tr>
+                        <td>002</td>
+                        <td>Klawiatura</td>
+                        <td>150.00</td>
+                        <td>Nie</td>
+                    </tr>
+                </tbody>
+                <tfoot>
+                    <tr>
+                        <td colspan="2">Suma elementów (unikalnych)</td>
+                        <td colspan="2">2</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </section>
+    </main>
+
+    <hr>
+
+    <footer id="stopka">
+        <address>
+            Kontakt: <a href="mailto:info@example.com">info@example.com</a>
+        </address>
+        <small>Prawa autorskie &copy; 2025. Wszelkie prawa zastrzeżone.</small>
+    </footer>
+
+</body>
+</html>

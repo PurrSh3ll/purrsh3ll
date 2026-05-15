@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strona HTML z CSS i JavaScriptem</title>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f8f8ff; /* Lżejszy kolor tła */
+            color: #2c3e50; /* Ciemniejszy, czytelniejszy tekst */
+        }
+
+        header, footer {
+            background: #2c3e50;
+            color: white;
+            padding: 15px 0;
+            text-align: center;
+        }
+
+        h1 {
+            color: #3498db; /* Niebieski kolor dla h1 */
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }
+
+        h2 {
+            color: #e74c3c; /* Czerwony kolor dla h2 */
+            margin-top: 35px;
+            border-left: 5px solid #e74c3c;
+            padding-left: 10px;
+        }
+
+        nav ul {
+            list-style: none;
+            padding: 0;
+        }
+        nav ul li {
+            display: inline;
+            margin: 0 15px;
+        }
+        nav ul li a {
+            color: #ecf0f1;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        nav ul li a:hover {
+            color: #bdc3c7;
+            text-decoration: underline;
+        }
+
+        /* Stylowanie formularza i przycisku dla JS */
+        form {
+            background: white;
+            padding: 25px;
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        button#interaktywnyPrzycisk {
+            padding: 10px 20px;
+            background-color: #2ecc71; /* Zielony kolor dla interakcji */
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        button#interaktywnyPrzycisk:hover {
+            background-color: #27ae60;
+        }
+
+        /* Stylowanie tabeli */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+        }
+        
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>Główny Tytuł Strony (H1)</h1>
+        <p>Strona z CSS (wygląd) i JavaScriptem (interaktywność).</p>
+        <nav>
+            <ul>
+                <li><a href="#interakcja">Interakcja JS</a></li>
+                <li><a href="#produkty">Produkty</a></li>
+                <li><a href="#kontakt">Formularz</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <hr>
+
+    <main>
+        
+        <section id="interakcja">
+            <h2>Interaktywność za pomocą JavaScript</h2>
+            
+            <p>Kliknij poniższy przycisk, aby wywołać prostą akcję JS (okno alertu).</p>
+
+            <button id="interaktywnyPrzycisk">Kliknij Mnie!</button>
+            
+            <p id="komunikatJS" style="margin-top: 15px; font-weight: bold; color: #8e44ad;">
+                Poniżej pojawi się tekst po kliknięciu przycisku.
+            </p>
+        </section>
+        
+        <hr>
+
+        <section id="produkty">
+            <h2>Artykuł: Struktura i Style</h2>
+            <article>
+                <h3>Wprowadzenie do HTML i CSS</h3>
+                <p>Użycie stylów CSS pozwala na oddzielenie prezentacji od struktury. JavaScript pozwala na ożywienie tej struktury poprzez interakcje, takie jak obsługa zdarzeń (np. kliknięcia).</p>
+
+                <blockquote>
+                    "JavaScript to kręgosłup interaktywnego webu, współpracujący z HTML (szkielet) i CSS (skóra)."
+                    <footer>— Źródło: Książka o Frontendzie</footer>
+                </blockquote>
+            </article>
+        </section>
+
+        <hr>
+
+        <section id="kontakt">
+            <h2>Formularz Kontaktowy</h2>
+            <form action="/submit_form" method="post">
+                <fieldset>
+                    <legend>Dane Użytkownika</legend>
+                    
+                    <div>
+                        <label for="imie">Imię:</label>
+                        <input type="text" id="imie" name="imie" required>
+                    </div>
+
+                    <div>
+                        <label for="wiadomosc">Wiadomość:</label>
+                        <textarea id="wiadomosc" name="wiadomosc" rows="5" cols="40"></textarea>
+                    </div>
+                </fieldset>
+                <div>
+                    <input type="submit" value="Wyślij Formularz">
+                </div>
+            </form>
+        </section>
+
+        <hr>
+
+        <section id="tabela">
+            <h2>Tabela Danych</h2>
+            <table>
+                <caption>Statystyki Usług</caption>
+                <thead>
+                    <tr>
+                        <th>Usługa</th>
+                        <th>Status</th>
+                        <th>Czas Działania</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>API Gateway</td>
+                        <td>Online</td>
+                        <td>99 dni</td>
+                    </tr>
+                    <tr>
+                        <td>Baza Danych</td>
+                        <td>Ostrzeżenie</td>
+                        <td>120 dni</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <hr>
+
+    <footer id="stopka">
+        <address>
+            Kontakt: <a href="mailto:info@example.com">info@example.com</a>
+        </address>
+        <small>Prawa autorskie &copy; 2025.</small>
+    </footer>
+
+    <script>
+        // Funkcja wykonywana po kliknięciu przycisku
+        function handleButtonClick() {
+            // Zmieniamy tekst w elemencie p
+            document.getElementById('komunikatJS').textContent = "✅ Akcja JS wykonana pomyślnie! Zmieniono treść elementu.";
+            
+            // Opcjonalne powiadomienie alertem
+            alert('Witaj! Wywołałeś funkcję JavaScript!');
+        }
+
+        // Dodanie słuchacza zdarzeń do przycisku po załadowaniu DOM
+        document.addEventListener('DOMContentLoaded', function() {
+            var button = document.getElementById('interaktywnyPrzycisk');
+            if (button) {
+                button.addEventListener('click', handleButtonClick);
+            }
+        });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,34 @@
+llama-cli -m model.gguf \
+  -t $(nproc) \
+  --threads-batch $(nproc) \
+  -b 256 \
+  -c 4096 \
+  -n 128
+sd
+f
+ds
+fdssad
+f
+ds
+fdl;kl;lkfghgfh
+sfasdasdasd
+sdf
+sd
+fsljlkkl;kl;
+df
+sdf
+sd
+fsdghjghjhgj
+fsd
+f
+sdf
+sd
+fsd
+fsd
+f
+sdf
+sdf
+sd
+fsd
+fds
+fds

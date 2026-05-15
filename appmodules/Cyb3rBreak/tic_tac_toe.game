@@ -1,0 +1,199 @@
+import pygame
+import sys
+import random
+
+# Initialize Pygame
+pygame.init()
+WIDTH, HEIGHT = 600, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption('Tic-Tac-Toe vs CPU')
+clock = pygame.time.Clock()
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (200, 0, 0)    # X (Player)
+BLUE = (0, 0, 200)   # O (CPU)
+
+# Fonts
+def load_fonts(size):
+    return pygame.font.SysFont('Arial', size)
+font_large = load_fonts(60)
+font_medium = load_fonts(40)
+
+# Game variables (to be set after size selection)
+N = None              # Board dimension
+board = []            # 2D list
+cell_size = None
+current_player = 1    # 1 -> X (Player), 2 -> O (CPU)
+game_over = False
+winner = None
+
+# Menu variables
+menu_options = list(range(3, 9))
+option_height = 50
+menu_start_y = 250
+
+# Initialize board state
+def init_board(n):
+    global board, N, cell_size, game_over, winner, current_player
+    N = n
+    cell_size = WIDTH // N
+    board = [[0]*N for _ in range(N)]
+    current_player = 1
+    game_over = False
+    winner = None
+
+# Draw centered text
+def draw_text_center(text, font, y):
+    label = font.render(text, True, WHITE)
+    x = (WIDTH - label.get_width()) // 2
+    screen.blit(label, (x, y))
+
+# Draw menu choices
+def draw_menu():
+    screen.fill(BLACK)
+    draw_text_center('Select Board Size', font_large, 150)
+    for i, size in enumerate(menu_options):
+        y = menu_start_y + i * option_height
+        draw_text_center(f'{size} x {size}', font_medium, y)
+
+# Draw grid lines
+def draw_grid():
+    for i in range(1, N):
+        pygame.draw.line(screen, WHITE, (i*cell_size, 0), (i*cell_size, HEIGHT), 3)
+        pygame.draw.line(screen, WHITE, (0, i*cell_size), (WIDTH, i*cell_size), 3)
+
+# Draw X and O marks
+def draw_marks():
+    offset = cell_size // 4
+    for r in range(N):
+        for c in range(N):
+            center = (c*cell_size + cell_size//2, r*cell_size + cell_size//2)
+            if board[r][c] == 1:
+                pygame.draw.line(screen, RED,
+                                 (center[0]-offset, center[1]-offset),
+                                 (center[0]+offset, center[1]+offset), 15)
+                pygame.draw.line(screen, RED,
+                                 (center[0]-offset, center[1]+offset),
+                                 (center[0]+offset, center[1]-offset), 15)
+            elif board[r][c] == 2:
+                pygame.draw.circle(screen, BLUE, center, offset, 15)
+
+# Evaluate board state: 1 X wins, -1 O wins, 0 draw, None continue
+def evaluate_state(state):
+    lines = []
+    # Rows and columns
+    for i in range(N):
+        lines.append(state[i])
+        lines.append([state[r][i] for r in range(N)])
+    # Two diagonals
+    lines.append([state[i][i] for i in range(N)])
+    lines.append([state[i][N-1-i] for i in range(N)])
+    for line in lines:
+        if line.count(1) == N: return 1
+        if line.count(2) == N: return -1
+    # Draw
+    if all(state[r][c] != 0 for r in range(N) for c in range(N)):
+        return 0
+    return None
+
+# Minimax for 3x3, fallback random for larger
+
+def ai_move():
+    # Gather empty cells
+    empties = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not empties:
+        return
+    # Use minimax only for 3x3 due to complexity
+    if N == 3:
+        def minimax(state, player):
+            score = evaluate_state(state)
+            if score is not None:
+                return score
+            best = float('inf') if player == 2 else -float('inf')
+            for rr, cc in [(r, c) for r in range(3) for c in range(3) if state[r][c] == 0]:
+                state[rr][cc] = player
+                val = minimax(state, 1 if player == 2 else 2)
+                state[rr][cc] = 0
+                best = min(best, val) if player == 2 else max(best, val)
+            return best
+        best_score = float('inf')
+        move = empties[0]
+        for r, c in empties:
+            board[r][c] = 2
+            score = minimax(board, 1)
+            board[r][c] = 0
+            if score < best_score:
+                best_score = score
+                move = (r, c)
+        board[move[0]][move[1]] = 2
+    else:
+        # For larger boards, pick random empty cell
+        r, c = random.choice(empties)
+        board[r][c] = 2
+
+# Reset current board
+
+def reset():
+    init_board(N)
+
+# Main loop
+selecting = True
+while True:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            pygame.quit(); sys.exit()
+        if selecting:
+            # Keyboard selection
+            if event.type == pygame.KEYDOWN and event.unicode in [str(s) for s in menu_options]:
+                init_board(int(event.unicode))
+                selecting = False
+            # Mouse selection
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                x, y = event.pos
+                for i, size in enumerate(menu_options):
+                    top = menu_start_y + i * option_height
+                    if top <= y <= top + option_height:
+                        init_board(size)
+                        selecting = False
+                        break
+        else:
+            if not game_over and current_player == 1 and event.type == pygame.MOUSEBUTTONDOWN:
+                x, y = event.pos
+                r, c = y // cell_size, x // cell_size
+                if board[r][c] == 0:
+                    board[r][c] = 1
+                    res = evaluate_state(board)
+                    if res is not None:
+                        game_over = True
+                        winner = 'X' if res == 1 else 'Draw'
+                    else:
+                        current_player = 2
+            if game_over and event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                reset()
+
+    # AI turn
+    if not selecting and not game_over and current_player == 2:
+        ai_move()
+        res = evaluate_state(board)
+        if res is not None:
+            game_over = True
+            winner = 'O' if res == -1 else 'Draw'
+        else:
+            current_player = 1
+
+    # Draw everything
+    screen.fill(BLACK)
+    if selecting:
+        draw_menu()
+    else:
+        draw_grid()
+        draw_marks()
+        if game_over:
+            text = 'Draw!' if winner == 'Draw' else f'{winner} wins!'
+            draw_text_center(text, font_large, HEIGHT // 2 - 30)
+            draw_text_center('Press R to restart', font_medium, HEIGHT // 2 + 30)
+
+    pygame.display.flip()
+    clock.tick(30)

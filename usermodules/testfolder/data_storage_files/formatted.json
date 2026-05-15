@@ -1,0 +1,130 @@
+{
+  "lootTable": [
+    {
+      "id": "sword_legendary",
+      "name": "Legendarny Miecz Ognia",
+      "rarity": "Legendary",
+      "value": 10000,
+      "weight": 0.001,
+      "attributes": {
+        "damage": 150,
+        "fire_dmg": 50,
+        "durability": 100
+      },
+      "compatibleClasses": [
+        "Warrior",
+        "Paladin"
+      ]
+    },
+    {
+      "id": "potion_hp_major",
+      "name": "Wielka Mikstura Zdrowia",
+      "rarity": "Common",
+      "value": 50,
+      "weight": 0.15,
+      "attributes": {
+        "heal_amount": 500,
+        "duration": 0,
+        "cooldown": 30
+      },
+      "compatibleClasses": [
+        "All"
+      ]
+    },
+    {
+      "id": "helmet_iron",
+      "name": "Żelazny Hełm",
+      "rarity": "Common",
+      "value": 150,
+      "weight": 0.05,
+      "attributes": {
+        "armor": 25,
+        "magic_res": 5,
+        "durability": 80
+      },
+      "compatibleClasses": [
+        "Warrior",
+        "Knight"
+      ]
+    },
+    {
+      "id": "gem_sapphire",
+      "name": "Szafir",
+      "rarity": "Rare",
+      "value": 500,
+      "weight": 0.03,
+      "attributes": {
+        "modifier": "Mana Regen +5"
+      },
+      "compatibleClasses": [
+        "Mage",
+        "Priest"
+      ]
+    },
+    {
+      "id": "bow_elven",
+      "name": "Łuk Elfów",
+      "rarity": "Epic",
+      "value": 4500,
+      "weight": 0.005,
+      "attributes": {
+        "damage": 80,
+        "range": 150,
+        "attack_speed": 1.2
+      },
+      "compatibleClasses": [
+        "Ranger",
+        "Rogue"
+      ]
+    },
+    {
+      "id": "scroll_teleport",
+      "name": "Zwój Teleportacji",
+      "rarity": "Uncommon",
+      "value": 100,
+      "weight": 0.08,
+      "attributes": {
+        "destination": "Last City",
+        "uses": 1
+      },
+      "compatibleClasses": [
+        "All"
+      ]
+    },
+    {
+      "id": "glove_leather",
+      "name": "Skórzane Rękawice",
+      "rarity": "Common",
+      "value": 75,
+      "weight": 0.06,
+      "attributes": {
+        "armor": 10,
+        "dexterity": 3
+      },
+      "compatibleClasses": [
+        "All"
+      ]
+    },
+    {
+      "id": "artifact_amulet",
+      "name": "Amulet Starożytnych",
+      "rarity": "Mythic",
+      "value": 50000,
+      "weight": 0.0001,
+      "attributes": {
+        "all_stats": 10,
+        "lifesteal": 0.05
+      },
+      "compatibleClasses": [
+        "All"
+      ]
+    },
+    {
+      "id": "mace_holy",
+      "name": "Święta Maczuga",
+      "rarity": "Rare",
+      "value": 1200,
+      "weight": 0.02,
+      "attributes": {
+        "damage": 100,
+        "holy
