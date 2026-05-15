@@ -385,8 +385,24 @@ def main():
     config            = _load_config(base_dir)
     llama_cfg         = config.get("llama", {})
     profile           = _active_profile(config)
+
+    if not profile and not args.model:
+        _err(
+            "No active API profile configured.\n"
+            "Go to AI Settings > API Providers and set an active profile,\n"
+            "or pass a model directly with:  psask -m <model> <query>"
+        )
+        sys.exit(1)
+
     provider          = profile.get("provider", "ollama")
-    model             = args.model or profile.get("model") or _ollama_model_fallback(config)
+    model             = args.model or profile.get("model", "")
+    if not model:
+        _err(
+            f"Active profile \"{profile.get('name', '?')}\" has no model configured.\n"
+            "Edit the profile in AI Settings > API Providers."
+        )
+        sys.exit(1)
+
     profile_url       = profile.get("url", "")
     host              = args.host or (profile_url if provider == "ollama" else "")
     api_url           = args.host or profile_url
