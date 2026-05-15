@@ -13,22 +13,6 @@ import subprocess
 from core.controller import controller_instance
 
 
-def _fetch_ollama_models() -> list:
-    """Run `ollama list` and return model names. Returns [] if ollama unavailable."""
-    try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True, text=True, timeout=5,
-        )
-        models = []
-        for line in result.stdout.strip().splitlines()[1:]:  # skip header row
-            parts = line.split()
-            if parts:
-                models.append(parts[0])
-        return models
-    except Exception:
-        return []
-
 c = controller_instance
 
 def build_menu(main_window):
@@ -604,21 +588,6 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills set:", settings_skills_combo)
 
-        _ollama_models = _fetch_ollama_models()
-        _saved_ollama_model = llama_cfg.get("ollama_model", "")
-        ollama_model_combo = QComboBox(grp_llm)
-        if _ollama_models:
-            ollama_model_combo.addItems(_ollama_models)
-            if _saved_ollama_model in _ollama_models:
-                ollama_model_combo.setCurrentText(_saved_ollama_model)
-            elif _saved_ollama_model:
-                ollama_model_combo.insertItem(0, f"{_saved_ollama_model} (not found)")
-                ollama_model_combo.setCurrentIndex(0)
-        else:
-            ollama_model_combo.addItem("(ollama not available)")
-            ollama_model_combo.setEnabled(False)
-        form_llm.addRow("Ollama model:", ollama_model_combo)
-
         _ollama_think_saved = llama_cfg.get("ollama_disable_thinking", False)
         _ollama_fast_saved  = llama_cfg.get("ollama_fast_answers", False)
         ollama_think_cb = QCheckBox("Disable thinking  (--think=false)", grp_llm)
@@ -941,11 +910,6 @@ def build_menu(main_window):
             _save_llama_key("skills_set", val)
             c.apply_agent_files(settings_agent_role_combo.currentText(), val)
 
-        def _on_ollama_model_changed(idx):
-            val = ollama_model_combo.currentText()
-            if not val.startswith("("):
-                _save_llama_key("ollama_model", val)
-
         def _on_ollama_think_changed():
             _save_llama_key("ollama_disable_thinking", ollama_think_cb.isChecked())
 
@@ -961,7 +925,6 @@ def build_menu(main_window):
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
         settings_skills_combo.currentIndexChanged.connect(_on_settings_skills_changed)
-        ollama_model_combo.currentIndexChanged.connect(_on_ollama_model_changed)
         ollama_think_cb.stateChanged.connect(_on_ollama_think_changed)
         ollama_fast_cb.stateChanged.connect(_on_ollama_fast_changed)
 
