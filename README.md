@@ -120,9 +120,6 @@ Main config file: `appdata/app_config.json`
 | `behavior.delete_notes_at_close` | Clear notes on exit |
 | `behavior.save_sys_vars_at_close` | Persist system variables |
 | `llama.llm_cli_path` | Path to `llama-cli` binary |
-| `llama.llama_server_path` | Path to `llama-server` binary |
-| `llama.model_path` | Path to `.gguf` model file |
-| `llama.mmproj_file` | Multimodal projection file (optional) |
 
 ---
 
