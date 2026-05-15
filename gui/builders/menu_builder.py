@@ -1053,6 +1053,8 @@ def build_menu(main_window):
                 req = urllib.request.Request(endpoint, headers={
                     "x-api-key":         key,
                     "anthropic-version": "2023-06-01",
+                    "Accept":            "application/json",
+                    "User-Agent":        "Mozilla/5.0",
                 })
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = json.loads(resp.read())
@@ -1062,7 +1064,9 @@ def build_menu(main_window):
                 # openai-compatible: openai / groq / custom
                 endpoint = f"{base}/models"
                 req = urllib.request.Request(endpoint, headers={
-                    "Authorization": f"Bearer {key}",
+                    "Authorization":  f"Bearer {key}",
+                    "Accept":         "application/json",
+                    "User-Agent":     "Mozilla/5.0",
                 })
                 with urllib.request.urlopen(req, timeout=8) as resp:
                     data = json.loads(resp.read())
