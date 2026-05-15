@@ -123,8 +123,6 @@ Main config file: `appdata/app_config.json`
 | `llama.llama_server_path` | Path to `llama-server` binary |
 | `llama.model_path` | Path to `.gguf` model file |
 | `llama.mmproj_file` | Multimodal projection file (optional) |
-| `llama.cli_custom_cmd` | Custom CLI AI command |
-| `llama.webui_custom_cmd` | Custom web UI command |
 
 ---
 
