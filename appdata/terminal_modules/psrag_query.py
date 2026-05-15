@@ -56,19 +56,6 @@ def _active_profile(config: dict) -> dict:
     return {}
 
 
-def _ollama_model_fallback(config: dict) -> str:
-    """Fallback: read model from llama.ollama_model or cli_custom_cmd."""
-    llama = config.get("llama", {})
-    explicit = llama.get("ollama_model", "")
-    if explicit:
-        return explicit
-    cli = llama.get("cli_custom_cmd", "")
-    parts = cli.split()
-    if len(parts) >= 3 and parts[0] == "ollama" and parts[1] == "run":
-        return parts[2]
-    return "llama3.2"
-
-
 # ── RAG pipeline ──────────────────────────────────────────────────────────────
 
 def _embed(query: str, model_name: str, cache_dir: str) -> list:
