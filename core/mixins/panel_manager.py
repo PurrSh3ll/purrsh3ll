@@ -125,7 +125,7 @@ class PanelManagerMixin:
             return
         main_window = self.widgets["main_window"]
         new_x = main_window.width() - combo.width() - 8
-        new_y = main_window.height() - combo.height() - 8
+        new_y = main_window.height() - combo.height() - 2
         combo.move(new_x, new_y)
         combo.raise_()
 
