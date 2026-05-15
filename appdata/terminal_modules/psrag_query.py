@@ -225,7 +225,7 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str):
     Call an OpenAI-compatible /v1/chat/completions endpoint (openai, groq, etc.)
     and stream the response to stdout.
     """
-    url = base_url.rstrip("/") + "/v1/chat/completions"
+    url = base_url.rstrip("/") + "/chat/completions"
     payload = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
