@@ -1199,7 +1199,12 @@ def build_menu(main_window):
                         current = f_model.currentText()
                         f_model.blockSignals(True)
                         f_model.clear()
-                        f_model.addItems(models)
+                        for name in models:
+                            f_model.addItem(name)
+                            f_model.setItemData(
+                                f_model.count() - 1, name,
+                                Qt.ItemDataRole.ToolTipRole
+                            )
                         idx = f_model.findText(current)
                         f_model.setCurrentIndex(max(0, idx))
                         f_model.blockSignals(False)
