@@ -936,12 +936,13 @@ def build_menu(main_window):
         import urllib.error
         import stat
 
-        _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq"]
+        _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "gemini"]
         _PROVIDER_BASE_URL = {
             "ollama":    "http://localhost:11434",
             "openai":    "https://api.openai.com/v1",
             "anthropic": "https://api.anthropic.com/v1",
             "groq":      "https://api.groq.com/openai/v1",
+            "gemini":    "https://generativelanguage.googleapis.com/v1beta/openai",
             "custom":    "",
         }
         _base_dir_prov  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

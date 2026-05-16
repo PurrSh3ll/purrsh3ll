@@ -239,6 +239,11 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
             _OPENAI_REASONING = ("o1", "o3", "o4")
             if any(m.startswith(k) or f"/{k}" in m for k in _OPENAI_REASONING):
                 body["reasoning_effort"] = "low"
+        elif provider == "gemini":
+            # Gemini 2.5+ and thinking-exp models support reasoning_effort
+            _GEMINI_THINKING = ("2.5", "thinking")
+            if any(k in m for k in _GEMINI_THINKING):
+                body["reasoning_effort"] = "none"
         # Note: Groq uses /no_think token in the message (handled in prompt)
     payload = json.dumps(body).encode("utf-8")
     headers = {
@@ -418,6 +423,7 @@ def main():
         "openai":    "https://api.openai.com/v1",
         "anthropic": "https://api.anthropic.com",
         "groq":      "https://api.groq.com/openai/v1",
+        "gemini":    "https://generativelanguage.googleapis.com/v1beta/openai",
     }
     profile_url       = profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
     host              = args.host or (profile_url if provider == "ollama" else "")
