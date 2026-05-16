@@ -1505,6 +1505,15 @@ def build_menu(main_window):
             if row < 0:
                 return
             name = providers_table.item(row, 0).text() if providers_table.item(row, 0) else ""
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                dlg, "Remove profile",
+                f"Remove profile \"{name}\"?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
             providers_table.removeRow(row)
             _remove_api_key(name)
             _on_table_selection_changed()
