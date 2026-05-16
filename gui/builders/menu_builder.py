@@ -588,21 +588,6 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills set:", settings_skills_combo)
 
-        _ai_think_saved = llama_cfg.get("ai_disable_thinking",
-                          llama_cfg.get("ollama_disable_thinking", False))
-        _ai_fast_saved  = llama_cfg.get("ai_fast_answers",
-                          llama_cfg.get("ollama_fast_answers", False))
-        ai_think_cb = QCheckBox("Disable thinking", grp_llm)
-        ai_fast_cb  = QCheckBox("Fast answers  (short responses)", grp_llm)
-        ai_think_cb.setChecked(bool(_ai_think_saved))
-        ai_fast_cb.setChecked(bool(_ai_fast_saved))
-        ai_opts_row = QHBoxLayout()
-        ai_opts_row.addWidget(ai_think_cb)
-        ai_opts_row.addSpacing(16)
-        ai_opts_row.addWidget(ai_fast_cb)
-        ai_opts_row.addStretch(1)
-        form_llm.addRow("Model options:", ai_opts_row)
-
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         form_rag = QFormLayout(grp_rag)
@@ -912,12 +897,6 @@ def build_menu(main_window):
             _save_llama_key("skills_set", val)
             c.apply_agent_files(settings_agent_role_combo.currentText(), val)
 
-        def _on_ai_think_changed():
-            _save_llama_key("ai_disable_thinking", ai_think_cb.isChecked())
-
-        def _on_ai_fast_changed():
-            _save_llama_key("ai_fast_answers", ai_fast_cb.isChecked())
-
         rag_model_combo.currentIndexChanged.connect(_on_rag_model_changed)
         rag_radio_braindump.toggled.connect(_on_rag_braindump_toggled)
         rag_radio_custom.toggled.connect(_on_rag_custom_toggled)
@@ -927,8 +906,6 @@ def build_menu(main_window):
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
         settings_skills_combo.currentIndexChanged.connect(_on_settings_skills_changed)
-        ai_think_cb.stateChanged.connect(_on_ai_think_changed)
-        ai_fast_cb.stateChanged.connect(_on_ai_fast_changed)
 
         # ── API Providers group ───────────────────────────────────────────────
         import threading
@@ -1355,6 +1332,71 @@ def build_menu(main_window):
         btn_edit_provider.clicked.connect(_on_edit_provider)
         btn_remove_provider.clicked.connect(_on_remove_provider)
 
+        # ── Provider options table ────────────────────────────────────────────
+        grp_opts = QGroupBox("Provider options")
+        grp_opts_layout = QVBoxLayout(grp_opts)
+        grp_opts_layout.setContentsMargins(8, 8, 8, 8)
+        grp_opts_layout.setSpacing(4)
+
+        _prov_opts_cfg = data.get("provider_options", {})
+        _opts_providers = _PROVIDER_TYPES  # same ordered list
+
+        opts_table = QTableWidget(len(_opts_providers), 3)
+        opts_table.setHorizontalHeaderLabels(["Provider", "Disable thinking", "Fast answers"])
+        opts_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        opts_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        opts_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        opts_table.verticalHeader().setVisible(False)
+        opts_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        opts_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        opts_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        opts_table.setFixedHeight(26 * (len(_opts_providers) + 1) + 4)
+
+        _opts_checkboxes = {}  # (provider, key) -> QCheckBox
+
+        def _center_cb(cb):
+            w = QWidget()
+            lay = QHBoxLayout(w)
+            lay.addWidget(cb)
+            lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lay.setContentsMargins(0, 0, 0, 0)
+            return w
+
+        for row, prov in enumerate(_opts_providers):
+            prov_item = QTableWidgetItem(prov)
+            prov_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            opts_table.setItem(row, 0, prov_item)
+
+            p_cfg = _prov_opts_cfg.get(prov, {})
+            for col, key in enumerate(("disable_thinking", "fast_answers"), start=1):
+                cb = QCheckBox()
+                cb.setChecked(bool(p_cfg.get(key, False)))
+                opts_table.setCellWidget(row, col, _center_cb(cb))
+                _opts_checkboxes[(prov, key)] = cb
+
+        grp_opts_layout.addWidget(opts_table)
+
+        def _save_provider_options():
+            try:
+                cfg = {}
+                if os.path.exists(c.config_path):
+                    with open(c.config_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                cfg["provider_options"] = {
+                    prov: {
+                        "disable_thinking": _opts_checkboxes[(prov, "disable_thinking")].isChecked(),
+                        "fast_answers":     _opts_checkboxes[(prov, "fast_answers")].isChecked(),
+                    }
+                    for prov in _opts_providers
+                }
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        for cb in _opts_checkboxes.values():
+            cb.stateChanged.connect(_save_provider_options)
+
         # ── Assemble dialog ───────────────────────────────────────────────────
         scroll_content = QWidget()
         scroll_content.setObjectName("ai_settings_scroll_content")
@@ -1365,6 +1407,7 @@ def build_menu(main_window):
         scroll_layout.addWidget(grp_llm)
         scroll_layout.addWidget(grp_rag)
         scroll_layout.addWidget(grp_providers)
+        scroll_layout.addWidget(grp_opts)
         scroll_layout.addStretch(1)
 
         scroll = QScrollArea(dlg)
