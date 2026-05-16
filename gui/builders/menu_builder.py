@@ -1391,7 +1391,7 @@ def build_menu(main_window):
             bdlg = QDialog(dlg)
             bdlg.setWindowTitle(f"Behavior — {profile['name']}")
             bdlg.setModal(True)
-            bdlg.resize(360, 150)
+            bdlg.resize(440, 150)
             try:
                 bdlg.setStyleSheet(c.messagebox_stylesheet)
             except Exception:
@@ -1419,7 +1419,7 @@ def build_menu(main_window):
             custom_edit = QTextEdit()
             custom_edit.setPlaceholderText(_PLACEHOLDER)
             custom_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-            custom_edit.setFixedHeight(90)
+            custom_edit.setFixedHeight(72)
             custom_edit.setVisible(is_custom)
             if saved_custom:
                 custom_edit.setPlainText(saved_custom)
