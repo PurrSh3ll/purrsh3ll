@@ -346,20 +346,19 @@ def main():
         print(
             "psai — unified AI assistant for PurrSh3ll\n\n"
             "Usage:\n"
-            "  psai ask <query>              Direct question, no context\n"
-            "  psai chat <message>           Chat with persistent history\n"
-            "  psai chat --history           Show conversation history\n"
-            "  psai chat --new [message]     Clear history (and optionally start new)\n\n"
+            "  psask <query>              Direct question, no context\n"
+            "  pschat <message>           Chat with persistent history\n"
+            "  pschat --history           Show conversation history\n"
+            "  pschat --new [message]     Clear history (and optionally start new)\n\n"
             "Options:\n"
             "  -m MODEL      Model override (default: from active profile)\n"
             "  --host URL    Base URL override\n"
             "  -h, --help    Show this help\n\n"
             "Examples:\n"
-            '  psai ask "what is XSS?"\n'
-            '  psai chat "explain SQL injection"\n'
-            '  psai chat "what did we talk about?"\n'
-            '  psai chat --new "start fresh: what is SSRF?"\n'
-            '  pschat "shorthand for psai chat"\n'
+            '  psask "what is XSS?"\n'
+            '  pschat "explain SQL injection"\n'
+            '  pschat "what did we talk about?"\n'
+            '  pschat --new "start fresh: what is SSRF?"\n'
         )
         sys.exit(0)
 

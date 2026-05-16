@@ -15,6 +15,10 @@ psai() {
     "$_py" "$_script" --base-dir "$_base" "$@"
 }
 
+psask() {
+    psai ask "$@"
+}
+
 pschat() {
     psai chat "$@"
 }
