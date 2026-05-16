@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
-    QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication
@@ -1291,6 +1291,7 @@ def build_menu(main_window):
                 "url":              meta.get("url", ""),
                 "disable_thinking": meta.get("disable_thinking", False),
                 "fast_answers":     meta.get("fast_answers", False),
+                "custom_params":    meta.get("custom_params", ""),
             }
 
         def _set_row_meta(row, profile):
@@ -1300,6 +1301,7 @@ def build_menu(main_window):
                     "url":              profile.get("url", ""),
                     "disable_thinking": bool(profile.get("disable_thinking", False)),
                     "fast_answers":     bool(profile.get("fast_answers", False)),
+                    "custom_params":    profile.get("custom_params", ""),
                 })
 
         def _insert_table_row(row_idx, profile):
@@ -1361,7 +1363,7 @@ def build_menu(main_window):
             bdlg = QDialog(dlg)
             bdlg.setWindowTitle(f"Behavior — {profile['name']}")
             bdlg.setModal(True)
-            bdlg.resize(300, 120)
+            bdlg.resize(360, 150)
             try:
                 bdlg.setStyleSheet(c.messagebox_stylesheet)
             except Exception:
@@ -1369,13 +1371,48 @@ def build_menu(main_window):
             bform = QVBoxLayout(bdlg)
             bform.setContentsMargins(16, 16, 16, 12)
             bform.setSpacing(8)
-            cb_think = QCheckBox("Disable thinking")
-            cb_fast  = QCheckBox("Fast answers  (short responses)")
-            cb_think.setChecked(bool(profile.get("disable_thinking", False)))
-            cb_fast.setChecked(bool(profile.get("fast_answers", False)))
+
+            saved_custom = profile.get("custom_params", "")
+            is_custom    = bool(saved_custom)
+
+            cb_think  = QCheckBox("Disable thinking")
+            cb_fast   = QCheckBox("Fast answers  (short responses)")
+            cb_custom = QCheckBox("Custom parameters")
+            cb_think.setChecked(bool(profile.get("disable_thinking", False)) and not is_custom)
+            cb_fast.setChecked(bool(profile.get("fast_answers",     False)) and not is_custom)
+            cb_custom.setChecked(is_custom)
+            cb_think.setEnabled(not is_custom)
+            cb_fast.setEnabled(not is_custom)
+
+            _PLACEHOLDER = (
+                '{"temperature": 0.7, "system": "You are Skynet, an AI assistant'
+                ' helping me with tasks. Be concise and precise."}'
+            )
+            custom_edit = QTextEdit()
+            custom_edit.setPlaceholderText(_PLACEHOLDER)
+            custom_edit.setFixedHeight(68)
+            custom_edit.setVisible(is_custom)
+            if saved_custom:
+                custom_edit.setPlainText(saved_custom)
+
+            def _on_custom_toggled():
+                _is = cb_custom.isChecked()
+                if _is:
+                    cb_think.setChecked(False)
+                    cb_fast.setChecked(False)
+                cb_think.setEnabled(not _is)
+                cb_fast.setEnabled(not _is)
+                custom_edit.setVisible(_is)
+                bdlg.adjustSize()
+
+            cb_custom.stateChanged.connect(_on_custom_toggled)
+
             bform.addWidget(cb_think)
             bform.addWidget(cb_fast)
+            bform.addWidget(cb_custom)
+            bform.addWidget(custom_edit)
             bform.addStretch(1)
+
             bbtn_row = QHBoxLayout()
             bbtn_ok     = QPushButton("OK")
             bbtn_cancel = QPushButton("Cancel")
@@ -1391,6 +1428,7 @@ def build_menu(main_window):
                 return
             profile["disable_thinking"] = cb_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
+            profile["custom_params"]    = custom_edit.toPlainText().strip() if cb_custom.isChecked() else ""
             _set_row_meta(row, profile)
             _persist()
 

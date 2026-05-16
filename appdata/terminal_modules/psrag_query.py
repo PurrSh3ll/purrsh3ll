@@ -221,18 +221,27 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
 # ── OpenAI-compatible runner ───────────────────────────────────────────────────
 
 def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
-                       disable_thinking: bool = False, provider: str = "openai"):
+                       disable_thinking: bool = False, provider: str = "openai",
+                       custom_params: dict = None):
     """
     Call an OpenAI-compatible /v1/chat/completions endpoint (openai, groq, etc.)
     and stream the response to stdout.
     """
     url = base_url.rstrip("/") + "/chat/completions"
+    messages = [{"role": "user", "content": prompt}]
+    # If custom_params contains a system prompt, prepend it as a system message
+    _system = (custom_params or {}).pop("system", None)
+    if _system:
+        messages.insert(0, {"role": "system", "content": _system})
     body = {
         "model":    model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "stream":   True,
     }
-    if disable_thinking:
+    # Merge remaining custom params (temperature, top_p, etc.)
+    if custom_params:
+        body.update(custom_params)
+    if disable_thinking and not custom_params:
         m = model.lower()
         if provider == "openai":
             # Only o-series reasoning models support reasoning_effort
@@ -339,7 +348,7 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
 
 def _run_llm(provider: str, model: str, prompt: str,
              url: str, api_key: str,
-             disable_thinking: bool = False):
+             disable_thinking: bool = False, custom_params: dict = None):
     """Dispatch to the correct runner based on provider."""
     if provider == "ollama":
         _run_ollama(model, prompt, disable_thinking, url)
@@ -347,11 +356,11 @@ def _run_llm(provider: str, model: str, prompt: str,
         _run_anthropic(model, prompt, url, api_key, disable_thinking)
     else:
         # For Groq thinking models, /no_think token disables chain-of-thought
-        if disable_thinking and provider == "groq":
+        if disable_thinking and provider == "groq" and not custom_params:
             _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking", "qwen3")
             if any(k in model.lower() for k in _GROQ_THINKING):
                 prompt = "/no_think\n" + prompt
-        _run_openai_compat(model, prompt, url, api_key, disable_thinking, provider)
+        _run_openai_compat(model, prompt, url, api_key, disable_thinking, provider, custom_params)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -438,8 +447,15 @@ def main():
     api_url           = args.host or profile_url
     embed_model       = _embedding_model(config)
     cache_dir         = os.path.join(base_dir, "appdata", "rag", "models")
-    disable_thinking  = bool(profile.get("disable_thinking", False))
-    fast_answers      = bool(profile.get("fast_answers", False))
+    _custom_str      = profile.get("custom_params", "")
+    custom_params    = None
+    if _custom_str:
+        try:
+            custom_params = json.loads(_custom_str)
+        except Exception:
+            _err(f"Invalid JSON in custom_params: {_custom_str[:60]}")
+    disable_thinking  = bool(profile.get("disable_thinking", False)) and not custom_params
+    fast_answers      = bool(profile.get("fast_answers", False)) and not custom_params
 
     # Load API key for non-ollama providers: keyring first, file fallback
     api_key = ""
@@ -467,7 +483,7 @@ def main():
         _info(f"Querying {model} via {provider} (no context)…")
         q = query + _FAST_SUFFIX if fast_answers else query
         _run_llm(provider, model, q, api_url if provider != "ollama" else host,
-                 api_key, disable_thinking)
+                 api_key, disable_thinking, custom_params)
         return
 
     _info("Embedding query…")
@@ -495,7 +511,7 @@ def main():
     if fast_answers:
         prompt += _FAST_SUFFIX
     _info(f"Querying {model} via {provider}…\n")
-    _run_llm(provider, model, prompt, api_url, api_key, disable_thinking)
+    _run_llm(provider, model, prompt, api_url, api_key, disable_thinking, custom_params)
 
 
 if __name__ == "__main__":
