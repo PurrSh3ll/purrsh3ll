@@ -1320,6 +1320,7 @@ def build_menu(main_window):
                 "disable_thinking": meta.get("disable_thinking", False),
                 "fast_answers":     meta.get("fast_answers", False),
                 "custom_params":    meta.get("custom_params", ""),
+                "context_tokens":   int(meta.get("context_tokens", 0)),
             }
 
         def _set_row_meta(row, profile):
@@ -1330,6 +1331,7 @@ def build_menu(main_window):
                     "disable_thinking": bool(profile.get("disable_thinking", False)),
                     "fast_answers":     bool(profile.get("fast_answers", False)),
                     "custom_params":    profile.get("custom_params", ""),
+                    "context_tokens":   int(profile.get("context_tokens", 0)),
                 })
 
         def _insert_table_row(row_idx, profile):
@@ -1456,10 +1458,21 @@ def build_menu(main_window):
 
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
+            ctx_row = QHBoxLayout()
+            ctx_label = QLabel("Context limit (tokens):")
+            sb_ctx = QSpinBox()
+            sb_ctx.setRange(0, 500_000)
+            sb_ctx.setSingleStep(1_000)
+            sb_ctx.setSpecialValueText("default (16 000)")
+            sb_ctx.setValue(int(profile.get("context_tokens", 0)))
+            ctx_row.addWidget(ctx_label)
+            ctx_row.addWidget(sb_ctx)
+
             bform.addWidget(cb_think)
             bform.addWidget(cb_fast)
             bform.addWidget(cb_custom)
             bform.addWidget(custom_edit)
+            bform.addLayout(ctx_row)
             bform.addStretch(1)
 
             bbtn_row = QHBoxLayout()
@@ -1479,6 +1492,7 @@ def build_menu(main_window):
             profile["fast_answers"]     = cb_fast.isChecked()
             _raw = custom_edit.toPlainText().strip()
             profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
+            profile["context_tokens"]   = sb_ctx.value()
             _set_row_meta(row, profile)
             _persist()
 
@@ -1511,10 +1525,12 @@ def build_menu(main_window):
                 item = QTableWidgetItem(profile[k])
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row, col, item)
-            # Preserve existing disable_thinking/fast_answers, update url
+            # Preserve existing behavior settings, update url
             existing = _table_row_to_dict(row)
             profile["disable_thinking"] = existing.get("disable_thinking", False)
             profile["fast_answers"]     = existing.get("fast_answers", False)
+            profile["custom_params"]    = existing.get("custom_params", "")
+            profile["context_tokens"]   = existing.get("context_tokens", 0)
             _set_row_meta(row, profile)
             if profile["name"] != old_name:
                 _rename_api_key(old_name, profile["name"])

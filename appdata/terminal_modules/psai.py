@@ -56,7 +56,8 @@ _DEFAULT_URLS = {
     "huggingface": "https://router.huggingface.co/featherless-ai/v1",
 }
 
-_MAX_HISTORY = 40  # max messages kept in chat session (20 turns)
+_MAX_HISTORY    = 40      # max messages kept in chat session (20 turns)
+_DEFAULT_CTX    = 16_000  # default token context window sent to API
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -66,6 +67,28 @@ def _info(msg: str):
 
 def _err(msg: str):
     print(f"\033[31m[psai] Error: {msg}\033[0m", file=sys.stderr)
+
+
+def _count_tokens(text: str) -> int:
+    """Estimate token count. Uses tiktoken if available, falls back to len/4."""
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
+
+def _trim_history(history: list, limit: int) -> list:
+    """Return a copy of history with oldest messages removed until total tokens <= limit.
+    Always keeps at least the last message to ensure something is sent."""
+    result = list(history)
+    while len(result) > 1:
+        total = sum(_count_tokens(m.get("content", "")) for m in result)
+        if total <= limit:
+            break
+        result.pop(0)
+    return result
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -332,6 +355,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    context_limit    = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
 
     if args.clear:
         _clear_session(base_dir, name)
@@ -368,10 +392,13 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     history.append({"role": "user", "content": query})
 
-    turns = len(history) // 2
-    _info(f"Chatting with {model} via {provider} ({turns} turn{'s' if turns != 1 else ''} in context)…\n")
+    msgs_to_send = _trim_history(history, context_limit)
+    trimmed = len(history) - len(msgs_to_send)
+    turns = len(msgs_to_send) // 2
+    ctx_info = f", limit {context_limit // 1000}k tok" + (f", dropped {trimmed} old msg{'s' if trimmed != 1 else ''}" if trimmed else "")
+    _info(f"Chatting with {model} via {provider} ({turns} turn{'s' if turns != 1 else ''} in context{ctx_info})…\n")
 
-    response = _run_llm(provider, model, history, url, api_key, disable_thinking, custom_params)
+    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
 
     if response:
         history.append({"role": "assistant", "content": response})
