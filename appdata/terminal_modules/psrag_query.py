@@ -375,7 +375,7 @@ def _err(msg: str):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(prog="psask", add_help=False)
+    parser = argparse.ArgumentParser(prog="psrag", add_help=False)
     parser.add_argument("query",           nargs="+")
     parser.add_argument("-n",              type=int, default=5, metavar="N", dest="top_n")
     parser.add_argument("-m", "--model",   default=None, metavar="MODEL")
@@ -389,8 +389,8 @@ def main():
 
     if args.help:
         print(
-            "psask — query the PurrSh3ll RAG knowledge base\n\n"
-            "Usage: psask [options] <query>\n\n"
+            "psrag — query the PurrSh3ll RAG knowledge base\n\n"
+            "Usage: psrag [options] <query>\n\n"
             "Options:\n"
             "  -n N             Context chunks to retrieve (default: 5)\n"
             "  -m MODEL         Model override (default: from active API profile)\n"
@@ -399,11 +399,11 @@ def main():
             "  --show-sources   Print source files and scores before answer\n"
             "  -h, --help       Show this help\n\n"
             "Examples:\n"
-            '  psask "what is XSS?"\n'
-            '  psask -n 3 --show-sources "how to enumerate subdomains"\n'
-            '  psask -m llama3.2 "explain SQL injection"\n'
-            '  psask --host http://192.168.1.10:11434 "query"\n'
-            '  psask --no-context "what is 2+2"'
+            '  psrag "what is XSS?"\n'
+            '  psrag -n 3 --show-sources "how to enumerate subdomains"\n'
+            '  psrag -m llama3.2 "explain SQL injection"\n'
+            '  psrag --host http://192.168.1.10:11434 "query"\n'
+            '  psrag --no-context "what is 2+2"'
         )
         sys.exit(0)
 
@@ -420,7 +420,7 @@ def main():
         _err(
             "No active API profile configured.\n"
             "Go to AI Settings > API Providers and set an active profile,\n"
-            "or pass a model directly with:  psask -m <model> <query>"
+            "or pass a model directly with:  psrag -m <model> <query>"
         )
         sys.exit(1)
 

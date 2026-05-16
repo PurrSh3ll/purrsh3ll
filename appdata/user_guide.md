@@ -20,8 +20,8 @@ It combines a terminal, script manager, documentation system, and environment co
 * Built-in terminal commands:
   * `psopen` — open any file in PurrSh3ll directly from the terminal
     * [psopen --help](action://run/command/psopen%20-h%0A)
-  * `psask` — query the RAG knowledge base and get an AI answer via Ollama
-    * [psask --help](action://run/command/psask%20-h%0A)
+  * `psrag` — query the RAG knowledge base and get an AI answer via Ollama
+    * [psrag --help](action://run/command/psrag%20-h%0A)
 
 ### 📂 Python Script Management
 
@@ -109,7 +109,7 @@ PurrSh3ll is designed for:
 * Run small projects or games
 * Make your screen more readable
 * Open any file instantly with `psopen` without leaving the terminal
-* Query your knowledge base and get AI answers with `psask`
+* Query your knowledge base and get AI answers with `psrag`
 
 ---
 
