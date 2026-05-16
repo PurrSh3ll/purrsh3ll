@@ -1414,6 +1414,7 @@ def build_menu(main_window):
 
             _PLACEHOLDER = (
                 '{"temperature": 0.7,\n'
+                '"thinking": {"type": "disabled"},\n'
                 '"system": "You are Skynet, an AI assistant'
                 ' helping me with tasks. Be concise and precise."}'
             )
