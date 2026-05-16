@@ -588,18 +588,20 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills set:", settings_skills_combo)
 
-        _ollama_think_saved = llama_cfg.get("ollama_disable_thinking", False)
-        _ollama_fast_saved  = llama_cfg.get("ollama_fast_answers", False)
-        ollama_think_cb = QCheckBox("Disable thinking  (--think=false)", grp_llm)
-        ollama_fast_cb  = QCheckBox("Fast answers  (short responses)", grp_llm)
-        ollama_think_cb.setChecked(bool(_ollama_think_saved))
-        ollama_fast_cb.setChecked(bool(_ollama_fast_saved))
-        ollama_opts_row = QHBoxLayout()
-        ollama_opts_row.addWidget(ollama_think_cb)
-        ollama_opts_row.addSpacing(16)
-        ollama_opts_row.addWidget(ollama_fast_cb)
-        ollama_opts_row.addStretch(1)
-        form_llm.addRow("Ollama options:", ollama_opts_row)
+        _ai_think_saved = llama_cfg.get("ai_disable_thinking",
+                          llama_cfg.get("ollama_disable_thinking", False))
+        _ai_fast_saved  = llama_cfg.get("ai_fast_answers",
+                          llama_cfg.get("ollama_fast_answers", False))
+        ai_think_cb = QCheckBox("Disable thinking", grp_llm)
+        ai_fast_cb  = QCheckBox("Fast answers  (short responses)", grp_llm)
+        ai_think_cb.setChecked(bool(_ai_think_saved))
+        ai_fast_cb.setChecked(bool(_ai_fast_saved))
+        ai_opts_row = QHBoxLayout()
+        ai_opts_row.addWidget(ai_think_cb)
+        ai_opts_row.addSpacing(16)
+        ai_opts_row.addWidget(ai_fast_cb)
+        ai_opts_row.addStretch(1)
+        form_llm.addRow("Model options:", ai_opts_row)
 
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
@@ -910,11 +912,11 @@ def build_menu(main_window):
             _save_llama_key("skills_set", val)
             c.apply_agent_files(settings_agent_role_combo.currentText(), val)
 
-        def _on_ollama_think_changed():
-            _save_llama_key("ollama_disable_thinking", ollama_think_cb.isChecked())
+        def _on_ai_think_changed():
+            _save_llama_key("ai_disable_thinking", ai_think_cb.isChecked())
 
-        def _on_ollama_fast_changed():
-            _save_llama_key("ollama_fast_answers", ollama_fast_cb.isChecked())
+        def _on_ai_fast_changed():
+            _save_llama_key("ai_fast_answers", ai_fast_cb.isChecked())
 
         rag_model_combo.currentIndexChanged.connect(_on_rag_model_changed)
         rag_radio_braindump.toggled.connect(_on_rag_braindump_toggled)
@@ -925,8 +927,8 @@ def build_menu(main_window):
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
         settings_skills_combo.currentIndexChanged.connect(_on_settings_skills_changed)
-        ollama_think_cb.stateChanged.connect(_on_ollama_think_changed)
-        ollama_fast_cb.stateChanged.connect(_on_ollama_fast_changed)
+        ai_think_cb.stateChanged.connect(_on_ai_think_changed)
+        ai_fast_cb.stateChanged.connect(_on_ai_fast_changed)
 
         # ── API Providers group ───────────────────────────────────────────────
         import threading

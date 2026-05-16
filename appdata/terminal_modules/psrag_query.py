@@ -220,17 +220,24 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
 
 # ── OpenAI-compatible runner ───────────────────────────────────────────────────
 
-def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str):
+def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
+                       disable_thinking: bool = False, provider: str = "openai"):
     """
     Call an OpenAI-compatible /v1/chat/completions endpoint (openai, groq, etc.)
     and stream the response to stdout.
     """
     url = base_url.rstrip("/") + "/chat/completions"
-    payload = json.dumps({
-        "model": model,
+    body = {
+        "model":    model,
         "messages": [{"role": "user", "content": prompt}],
-        "stream": True,
-    }).encode("utf-8")
+        "stream":   True,
+    }
+    if disable_thinking:
+        if provider == "groq":
+            body["thinking"] = {"type": "disabled"}
+        elif provider == "openai":
+            body["reasoning_effort"] = "low"
+    payload = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -265,18 +272,22 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str):
 
 # ── Anthropic runner ───────────────────────────────────────────────────────────
 
-def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str):
+def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
+                   disable_thinking: bool = False):
     """
     Call the Anthropic messages API and stream the response to stdout.
     base_url defaults to https://api.anthropic.com if empty.
     """
     url = (base_url.rstrip("/") if base_url else "https://api.anthropic.com") + "/v1/messages"
-    payload = json.dumps({
-        "model": model,
+    body = {
+        "model":      model,
         "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": True,
-    }).encode("utf-8")
+        "messages":   [{"role": "user", "content": prompt}],
+        "stream":     True,
+    }
+    if disable_thinking:
+        body["thinking"] = {"type": "disabled"}
+    payload = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type":      "application/json",
         "x-api-key":         api_key,
@@ -316,10 +327,10 @@ def _run_llm(provider: str, model: str, prompt: str,
     if provider == "ollama":
         _run_ollama(model, prompt, disable_thinking, url)
     elif provider == "anthropic":
-        _run_anthropic(model, prompt, url, api_key)
+        _run_anthropic(model, prompt, url, api_key, disable_thinking)
     else:
         # openai, groq, and any other OpenAI-compatible provider
-        _run_openai_compat(model, prompt, url, api_key)
+        _run_openai_compat(model, prompt, url, api_key, disable_thinking, provider)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -403,8 +414,10 @@ def main():
     api_url           = args.host or profile_url
     embed_model       = _embedding_model(config)
     cache_dir         = os.path.join(base_dir, "appdata", "rag", "models")
-    disable_thinking  = bool(llama_cfg.get("ollama_disable_thinking", False)) if provider == "ollama" else False
-    fast_answers      = bool(llama_cfg.get("ollama_fast_answers", False))
+    disable_thinking  = bool(llama_cfg.get("ai_disable_thinking",
+                            llama_cfg.get("ollama_disable_thinking", False)))
+    fast_answers      = bool(llama_cfg.get("ai_fast_answers",
+                            llama_cfg.get("ollama_fast_answers", False)))
 
     # Load API key for non-ollama providers
     api_key = ""
@@ -424,10 +437,8 @@ def main():
     if args.no_context:
         _info(f"Querying {model} via {provider} (no context)…")
         q = query + _FAST_SUFFIX if fast_answers else query
-        if provider == "ollama":
-            _run_ollama(model, q, disable_thinking, host)
-        else:
-            _run_llm(provider, model, q, api_url, api_key)
+        _run_llm(provider, model, q, api_url if provider != "ollama" else host,
+                 api_key, disable_thinking)
         return
 
     _info("Embedding query…")
