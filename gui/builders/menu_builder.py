@@ -1443,8 +1443,16 @@ def build_menu(main_window):
             else:
                 _set_placeholder()
 
-            custom_edit.focusInEvent  = lambda e: (_clear_placeholder(), QTextEdit.focusInEvent(custom_edit, e))
-            custom_edit.focusOutEvent = lambda e: (_restore_placeholder_if_empty(), QTextEdit.focusOutEvent(custom_edit, e))
+            def _focus_in(e):
+                _clear_placeholder()
+                QTextEdit.focusInEvent(custom_edit, e)
+
+            def _focus_out(e):
+                _restore_placeholder_if_empty()
+                QTextEdit.focusOutEvent(custom_edit, e)
+
+            custom_edit.focusInEvent  = _focus_in
+            custom_edit.focusOutEvent = _focus_out
 
             def _on_custom_toggled():
                 _is = cb_custom.isChecked()
