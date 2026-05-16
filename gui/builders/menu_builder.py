@@ -1413,16 +1413,35 @@ def build_menu(main_window):
             cb_fast.setEnabled(not is_custom)
 
             _PLACEHOLDER = (
-                '{"temperature": 0.7,\n"system": "You are Skynet, an AI assistant'
+                '{"temperature": 0.7,\n'
+                '"system": "You are Skynet, an AI assistant'
                 ' helping me with tasks. Be concise and precise."}'
             )
             custom_edit = QTextEdit()
-            custom_edit.setPlaceholderText(_PLACEHOLDER)
             custom_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
             custom_edit.setFixedHeight(72)
             custom_edit.setVisible(is_custom)
+
+            def _set_placeholder():
+                custom_edit.setPlainText(_PLACEHOLDER)
+                custom_edit.setStyleSheet("color: gray;")
+
+            def _clear_placeholder():
+                if custom_edit.toPlainText() == _PLACEHOLDER:
+                    custom_edit.clear()
+                    custom_edit.setStyleSheet("")
+
+            def _restore_placeholder_if_empty():
+                if not custom_edit.toPlainText().strip():
+                    _set_placeholder()
+
             if saved_custom:
                 custom_edit.setPlainText(saved_custom)
+            else:
+                _set_placeholder()
+
+            custom_edit.focusInEvent  = lambda e: (_clear_placeholder(), QTextEdit.focusInEvent(custom_edit, e))
+            custom_edit.focusOutEvent = lambda e: (_restore_placeholder_if_empty(), QTextEdit.focusOutEvent(custom_edit, e))
 
             def _on_custom_toggled():
                 _is = cb_custom.isChecked()
@@ -1457,7 +1476,8 @@ def build_menu(main_window):
                 return
             profile["disable_thinking"] = cb_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
-            profile["custom_params"]    = custom_edit.toPlainText().strip() if cb_custom.isChecked() else ""
+            _raw = custom_edit.toPlainText().strip()
+            profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
             _set_row_meta(row, profile)
             _persist()
 
