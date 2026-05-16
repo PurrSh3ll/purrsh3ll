@@ -1067,10 +1067,10 @@ def build_menu(main_window):
                 return sorted(m["id"] for m in data.get("data", []) if "id" in m)
 
             elif provider == "huggingface":
-                # HF Hub API — top downloaded text-generation models
+                # HF Hub API — warm (serverless-ready) text-generation models
                 endpoint = (
                     "https://huggingface.co/api/models"
-                    "?pipeline_tag=text-generation&limit=50&sort=downloads&direction=-1"
+                    "?pipeline_tag=text-generation&inference=warm&limit=50&sort=downloads&direction=-1"
                 )
                 headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
                 if key:
