@@ -1190,13 +1190,41 @@ def build_menu(main_window):
             f_key = QLineEdit(d.get("key", ""))
             f_key.setPlaceholderText("API key")
             f_key.setEchoMode(QLineEdit.EchoMode.Password)
+            _autofilled_key = [d.get("key", "")]  # tracks last autofilled value
 
             def _update_url_placeholder(idx=None):
                 f_url.setPlaceholderText(
                     _PROVIDER_BASE_URL.get(f_provider.currentText(), "") or "Base URL"
                 )
+
+            def _autofill_key(idx=None):
+                # Only autofill in Add mode (no defaults) or when field is empty/autofilled
+                current = f_key.text()
+                if current and current != _autofilled_key[0]:
+                    return  # user typed something manually — don't overwrite
+                provider = f_provider.currentText()
+                # Find first existing profile with this provider that has a key
+                for r in range(providers_table.rowCount()):
+                    cell = providers_table.item(r, 1)
+                    if cell and cell.text() == provider:
+                        name = providers_table.item(r, 0)
+                        if name:
+                            key = _get_api_key(name.text())
+                            if key:
+                                f_key.setText(key)
+                                _autofilled_key[0] = key
+                                return
+                # No match found — clear only if was autofilled
+                if current == _autofilled_key[0]:
+                    f_key.clear()
+                    _autofilled_key[0] = ""
+
             f_provider.currentIndexChanged.connect(_update_url_placeholder)
+            f_provider.currentIndexChanged.connect(_autofill_key)
             _update_url_placeholder()
+            # Autofill on open only in Add mode (no pre-existing key)
+            if not d.get("key"):
+                _autofill_key()
 
             def _do_fetch():
                 provider = f_provider.currentText()
