@@ -1067,10 +1067,10 @@ def build_menu(main_window):
                 return sorted(m["id"] for m in data.get("data", []) if "id" in m)
 
             elif provider == "huggingface":
-                # HF Hub API — trending text-generation models
+                # HF Hub API — top downloaded text-generation models
                 endpoint = (
                     "https://huggingface.co/api/models"
-                    "?pipeline_tag=text-generation&limit=50&sort=trending"
+                    "?pipeline_tag=text-generation&limit=50&sort=downloads&direction=-1"
                 )
                 headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
                 if key:
@@ -1078,8 +1078,12 @@ def build_menu(main_window):
                 req = urllib.request.Request(endpoint, headers=headers)
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     data = json.loads(resp.read())
-                # HF returns a list of objects with "id" field (model name)
-                return sorted(m["id"] for m in data if "id" in m)
+                # HF returns objects with "modelId" or "id" field
+                return sorted(
+                    m.get("modelId") or m.get("id")
+                    for m in data
+                    if m.get("modelId") or m.get("id")
+                )
 
             else:
                 # openai-compatible: openai / groq / gemini / openrouter / custom
