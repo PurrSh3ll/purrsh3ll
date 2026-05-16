@@ -345,20 +345,11 @@ def main():
     if args.help:
         print(
             "psai — unified AI assistant for PurrSh3ll\n\n"
-            "Usage:\n"
-            "  psask <query>              Direct question, no context\n"
-            "  pschat <message>           Chat with persistent history\n"
-            "  pschat --history           Show conversation history\n"
-            "  pschat --new [message]     Clear history (and optionally start new)\n\n"
-            "Options:\n"
-            "  -m MODEL      Model override (default: from active profile)\n"
-            "  --host URL    Base URL override\n"
-            "  -h, --help    Show this help\n\n"
-            "Examples:\n"
-            '  psask "what is XSS?"\n'
-            '  pschat "explain SQL injection"\n'
-            '  pschat "what did we talk about?"\n'
-            '  pschat --new "start fresh: what is SSRF?"\n'
+            "Commands:\n"
+            "  psask <query>     Direct question to active profile (no RAG)\n"
+            "  pschat <message>  Chat with persistent conversation history\n"
+            "  psrag <query>     RAG query against the knowledge base\n\n"
+            "Run each command with -h for detailed help."
         )
         sys.exit(0)
 

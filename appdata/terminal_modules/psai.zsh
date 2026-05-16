@@ -16,9 +16,49 @@ psai() {
 }
 
 psask() {
+    if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        cat <<'EOF'
+psask — direct question to the active AI profile (no RAG context)
+
+Usage:
+  psask [options] <query>
+
+Options:
+  -m MODEL      Model override (default: from active profile)
+  --host URL    Base URL override
+  -h, --help    Show this help
+
+Examples:
+  psask "what is XSS?"
+  psask -m gpt-4o "explain SQL injection"
+EOF
+        return 0
+    fi
     psai ask "$@"
 }
 
 pschat() {
+    if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+        cat <<'EOF'
+pschat — chat with persistent conversation history
+
+Usage:
+  pschat <message>           Send a message (history is preserved)
+  pschat --history           Show current conversation history
+  pschat --new [message]     Clear history, optionally send first message
+
+Options:
+  -m MODEL      Model override (default: from active profile)
+  --host URL    Base URL override
+  -h, --help    Show this help
+
+Examples:
+  pschat "explain SQL injection"
+  pschat "what did we talk about?"
+  pschat --new "start fresh: what is SSRF?"
+  pschat --history
+EOF
+        return 0
+    fi
     psai chat "$@"
 }
