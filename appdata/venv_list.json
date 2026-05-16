@@ -3205,6 +3205,10 @@
         "version": "0.37.0"
       },
       {
+        "name": "regex",
+        "version": "2026.5.9"
+      },
+      {
         "name": "requests",
         "version": "2.32.5"
       },
@@ -3243,6 +3247,10 @@
       {
         "name": "tenacity",
         "version": "9.1.4"
+      },
+      {
+        "name": "tiktoken",
+        "version": "0.13.0"
       },
       {
         "name": "tokenizers",
