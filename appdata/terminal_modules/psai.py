@@ -292,6 +292,11 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str):
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
+    if args.clear:
+        _clear_session(base_dir, name)
+        _info("Chat history cleared.")
+        return
+
     if args.new:
         _clear_session(base_dir, name)
         _info("Session cleared.")
@@ -337,6 +342,7 @@ def main():
     parser.add_argument("-m", "--model",  default=None, metavar="MODEL")
     parser.add_argument("--host",         default="", metavar="URL")
     parser.add_argument("--new",          action="store_true", help="Clear chat history (chat mode)")
+    parser.add_argument("--clear",        action="store_true", help="Clear chat history and exit (chat mode)")
     parser.add_argument("--history",      action="store_true", help="Show chat history (chat mode)")
     parser.add_argument("--base-dir",     default=None)
     parser.add_argument("-h", "--help",   action="store_true")

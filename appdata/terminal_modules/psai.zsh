@@ -45,6 +45,7 @@ pschat — chat with persistent conversation history
 Usage:
   pschat <message>           Send a message (history is preserved)
   pschat --history           Show current conversation history
+  pschat --clear             Clear conversation history and exit
   pschat --new [message]     Clear history, optionally send first message
 
 Options:
@@ -57,6 +58,7 @@ Examples:
   pschat "what did we talk about?"
   pschat --new "start fresh: what is SSRF?"
   pschat --history
+  pschat --clear
 EOF
         return 0
     fi
