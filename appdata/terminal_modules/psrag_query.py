@@ -430,13 +430,10 @@ def main():
     api_url           = args.host or profile_url
     embed_model       = _embedding_model(config)
     cache_dir         = os.path.join(base_dir, "appdata", "rag", "models")
-    _prov_opts        = config.get("provider_options", {}).get(provider, {})
-    disable_thinking  = bool(_prov_opts.get("disable_thinking",
-                            llama_cfg.get("ai_disable_thinking",
-                            llama_cfg.get("ollama_disable_thinking", False))))
-    fast_answers      = bool(_prov_opts.get("fast_answers",
-                            llama_cfg.get("ai_fast_answers",
-                            llama_cfg.get("ollama_fast_answers", False))))
+    disable_thinking  = bool(llama_cfg.get("ai_disable_thinking",
+                            llama_cfg.get("ollama_disable_thinking", False)))
+    fast_answers      = bool(llama_cfg.get("ai_fast_answers",
+                            llama_cfg.get("ollama_fast_answers", False)))
 
     # Load API key for non-ollama providers
     api_key = ""
