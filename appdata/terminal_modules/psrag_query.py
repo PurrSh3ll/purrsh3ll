@@ -381,7 +381,6 @@ def main():
     parser.add_argument("-m", "--model",   default=None, metavar="MODEL")
     parser.add_argument("--host",          default="", metavar="URL",
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
-    parser.add_argument("--no-context",    action="store_true")
     parser.add_argument("--show-sources",  action="store_true")
     parser.add_argument("--base-dir",      default=None)
     parser.add_argument("-h", "--help",    action="store_true")
@@ -395,15 +394,13 @@ def main():
             "  -n N             Context chunks to retrieve (default: 5)\n"
             "  -m MODEL         Model override (default: from active API profile)\n"
             "  --host URL       Provider host/base URL override\n"
-            "  --no-context     Query the model directly without RAG context\n"
             "  --show-sources   Print source files and scores before answer\n"
             "  -h, --help       Show this help\n\n"
             "Examples:\n"
             '  psrag "what is XSS?"\n'
             '  psrag -n 3 --show-sources "how to enumerate subdomains"\n'
             '  psrag -m llama3.2 "explain SQL injection"\n'
-            '  psrag --host http://192.168.1.10:11434 "query"\n'
-            '  psrag --no-context "what is 2+2"'
+            '  psrag --host http://192.168.1.10:11434 "query"'
         )
         sys.exit(0)
 
@@ -478,13 +475,6 @@ def main():
         "\n\nAnswer as briefly as possible. "
         "Use 1-3 sentences. No unnecessary explanations."
     )
-
-    if args.no_context:
-        _info(f"Querying {model} via {provider} (no context)…")
-        q = query + _FAST_SUFFIX if fast_answers else query
-        _run_llm(provider, model, q, api_url if provider != "ollama" else host,
-                 api_key, disable_thinking, custom_params)
-        return
 
     _info("Embedding query…")
     vec = _embed(query, embed_model, cache_dir)

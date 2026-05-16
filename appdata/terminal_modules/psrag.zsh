@@ -10,7 +10,6 @@ Options:
   -n N             Number of context chunks to retrieve  (default: 5)
   -m MODEL         Model to use  (default: from active API profile)
   --host URL       Provider host/base URL override
-  --no-context     Skip RAG — query model directly
   --show-sources   Print source filenames and scores before the answer
   -h, --help       Show this help
 
@@ -19,7 +18,6 @@ Examples:
   psrag -n 3 --show-sources "how to enumerate subdomains"
   psrag -m llama3.2 "explain SQL injection"
   psrag --host http://192.168.1.10:11434 "query"
-  psrag --no-context "what is 2+2"
 EOF
         return 0
     fi
