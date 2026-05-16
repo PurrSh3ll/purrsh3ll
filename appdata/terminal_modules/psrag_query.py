@@ -234,16 +234,12 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
     }
     if disable_thinking:
         m = model.lower()
-        if provider == "groq":
-            # Only thinking-capable Groq models accept this parameter
-            _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking", "qwen3")
-            if any(k in m for k in _GROQ_THINKING):
-                body["thinking"] = {"type": "disabled"}
-        elif provider == "openai":
+        if provider == "openai":
             # Only o-series reasoning models support reasoning_effort
             _OPENAI_REASONING = ("o1", "o3", "o4")
             if any(m.startswith(k) or f"/{k}" in m for k in _OPENAI_REASONING):
                 body["reasoning_effort"] = "low"
+        # Note: Groq uses /no_think token in the message (handled in prompt)
     payload = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type":  "application/json",
@@ -339,7 +335,11 @@ def _run_llm(provider: str, model: str, prompt: str,
     elif provider == "anthropic":
         _run_anthropic(model, prompt, url, api_key, disable_thinking)
     else:
-        # openai, groq, and any other OpenAI-compatible provider
+        # For Groq thinking models, /no_think token disables chain-of-thought
+        if disable_thinking and provider == "groq":
+            _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking", "qwen3")
+            if any(k in model.lower() for k in _GROQ_THINKING):
+                prompt = "/no_think\n" + prompt
         _run_openai_compat(model, prompt, url, api_key, disable_thinking, provider)
 
 
