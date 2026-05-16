@@ -945,7 +945,7 @@ def build_menu(main_window):
             "groq":         "https://api.groq.com/openai/v1",
             "gemini":       "https://generativelanguage.googleapis.com/v1beta/openai",
             "openrouter":   "https://openrouter.ai/api/v1",
-            "huggingface":  "https://router.huggingface.co/hf-inference",
+            "huggingface":  "https://router.huggingface.co/featherless-ai/v1",
             "custom":       "",
         }
         _base_dir_prov  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1067,10 +1067,10 @@ def build_menu(main_window):
                 return sorted(m["id"] for m in data.get("data", []) if "id" in m)
 
             elif provider == "huggingface":
-                # HF Hub API — warm (serverless-ready) text-generation models
+                # HF Hub API — models available via featherless-ai inference provider
                 endpoint = (
                     "https://huggingface.co/api/models"
-                    "?pipeline_tag=text-generation&inference=warm&limit=50&sort=downloads&direction=-1"
+                    "?pipeline_tag=text-generation&inference_provider=featherless-ai&limit=50&sort=downloads&direction=-1"
                 )
                 headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
                 if key:
