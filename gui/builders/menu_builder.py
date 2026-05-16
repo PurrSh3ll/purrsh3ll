@@ -1051,11 +1051,12 @@ def build_menu(main_window):
         def _collect_profiles_from_table():
             profiles = []
             for r in range(providers_table.rowCount()):
+                name_item = providers_table.item(r, 0)
                 profiles.append({
-                    "name":     providers_table.item(r, 0).text() if providers_table.item(r, 0) else "",
+                    "name":     name_item.text() if name_item else "",
                     "provider": providers_table.item(r, 1).text() if providers_table.item(r, 1) else "",
                     "model":    providers_table.item(r, 2).text() if providers_table.item(r, 2) else "",
-                    "url":      providers_table.item(r, 3).text() if providers_table.item(r, 3) else "",
+                    "url":      (name_item.data(Qt.ItemDataRole.UserRole) or "") if name_item else "",
                 })
             return profiles
 
@@ -1148,11 +1149,12 @@ def build_menu(main_window):
 
         # Profiles table
         providers_table = QTableWidget(0, 4)
-        providers_table.setHorizontalHeaderLabels(["Name", "Provider", "Model", "URL"])
+        providers_table.setHorizontalHeaderLabels(["Name", "Provider", "Model", "Behavior"])
         providers_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         providers_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         providers_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        providers_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        providers_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        providers_table.horizontalHeader().resizeSection(3, 60)
         providers_table.verticalHeader().setVisible(False)
         providers_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         providers_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1307,16 +1309,36 @@ def build_menu(main_window):
 
         # ── table helpers ─────────────────────────────────────────────────────
         def _table_row_to_dict(row):
-            return {k: (providers_table.item(row, i).text()
-                        if providers_table.item(row, i) else "")
-                    for i, k in enumerate(["name", "provider", "model", "url"])}
+            name_item = providers_table.item(row, 0)
+            return {
+                "name":     name_item.text() if name_item else "",
+                "provider": providers_table.item(row, 1).text() if providers_table.item(row, 1) else "",
+                "model":    providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
+                "url":      (name_item.data(Qt.ItemDataRole.UserRole) or "") if name_item else "",
+            }
 
         def _insert_table_row(row_idx, profile):
             providers_table.insertRow(row_idx)
-            for col, key in enumerate(["name", "provider", "model", "url"]):
+            for col, key in enumerate(["name", "provider", "model"]):
                 item = QTableWidgetItem(profile.get(key, ""))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row_idx, col, item)
+            # URL stored hidden in Name item's UserRole
+            name_item = providers_table.item(row_idx, 0)
+            if name_item:
+                name_item.setData(Qt.ItemDataRole.UserRole, profile.get("url", ""))
+            # Gear button in Behavior column
+            gear_btn = QPushButton("⚙")
+            gear_btn.setFixedSize(24, 20)
+            gear_btn.setToolTip("Edit profile")
+            def _on_gear(checked=False, b=gear_btn):
+                for _r in range(providers_table.rowCount()):
+                    if providers_table.cellWidget(_r, 3) is b:
+                        providers_table.selectRow(_r)
+                        _on_edit_provider()
+                        return
+            gear_btn.clicked.connect(_on_gear)
+            providers_table.setCellWidget(row_idx, 3, gear_btn)
 
         def _refresh_active_combo(keep=None):
             keep = keep or active_profile_combo.currentText()
@@ -1378,10 +1400,14 @@ def build_menu(main_window):
             profile = _profile_from_fields(fields)
             if not profile["name"]:
                 return
-            for col, k in enumerate(["name", "provider", "model", "url"]):
+            for col, k in enumerate(["name", "provider", "model"]):
                 item = QTableWidgetItem(profile[k])
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row, col, item)
+            # Update URL in Name item's UserRole
+            name_item = providers_table.item(row, 0)
+            if name_item:
+                name_item.setData(Qt.ItemDataRole.UserRole, profile.get("url", ""))
             if profile["name"] != old_name:
                 _rename_api_key(old_name, profile["name"])
             _save_api_key(profile["name"], fields["key"].text())
