@@ -244,7 +244,13 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
             _GEMINI_THINKING = ("2.5", "thinking")
             if any(k in m for k in _GEMINI_THINKING):
                 body["reasoning_effort"] = "none"
+        elif provider == "openrouter":
+            # OpenRouter forwards reasoning_effort to underlying reasoning models
+            _OR_REASONING = ("o1", "o3", "o4", "r1", "thinking", "qwq", "sonnet-3-7")
+            if any(k in m for k in _OR_REASONING):
+                body["reasoning"] = {"effort": "low"}
         # Note: Groq uses /no_think token in the message (handled in prompt)
+        # Note: HuggingFace models don't expose thinking parameters
     payload = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type":  "application/json",
@@ -419,11 +425,13 @@ def main():
         sys.exit(1)
 
     _DEFAULT_URLS = {
-        "ollama":    "http://localhost:11434",
-        "openai":    "https://api.openai.com/v1",
-        "anthropic": "https://api.anthropic.com",
-        "groq":      "https://api.groq.com/openai/v1",
-        "gemini":    "https://generativelanguage.googleapis.com/v1beta/openai",
+        "ollama":      "http://localhost:11434",
+        "openai":      "https://api.openai.com/v1",
+        "anthropic":   "https://api.anthropic.com",
+        "groq":        "https://api.groq.com/openai/v1",
+        "gemini":      "https://generativelanguage.googleapis.com/v1beta/openai",
+        "openrouter":  "https://openrouter.ai/api/v1",
+        "huggingface": "https://api-inference.huggingface.co/v1",
     }
     profile_url       = profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
     host              = args.host or (profile_url if provider == "ollama" else "")

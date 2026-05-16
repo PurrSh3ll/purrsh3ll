@@ -936,14 +936,17 @@ def build_menu(main_window):
         import urllib.error
         import stat
 
-        _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "gemini"]
+        _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "gemini",
+                              "openrouter", "huggingface"]
         _PROVIDER_BASE_URL = {
-            "ollama":    "http://localhost:11434",
-            "openai":    "https://api.openai.com/v1",
-            "anthropic": "https://api.anthropic.com/v1",
-            "groq":      "https://api.groq.com/openai/v1",
-            "gemini":    "https://generativelanguage.googleapis.com/v1beta/openai",
-            "custom":    "",
+            "ollama":       "http://localhost:11434",
+            "openai":       "https://api.openai.com/v1",
+            "anthropic":    "https://api.anthropic.com/v1",
+            "groq":         "https://api.groq.com/openai/v1",
+            "gemini":       "https://generativelanguage.googleapis.com/v1beta/openai",
+            "openrouter":   "https://openrouter.ai/api/v1",
+            "huggingface":  "https://api-inference.huggingface.co/v1",
+            "custom":       "",
         }
         _base_dir_prov  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _api_keys_path  = os.path.join(
@@ -1063,8 +1066,23 @@ def build_menu(main_window):
                     data = json.loads(resp.read())
                 return sorted(m["id"] for m in data.get("data", []) if "id" in m)
 
+            elif provider == "huggingface":
+                # HF Hub API — lists text-generation models with warm inference
+                endpoint = (
+                    "https://huggingface.co/api/models"
+                    "?pipeline_tag=text-generation&inference=warm&limit=50&sort=trending"
+                )
+                headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+                if key:
+                    headers["Authorization"] = f"Bearer {key}"
+                req = urllib.request.Request(endpoint, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read())
+                # HF returns a list of objects with "id" field (model name)
+                return sorted(m["id"] for m in data if "id" in m)
+
             else:
-                # openai-compatible: openai / groq / custom
+                # openai-compatible: openai / groq / gemini / openrouter / custom
                 endpoint = f"{base}/models"
                 req = urllib.request.Request(endpoint, headers={
                     "Authorization":  f"Bearer {key}",
