@@ -436,7 +436,7 @@ def main():
         "groq":        "https://api.groq.com/openai/v1",
         "gemini":      "https://generativelanguage.googleapis.com/v1beta/openai",
         "openrouter":  "https://openrouter.ai/api/v1",
-        "huggingface": "https://api-inference.huggingface.co",
+        "huggingface": "https://router.huggingface.co/hf-inference",
     }
     profile_url       = profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
     host              = args.host or (profile_url if provider == "ollama" else "")
