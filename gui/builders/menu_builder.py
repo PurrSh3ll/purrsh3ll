@@ -588,21 +588,6 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills set:", settings_skills_combo)
 
-        _ai_think_saved = llama_cfg.get("ai_disable_thinking",
-                          llama_cfg.get("ollama_disable_thinking", False))
-        _ai_fast_saved  = llama_cfg.get("ai_fast_answers",
-                          llama_cfg.get("ollama_fast_answers", False))
-        ai_think_cb = QCheckBox("Disable thinking", grp_llm)
-        ai_fast_cb  = QCheckBox("Fast answers  (short responses)", grp_llm)
-        ai_think_cb.setChecked(bool(_ai_think_saved))
-        ai_fast_cb.setChecked(bool(_ai_fast_saved))
-        ai_opts_row = QHBoxLayout()
-        ai_opts_row.addWidget(ai_think_cb)
-        ai_opts_row.addSpacing(16)
-        ai_opts_row.addWidget(ai_fast_cb)
-        ai_opts_row.addStretch(1)
-        form_llm.addRow("Model options:", ai_opts_row)
-
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         form_rag = QFormLayout(grp_rag)
@@ -912,12 +897,6 @@ def build_menu(main_window):
             _save_llama_key("skills_set", val)
             c.apply_agent_files(settings_agent_role_combo.currentText(), val)
 
-        def _on_ai_think_changed():
-            _save_llama_key("ai_disable_thinking", ai_think_cb.isChecked())
-
-        def _on_ai_fast_changed():
-            _save_llama_key("ai_fast_answers", ai_fast_cb.isChecked())
-
         rag_model_combo.currentIndexChanged.connect(_on_rag_model_changed)
         rag_radio_braindump.toggled.connect(_on_rag_braindump_toggled)
         rag_radio_custom.toggled.connect(_on_rag_custom_toggled)
@@ -927,8 +906,6 @@ def build_menu(main_window):
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
         settings_skills_combo.currentIndexChanged.connect(_on_settings_skills_changed)
-        ai_think_cb.stateChanged.connect(_on_ai_think_changed)
-        ai_fast_cb.stateChanged.connect(_on_ai_fast_changed)
 
         # ── API Providers group ───────────────────────────────────────────────
         import threading
@@ -1051,13 +1028,7 @@ def build_menu(main_window):
         def _collect_profiles_from_table():
             profiles = []
             for r in range(providers_table.rowCount()):
-                name_item = providers_table.item(r, 0)
-                profiles.append({
-                    "name":     name_item.text() if name_item else "",
-                    "provider": providers_table.item(r, 1).text() if providers_table.item(r, 1) else "",
-                    "model":    providers_table.item(r, 2).text() if providers_table.item(r, 2) else "",
-                    "url":      (name_item.data(Qt.ItemDataRole.UserRole) or "") if name_item else "",
-                })
+                profiles.append(_table_row_to_dict(r))
             return profiles
 
         def _persist():
@@ -1310,12 +1281,26 @@ def build_menu(main_window):
         # ── table helpers ─────────────────────────────────────────────────────
         def _table_row_to_dict(row):
             name_item = providers_table.item(row, 0)
+            meta = (name_item.data(Qt.ItemDataRole.UserRole) or {}) if name_item else {}
+            if not isinstance(meta, dict):
+                meta = {"url": meta}
             return {
-                "name":     name_item.text() if name_item else "",
-                "provider": providers_table.item(row, 1).text() if providers_table.item(row, 1) else "",
-                "model":    providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
-                "url":      (name_item.data(Qt.ItemDataRole.UserRole) or "") if name_item else "",
+                "name":             name_item.text() if name_item else "",
+                "provider":         providers_table.item(row, 1).text() if providers_table.item(row, 1) else "",
+                "model":            providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
+                "url":              meta.get("url", ""),
+                "disable_thinking": meta.get("disable_thinking", False),
+                "fast_answers":     meta.get("fast_answers", False),
             }
+
+        def _set_row_meta(row, profile):
+            name_item = providers_table.item(row, 0)
+            if name_item:
+                name_item.setData(Qt.ItemDataRole.UserRole, {
+                    "url":              profile.get("url", ""),
+                    "disable_thinking": bool(profile.get("disable_thinking", False)),
+                    "fast_answers":     bool(profile.get("fast_answers", False)),
+                })
 
         def _insert_table_row(row_idx, profile):
             providers_table.insertRow(row_idx)
@@ -1323,19 +1308,15 @@ def build_menu(main_window):
                 item = QTableWidgetItem(profile.get(key, ""))
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row_idx, col, item)
-            # URL stored hidden in Name item's UserRole
-            name_item = providers_table.item(row_idx, 0)
-            if name_item:
-                name_item.setData(Qt.ItemDataRole.UserRole, profile.get("url", ""))
+            _set_row_meta(row_idx, profile)
             # Gear button in Behavior column
             gear_btn = QPushButton("⚙")
             gear_btn.setFixedSize(24, 20)
-            gear_btn.setToolTip("Edit profile")
+            gear_btn.setToolTip("Behavior settings")
             def _on_gear(checked=False, b=gear_btn):
                 for _r in range(providers_table.rowCount()):
                     if providers_table.cellWidget(_r, 3) is b:
-                        providers_table.selectRow(_r)
-                        _on_edit_provider()
+                        _on_behavior(_r)
                         return
             gear_btn.clicked.connect(_on_gear)
             providers_table.setCellWidget(row_idx, 3, gear_btn)
@@ -1375,6 +1356,44 @@ def build_menu(main_window):
                 "url":      fields["url"].text().strip(),
             }
 
+        def _on_behavior(row):
+            profile = _table_row_to_dict(row)
+            bdlg = QDialog(dlg)
+            bdlg.setWindowTitle(f"Behavior — {profile['name']}")
+            bdlg.setModal(True)
+            bdlg.resize(300, 120)
+            try:
+                bdlg.setStyleSheet(c.messagebox_stylesheet)
+            except Exception:
+                pass
+            bform = QVBoxLayout(bdlg)
+            bform.setContentsMargins(16, 16, 16, 12)
+            bform.setSpacing(8)
+            cb_think = QCheckBox("Disable thinking")
+            cb_fast  = QCheckBox("Fast answers  (short responses)")
+            cb_think.setChecked(bool(profile.get("disable_thinking", False)))
+            cb_fast.setChecked(bool(profile.get("fast_answers", False)))
+            bform.addWidget(cb_think)
+            bform.addWidget(cb_fast)
+            bform.addStretch(1)
+            bbtn_row = QHBoxLayout()
+            bbtn_ok     = QPushButton("OK")
+            bbtn_cancel = QPushButton("Cancel")
+            bbtn_ok.setFixedWidth(70)
+            bbtn_cancel.setFixedWidth(70)
+            bbtn_row.addStretch(1)
+            bbtn_row.addWidget(bbtn_ok)
+            bbtn_row.addWidget(bbtn_cancel)
+            bform.addLayout(bbtn_row)
+            bbtn_ok.clicked.connect(bdlg.accept)
+            bbtn_cancel.clicked.connect(bdlg.reject)
+            if bdlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            profile["disable_thinking"] = cb_think.isChecked()
+            profile["fast_answers"]     = cb_fast.isChecked()
+            _set_row_meta(row, profile)
+            _persist()
+
         def _on_add_provider():
             pdlg, fields = _build_profile_dialog("Add Provider Profile")
             if pdlg.exec() != QDialog.DialogCode.Accepted:
@@ -1404,10 +1423,11 @@ def build_menu(main_window):
                 item = QTableWidgetItem(profile[k])
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row, col, item)
-            # Update URL in Name item's UserRole
-            name_item = providers_table.item(row, 0)
-            if name_item:
-                name_item.setData(Qt.ItemDataRole.UserRole, profile.get("url", ""))
+            # Preserve existing disable_thinking/fast_answers, update url
+            existing = _table_row_to_dict(row)
+            profile["disable_thinking"] = existing.get("disable_thinking", False)
+            profile["fast_answers"]     = existing.get("fast_answers", False)
+            _set_row_meta(row, profile)
             if profile["name"] != old_name:
                 _rename_api_key(old_name, profile["name"])
             _save_api_key(profile["name"], fields["key"].text())

@@ -438,10 +438,8 @@ def main():
     api_url           = args.host or profile_url
     embed_model       = _embedding_model(config)
     cache_dir         = os.path.join(base_dir, "appdata", "rag", "models")
-    disable_thinking  = bool(llama_cfg.get("ai_disable_thinking",
-                            llama_cfg.get("ollama_disable_thinking", False)))
-    fast_answers      = bool(llama_cfg.get("ai_fast_answers",
-                            llama_cfg.get("ollama_fast_answers", False)))
+    disable_thinking  = bool(profile.get("disable_thinking", False))
+    fast_answers      = bool(profile.get("fast_answers", False))
 
     # Load API key for non-ollama providers: keyring first, file fallback
     api_key = ""
