@@ -1413,7 +1413,7 @@ def build_menu(main_window):
             cb_fast.setEnabled(not is_custom)
 
             _PLACEHOLDER = (
-                '{"temperature": 0.7, "system": "You are Skynet, an AI assistant'
+                '{"temperature": 0.7,\n"system": "You are Skynet, an AI assistant'
                 ' helping me with tasks. Be concise and precise."}'
             )
             custom_edit = QTextEdit()
