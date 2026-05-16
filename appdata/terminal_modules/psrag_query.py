@@ -226,7 +226,12 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
     Call an OpenAI-compatible /v1/chat/completions endpoint (openai, groq, etc.)
     and stream the response to stdout.
     """
-    url = base_url.rstrip("/") + "/chat/completions"
+    # HuggingFace requires the model in the URL path:
+    # https://api-inference.huggingface.co/models/{model}/v1/chat/completions
+    if provider == "huggingface":
+        url = base_url.rstrip("/") + f"/models/{model}/v1/chat/completions"
+    else:
+        url = base_url.rstrip("/") + "/chat/completions"
     body = {
         "model":    model,
         "messages": [{"role": "user", "content": prompt}],
@@ -431,7 +436,7 @@ def main():
         "groq":        "https://api.groq.com/openai/v1",
         "gemini":      "https://generativelanguage.googleapis.com/v1beta/openai",
         "openrouter":  "https://openrouter.ai/api/v1",
-        "huggingface": "https://api-inference.huggingface.co/v1",
+        "huggingface": "https://api-inference.huggingface.co",
     }
     profile_url       = profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
     host              = args.host or (profile_url if provider == "ollama" else "")

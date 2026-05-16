@@ -945,7 +945,7 @@ def build_menu(main_window):
             "groq":         "https://api.groq.com/openai/v1",
             "gemini":       "https://generativelanguage.googleapis.com/v1beta/openai",
             "openrouter":   "https://openrouter.ai/api/v1",
-            "huggingface":  "https://api-inference.huggingface.co/v1",
+            "huggingface":  "https://api-inference.huggingface.co",
             "custom":       "",
         }
         _base_dir_prov  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
