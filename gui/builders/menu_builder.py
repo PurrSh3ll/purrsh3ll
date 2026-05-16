@@ -955,7 +955,9 @@ def build_menu(main_window):
         _providers_cfg_key = "api_providers"
 
         # ── persistence helpers ───────────────────────────────────────────────
-        def _load_api_keys():
+        _KR_SERVICE = "purrsh3ll"
+
+        def _load_file_keys():
             try:
                 if os.path.exists(_api_keys_path):
                     with open(_api_keys_path, "r", encoding="utf-8") as f:
@@ -964,12 +966,7 @@ def build_menu(main_window):
                 pass
             return {}
 
-        def _save_api_key(profile_name, key):
-            keys = _load_api_keys()
-            if key:
-                keys[profile_name] = key
-            else:
-                keys.pop(profile_name, None)
+        def _write_file_keys(keys):
             try:
                 with open(_api_keys_path, "w", encoding="utf-8") as f:
                     json.dump(keys, f, indent=2, ensure_ascii=False)
@@ -977,19 +974,54 @@ def build_menu(main_window):
             except Exception:
                 pass
 
+        def _get_api_key(profile_name):
+            """Read key: keyring first, file fallback."""
+            try:
+                import keyring
+                val = keyring.get_password(_KR_SERVICE, profile_name)
+                if val:
+                    return val
+            except Exception:
+                pass
+            return _load_file_keys().get(profile_name, "")
+
+        def _save_api_key(profile_name, key):
+            if key:
+                try:
+                    import keyring
+                    keyring.set_password(_KR_SERVICE, profile_name, key)
+                    # migrate: remove from file if present
+                    _fkeys = _load_file_keys()
+                    if profile_name in _fkeys:
+                        _fkeys.pop(profile_name)
+                        _write_file_keys(_fkeys)
+                    return
+                except Exception:
+                    pass
+                # keyring unavailable — fallback to file
+                _fkeys = _load_file_keys()
+                _fkeys[profile_name] = key
+                _write_file_keys(_fkeys)
+            else:
+                # delete from both
+                try:
+                    import keyring
+                    keyring.delete_password(_KR_SERVICE, profile_name)
+                except Exception:
+                    pass
+                _fkeys = _load_file_keys()
+                if profile_name in _fkeys:
+                    _fkeys.pop(profile_name)
+                    _write_file_keys(_fkeys)
+
         def _remove_api_key(profile_name):
             _save_api_key(profile_name, "")
 
         def _rename_api_key(old_name, new_name):
-            keys = _load_api_keys()
-            if old_name in keys:
-                keys[new_name] = keys.pop(old_name)
-                try:
-                    with open(_api_keys_path, "w", encoding="utf-8") as f:
-                        json.dump(keys, f, indent=2, ensure_ascii=False)
-                    os.chmod(_api_keys_path, stat.S_IRUSR | stat.S_IWUSR)
-                except Exception:
-                    pass
+            key = _get_api_key(old_name)
+            _remove_api_key(old_name)
+            if key:
+                _save_api_key(new_name, key)
 
         def _load_providers_config():
             try:
@@ -1302,7 +1334,6 @@ def build_menu(main_window):
         # ── load saved profiles on open ───────────────────────────────────────
         _prov_cfg     = _load_providers_config()
         _saved_active = _prov_cfg.get("active", "")
-        _api_keys     = _load_api_keys()
         for _p in _prov_cfg.get("profiles", []):
             _insert_table_row(providers_table.rowCount(), _p)
         _refresh_active_combo(keep=_saved_active)
@@ -1340,7 +1371,7 @@ def build_menu(main_window):
                 return
             old_name = providers_table.item(row, 0).text() if providers_table.item(row, 0) else ""
             current  = _table_row_to_dict(row)
-            current["key"] = _load_api_keys().get(old_name, "")
+            current["key"] = _get_api_key(old_name)
             pdlg, fields = _build_profile_dialog("Edit Provider Profile", defaults=current)
             if pdlg.exec() != QDialog.DialogCode.Accepted:
                 return

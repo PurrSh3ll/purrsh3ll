@@ -443,15 +443,22 @@ def main():
     fast_answers      = bool(llama_cfg.get("ai_fast_answers",
                             llama_cfg.get("ollama_fast_answers", False)))
 
-    # Load API key for non-ollama providers
+    # Load API key for non-ollama providers: keyring first, file fallback
     api_key = ""
     if provider != "ollama" and profile.get("name"):
+        _KR_SERVICE = "purrsh3ll"
         try:
-            keys_path = os.path.join(base_dir, "appdata", "api_keys.json")
-            with open(keys_path, encoding="utf-8") as _f:
-                api_key = json.load(_f).get(profile["name"], "")
+            import keyring
+            api_key = keyring.get_password(_KR_SERVICE, profile["name"]) or ""
         except Exception:
             pass
+        if not api_key:
+            try:
+                keys_path = os.path.join(base_dir, "appdata", "api_keys.json")
+                with open(keys_path, encoding="utf-8") as _f:
+                    api_key = json.load(_f).get(profile["name"], "")
+            except Exception:
+                pass
 
     _FAST_SUFFIX = (
         "\n\nAnswer as briefly as possible. "
