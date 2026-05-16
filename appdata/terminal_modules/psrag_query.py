@@ -233,10 +233,17 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
         "stream":   True,
     }
     if disable_thinking:
+        m = model.lower()
         if provider == "groq":
-            body["thinking"] = {"type": "disabled"}
+            # Only thinking-capable Groq models accept this parameter
+            _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking")
+            if any(k in m for k in _GROQ_THINKING):
+                body["thinking"] = {"type": "disabled"}
         elif provider == "openai":
-            body["reasoning_effort"] = "low"
+            # Only o-series reasoning models support reasoning_effort
+            _OPENAI_REASONING = ("o1", "o3", "o4")
+            if any(m.startswith(k) or f"/{k}" in m for k in _OPENAI_REASONING):
+                body["reasoning_effort"] = "low"
     payload = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type":  "application/json",
@@ -286,7 +293,10 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
         "stream":     True,
     }
     if disable_thinking:
-        body["thinking"] = {"type": "disabled"}
+        # Extended thinking supported on claude-3-5-sonnet and newer only
+        _ANTHROPIC_THINKING = ("claude-3-5", "claude-3-7", "claude-opus-4", "claude-sonnet-4")
+        if any(k in model.lower() for k in _ANTHROPIC_THINKING):
+            body["thinking"] = {"type": "disabled"}
     payload = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type":      "application/json",
