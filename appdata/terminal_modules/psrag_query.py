@@ -232,8 +232,9 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str):
         "stream": True,
     }).encode("utf-8")
     headers = {
-        "Content-Type": "application/json",
+        "Content-Type":  "application/json",
         "Authorization": f"Bearer {api_key}",
+        "User-Agent":    "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
@@ -277,9 +278,10 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str):
         "stream": True,
     }).encode("utf-8")
     headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
+        "Content-Type":      "application/json",
+        "x-api-key":         api_key,
         "anthropic-version": "2023-06-01",
+        "User-Agent":        "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
     try:
