@@ -236,7 +236,7 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
         m = model.lower()
         if provider == "groq":
             # Only thinking-capable Groq models accept this parameter
-            _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking")
+            _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking", "qwen3")
             if any(k in m for k in _GROQ_THINKING):
                 body["thinking"] = {"type": "disabled"}
         elif provider == "openai":
