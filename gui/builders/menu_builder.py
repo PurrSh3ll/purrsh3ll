@@ -1418,6 +1418,7 @@ def build_menu(main_window):
             )
             custom_edit = QTextEdit()
             custom_edit.setPlaceholderText(_PLACEHOLDER)
+            custom_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
             custom_edit.setFixedHeight(68)
             custom_edit.setVisible(is_custom)
             if saved_custom:
