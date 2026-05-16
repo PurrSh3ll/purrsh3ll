@@ -26,11 +26,14 @@ Usage:
 Options:
   -m MODEL      Model override (default: from active profile)
   --host URL    Base URL override
+  --rag         Enrich prompt with RAG knowledge base context
+  -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)
   -h, --help    Show this help
 
 Examples:
   psask "what is XSS?"
   psask -m gpt-4o "explain SQL injection"
+  psask --rag "how to enumerate subdomains"
 EOF
         return 0
     fi
@@ -51,11 +54,14 @@ Usage:
 Options:
   -m MODEL      Model override (default: from active profile)
   --host URL    Base URL override
+  --rag         Enrich current message with RAG knowledge base context
+  -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)
   -h, --help    Show this help
 
 Examples:
   pschat "explain SQL injection"
   pschat "what did we talk about?"
+  pschat --rag "what do my notes say about XSS?"
   pschat --new "start fresh: what is SSRF?"
   pschat --history
   pschat --clear

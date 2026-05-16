@@ -11,6 +11,41 @@ import sys
 import urllib.request
 import urllib.error
 
+
+def _rag_build_context(query: str, base_dir: str, config: dict, top_n: int = 5) -> str | None:
+    """Run RAG pipeline and return a context-enriched prompt, or None on failure."""
+    # Import RAG helpers from psrag_query (same directory)
+    sys.path.insert(0, os.path.dirname(__file__))
+    try:
+        from psrag_query import _embed, _search, _build_prompt, _embedding_model, _kb_path
+    except ImportError as e:
+        _err(f"RAG unavailable: {e}")
+        return None
+
+    import gc
+    embed_model = _embedding_model(config)
+    cache_dir   = os.path.join(base_dir, "appdata", "rag", "models")
+
+    _info("Embedding query…")
+    try:
+        vec = _embed(query, embed_model, cache_dir)
+    except Exception as e:
+        _err(f"Embedding failed: {e}")
+        return None
+
+    _info("Searching knowledge base…")
+    try:
+        chunks = _search(base_dir, vec, top_n)
+    except Exception as e:
+        _err(f"RAG search failed: {e}")
+        return None
+
+    if not chunks:
+        _info("No relevant chunks found — querying without RAG context.")
+        return None
+
+    return _build_prompt(query, chunks)
+
 _DEFAULT_URLS = {
     "ollama":      "http://localhost:11434/v1",
     "openai":      "https://api.openai.com/v1",
@@ -263,7 +298,7 @@ def _clear_session(base_dir: str, profile_name: str):
 
 # ── Mode: ask ─────────────────────────────────────────────────────────────────
 
-def mode_ask(args, profile: dict, base_dir: str, api_key: str):
+def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     model    = args.model or profile.get("model", "")
     provider = profile.get("provider", "ollama")
     url      = args.host or profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
@@ -273,6 +308,12 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str):
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
 
     query = " ".join(args.query)
+
+    if args.rag:
+        enriched = _rag_build_context(query, base_dir, config, args.top_n)
+        if enriched:
+            query = enriched
+
     if fast_answers:
         query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
 
@@ -283,7 +324,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str):
 
 # ── Mode: chat ────────────────────────────────────────────────────────────────
 
-def mode_chat(args, profile: dict, base_dir: str, api_key: str):
+def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     model    = args.model or profile.get("model", "")
     provider = profile.get("provider", "ollama")
     url      = args.host or profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
@@ -319,6 +360,12 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str):
         sys.exit(1)
 
     query = " ".join(args.query)
+
+    if args.rag:
+        enriched = _rag_build_context(query, base_dir, config, args.top_n)
+        if enriched:
+            query = enriched
+
     history.append({"role": "user", "content": query})
 
     turns = len(history) // 2
@@ -344,6 +391,9 @@ def main():
     parser.add_argument("--new",          action="store_true", help="Clear chat history (chat mode)")
     parser.add_argument("--clear",        action="store_true", help="Clear chat history and exit (chat mode)")
     parser.add_argument("--history",      action="store_true", help="Show chat history (chat mode)")
+    parser.add_argument("--rag",          action="store_true", help="Enrich prompt with RAG context")
+    parser.add_argument("-n",             type=int, default=5, metavar="N", dest="top_n",
+                        help="Number of RAG chunks (default: 5, used with --rag)")
     parser.add_argument("--base-dir",     default=None)
     parser.add_argument("-h", "--help",   action="store_true")
     args = parser.parse_args()
@@ -377,9 +427,9 @@ def main():
     api_key = _load_api_key(profile.get("name", ""), base_dir) if profile.get("name") else ""
 
     if args.mode == "ask":
-        mode_ask(args, profile, base_dir, api_key)
+        mode_ask(args, profile, base_dir, api_key, config)
     elif args.mode == "chat":
-        mode_chat(args, profile, base_dir, api_key)
+        mode_chat(args, profile, base_dir, api_key, config)
 
 
 if __name__ == "__main__":
