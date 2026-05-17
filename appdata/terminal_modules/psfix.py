@@ -21,13 +21,44 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     return None
 
 
+def _clean_command(text: str) -> str:
+    """Extract a single shell command from AI response, stripping markdown/explanations."""
+    lines = []
+    in_fence = False
+    for raw in text.strip().splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or stripped:
+            lines.append(stripped)
+
+    for line in lines:
+        # Skip obvious prose lines
+        if line.lower().startswith(("the ", "here ", "you ", "try ", "this ", "use ", "note")):
+            continue
+        # Strip surrounding backticks
+        if line.startswith("`") and line.endswith("`"):
+            line = line[1:-1]
+        if line:
+            return line
+
+    # Fallback: first non-empty line
+    for line in text.strip().splitlines():
+        if line.strip():
+            return line.strip()
+    return text.strip()
+
+
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(prog="psfix", add_help=False)
-    parser.add_argument("--explain",  action="store_true",
+    parser.add_argument("--explain",    action="store_true",
                         help="Explain why the command failed instead of suggesting a fix")
-    parser.add_argument("--base-dir", default=None, metavar="DIR")
+    parser.add_argument("--paste-mode", action="store_true",
+                        help="Stream to stderr, print only clean command to stdout (used by zsh wrapper)")
+    parser.add_argument("--base-dir",   default=None, metavar="DIR")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -35,7 +66,7 @@ def main():
         print(
             "psfix — AI-powered terminal error explainer/fixer\n\n"
             "Usage:\n"
-            "  psfix             Suggest a fix for the last failed command\n"
+            "  psfix             Paste the corrected command at the prompt\n"
             "  psfix --explain   Explain why the last command failed\n\n"
             "psfix reads the last entry from terminal history automatically.\n"
         )
@@ -70,11 +101,14 @@ def main():
         _ai._info("Last command exited successfully (exit 0) — nothing to fix.")
         sys.exit(0)
 
+    provider         = profile.get("provider", "ollama")
+    url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
+    model            = profile.get("model", "")
+    custom_params    = _ai._parse_custom_params(profile)
+    disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+
     if args.explain:
-        prompt = (
-            f"Command: {cmd}\n"
-            f"Exit code: {exit_code}\n"
-        )
+        prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
         prompt += (
@@ -82,28 +116,33 @@ def main():
             "Be direct and practical."
         )
         _ai._info(f"Explaining: {cmd}\n")
+        messages = [{"role": "user", "content": prompt}]
+        _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+
     else:
-        prompt = (
-            f"Command: {cmd}\n"
-            f"Exit code: {exit_code}\n"
-        )
+        # Fix mode: ask for ONLY the corrected command
+        prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
         prompt += (
-            "\nSuggest the corrected command. "
-            "Show the fixed command first on its own line (ready to copy-paste), "
-            "then a brief explanation of what was wrong."
+            "\nReturn ONLY the corrected shell command. "
+            "No explanation, no markdown, no backticks — just the raw command on a single line."
         )
         _ai._info(f"Fixing: {cmd}\n")
+        messages = [{"role": "user", "content": prompt}]
 
-    provider = profile.get("provider", "ollama")
-    url      = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model    = profile.get("model", "")
-    custom_params    = _ai._parse_custom_params(profile)
-    disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-
-    messages = [{"role": "user", "content": prompt}]
-    _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+        if args.paste_mode:
+            # Stream visible on stderr, capture stdout for zsh print -z
+            real_stdout = sys.stdout
+            sys.stdout  = sys.stderr
+            try:
+                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+            finally:
+                sys.stdout = real_stdout
+            if response:
+                print(_clean_command(response))
+        else:
+            _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
 
 
 if __name__ == "__main__":
