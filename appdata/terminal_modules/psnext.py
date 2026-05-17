@@ -9,6 +9,47 @@ import os
 import platform
 import sys
 
+
+def _clean_command(text: str) -> str:
+    """Extract the last meaningful shell command from AI response.
+    Handles <think> blocks, markdown fences, and prose lines."""
+    lines_raw = text.strip().splitlines()
+
+    filtered = []
+    in_fence  = False
+    in_think  = False
+    for raw in lines_raw:
+        s  = raw.strip()
+        lo = s.lower()
+        if s.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if "<think>" in lo or "<thinking>" in lo:
+            in_think = True
+        if in_think:
+            if "</think>" in lo or "</thinking>" in lo:
+                in_think = False
+            continue
+        if not in_fence and not s:
+            continue
+        filtered.append(s)
+
+    candidates = []
+    for line in filtered:
+        if line.lower().startswith(("the ", "here ", "you ", "try ", "this ", "use ", "note", "#")):
+            continue
+        if line.startswith("`") and line.endswith("`"):
+            line = line[1:-1]
+        if line:
+            candidates.append(line)
+
+    if candidates:
+        return candidates[-1]
+    for line in reversed(lines_raw):
+        if line.strip():
+            return line.strip()
+    return text.strip()
+
 _HISTORY_TOKENS = 8_000  # token budget for terminal history context
 
 
@@ -115,12 +156,27 @@ def main():
         "1. Briefly summarize what has been discovered or accomplished so far.\n"
         "2. Identify gaps — what has NOT been checked yet that could be relevant.\n"
         "3. Suggest 3-5 concrete next steps with the exact commands to run, ordered by priority.\n"
-        "Be specific, practical, and focused on the attack surface visible in the history."
+        "Be specific, practical, and focused on the attack surface visible in the history.\n"
+        "At the very end, on a new line, write ONLY the single most important command to run next "
+        "— no prefix, no explanation, no backticks, just the raw command."
     )
 
     _ai._info("Analyzing terminal history for next pentest steps...\n")
     messages = [{"role": "user", "content": prompt}]
-    _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+
+    # Stream analysis to stderr (visible via 2>/dev/tty),
+    # print the best command to stdout (captured by zsh $())
+    _real_stdout = sys.stdout
+    sys.stdout   = sys.stderr
+    try:
+        response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+    finally:
+        sys.stdout = _real_stdout
+
+    if response:
+        cmd = _clean_command(response)
+        if cmd:
+            print(cmd)
 
 
 if __name__ == "__main__":
