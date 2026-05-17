@@ -131,9 +131,10 @@ def _build_prompt(query: str, chunks: list) -> str:
 
     context = "\n\n---\n\n".join(parts)
     return (
-        "Use the following knowledge base context to answer the question.\n"
-        "Answer only based on the provided context. "
-        "If the context does not contain enough information, say so clearly.\n\n"
+        "Use the following knowledge base context to answer the question if it contains relevant information.\n"
+        "If the context is relevant, prioritize it in your answer.\n"
+        "If the context does not contain enough information, answer from your own knowledge "
+        "and briefly note that the answer is not from the knowledge base.\n\n"
         f"Context:\n{context}\n\n"
         f"Question: {query}\n\n"
         "Answer:"
