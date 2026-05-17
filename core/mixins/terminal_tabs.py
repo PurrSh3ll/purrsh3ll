@@ -79,37 +79,46 @@ class TerminalTabsMixin:
                     _state["cmd"] = cmd
                     _state["ts_start"] = int(ts)
                     _state["output"] = []
+                    # Hide overlay when new command starts
+                    _w = _wrapper_ref[0]
+                    if _w is not None:
+                        _w.hide_error_overlay()
                 elif typ == "end" and _state["cmd"] is not None:
+                    exit_code = int(payload)
                     entry = {
                         "ts": _state["ts_start"],
                         "ts_end": int(ts),
                         "terminal": _tid,
                         "cmd": _state["cmd"],
-                        "exit_code": int(payload),
+                        "exit_code": exit_code,
                         "output": "".join(_state["output"]).strip()
                     }
-                    if getattr(self, "terminal_history_disabled", False):
-                        _state["cmd"] = None
-                        _state["output"] = []
-                        continue
-                    log_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.jsonl")
-                    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                    try:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                        _max = getattr(self, "terminal_history_max_entries", 5000)
-                        try:
-                            with open(log_path, "r", encoding="utf-8") as f:
-                                lines = f.readlines()
-                            if len(lines) > _max:
-                                with open(log_path, "w", encoding="utf-8") as f:
-                                    f.writelines(lines[-_max:])
-                        except Exception:
-                            pass
-                    except Exception:
-                        logger.error("Failed to write terminal history to %s", log_path, exc_info=True)
                     _state["cmd"] = None
                     _state["output"] = []
+                    if not getattr(self, "terminal_history_disabled", False):
+                        log_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.jsonl")
+                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                        try:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                            _max = getattr(self, "terminal_history_max_entries", 5000)
+                            try:
+                                with open(log_path, "r", encoding="utf-8") as f:
+                                    lines = f.readlines()
+                                if len(lines) > _max:
+                                    with open(log_path, "w", encoding="utf-8") as f:
+                                        f.writelines(lines[-_max:])
+                            except Exception:
+                                pass
+                        except Exception:
+                            logger.error("Failed to write terminal history to %s", log_path, exc_info=True)
+                    # Show or hide error overlay
+                    _w = _wrapper_ref[0]
+                    if _w is not None:
+                        if exit_code != 0:
+                            _w.show_error_overlay(exit_code)
+                        else:
+                            _w.hide_error_overlay()
             if _state["cmd"] is not None:
                 clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
                 clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
@@ -235,6 +244,18 @@ class TerminalTabsMixin:
         wrapper_widget = TerminalWrapper(console_widget=term, min_h=0,
                                          pref_h=0, parent=self.widgets["terminal_tabs"])
         _wrapper_ref[0] = wrapper_widget
+
+        def _inject_and_hide(text, _t=term, _w=wrapper_widget):
+            try:
+                _t.sendText(text)
+            except Exception:
+                pass
+            _w.hide_error_overlay()
+
+        wrapper_widget.set_error_callbacks(
+            explain_fn=lambda: _inject_and_hide("psfix --explain\n"),
+            fix_fn=lambda:     _inject_and_hide("psfix\n"),
+        )
 
         self.widgets["terminal_tabs"].addTab(wrapper_widget, f"{name}" if name else f"Console {idx}")
         if command is not None:
