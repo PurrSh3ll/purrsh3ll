@@ -198,11 +198,27 @@ def main():
             "\nBased on the system info, working directory, and terminal history, "
             "provide a deep analysis of why this command failed. "
             "Consider the full context — previous commands, environment, permissions — "
-            "and suggest the most accurate fix. Be specific and practical."
+            "and suggest the most accurate fix. Be specific and practical.\n"
+            "At the very end, on a new line, write ONLY the corrected command "
+            "with no prefix, no explanation, no backticks — just the raw command."
         )
         _ai._info(f"Analyzing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
-        _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+
+        # Stream analysis to stderr (visible in terminal via 2>/dev/tty),
+        # then print only the fix command to stdout (captured by zsh $())
+        import io as _io
+        _real_stdout = sys.stdout
+        sys.stdout   = sys.stderr
+        try:
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+        finally:
+            sys.stdout = _real_stdout
+
+        if response:
+            fix = _clean_command(response)
+            if fix:
+                print(fix)
 
     # ── Explain mode ──────────────────────────────────────────────────────────
     elif args.explain:

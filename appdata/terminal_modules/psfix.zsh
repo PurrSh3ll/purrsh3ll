@@ -28,9 +28,20 @@ EOF
         return 1
     fi
 
-    if [[ "$*" == *"--explain"* ]] || [[ "$*" == *"--analyze"* ]]; then
-        # Explain / Analyze mode: stream output normally to the terminal
+    if [[ "$*" == *"--explain"* ]]; then
+        # Explain mode: stream output normally to the terminal
         "$_py" "$_script" --base-dir "$_base" "$@"
+    elif [[ "$*" == *"--analyze"* ]]; then
+        # Analyze mode: stream analysis to terminal (via 2>/dev/tty), capture fix command on stdout
+        local _fix_cmd
+        _fix_cmd=$("$_py" "$_script" --base-dir "$_base" "$@" 2>/dev/tty)
+        if [[ -n "$_fix_cmd" ]]; then
+            echo -n "Paste corrected command? [y/n] " >/dev/tty
+            read -r _reply </dev/tty
+            if [[ "$_reply" == [yY] ]]; then
+                print -z "$_fix_cmd"
+            fi
+        fi
     else
         # Fix mode: capture clean command on stdout, paste into ZLE buffer
         local _fixed
