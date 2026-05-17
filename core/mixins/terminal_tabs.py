@@ -277,7 +277,7 @@ class TerminalTabsMixin:
         wrapper_widget.set_error_callbacks(
             explain_fn=lambda: _inject_and_hide("psfix --explain\n"),
             fix_fn=lambda:     _inject_and_hide("psfix\n"),
-            analyze_fn=_analyze_and_inject,
+            analyze_fn=lambda: _analyze_and_inject(),
         )
 
         self.widgets["terminal_tabs"].addTab(wrapper_widget, f"{name}" if name else f"Console {idx}")
