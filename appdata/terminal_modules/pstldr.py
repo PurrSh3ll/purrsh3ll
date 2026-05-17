@@ -7,7 +7,28 @@ Accepts text directly, a file path, or stdin via pipe.
 import os
 import sys
 
-_MAX_INPUT_CHARS = 120_000  # ~30k tokens — hard cap to avoid huge prompts
+_MAX_INPUT_CHARS  = 120_000  # ~30k tokens — hard cap to avoid huge prompts
+_BINARY_CHECK_BYTES = 512
+
+
+def _is_binary(path: str) -> bool:
+    """Return True if the file appears to be binary (contains null bytes)."""
+    try:
+        with open(path, "rb") as f:
+            return b"\x00" in f.read(_BINARY_CHECK_BYTES)
+    except Exception:
+        return True
+
+
+def _read_file(path: str) -> str | None:
+    """Try to read a text file with common encodings."""
+    for enc in ("utf-8", "utf-8-sig", "latin-1"):
+        try:
+            with open(path, "r", encoding=enc) as f:
+                return f.read()
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return None
 
 
 def main():
@@ -16,6 +37,8 @@ def main():
     parser = argparse.ArgumentParser(prog="pstldr", add_help=False)
     parser.add_argument("input", nargs="*",
                         help="Text to summarize, or path to a file")
+    parser.add_argument("--tail",     action="store_true",
+                        help="Take the last part of the file instead of the first (useful for logs)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
@@ -24,7 +47,8 @@ def main():
         print(
             "pstldr — AI-powered TL;DR summarizer\n\n"
             "Usage:\n"
-            "  pstldr <file>          Summarize a file\n"
+            "  pstldr <file>          Summarize a file (first part if truncated)\n"
+            "  pstldr --tail <file>   Summarize a file (last part if truncated)\n"
             "  pstldr \"<text>\"        Summarize text passed directly\n"
             "  cat file | pstldr      Summarize piped input\n"
         )
@@ -53,6 +77,7 @@ def main():
     # ── Resolve input ──────────────────────────────────────────────────────────
     source_label = "text"
     content = ""
+    is_file = False
 
     if not sys.stdin.isatty():
         # Piped input
@@ -61,16 +86,16 @@ def main():
     elif args.input:
         joined = " ".join(args.input)
         if os.path.isfile(joined):
-            # Single file path
-            try:
-                with open(joined, encoding="utf-8", errors="replace") as fh:
-                    content = fh.read()
-                source_label = f"file: {joined}"
-            except Exception as e:
-                _ai._err(f"Cannot read file: {e}")
+            if _is_binary(joined):
+                _ai._err(f"File appears to be binary: {joined}\nOnly text files are supported.")
                 sys.exit(1)
+            content = _read_file(joined)
+            if content is None:
+                _ai._err(f"Cannot decode file (tried utf-8, utf-8-sig, latin-1): {joined}")
+                sys.exit(1)
+            source_label = f"file: {os.path.basename(joined)}"
+            is_file = True
         else:
-            # Treat as literal text
             content = joined
             source_label = "text"
     else:
@@ -82,9 +107,22 @@ def main():
         _ai._err("Input is empty — nothing to summarize.")
         sys.exit(1)
 
+    # ── Truncate if needed ─────────────────────────────────────────────────────
     if len(content) > _MAX_INPUT_CHARS:
-        _ai._info(f"Input truncated to {_MAX_INPUT_CHARS} characters.\n")
-        content = content[:_MAX_INPUT_CHARS]
+        if args.tail:
+            content = content[-_MAX_INPUT_CHARS:]
+            # Trim to nearest newline to avoid cutting mid-line
+            nl = content.find("\n")
+            if 0 < nl < 200:
+                content = content[nl + 1:]
+            _ai._info(f"File truncated — summarizing last ~{_MAX_INPUT_CHARS // 1000}k characters.\n")
+        else:
+            content = content[:_MAX_INPUT_CHARS]
+            # Trim to nearest newline
+            nl = content.rfind("\n")
+            if nl > _MAX_INPUT_CHARS - 200:
+                content = content[:nl]
+            _ai._info(f"File truncated — summarizing first ~{_MAX_INPUT_CHARS // 1000}k characters. Use --tail for the end.\n")
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     prompt = (
