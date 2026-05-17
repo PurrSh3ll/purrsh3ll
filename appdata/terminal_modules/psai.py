@@ -385,14 +385,22 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     query = " ".join(args.query)
 
+    # query_for_api may be enriched with RAG context, but we always save
+    # the original query to history so future turns are not contaminated
+    query_for_api = query
     if args.rag:
         enriched = _rag_build_context(query, base_dir, config, args.top_n)
         if enriched:
-            query = enriched
+            query_for_api = enriched
 
     history.append({"role": "user", "content": query})
 
+    # Build messages for API: history (with plain query) replaced by RAG version for last entry
     msgs_to_send = _trim_history(history, context_limit)
+    if query_for_api != query and msgs_to_send:
+        msgs_to_send = list(msgs_to_send)
+        msgs_to_send[-1] = {"role": "user", "content": query_for_api}
+
     trimmed = len(history) - len(msgs_to_send)
     turns = len(msgs_to_send) // 2
     ctx_info = f", limit {context_limit // 1000}k tok" + (f", dropped {trimmed} old msg{'s' if trimmed != 1 else ''}" if trimmed else "")
