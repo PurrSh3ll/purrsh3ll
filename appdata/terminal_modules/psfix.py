@@ -22,29 +22,46 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
 
 
 def _clean_command(text: str) -> str:
-    """Extract a single shell command from AI response, stripping markdown/explanations."""
-    lines = []
+    """Extract the corrected shell command from AI response.
+    Takes the LAST meaningful line to handle <think> blocks and preamble."""
+    lines_raw = text.strip().splitlines()
+
+    # Strip markdown code fences and <think>/<thinking> blocks
+    filtered = []
     in_fence = False
-    for raw in text.strip().splitlines():
-        stripped = raw.strip()
-        if stripped.startswith("```"):
+    in_think = False
+    for raw in lines_raw:
+        s = raw.strip()
+        if s.startswith("```"):
             in_fence = not in_fence
             continue
-        if in_fence or stripped:
-            lines.append(stripped)
-
-    for line in lines:
-        # Skip obvious prose lines
-        if line.lower().startswith(("the ", "here ", "you ", "try ", "this ", "use ", "note")):
+        lo = s.lower()
+        if "<think>" in lo or "<thinking>" in lo:
+            in_think = True
+        if in_think:
+            if "</think>" in lo or "</thinking>" in lo:
+                in_think = False
             continue
-        # Strip surrounding backticks
+        if not in_fence and not s:
+            continue
+        filtered.append(s)
+
+    # Remove obvious prose lines, strip backticks
+    candidates = []
+    for line in filtered:
+        if line.lower().startswith(("the ", "here ", "you ", "try ", "this ", "use ", "note", "#")):
+            continue
         if line.startswith("`") and line.endswith("`"):
             line = line[1:-1]
         if line:
-            return line
+            candidates.append(line)
 
-    # Fallback: first non-empty line
-    for line in text.strip().splitlines():
+    # Return LAST candidate — command follows thinking/explanation
+    if candidates:
+        return candidates[-1]
+
+    # Fallback: last non-empty raw line
+    for line in reversed(lines_raw):
         if line.strip():
             return line.strip()
     return text.strip()
