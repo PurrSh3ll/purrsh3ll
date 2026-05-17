@@ -227,11 +227,26 @@ def main():
             prompt += f"Output:\n{output}\n"
         prompt += (
             "\nExplain concisely why this command failed and what the error means. "
-            "Be direct and practical."
+            "Be direct and practical.\n"
+            "At the very end, on a new line, write ONLY the corrected command "
+            "with no prefix, no explanation, no backticks — just the raw command."
         )
         _ai._info(f"Explaining: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
-        _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+
+        # Stream explanation to stderr (visible via 2>/dev/tty),
+        # then print only the fix command to stdout (captured by zsh $())
+        _real_stdout = sys.stdout
+        sys.stdout   = sys.stderr
+        try:
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+        finally:
+            sys.stdout = _real_stdout
+
+        if response:
+            fix = _clean_command(response)
+            if fix:
+                print(fix)
 
     # ── Fix mode ──────────────────────────────────────────────────────────────
     else:
