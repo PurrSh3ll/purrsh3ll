@@ -4,12 +4,14 @@ psreport() {
 psreport — AI-powered pentest report generator
 
 Usage:
-  psreport                             Generate report from filtered history
+  psreport                             Generate report, save only (silent)
+  psreport --verbose                   Stream report to terminal while saving
+  psreport --format html               Generate HTML report (default: md)
   psreport --full                      Include full history (no smart filter)
   psreport --target <host/network>     Set target in report header
   psreport --title "<title>"           Set custom report title
 
-Report is saved to appmodules/Cyb3rCollector/reports/report_YYYY-MM-DD_HH-MM.md
+Report is saved to appmodules/Cyb3rCollector/reports/report_YYYY-MM-DD_HH-MM.{md,html}
 EOF
         return 0
     fi
