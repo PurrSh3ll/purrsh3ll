@@ -149,13 +149,15 @@ def main():
         messages = [{"role": "user", "content": prompt}]
 
         if args.paste_mode:
-            # Stream visible on stderr, capture stdout for zsh print -z
-            real_stdout = sys.stdout
-            sys.stdout  = sys.stderr
+            # Suppress streaming output; print only the clean command to stdout
+            import io
+            _buf = io.StringIO()
+            _real_stdout = sys.stdout
+            sys.stdout = _buf
             try:
                 response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
             finally:
-                sys.stdout = real_stdout
+                sys.stdout = _real_stdout
             if response:
                 print(_clean_command(response))
         else:

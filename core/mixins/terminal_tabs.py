@@ -270,8 +270,11 @@ class TerminalTabsMixin:
                         capture_output=True, text=True, timeout=120,
                     )
                     result[0] = proc.stdout.strip()
-                except Exception:
-                    pass
+                    if not result[0]:
+                        logger.warning("psfix returned empty stdout (rc=%s): %s",
+                                       proc.returncode, proc.stderr[:300])
+                except Exception as e:
+                    logger.error("psfix subprocess error: %s", e)
 
             t = threading.Thread(target=_worker, daemon=True)
             t.start()
