@@ -6,7 +6,10 @@ Reads the last command entry from terminal_history.jsonl and sends it to AI.
 
 import json
 import os
+import platform
 import sys
+
+_ANALYZE_HISTORY_TOKENS = 6_000  # token budget for terminal history in analyze mode
 
 
 def _last_terminal_entry(base_dir: str) -> dict | None:
@@ -19,6 +22,45 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     except Exception:
         pass
     return None
+
+
+def _load_recent_history(base_dir: str, token_budget: int, _ai) -> str:
+    """Load recent terminal history as formatted string, limited by token budget.
+    Returns entries in chronological order (oldest → newest)."""
+    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+    except Exception:
+        return ""
+
+    entries = []
+    for l in lines:
+        try:
+            entries.append(json.loads(l))
+        except Exception:
+            pass
+
+    # Walk newest → oldest, accumulate within budget, then reverse for display
+    collected = []
+    used = 0
+    for entry in reversed(entries):
+        ec  = entry.get("exit_code", 0)
+        cmd = entry.get("cmd", "")
+        out = entry.get("output", "")[:400]  # cap per-entry output to keep things concise
+        status = f"exit {ec}" if ec != 0 else "ok"
+        part = f"$ {cmd} [{status}]"
+        if out:
+            part += f"\n{out}"
+        tokens = _ai._count_tokens(part)
+        if used + tokens > token_budget:
+            break
+        collected.append(part)
+        used += tokens
+
+    if not collected:
+        return ""
+    return "\n".join(reversed(collected))
 
 
 def _clean_command(text: str) -> str:
@@ -72,10 +114,14 @@ def main():
 
     parser = argparse.ArgumentParser(prog="psfix", add_help=False)
     parser.add_argument("--explain",    action="store_true",
-                        help="Explain why the command failed instead of suggesting a fix")
+                        help="Explain why the command failed")
+    parser.add_argument("--analyze",    action="store_true",
+                        help="Deep analysis using terminal history and working directory")
     parser.add_argument("--paste-mode", action="store_true",
                         help="Suppress streaming; print only clean command to stdout (used internally)")
     parser.add_argument("--base-dir",   default=None, metavar="DIR")
+    parser.add_argument("--cwd",        default=None, metavar="DIR",
+                        help="Working directory where the command was run")
     # Direct data args (passed by the Fix overlay button, bypasses history file)
     parser.add_argument("--cmd",        default=None, metavar="CMD")
     parser.add_argument("--exit-code",  default=None, type=int, metavar="N")
@@ -88,7 +134,8 @@ def main():
             "psfix — AI-powered terminal error explainer/fixer\n\n"
             "Usage:\n"
             "  psfix             Paste the corrected command at the prompt\n"
-            "  psfix --explain   Explain why the last command failed\n\n"
+            "  psfix --explain   Explain why the last command failed\n"
+            "  psfix --analyze   Deep analysis with terminal history and cwd context\n\n"
             "psfix reads the last entry from terminal history automatically.\n"
         )
         sys.exit(0)
@@ -109,7 +156,7 @@ def main():
 
     api_key = _ai._load_api_key(profile.get("name", ""), base_dir)
 
-    # Data can come from direct args (Fix overlay) or from history file (manual psfix)
+    # Data can come from direct args (overlay button) or from history file (manual psfix)
     if args.cmd is not None and args.exit_code is not None:
         cmd       = args.cmd
         exit_code = args.exit_code
@@ -133,7 +180,32 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
-    if args.explain:
+    # ── Analyze mode ──────────────────────────────────────────────────────────
+    if args.analyze:
+        cwd = (args.cwd or "").strip()
+        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+        history_text = _load_recent_history(base_dir, _ANALYZE_HISTORY_TOKENS, _ai)
+
+        prompt = f"System: {sys_info}\n"
+        if cwd:
+            prompt += f"Working directory: {cwd}\n"
+        prompt += f"\nFailed command: {cmd}\nExit code: {exit_code}\n"
+        if output:
+            prompt += f"Output:\n{output}\n"
+        if history_text:
+            prompt += f"\nRecent terminal session history:\n{history_text}\n"
+        prompt += (
+            "\nBased on the system info, working directory, and terminal history, "
+            "provide a deep analysis of why this command failed. "
+            "Consider the full context — previous commands, environment, permissions — "
+            "and suggest the most accurate fix. Be specific and practical."
+        )
+        _ai._info(f"Analyzing: {cmd}\n")
+        messages = [{"role": "user", "content": prompt}]
+        _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+
+    # ── Explain mode ──────────────────────────────────────────────────────────
+    elif args.explain:
         prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
@@ -145,8 +217,8 @@ def main():
         messages = [{"role": "user", "content": prompt}]
         _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
 
+    # ── Fix mode ──────────────────────────────────────────────────────────────
     else:
-        # Fix mode: ask for ONLY the corrected command
         prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
@@ -158,7 +230,6 @@ def main():
         messages = [{"role": "user", "content": prompt}]
 
         if args.paste_mode:
-            # Suppress streaming output; print only the clean command to stdout
             import io
             _buf = io.StringIO()
             _real_stdout = sys.stdout

@@ -6,9 +6,10 @@ psfix — AI-powered terminal error explainer/fixer
 Usage:
   psfix             Paste the corrected command at the prompt (ready to run)
   psfix --explain   Explain why the last command failed
+  psfix --analyze   Deep analysis using terminal history and working directory
 
 psfix reads the last command from terminal history automatically.
-It can also be triggered via the ⚠ Explain / 🔧 Fix overlay buttons
+Triggered via the ⚠ Explain / 🔧 Fix / 🔍 Analyze overlay buttons
 that appear in the terminal after a command fails.
 EOF
         return 0
@@ -27,15 +28,14 @@ EOF
         return 1
     fi
 
-    if [[ "$*" == *"--explain"* ]]; then
-        # Explain mode: stream output normally to the terminal
+    if [[ "$*" == *"--explain"* ]] || [[ "$*" == *"--analyze"* ]]; then
+        # Explain / Analyze mode: stream output normally to the terminal
         "$_py" "$_script" --base-dir "$_base" "$@"
     else
-        # Fix mode: stream visible on stderr (2>/dev/tty), capture clean command on stdout
+        # Fix mode: capture clean command on stdout, paste into ZLE buffer
         local _fixed
         _fixed=$("$_py" "$_script" --base-dir "$_base" --paste-mode "$@" 2>/dev/tty)
         if [[ -n "$_fixed" ]]; then
-            # Paste the corrected command into the ZLE input buffer without executing
             print -z "$_fixed"
         fi
     fi

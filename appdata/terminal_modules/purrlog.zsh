@@ -1,9 +1,10 @@
 autoload -Uz add-zsh-hook
 
 _purrlog_preexec() {
-    local cmd_b64
+    local cmd_b64 cwd_b64
     cmd_b64=$(printf '%s' "$1" | base64 -w0 2>/dev/null || printf '%s' "$1" | base64 2>/dev/null)
-    printf '\033]777;purrlog_cmd;%s;%s\007' "$cmd_b64" "$(date +%s)"
+    cwd_b64=$(printf '%s' "$PWD" | base64 -w0 2>/dev/null || printf '%s' "$PWD" | base64 2>/dev/null)
+    printf '\033]777;purrlog_cmd;%s;%s;%s\007' "$cmd_b64" "$(date +%s)" "$cwd_b64"
 }
 
 _purrlog_precmd() {

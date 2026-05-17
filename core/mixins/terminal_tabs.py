@@ -4,6 +4,7 @@ import re
 import json
 import base64
 import shutil
+import shlex
 
 logger = logging.getLogger(__name__)
 from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject
@@ -63,14 +64,14 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         term.receivedData.connect(self._on_terminal_received)
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None}
-        _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)\x07')
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None, "cwd": ""}
+        _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
         _wrapper_ref = [None]
 
         def _on_log(data: str, _state=_log_state, _tid=f"terminal_{idx}"):
             if getattr(_wrapper_ref[0], "_agent_monitoring_paused", False):
                 return
-            for typ, payload, ts in _osc_re.findall(data):
+            for typ, payload, ts, cwd_b64 in _osc_re.findall(data):
                 if typ == "cmd":
                     try:
                         cmd = base64.b64decode(payload + "==").decode("utf-8", errors="replace").strip()
@@ -79,6 +80,12 @@ class TerminalTabsMixin:
                     _state["cmd"] = cmd
                     _state["ts_start"] = int(ts)
                     _state["output"] = []
+                    _state["cwd"] = ""
+                    if cwd_b64:
+                        try:
+                            _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
+                        except Exception:
+                            pass
                     # Hide overlay when new command starts
                     _w = _wrapper_ref[0]
                     if _w is not None:
@@ -120,6 +127,7 @@ class TerminalTabsMixin:
                                 "cmd":       entry["cmd"],
                                 "exit_code": exit_code,
                                 "output":    entry["output"],
+                                "cwd":       _state.get("cwd", ""),
                             }
                             _w.show_error_overlay(exit_code)
                         else:
@@ -257,9 +265,19 @@ class TerminalTabsMixin:
                 pass
             _w.hide_error_overlay()
 
+        def _analyze_and_inject(_t=term, _w=wrapper_widget, _state=_log_state):
+            _w.hide_error_overlay()
+            cwd = (_state.get("last_failed") or {}).get("cwd", "")
+            cmd = f'psfix --analyze{(" --cwd " + shlex.quote(cwd)) if cwd else ""}\n'
+            try:
+                _t.sendText(cmd)
+            except Exception:
+                pass
+
         wrapper_widget.set_error_callbacks(
             explain_fn=lambda: _inject_and_hide("psfix --explain\n"),
             fix_fn=lambda:     _inject_and_hide("psfix\n"),
+            analyze_fn=_analyze_and_inject,
         )
 
         self.widgets["terminal_tabs"].addTab(wrapper_widget, f"{name}" if name else f"Console {idx}")

@@ -50,14 +50,16 @@ class _ErrorOverlay(QFrame):
         row.setContentsMargins(0, 0, 0, 0)
         self.btn_explain = QPushButton("⚠ Explain")
         self.btn_fix = QPushButton("🔧 Fix")
-        for b in (self.btn_explain, self.btn_fix):
+        self.btn_analyze = QPushButton("🔍 Analyze")
+        for b in (self.btn_explain, self.btn_fix, self.btn_analyze):
             b.setFixedHeight(20)
             b.setStyleSheet(self._BTN_STYLE)
         row.addWidget(self.btn_explain)
         row.addWidget(self.btn_fix)
+        row.addWidget(self.btn_analyze)
         lay.addLayout(row)
 
-        self.setFixedSize(152, 62)
+        self.setFixedSize(226, 62)
         self.hide()
 
     def set_exit_code(self, code: int):
@@ -111,10 +113,13 @@ class TerminalWrapper(QtWidgets.QWidget):
         if self._overlay is not None:
             self._overlay.hide()
 
-    def set_error_callbacks(self, explain_fn, fix_fn):
-        """Connect Explain / Fix buttons. Safe to call multiple times."""
+    def set_error_callbacks(self, explain_fn, fix_fn, analyze_fn=None):
+        """Connect Explain / Fix / Analyze buttons. Safe to call multiple times."""
         ov = self._get_overlay()
-        for btn, fn in ((ov.btn_explain, explain_fn), (ov.btn_fix, fix_fn)):
+        pairs = [(ov.btn_explain, explain_fn), (ov.btn_fix, fix_fn)]
+        if analyze_fn is not None:
+            pairs.append((ov.btn_analyze, analyze_fn))
+        for btn, fn in pairs:
             try:
                 btn.clicked.disconnect()
             except Exception:
