@@ -65,7 +65,7 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         term.receivedData.connect(self._on_terminal_received)
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": []}
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)\x07')
         _wrapper_ref = [None]
 
@@ -118,6 +118,11 @@ class TerminalTabsMixin:
                     _w = _wrapper_ref[0]
                     if _w is not None:
                         if exit_code != 0:
+                            _state["last_failed"] = {
+                                "cmd":       entry["cmd"],
+                                "exit_code": exit_code,
+                                "output":    entry["output"],
+                            }
                             _w.show_error_overlay(exit_code)
                         else:
                             _w.hide_error_overlay()
@@ -254,9 +259,13 @@ class TerminalTabsMixin:
                 pass
             _w.hide_error_overlay()
 
-        def _fix_and_paste(_t=term, _w=wrapper_widget, _base=self.base_path):
+        def _fix_and_paste(_t=term, _w=wrapper_widget, _base=self.base_path,
+                           _state=_log_state):
             """Run psfix in background, paste clean command at prompt without showing 'psfix'."""
             _w.hide_error_overlay()
+            failed = _state.get("last_failed")
+            if not failed:
+                return
             python_exe = os.path.join(_base, ".venv", "bin", "python3")
             if not os.path.isfile(python_exe):
                 python_exe = "python3"
@@ -266,7 +275,14 @@ class TerminalTabsMixin:
             def _worker():
                 try:
                     proc = subprocess.run(
-                        [python_exe, psfix_script, "--base-dir", _base, "--paste-mode"],
+                        [
+                            python_exe, psfix_script,
+                            "--base-dir",  _base,
+                            "--paste-mode",
+                            "--cmd",       failed["cmd"],
+                            "--exit-code", str(failed["exit_code"]),
+                            "--output",    failed["output"],
+                        ],
                         capture_output=True, text=True, timeout=120,
                     )
                     result[0] = proc.stdout.strip()

@@ -74,8 +74,12 @@ def main():
     parser.add_argument("--explain",    action="store_true",
                         help="Explain why the command failed instead of suggesting a fix")
     parser.add_argument("--paste-mode", action="store_true",
-                        help="Stream to stderr, print only clean command to stdout (used by zsh wrapper)")
+                        help="Suppress streaming; print only clean command to stdout (used internally)")
     parser.add_argument("--base-dir",   default=None, metavar="DIR")
+    # Direct data args (passed by the Fix overlay button, bypasses history file)
+    parser.add_argument("--cmd",        default=None, metavar="CMD")
+    parser.add_argument("--exit-code",  default=None, type=int, metavar="N")
+    parser.add_argument("--output",     default=None, metavar="OUTPUT")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -105,14 +109,19 @@ def main():
 
     api_key = _ai._load_api_key(profile.get("name", ""), base_dir)
 
-    entry = _last_terminal_entry(base_dir)
-    if not entry:
-        _ai._err("No terminal history found — run a command first.")
-        sys.exit(1)
-
-    cmd       = entry.get("cmd", "")
-    exit_code = entry.get("exit_code", 0)
-    output    = entry.get("output", "").strip()
+    # Data can come from direct args (Fix overlay) or from history file (manual psfix)
+    if args.cmd is not None and args.exit_code is not None:
+        cmd       = args.cmd
+        exit_code = args.exit_code
+        output    = (args.output or "").strip()
+    else:
+        entry = _last_terminal_entry(base_dir)
+        if not entry:
+            _ai._err("No terminal history found — run a command first.")
+            sys.exit(1)
+        cmd       = entry.get("cmd", "")
+        exit_code = entry.get("exit_code", 0)
+        output    = entry.get("output", "").strip()
 
     if exit_code == 0:
         _ai._info("Last command exited successfully (exit 0) — nothing to fix.")
