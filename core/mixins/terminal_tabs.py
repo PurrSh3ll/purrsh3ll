@@ -4,8 +4,6 @@ import re
 import json
 import base64
 import shutil
-import subprocess
-import threading
 
 logger = logging.getLogger(__name__)
 from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject
@@ -259,57 +257,9 @@ class TerminalTabsMixin:
                 pass
             _w.hide_error_overlay()
 
-        def _fix_and_paste(_t=term, _w=wrapper_widget, _base=self.base_path,
-                           _state=_log_state):
-            """Run psfix in background, paste clean command at prompt without showing 'psfix'."""
-            _w.hide_error_overlay()
-            failed = _state.get("last_failed")
-            if not failed:
-                return
-            python_exe = os.path.join(_base, ".venv", "bin", "python3")
-            if not os.path.isfile(python_exe):
-                python_exe = "python3"
-            psfix_script = os.path.join(_base, "appdata", "terminal_modules", "psfix.py")
-            result = [None]
-
-            def _worker():
-                try:
-                    proc = subprocess.run(
-                        [
-                            python_exe, psfix_script,
-                            "--base-dir",  _base,
-                            "--paste-mode",
-                            "--cmd",       failed["cmd"],
-                            "--exit-code", str(failed["exit_code"]),
-                            "--output",    failed["output"],
-                        ],
-                        capture_output=True, text=True, timeout=120,
-                    )
-                    result[0] = proc.stdout.strip()
-                    if not result[0]:
-                        logger.warning("psfix returned empty stdout (rc=%s): %s",
-                                       proc.returncode, proc.stderr[:300])
-                except Exception as e:
-                    logger.error("psfix subprocess error: %s", e)
-
-            t = threading.Thread(target=_worker, daemon=True)
-            t.start()
-
-            def _poll():
-                if t.is_alive():
-                    QTimer.singleShot(300, _poll)
-                else:
-                    if result[0]:
-                        try:
-                            _t.sendText(result[0])
-                        except Exception:
-                            pass
-
-            QTimer.singleShot(300, _poll)
-
         wrapper_widget.set_error_callbacks(
             explain_fn=lambda: _inject_and_hide("psfix --explain\n"),
-            fix_fn=_fix_and_paste,
+            fix_fn=lambda:     _inject_and_hide("psfix\n"),
         )
 
         self.widgets["terminal_tabs"].addTab(wrapper_widget, f"{name}" if name else f"Console {idx}")
