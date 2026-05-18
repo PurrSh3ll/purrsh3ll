@@ -136,6 +136,8 @@ def build_chat_panel(main_window):
         chat_btn_add.setVisible(not is_connect)
         chat_btn_info.setVisible(not is_connect)
         cmd_preview_widget.setVisible(not is_connect)
+        if not is_connect:
+            _refresh_custom_combo()
 
     _run_mode_menu.triggered.connect(_on_mode_selected)
 
@@ -538,32 +540,83 @@ def build_chat_panel(main_window):
 
     chat_btn_run.clicked.connect(_on_run_clicked)
 
-    # ── Preset logic ──────────────────────────────────────────────────────────
+    # ── Preset / model logic ───────────────────────────────────────────────────
+
+    _WEB_DOCKER_CMD = (
+        "sudo docker rm -f open-webui; "
+        "sudo docker run -d --network=host "
+        "-e OLLAMA_BASE_URL=http://localhost:11434 "
+        "-e PORT=3000 "
+        "-v open-webui:/app/backend/data "
+        "--name open-webui "
+        "ghcr.io/open-webui/open-webui:main"
+    )
+
+    def _load_ollama_models():
+        """Return list of model names from globally defined profiles with provider=ollama."""
+        try:
+            with open(c.config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            profiles = cfg.get("api_providers", {}).get("profiles", [])
+            return [p["model"] for p in profiles
+                    if p.get("provider", "").lower() == "ollama" and p.get("model")]
+        except Exception:
+            return []
+
+    def _is_run_mode():
+        return chat_btn_run.text() == "run"
 
     def _refresh_custom_combo():
         category = chat_combo_interface.currentText()
-        presets = _load_presets()
         chat_combo_custom.blockSignals(True)
         chat_combo_custom.clear()
-        chat_combo_custom.addItem("custom")
-        for p in presets:
-            if p.get("category") == category:
-                chat_combo_custom.addItem(p.get("name", ""))
-        chat_combo_custom.blockSignals(False)
-        cmd_preview_edit.setPlainText("")
+
+        if _is_run_mode():
+            # Load ollama models from global profiles
+            models = _load_ollama_models()
+            for m in models:
+                chat_combo_custom.addItem(m)
+            if not models:
+                chat_combo_custom.addItem("(no ollama models)")
+            # Set command preview immediately for first item
+            chat_combo_custom.blockSignals(False)
+            _on_custom_changed()
+        else:
+            # Legacy preset behaviour
+            presets = _load_presets()
+            chat_combo_custom.addItem("custom")
+            for p in presets:
+                if p.get("category") == category:
+                    chat_combo_custom.addItem(p.get("name", ""))
+            chat_combo_custom.blockSignals(False)
+            cmd_preview_edit.setPlainText("")
 
     def _on_custom_changed():
-        name = chat_combo_custom.currentText()
-        if name == "custom":
+        if not _is_run_mode():
+            # Legacy preset behaviour
+            name = chat_combo_custom.currentText()
+            if name == "custom":
+                cmd_preview_edit.setPlainText("")
+                return
+            category = chat_combo_interface.currentText()
+            presets = _load_presets()
+            for p in presets:
+                if p.get("category") == category and p.get("name") == name:
+                    cmd_preview_edit.setPlainText(p.get("command", ""))
+                    return
+            cmd_preview_edit.setPlainText("")
+            return
+
+        # Run mode: generate command from selected ollama model
+        model = chat_combo_custom.currentText()
+        if not model or model == "(no ollama models)":
             cmd_preview_edit.setPlainText("")
             return
         category = chat_combo_interface.currentText()
-        presets = _load_presets()
-        for p in presets:
-            if p.get("category") == category and p.get("name") == name:
-                cmd_preview_edit.setPlainText(p.get("command", ""))
-                return
-        cmd_preview_edit.setPlainText("")
+        if category == "cli":
+            cmd_preview_edit.setPlainText(f"ollama run {model}")
+        else:
+            cmd_preview_edit.setPlainText(_WEB_DOCKER_CMD)
 
     def _open_add_dialog():
         dlg = QDialog(chat_panel)
