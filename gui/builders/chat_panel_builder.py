@@ -591,10 +591,18 @@ def build_chat_panel(main_window):
 
     def _refresh_custom_combo():
         category = chat_combo_interface.currentText()
+        is_web = category == "web"
+        # Hide model combobox for web — model selection happens inside Open WebUI
+        chat_combo_custom.setVisible(not is_web and _is_run_mode() or not _is_run_mode())
         chat_combo_custom.blockSignals(True)
         chat_combo_custom.clear()
 
         if _is_run_mode():
+            if is_web:
+                # Web run mode: no model needed, just show docker command
+                chat_combo_custom.blockSignals(False)
+                cmd_preview_edit.setPlainText(_WEB_DOCKER_CMD)
+                return
             # Load ollama profile names from global profiles
             profiles = _load_ollama_profiles()
             for p in profiles:
