@@ -1041,6 +1041,10 @@ def build_menu(main_window):
             reload_fn = c.widgets.get("global_active_profile_combo_reload")
             if global_combo is not None and reload_fn is not None:
                 reload_fn(keep=active)
+            # sync chat panel model combobox
+            chat_reload_fn = c.widgets.get("chat_combo_custom_reload")
+            if chat_reload_fn is not None:
+                chat_reload_fn()
 
         # ── model fetch helper ────────────────────────────────────────────────
         def _fetch_provider_models(provider, url, key):

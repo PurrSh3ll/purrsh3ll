@@ -807,6 +807,9 @@ def build_chat_panel(main_window):
     # Load presets on startup
     _refresh_custom_combo()
 
+    # Register reload hook so menu_builder can trigger refresh after profile save
+    c.register_widget("chat_combo_custom_reload", _refresh_custom_combo)
+
     # ── Info dialog ───────────────────────────────────────────────────────────
 
     chat_info_dialog = QDialog(chat_panel)
