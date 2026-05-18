@@ -552,16 +552,36 @@ def build_chat_panel(main_window):
         "ghcr.io/open-webui/open-webui:main"
     )
 
-    def _load_ollama_models():
-        """Return list of model names from globally defined profiles with provider=ollama."""
+    def _load_ollama_profiles():
+        """Return list of ollama profiles (full dicts) from global config."""
         try:
             with open(c.config_path, "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             profiles = cfg.get("api_providers", {}).get("profiles", [])
-            return [p["model"] for p in profiles
-                    if p.get("provider", "").lower() == "ollama" and p.get("model")]
+            return [p for p in profiles if p.get("provider", "").lower() == "ollama" and p.get("model")]
         except Exception:
             return []
+
+    def _build_ollama_run_cmd(profile: dict) -> str:
+        """Build 'ollama run <model> [flags]' from profile settings."""
+        model = profile.get("model", "")
+        flags = []
+        # Parse custom_params JSON → CLI flags
+        raw_params = profile.get("custom_params", "")
+        if raw_params:
+            try:
+                params = json.loads(raw_params)
+                for k, v in params.items():
+                    if isinstance(v, bool):
+                        flags.append(f"--{k}={'true' if v else 'false'}")
+                    else:
+                        flags.append(f"--{k}={v}")
+            except Exception:
+                pass
+        cmd = f"ollama run {model}"
+        if flags:
+            cmd += " " + " ".join(flags)
+        return cmd
 
     def _is_run_mode():
         return chat_btn_run.text() == "run"
@@ -572,12 +592,12 @@ def build_chat_panel(main_window):
         chat_combo_custom.clear()
 
         if _is_run_mode():
-            # Load ollama models from global profiles
-            models = _load_ollama_models()
-            for m in models:
-                chat_combo_custom.addItem(m)
-            if not models:
-                chat_combo_custom.addItem("(no ollama models)")
+            # Load ollama profile names from global profiles
+            profiles = _load_ollama_profiles()
+            for p in profiles:
+                chat_combo_custom.addItem(p["name"], userData=p)
+            if not profiles:
+                chat_combo_custom.addItem("(no ollama profiles)")
             # Set command preview immediately for first item
             chat_combo_custom.blockSignals(False)
             _on_custom_changed()
@@ -607,14 +627,14 @@ def build_chat_panel(main_window):
             cmd_preview_edit.setPlainText("")
             return
 
-        # Run mode: generate command from selected ollama model
-        model = chat_combo_custom.currentText()
-        if not model or model == "(no ollama models)":
+        # Run mode: build command from selected ollama profile
+        profile = chat_combo_custom.currentData()
+        if not profile:
             cmd_preview_edit.setPlainText("")
             return
         category = chat_combo_interface.currentText()
         if category == "cli":
-            cmd_preview_edit.setPlainText(f"ollama run {model}")
+            cmd_preview_edit.setPlainText(_build_ollama_run_cmd(profile))
         else:
             cmd_preview_edit.setPlainText(_WEB_DOCKER_CMD)
 
