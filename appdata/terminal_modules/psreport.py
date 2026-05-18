@@ -24,6 +24,9 @@ _REDUCE_BUDGET     = 10_000 # max tokens of combined extracts sent to reduce
 
 # ── Pentest tool keywords ──────────────────────────────────────────────────────
 _TOOL_PATTERNS = {
+    # psview synthetic screenshot entries — always captured
+    "psscreenshot",
+    # Network scanning
     "nmap", "masscan", "rustscan", "unicornscan", "zmap", "arp-scan",
     "gobuster", "dirbuster", "dirb", "nikto", "wfuzz", "ffuf",
     "feroxbuster", "sqlmap", "nuclei", "whatweb", "wafw00f", "wpscan",
