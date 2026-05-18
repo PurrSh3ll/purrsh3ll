@@ -155,8 +155,8 @@ def build_chat_panel(main_window):
     _blink_timer = [None]
     _poll_timer = [None]
     _blink_state = [False]
-    _INFO_BLINK_ON = "QPushButton { background-color: #c8a000; color: #000000; }"
-    _INFO_BLINK_OFF = ""
+    _INFO_BLINK_ON  = "QPushButton { background-color: #e6ac00; color: #000000; border: none; }"
+    _INFO_BLINK_OFF = "QPushButton { background-color: #37373B; color: #ffffff; border: none; }"
     _STOP_STYLE = (
         "QToolButton { background-color: #8B2222; color: #ffffff; }"
         "QToolButton:hover { background-color: #A52A2A; }"
@@ -180,7 +180,7 @@ def build_chat_panel(main_window):
         if _blink_timer[0] is not None:
             _blink_timer[0].stop()
             _blink_timer[0] = None
-        chat_btn_info.setStyleSheet(_INFO_BLINK_OFF)
+        chat_btn_info.setStyleSheet("")  # reset to inherited style
         _blink_state[0] = False
         if _poll_timer[0] is not None:
             _poll_timer[0].stop()
