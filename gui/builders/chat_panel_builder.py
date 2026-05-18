@@ -202,11 +202,10 @@ def build_chat_panel(main_window):
 
     def _start_port_poll(host, port):
         _stop_info_blink()
-        # Blink immediately — user may need to enter sudo or check logs
-        _start_info_blink()
         t = QTimer(chat_panel)
         t.setInterval(3000)
-        def _poll():
+
+        def _repeated_poll():
             if not _running[0]:
                 _stop_info_blink()
                 t.stop()
@@ -216,11 +215,19 @@ def build_chat_panel(main_window):
                 _stop_info_blink()
                 t.stop()
                 _poll_timer[0] = None
-        t.timeout.connect(_poll)
-        # First check shortly after start — if already running, stop blinking fast
-        QTimer.singleShot(800, _poll)
-        t.start()
-        _poll_timer[0] = t
+
+        def _first_check():
+            if not _running[0]:
+                return
+            if not _check_port(host, port):
+                # Container not reachable — start blinking and keep polling
+                _start_info_blink()
+                t.timeout.connect(_repeated_poll)
+                t.start()
+                _poll_timer[0] = t
+            # else: container already running — do nothing, no blink
+
+        QTimer.singleShot(800, _first_check)
 
     def _enter_running_state():
         _prev_btn_text[0] = chat_btn_run.text()
