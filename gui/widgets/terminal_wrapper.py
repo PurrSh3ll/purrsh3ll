@@ -39,11 +39,24 @@ class _ErrorOverlay(QFrame):
         lay.setContentsMargins(8, 5, 8, 6)
         lay.setSpacing(5)
 
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(4)
         self._lbl = QLabel("✗ exit 1")
         self._lbl.setStyleSheet(
             "color: #e74c3c; font-size: 10px; font-weight: bold; background: transparent;"
         )
-        lay.addWidget(self._lbl)
+        header.addWidget(self._lbl)
+        header.addStretch()
+        self.btn_close = QPushButton("✕")
+        self.btn_close.setFixedSize(16, 16)
+        self.btn_close.setStyleSheet(
+            "QPushButton { background: transparent; border: none; color: #666; font-size: 10px; }"
+            "QPushButton:hover { color: #ccc; }"
+        )
+        self.btn_close.clicked.connect(self.hide)
+        header.addWidget(self.btn_close)
+        lay.addLayout(header)
 
         row = QHBoxLayout()
         row.setSpacing(4)
@@ -59,7 +72,7 @@ class _ErrorOverlay(QFrame):
         row.addWidget(self.btn_analyze)
         lay.addLayout(row)
 
-        self.setFixedSize(226, 62)
+        self.setFixedSize(226, 66)
         self.hide()
 
     def set_exit_code(self, code: int):
