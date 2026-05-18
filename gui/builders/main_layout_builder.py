@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QSplitter, QGroupBox, QHBoxLayout, QVBoxLayout, QWidget,
     QLabel, QPushButton, QDialog, QToolButton, QMenu, QSizePolicy,
-    QTextEdit, QDialogButtonBox, QFileDialog, QComboBox,
+    QTextEdit, QDialogButtonBox, QFileDialog, QComboBox, QMessageBox,
 )
 from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtCore import QSize, Qt
@@ -342,6 +342,68 @@ def build_main_layout(main_window):
         c.register_widget("welcome_tab_text", container)
         c.register_widget("gif_label", gif_label)
 
+    def create_voice_button():
+        central_widget = c.widgets["central_widget"]
+        btn = QPushButton("🎙", central_widget)
+        btn.setFixedSize(26, 22)
+        btn.setToolTip("Voice command mode")
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        btn.setCheckable(True)
+        btn.setChecked(False)
+
+        _STYLE_OFF = (
+            "QPushButton { background: transparent; border: 1px solid #555; "
+            "border-radius: 3px; font-size: 13px; color: #aaa; }"
+            "QPushButton:hover { border-color: #888; color: #fff; }"
+        )
+        _STYLE_ON = (
+            "QPushButton { background: #6a1a1a; border: 1px solid #e05555; "
+            "border-radius: 3px; font-size: 13px; color: #ff8888; }"
+            "QPushButton:hover { background: #7a2020; }"
+        )
+        btn.setStyleSheet(_STYLE_OFF)
+
+        def _on_clicked(checked):
+            if not checked:
+                btn.setStyleSheet(_STYLE_OFF)
+                btn.setToolTip("Voice command mode")
+                return
+
+            # Show confirmation popup before activating
+            msg = QMessageBox(c.widgets["main_window"])
+            msg.setWindowTitle("Activate Voice Command Mode")
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setText("<b>Activate Voice Command Mode?</b>")
+            msg.setInformativeText(
+                "Voice Command Mode will:\n\n"
+                "• Access your <b>microphone continuously</b> in the background\n"
+                "• Listen for a wake word to start recording\n"
+                "• Send your speech to the active AI profile\n"
+                "• Paste the generated command into the active terminal\n\n"
+                "<i>You will be asked to confirm (Accept / Cancel) before any "
+                "command is executed.</i>\n\n"
+                "Make sure a vision/speech-capable profile is active.\n"
+                "You can deactivate at any time by clicking the button again."
+            )
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+
+            result = msg.exec()
+            if result == QMessageBox.StandardButton.Ok:
+                btn.setStyleSheet(_STYLE_ON)
+                btn.setToolTip("Voice command mode: ACTIVE — click to deactivate")
+            else:
+                # User cancelled — revert toggle
+                btn.blockSignals(True)
+                btn.setChecked(False)
+                btn.blockSignals(False)
+                btn.setStyleSheet(_STYLE_OFF)
+
+        btn.clicked.connect(_on_clicked)
+        c.register_widget("voice_button", btn)
+
     def create_active_profile_combo():
         central_widget = c.widgets["central_widget"]
         combo = QComboBox(central_widget)
@@ -430,5 +492,6 @@ def build_main_layout(main_window):
     create_mode_button()
     create_snippet_button()
     create_active_profile_combo()
+    create_voice_button()
     dropdown_menu_button()
     add_widgets_to_layout_and_setup()

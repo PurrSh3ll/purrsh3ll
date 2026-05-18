@@ -128,6 +128,10 @@ class PanelManagerMixin:
         new_y = main_window.height() - combo.height() - 2
         combo.move(new_x, new_y)
 
+        voice_btn = self.widgets.get("voice_button")
+        if voice_btn is not None:
+            voice_btn.move(new_x - voice_btn.width() - 4, new_y)
+
     def _toggle_panel(self, panel_key, button_key, visible_attr, icon_closed, button_y_fn, anim_prefix):
         button = self.widgets[button_key]
         panel = self.widgets[panel_key]
