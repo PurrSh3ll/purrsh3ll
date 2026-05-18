@@ -499,8 +499,8 @@ def main():
         print(file=sys.stderr)
 
     # Trim chunks to fit within half of model's context window
-    _DEFAULT_CTX      = 8_000
-    ctx_tokens        = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    _CTX_BY_PROVIDER  = {"ollama": 4_096, "anthropic": 200_000, "openai": 128_000}
+    ctx_tokens        = int(profile.get("context_tokens") or 0) or _CTX_BY_PROVIDER.get(provider, 16_000)
     max_prompt_tokens = ctx_tokens // 2
     while chunks:
         prompt = _build_prompt(query, chunks)

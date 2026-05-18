@@ -7,7 +7,6 @@ Accepts text directly, a file path, or stdin via pipe.
 import os
 import sys
 
-_DEFAULT_CTX        = 16_000  # fallback when profile has no context_tokens
 _BINARY_CHECK_BYTES = 512
 
 
@@ -75,7 +74,7 @@ def main():
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
     # Derive max input size from profile context window (half for input, half for response)
-    ctx_tokens     = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    ctx_tokens     = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
     max_input_toks = ctx_tokens // 2
     max_chars      = max_input_toks * 4  # 1 token ≈ 4 chars
 

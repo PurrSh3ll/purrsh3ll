@@ -9,7 +9,6 @@ import os
 import platform
 import sys
 
-_DEFAULT_CTX = 8_000  # fallback when profile has no context_tokens
 
 
 def _last_terminal_entry(base_dir: str) -> dict | None:
@@ -179,7 +178,7 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-    ctx_tokens       = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    ctx_tokens       = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
 
     # ── Analyze mode ──────────────────────────────────────────────────────────
     if args.analyze:

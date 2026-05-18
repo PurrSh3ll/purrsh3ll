@@ -18,7 +18,6 @@ import sys
 from datetime import datetime
 
 _OUTPUT_PER_ENTRY  = 800    # max output chars per history entry
-_DEFAULT_CTX       = 8_192  # fallback context size when profile has none
 _MAP_OVERHEAD      = 600    # tokens reserved for map prompt + response header
 _MAP_RESPONSE_RSV  = 1_200  # tokens reserved for map response
 _REDUCE_BUDGET     = 10_000 # max tokens of combined extracts sent to reduce
@@ -323,7 +322,7 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     if args.deep:
         # Chunk budget: half of model context minus overhead
-        ctx_tokens   = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+        ctx_tokens   = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
         chunk_budget = max(ctx_tokens // 2 - _MAP_OVERHEAD - _MAP_RESPONSE_RSV, 1024)
 
         entries, total_raw = _load_entries(base_dir, args.full)
@@ -433,7 +432,7 @@ def main():
     # STANDARD MODE — single call
     # ══════════════════════════════════════════════════════════════════════════
     else:
-        ctx_tokens = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+        ctx_tokens = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
         history, loaded, total = _load_filtered_history(base_dir, ctx_tokens // 2, args.full, _ai)
         if not history:
             _ai._err("No relevant history found — run some pentest commands first.")

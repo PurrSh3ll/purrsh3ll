@@ -57,7 +57,20 @@ _DEFAULT_URLS = {
 }
 
 _MAX_HISTORY    = 40      # max messages kept in chat session (20 turns)
-_DEFAULT_CTX    = 16_000  # default token context window sent to API
+_DEFAULT_CTX    = 16_000  # generic fallback
+
+# Provider-specific context defaults (used when profile has no context_tokens set)
+_CTX_BY_PROVIDER = {
+    "ollama":      4_096,    # local models — conservative
+    "anthropic":   200_000,  # Claude 3.x/4.x — 200k window
+    "openai":      128_000,  # GPT-4o — 128k window
+}
+# groq, gemini, openrouter, huggingface → _DEFAULT_CTX (16k)
+
+
+def _default_ctx(provider: str) -> int:
+    """Return the default context token limit for a given provider."""
+    return _CTX_BY_PROVIDER.get(provider, _DEFAULT_CTX)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -340,7 +353,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if fast_answers:
         query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
 
-    ctx_tokens = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    ctx_tokens = int(profile.get("context_tokens") or 0) or _default_ctx(provider)
     q_tokens   = _count_tokens(query)
     if q_tokens > ctx_tokens:
         _err(f"Query is too large ({q_tokens} tokens) for model context ({ctx_tokens} tokens). Shorten the input.")
@@ -361,7 +374,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-    context_limit    = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    context_limit    = int(profile.get("context_tokens") or 0) or _default_ctx(provider)
 
     if args.clear:
         _clear_session(base_dir, name)
