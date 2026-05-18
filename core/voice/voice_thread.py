@@ -171,15 +171,10 @@ class VoiceThread(QThread):
 
                 # Wait for "Hey Jarvis" + "accept" / "cancel" via voice.
                 # No AI needed — Whisper keyword check only.
-                # Reset wake word buffer and drain audio queue so the previous
-                # detection score doesn't immediately re-trigger.
-                for scores in ww_model.prediction_buffer.values():
-                    scores.clear()
-                while not audio_q.empty():
-                    try:
-                        audio_q.get_nowait()
-                    except Exception:
-                        break
+                # Cooldown after command generation — flush model's internal
+                # audio features so the voice used to generate the command
+                # doesn't immediately re-trigger wake word detection.
+                self._ww_cooldown(audio_q, ww_model, seconds=1.5)
                 self._exit_confirm = False
                 self.state_changed.emit("idle")
                 while self._running and not self._exit_confirm:
@@ -201,24 +196,15 @@ class VoiceThread(QThread):
                         self.confirm_action.emit("cancel")
                         break  # back to main wake word loop
                     else:
-                        # Neither word — clear buffer and return to wake word listening
-                        for scores in ww_model.prediction_buffer.values():
-                            scores.clear()
-                        while not audio_q.empty():
-                            try:
-                                audio_q.get_nowait()
-                            except Exception:
-                                break
+                        # Neither word — cooldown then back to wake word listening
+                        self._ww_cooldown(audio_q, ww_model, seconds=1.5)
                         self.state_changed.emit("idle")
 
-                # After accept/cancel, clear buffer and continue outer loop
-                for scores in ww_model.prediction_buffer.values():
-                    scores.clear()
-                while not audio_q.empty():
-                    try:
-                        audio_q.get_nowait()
-                    except Exception:
-                        break
+                # After accept/cancel: flush queue, run cooldown (feed audio
+                # to model without checking scores) so internal mel-spectrogram
+                # features built up from "cancel"/"accept" speech drain out
+                # before we re-enter wake word detection.
+                self._ww_cooldown(audio_q, ww_model, seconds=1.5)
                 self.state_changed.emit("idle")
 
         self.state_changed.emit("idle")
@@ -240,6 +226,30 @@ class VoiceThread(QThread):
         logger.info("VoiceThread: loading wake word model: %s", model_path)
         from openwakeword import Model
         return Model(wakeword_model_paths=[model_path])
+
+    def _ww_cooldown(self, audio_q: queue.Queue, ww_model, seconds: float = 1.5):
+        """Drain queue and feed audio to model without checking scores.
+        Flushes internal mel-spectrogram features so residual speech audio
+        (e.g. from saying 'cancel') doesn't immediately re-trigger wake word."""
+        # First drain whatever is already queued
+        while not audio_q.empty():
+            try:
+                audio_q.get_nowait()
+            except Exception:
+                break
+        # Feed fresh chunks for `seconds` to flush model's internal state
+        chunks = int(seconds * _SAMPLE_RATE / _CHUNK_FRAMES)
+        for _ in range(chunks):
+            if not self._running:
+                break
+            try:
+                chunk = audio_q.get(timeout=0.3)
+                ww_model.predict(chunk.flatten())  # feed but ignore score
+            except queue.Empty:
+                pass
+        # Clear scores after cooldown
+        for scores in ww_model.prediction_buffer.values():
+            scores.clear()
 
     def _wait_for_wakeword(self, audio_q: queue.Queue, ww_model) -> bool:
         """Consume queue chunks and feed to wake word detector.
