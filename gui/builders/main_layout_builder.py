@@ -429,7 +429,10 @@ def build_main_layout(main_window):
 
         def _show_popup(command: str):
             _state["command"] = command
-            popup_label.setText(f"<b>Command:</b> <code>{command}</code>")
+            popup_label.setText(
+                f"<b>Command:</b> <code>{command}</code><br>"
+                f"<small style='color:#888'>Say 'Hey Jarvis' then 'Accept' or 'Cancel'</small>"
+            )
             _position_popup()
             popup.show()
 
@@ -493,7 +496,10 @@ def build_main_layout(main_window):
                 btn.setToolTip("Generating command…")
             elif state == "ready":
                 btn.setStyleSheet(_STYLE_ON)
-                btn.setToolTip("Command ready — accept or cancel")
+                btn.setToolTip("Say 'Hey Jarvis' then 'Accept' or 'Cancel'")
+            elif state == "confirming":
+                btn.setStyleSheet(_STYLE_LISTENING)
+                btn.setToolTip("Say 'Accept' or 'Cancel'…")
             elif state.startswith("error:"):
                 msg_text = state[6:]
                 import logging as _log
@@ -507,12 +513,19 @@ def build_main_layout(main_window):
         def _on_command_ready(command: str):
             _show_popup(command)
 
+        def _on_confirm_action(action: str):
+            if action == "accept":
+                _on_accept()
+            else:
+                _on_cancel()
+
         def _start_thread():
             from core.voice.voice_thread import VoiceThread
             base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
             thread = VoiceThread(base_dir=base_dir, parent=None)
             thread.state_changed.connect(_on_state_changed)
             thread.command_ready.connect(_on_command_ready)
+            thread.confirm_action.connect(_on_confirm_action)
             thread.finished.connect(lambda: None)  # prevent Qt warning
             _state["thread"] = thread
             thread.start()

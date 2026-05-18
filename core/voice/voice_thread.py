@@ -64,8 +64,9 @@ def _rms(chunk: np.ndarray) -> float:
 
 
 class VoiceThread(QThread):
-    state_changed  = pyqtSignal(str)   # "idle" | "listening" | "processing" | "ready" | "error:..."
+    state_changed  = pyqtSignal(str)   # "idle" | "listening" | "processing" | "ready" | "confirming" | "error:..."
     command_ready  = pyqtSignal(str)   # generated shell command
+    confirm_action = pyqtSignal(str)   # "accept" | "cancel" — voice confirmation
 
     def __init__(self, base_dir: str, parent=None):
         super().__init__(parent)
@@ -159,10 +160,35 @@ class VoiceThread(QThread):
                     self.state_changed.emit("idle")
                     continue
 
-                # ── Phase 4: emit command, wait for accept/cancel ─────────────
+                # ── Phase 4: emit command, then voice-confirm loop ────────────
                 self.state_changed.emit("ready")
                 self.command_ready.emit(command)
-                return  # one command per activation; GUI restarts thread if needed
+
+                # Wait for "Hey Jarvis" + "accept" / "cancel" via voice.
+                # No AI needed — Whisper keyword check only.
+                while self._running:
+                    detected = self._wait_for_wakeword(audio_q, ww_model)
+                    if not detected:
+                        break
+
+                    self.state_changed.emit("confirming")
+                    frames = self._record_speech(audio_q)
+                    if frames is None:
+                        self.state_changed.emit("ready")
+                        continue
+
+                    text = self._transcribe(stt_model, frames).lower()
+                    if "accept" in text:
+                        self.confirm_action.emit("accept")
+                        return
+                    elif "cancel" in text:
+                        self.confirm_action.emit("cancel")
+                        return
+                    else:
+                        # Neither word — back to waiting
+                        self.state_changed.emit("ready")
+
+                return
 
         self.state_changed.emit("idle")
 
