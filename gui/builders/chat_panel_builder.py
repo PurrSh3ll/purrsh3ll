@@ -152,12 +152,78 @@ def build_chat_panel(main_window):
     _connect_tmpdir = [None]
     _prev_btn_text = ["run"]
     _osc_end_re = re.compile(r'\x1b\]777;purrlog_end;')
+    _blink_timer = [None]
+    _poll_timer = [None]
+    _blink_state = [False]
+    _INFO_BLINK_ON = "QPushButton { background-color: #c8a000; color: #000000; }"
+    _INFO_BLINK_OFF = ""
     _STOP_STYLE = (
         "QToolButton { background-color: #8B2222; color: #ffffff; }"
         "QToolButton:hover { background-color: #A52A2A; }"
         "QToolButton:pressed { background-color: #6B1111; }"
     )
     _controls = [chat_combo_interface, chat_combo_custom, chat_btn_info]
+
+    def _start_info_blink():
+        if _blink_timer[0] is not None:
+            return
+        t = QTimer()
+        t.setInterval(500)
+        def _toggle():
+            _blink_state[0] = not _blink_state[0]
+            chat_btn_info.setStyleSheet(_INFO_BLINK_ON if _blink_state[0] else _INFO_BLINK_OFF)
+        t.timeout.connect(_toggle)
+        t.start()
+        _blink_timer[0] = t
+
+    def _stop_info_blink():
+        if _blink_timer[0] is not None:
+            _blink_timer[0].stop()
+            _blink_timer[0] = None
+        chat_btn_info.setStyleSheet(_INFO_BLINK_OFF)
+        _blink_state[0] = False
+        if _poll_timer[0] is not None:
+            _poll_timer[0].stop()
+            _poll_timer[0] = None
+
+    def _check_port_async(host, port, on_result):
+        import threading, socket
+        def _worker():
+            try:
+                s = socket.create_connection((host, port), timeout=2)
+                s.close()
+                reachable = True
+            except Exception:
+                reachable = False
+            QTimer.singleShot(0, lambda r=reachable: on_result(r))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _start_port_poll(host, port):
+        _stop_info_blink()  # reset any previous state
+
+        def _on_initial(reachable):
+            if reachable or not _running[0]:
+                return
+            _start_info_blink()
+            t = QTimer()
+            t.setInterval(4000)
+            def _poll():
+                if not _running[0]:
+                    _stop_info_blink()
+                    t.stop()
+                    _poll_timer[0] = None
+                    return
+                def _on_poll(r):
+                    if r:
+                        _stop_info_blink()
+                        t.stop()
+                        _poll_timer[0] = None
+                _check_port_async(host, port, _on_poll)
+            t.timeout.connect(_poll)
+            t.start()
+            _poll_timer[0] = t
+
+        _check_port_async(host, port, _on_initial)
 
     def _enter_running_state():
         _prev_btn_text[0] = chat_btn_run.text()
@@ -297,6 +363,16 @@ def build_chat_panel(main_window):
         # Populate info dialog with a terminal running the launch command
         _launch_info_terminal(_web_launch_cmd)
 
+        # Check if container is reachable; blink ℹ if not
+        try:
+            from urllib.parse import urlparse
+            _parsed = urlparse(raw)
+            _host = _parsed.hostname or "localhost"
+            _port = _parsed.port or (443 if raw.startswith("https") else 80)
+            QTimer.singleShot(1500, lambda h=_host, p=_port: _start_port_poll(h, p))
+        except Exception:
+            pass
+
     def _launch_info_terminal(command):
         chat_info_dialog.setMinimumSize(520, 380)
         server_log_label.hide()
@@ -419,6 +495,7 @@ def build_chat_panel(main_window):
                 pass
             _connect_tmpdir[0] = None
 
+        _stop_info_blink()
         _leave_running_state()
 
     def _start_connect_session():
@@ -871,7 +948,11 @@ def build_chat_panel(main_window):
 
     _info_term = [None]
 
-    chat_btn_info.clicked.connect(chat_info_dialog.exec)
+    def _on_info_clicked():
+        _stop_info_blink()
+        chat_info_dialog.exec()
+
+    chat_btn_info.clicked.connect(_on_info_clicked)
 
     c.register_widget("chat_panel", chat_panel)
     c.register_widget("chat_panel_layout", chat_panel_layout)
