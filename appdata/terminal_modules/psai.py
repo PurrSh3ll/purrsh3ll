@@ -340,6 +340,12 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if fast_answers:
         query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
 
+    ctx_tokens = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    q_tokens   = _count_tokens(query)
+    if q_tokens > ctx_tokens:
+        _err(f"Query is too large ({q_tokens} tokens) for model context ({ctx_tokens} tokens). Shorten the input.")
+        return
+
     _info(f"Querying {model} via {provider}…\n")
     _run_llm(provider, model, [{"role": "user", "content": query}],
              url, api_key, disable_thinking, custom_params)

@@ -9,7 +9,7 @@ import os
 import platform
 import sys
 
-_ANALYZE_HISTORY_TOKENS = 6_000  # token budget for terminal history in analyze mode
+_DEFAULT_CTX = 8_000  # fallback when profile has no context_tokens
 
 
 def _last_terminal_entry(base_dir: str) -> dict | None:
@@ -179,12 +179,14 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    ctx_tokens       = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
 
     # ── Analyze mode ──────────────────────────────────────────────────────────
     if args.analyze:
         cwd = (args.cwd or "").strip()
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        history_text = _load_recent_history(base_dir, _ANALYZE_HISTORY_TOKENS, _ai)
+        # Reserve half context for history; the rest covers prompt overhead + response
+        history_text = _load_recent_history(base_dir, ctx_tokens // 2, _ai)
 
         prompt = f"System: {sys_info}\n"
         if cwd:

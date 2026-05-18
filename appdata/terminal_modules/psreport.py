@@ -433,7 +433,8 @@ def main():
     # STANDARD MODE — single call
     # ══════════════════════════════════════════════════════════════════════════
     else:
-        history, loaded, total = _load_filtered_history(base_dir, 12_000, args.full, _ai)
+        ctx_tokens = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+        history, loaded, total = _load_filtered_history(base_dir, ctx_tokens // 2, args.full, _ai)
         if not history:
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)

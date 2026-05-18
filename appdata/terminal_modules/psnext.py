@@ -50,7 +50,7 @@ def _clean_command(text: str) -> str:
             return line.strip()
     return text.strip()
 
-_HISTORY_TOKENS = 8_000  # token budget for terminal history context
+_DEFAULT_CTX    = 8_000  # fallback when profile has no context_tokens
 
 
 def _load_history(base_dir: str, token_budget: int, _ai) -> tuple[str, int]:
@@ -136,7 +136,10 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
-    history, count = _load_history(base_dir, _HISTORY_TOKENS, _ai)
+    ctx_tokens      = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    history_budget  = ctx_tokens // 2  # leave half for prompt overhead + response
+
+    history, count = _load_history(base_dir, history_budget, _ai)
     if not history:
         _ai._err("No terminal history found — run some commands first.")
         sys.exit(1)

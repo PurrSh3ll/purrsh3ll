@@ -7,7 +7,7 @@ Accepts text directly, a file path, or stdin via pipe.
 import os
 import sys
 
-_MAX_INPUT_CHARS  = 120_000  # ~30k tokens — hard cap to avoid huge prompts
+_DEFAULT_CTX        = 16_000  # fallback when profile has no context_tokens
 _BINARY_CHECK_BYTES = 512
 
 
@@ -74,6 +74,11 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
+    # Derive max input size from profile context window (half for input, half for response)
+    ctx_tokens     = int(profile.get("context_tokens") or 0) or _DEFAULT_CTX
+    max_input_toks = ctx_tokens // 2
+    max_chars      = max_input_toks * 4  # 1 token ≈ 4 chars
+
     # ── Resolve input ──────────────────────────────────────────────────────────
     source_label = "text"
     content = ""
@@ -108,21 +113,19 @@ def main():
         sys.exit(1)
 
     # ── Truncate if needed ─────────────────────────────────────────────────────
-    if len(content) > _MAX_INPUT_CHARS:
+    if len(content) > max_chars:
         if args.tail:
-            content = content[-_MAX_INPUT_CHARS:]
-            # Trim to nearest newline to avoid cutting mid-line
+            content = content[-max_chars:]
             nl = content.find("\n")
             if 0 < nl < 200:
                 content = content[nl + 1:]
-            _ai._info(f"File truncated — summarizing last ~{_MAX_INPUT_CHARS // 1000}k characters.\n")
+            _ai._info(f"File truncated — summarizing last ~{max_input_toks // 1000}k tokens ({max_chars // 1000}k chars).\n")
         else:
-            content = content[:_MAX_INPUT_CHARS]
-            # Trim to nearest newline
+            content = content[:max_chars]
             nl = content.rfind("\n")
-            if nl > _MAX_INPUT_CHARS - 200:
+            if nl > max_chars - 200:
                 content = content[:nl]
-            _ai._info(f"File truncated — summarizing first ~{_MAX_INPUT_CHARS // 1000}k characters. Use --tail for the end.\n")
+            _ai._info(f"File truncated — summarizing first ~{max_input_toks // 1000}k tokens ({max_chars // 1000}k chars). Use --tail for the end.\n")
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     prompt = (
