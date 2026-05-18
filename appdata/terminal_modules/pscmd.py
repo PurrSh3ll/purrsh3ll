@@ -63,6 +63,8 @@ def main():
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR",
                         help="Current working directory (for context)")
+    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
+                        help="Override model from active profile")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -70,11 +72,13 @@ def main():
         print(
             "pscmd — AI-powered shell command generator\n\n"
             "Usage:\n"
-            "  pscmd <description>   Generate a shell command from description\n\n"
+            "  pscmd <description>            Generate a shell command from description\n"
+            "  pscmd -m <model> <description> Use a specific model\n\n"
             "Examples:\n"
             "  pscmd list all open ports\n"
             "  pscmd find files modified in the last 24 hours\n"
             "  pscmd kill process using port 8080\n"
+            "  pscmd -m gpt-4o list all open ports\n"
         )
         sys.exit(0)
 
@@ -95,7 +99,7 @@ def main():
     api_key          = _ai._load_api_key(profile.get("name", ""), base_dir)
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = profile.get("model", "")
+    model            = args.model or profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
