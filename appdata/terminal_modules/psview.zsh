@@ -4,10 +4,11 @@ psview() {
 psview — AI-powered screenshot / image analyzer
 
 Usage:
-  psview <image>                    Analyze image with default pentest prompt
-  psview <image> "<question>"       Ask a specific question about the image
-  psview <image> --cmd              Analyze and paste best command (image only, y/n)
-  psview <image> --next             Analyze and suggest next steps (full history, y/n)
+  psview <image>                      Analyze image with default pentest prompt
+  psview <image> "<question>"         Ask a specific question about the image
+  psview <image> --cmd                Analyze and paste best command (image only, y/n)
+  psview <image> --next               Analyze and suggest next steps (full history, y/n)
+  psview -m <model> <image>           Use a specific model
 
 Supported formats: PNG, JPG, JPEG, WebP, GIF
 

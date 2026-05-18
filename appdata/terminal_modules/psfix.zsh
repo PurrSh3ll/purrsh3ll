@@ -4,9 +4,10 @@ psfix() {
 psfix — AI-powered terminal error explainer/fixer
 
 Usage:
-  psfix             Paste the corrected command at the prompt (ready to run)
-  psfix --explain   Explain why the last command failed
-  psfix --analyze   Deep analysis using terminal history and working directory
+  psfix                  Paste the corrected command at the prompt (ready to run)
+  psfix --explain        Explain why the last command failed
+  psfix --analyze        Deep analysis using terminal history and working directory
+  psfix -m <model>       Use a specific model
 
 psfix reads the last command from terminal history automatically.
 Triggered via the ⚠ Explain / 🔧 Fix / 🔍 Analyze overlay buttons

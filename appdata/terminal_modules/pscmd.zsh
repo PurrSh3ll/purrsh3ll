@@ -4,12 +4,14 @@ pscmd() {
 pscmd — AI-powered shell command generator
 
 Usage:
-  pscmd <description>   Generate a shell command from natural-language description
+  pscmd <description>            Generate a shell command from natural-language description
+  pscmd -m <model> <description> Use a specific model
 
 Examples:
   pscmd list all open ports
   pscmd find files modified in the last 24 hours
   pscmd kill process using port 8080
+  pscmd -m gpt-4o list all open ports
 EOF
         return 0
     fi
