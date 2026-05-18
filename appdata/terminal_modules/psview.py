@@ -164,7 +164,9 @@ def main():
     parser.add_argument("question", nargs="*",
                         help="Optional question about the image")
     parser.add_argument("--next",     action="store_true",
-                        help="After analysis, run psnext-style next-step suggestion")
+                        help="After analysis, run psnext-style next-step suggestion (uses full history)")
+    parser.add_argument("--cmd",      action="store_true",
+                        help="After analysis, ask y/n to paste the best command (image only, no history)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("-h", "--help", action="store_true")
@@ -176,7 +178,8 @@ def main():
             "Usage:\n"
             "  psview <image>                    Analyze image with default pentest prompt\n"
             "  psview <image> \"<question>\"       Ask a specific question about the image\n"
-            "  psview <image> --next             Analyze and suggest next pentest steps\n\n"
+            "  psview <image> --cmd              Analyze and paste best command (image only)\n"
+            "  psview <image> --next             Analyze and suggest next steps (full history)\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
             "The analysis is saved to terminal history so psnext/psreport can use it.\n"
@@ -225,13 +228,24 @@ def main():
     if not question:
         question = _DEFAULT_QUESTION
 
-    messages = _build_messages(b64, media_type, question, provider)
+    # For --cmd: append instruction to write the command on the last line
+    cmd_question = question
+    if args.cmd:
+        cmd_question = (
+            question + "\n\n"
+            "At the very end, on a new line, write ONLY the single most important command "
+            "to run based solely on what you see in this image — "
+            "no prefix, no explanation, no backticks, just the raw command."
+        )
+
+    messages = _build_messages(b64, media_type, cmd_question, provider)
 
     # ── Stream analysis ────────────────────────────────────────────────────────
     _ai._info(f"Analyzing {filename} with {model}...\n")
 
-    if args.next:
-        # Stream to stderr (visible via 2>/dev/tty), capture for history + next step
+    stream_to_stderr = args.next or args.cmd
+    if stream_to_stderr:
+        # Stream to stderr (visible via 2>/dev/tty), capture response for further processing
         _real_stdout = sys.stdout
         sys.stdout   = sys.stderr
         try:
@@ -248,6 +262,13 @@ def main():
     # ── Save synthetic history entry ───────────────────────────────────────────
     _save_to_history(base_dir, filename, analysis, cwd)
     _ai._info(f"\nSaved to terminal history as [psscreenshot: {filename}]\n")
+
+    # ── --cmd: paste best command based on image only ──────────────────────────
+    if args.cmd:
+        cmd = _clean_command(analysis)
+        if cmd:
+            print(cmd)
+        sys.exit(0)
 
     if not args.next:
         sys.exit(0)

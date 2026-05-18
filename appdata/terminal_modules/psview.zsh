@@ -6,7 +6,8 @@ psview — AI-powered screenshot / image analyzer
 Usage:
   psview <image>                    Analyze image with default pentest prompt
   psview <image> "<question>"       Ask a specific question about the image
-  psview <image> --next             Analyze and suggest next pentest steps (y/n paste)
+  psview <image> --cmd              Analyze and paste best command (image only, y/n)
+  psview <image> --next             Analyze and suggest next steps (full history, y/n)
 
 Supported formats: PNG, JPG, JPEG, WebP, GIF
 
@@ -29,8 +30,8 @@ EOF
         return 1
     fi
 
-    if [[ "$*" == *"--next"* ]]; then
-        # Stream analysis + next-step output to terminal (via 2>/dev/tty),
+    if [[ "$*" == *"--next"* ]] || [[ "$*" == *"--cmd"* ]]; then
+        # Stream analysis to terminal (via 2>/dev/tty),
         # capture best command on stdout, then ask y/n
         local _cmd
         _cmd=$("$_py" "$_script" --base-dir "$_base" --cwd "$PWD" "$@" 2>/dev/tty)
