@@ -70,8 +70,9 @@ class VoiceThread(QThread):
 
     def __init__(self, base_dir: str, parent=None):
         super().__init__(parent)
-        self.base_dir    = base_dir
-        self._running    = False
+        self.base_dir         = base_dir
+        self._running         = False
+        self._exit_confirm    = False  # set by GUI to break out of confirm loop
         self._wakeword_model_name = "hey_jarvis"  # default; change via set_wakeword()
 
     def set_wakeword(self, name: str):
@@ -92,6 +93,10 @@ class VoiceThread(QThread):
 
     def stop(self):
         self._running = False
+
+    def exit_confirm(self):
+        """Called by GUI Cancel button to break out of the confirm loop."""
+        self._exit_confirm = True
 
     # ── Main pipeline ─────────────────────────────────────────────────────────
 
@@ -166,7 +171,18 @@ class VoiceThread(QThread):
 
                 # Wait for "Hey Jarvis" + "accept" / "cancel" via voice.
                 # No AI needed — Whisper keyword check only.
-                while self._running:
+                # Reset wake word buffer and drain audio queue so the previous
+                # detection score doesn't immediately re-trigger.
+                for scores in ww_model.prediction_buffer.values():
+                    scores.clear()
+                while not audio_q.empty():
+                    try:
+                        audio_q.get_nowait()
+                    except Exception:
+                        break
+                self._exit_confirm = False
+                self.state_changed.emit("idle")
+                while self._running and not self._exit_confirm:
                     detected = self._wait_for_wakeword(audio_q, ww_model)
                     if not detected:
                         break
@@ -174,21 +190,36 @@ class VoiceThread(QThread):
                     self.state_changed.emit("confirming")
                     frames = self._record_speech(audio_q)
                     if frames is None:
-                        self.state_changed.emit("ready")
+                        self.state_changed.emit("idle")
                         continue
 
                     text = self._transcribe(stt_model, frames).lower()
                     if "accept" in text:
                         self.confirm_action.emit("accept")
-                        return
+                        break  # back to main wake word loop
                     elif "cancel" in text:
                         self.confirm_action.emit("cancel")
-                        return
+                        break  # back to main wake word loop
                     else:
-                        # Neither word — back to waiting
-                        self.state_changed.emit("ready")
+                        # Neither word — clear buffer and return to wake word listening
+                        for scores in ww_model.prediction_buffer.values():
+                            scores.clear()
+                        while not audio_q.empty():
+                            try:
+                                audio_q.get_nowait()
+                            except Exception:
+                                break
+                        self.state_changed.emit("idle")
 
-                return
+                # After accept/cancel, clear buffer and continue outer loop
+                for scores in ww_model.prediction_buffer.values():
+                    scores.clear()
+                while not audio_q.empty():
+                    try:
+                        audio_q.get_nowait()
+                    except Exception:
+                        break
+                self.state_changed.emit("idle")
 
         self.state_changed.emit("idle")
 

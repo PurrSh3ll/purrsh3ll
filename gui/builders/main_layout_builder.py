@@ -443,11 +443,6 @@ def build_main_layout(main_window):
         def _on_accept():
             cmd = _state["command"]
             _hide_popup()
-            _stop_thread()
-            _set_idle_style()
-            btn.blockSignals(True)
-            btn.setChecked(False)
-            btn.blockSignals(False)
             if not cmd:
                 return
             # Paste into active terminal via sendText
@@ -456,11 +451,9 @@ def build_main_layout(main_window):
                 if tabs is not None:
                     wrapper = tabs.currentWidget()
                     if wrapper is not None:
-                        # Try direct sendText (QTermWidget)
                         if hasattr(wrapper, "sendText"):
                             wrapper.sendText(cmd + "\n")
                             return
-                        # Try _console attribute (TerminalWrapper)
                         inner = getattr(wrapper, "_console", None)
                         if inner is not None and hasattr(inner, "sendText"):
                             inner.sendText(cmd + "\n")
@@ -471,11 +464,10 @@ def build_main_layout(main_window):
 
         def _on_cancel():
             _hide_popup()
-            _stop_thread()
-            _set_idle_style()
-            btn.blockSignals(True)
-            btn.setChecked(False)
-            btn.blockSignals(False)
+            # Signal thread to exit confirm loop and return to main wake word loop
+            thread = _state.get("thread")
+            if thread is not None:
+                thread.exit_confirm()
 
         accept_btn.clicked.connect(_on_accept)
         cancel_btn.clicked.connect(_on_cancel)
@@ -494,9 +486,6 @@ def build_main_layout(main_window):
             elif state == "processing":
                 btn.setStyleSheet(_STYLE_PROCESSING)
                 btn.setToolTip("Generating command…")
-            elif state == "ready":
-                btn.setStyleSheet(_STYLE_ON)
-                btn.setToolTip("Say 'Hey Jarvis' then 'Accept' or 'Cancel'")
             elif state == "confirming":
                 btn.setStyleSheet(_STYLE_LISTENING)
                 btn.setToolTip("Say 'Accept' or 'Cancel'…")
