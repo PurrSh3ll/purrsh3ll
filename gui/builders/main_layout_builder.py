@@ -343,6 +343,7 @@ def build_main_layout(main_window):
         c.register_widget("gif_label", gif_label)
 
     def create_voice_button():
+        import os as _os
         central_widget = c.widgets["central_widget"]
         btn = QPushButton("🎙", central_widget)
         btn.setFixedSize(26, 22)
@@ -361,12 +362,180 @@ def build_main_layout(main_window):
             "border-radius: 3px; font-size: 13px; color: #ff8888; }"
             "QPushButton:hover { background: #7a2020; }"
         )
+        _STYLE_LISTENING = (
+            "QPushButton { background: #1a4a1a; border: 2px solid #55e055; "
+            "border-radius: 3px; font-size: 13px; color: #88ff88; }"
+        )
+        _STYLE_PROCESSING = (
+            "QPushButton { background: #1a3a5a; border: 1px solid #5599ee; "
+            "border-radius: 3px; font-size: 13px; color: #88bbff; }"
+        )
         btn.setStyleSheet(_STYLE_OFF)
+
+        # ── voice command popup (Accept / Cancel) ─────────────────────────────
+        popup = QWidget(central_widget)
+        popup.setFixedWidth(320)
+        popup.setStyleSheet(
+            "QWidget { background: #1e1e1e; border: 1px solid #555; border-radius: 6px; }"
+        )
+        popup_layout = QVBoxLayout(popup)
+        popup_layout.setContentsMargins(8, 6, 8, 6)
+        popup_layout.setSpacing(4)
+
+        popup_label = QLabel("", popup)
+        popup_label.setWordWrap(True)
+        popup_label.setStyleSheet("QLabel { color: #ddd; font-size: 11px; border: none; }")
+
+        popup_btn_row = QWidget(popup)
+        popup_btn_row.setStyleSheet("QWidget { background: transparent; border: none; }")
+        popup_btn_layout = QHBoxLayout(popup_btn_row)
+        popup_btn_layout.setContentsMargins(0, 0, 0, 0)
+        popup_btn_layout.setSpacing(6)
+
+        accept_btn = QPushButton("✓ Accept", popup_btn_row)
+        accept_btn.setFixedHeight(22)
+        accept_btn.setStyleSheet(
+            "QPushButton { background: #1a4a1a; border: 1px solid #55aa55; "
+            "border-radius: 3px; color: #88ff88; font-size: 11px; }"
+            "QPushButton:hover { background: #1e5e1e; }"
+        )
+        cancel_btn = QPushButton("✗ Cancel", popup_btn_row)
+        cancel_btn.setFixedHeight(22)
+        cancel_btn.setStyleSheet(
+            "QPushButton { background: #4a1a1a; border: 1px solid #aa5555; "
+            "border-radius: 3px; color: #ff8888; font-size: 11px; }"
+            "QPushButton:hover { background: #5e1e1e; }"
+        )
+        popup_btn_layout.addWidget(accept_btn)
+        popup_btn_layout.addWidget(cancel_btn)
+
+        popup_layout.addWidget(popup_label)
+        popup_layout.addWidget(popup_btn_row)
+        popup.hide()
+        popup.adjustSize()
+        c.register_widget("voice_popup", popup)
+        c.register_widget("voice_popup_label", popup_label)
+
+        # ── VoiceThread state ──────────────────────────────────────────────────
+        _state = {"thread": None, "command": ""}
+
+        def _position_popup():
+            mw = c.widgets["main_window"]
+            popup.adjustSize()
+            px = mw.width() - popup.width() - 4
+            py = mw.height() - btn.height() - popup.height() - 6
+            popup.move(px, py)
+            popup.raise_()
+
+        def _show_popup(command: str):
+            _state["command"] = command
+            popup_label.setText(f"<b>Command:</b> <code>{command}</code>")
+            _position_popup()
+            popup.show()
+
+        def _hide_popup():
+            popup.hide()
+            _state["command"] = ""
+
+        def _on_accept():
+            cmd = _state["command"]
+            _hide_popup()
+            _stop_thread()
+            _set_idle_style()
+            btn.blockSignals(True)
+            btn.setChecked(False)
+            btn.blockSignals(False)
+            if not cmd:
+                return
+            # Paste into active terminal via sendText
+            try:
+                tabs = c.widgets.get("terminal_tabs")
+                if tabs is not None:
+                    wrapper = tabs.currentWidget()
+                    if wrapper is not None:
+                        # Try direct sendText (QTermWidget)
+                        if hasattr(wrapper, "sendText"):
+                            wrapper.sendText(cmd + "\n")
+                            return
+                        # Try _console attribute (TerminalWrapper)
+                        inner = getattr(wrapper, "_console", None)
+                        if inner is not None and hasattr(inner, "sendText"):
+                            inner.sendText(cmd + "\n")
+                            return
+            except Exception as e:
+                import logging as _log
+                _log.getLogger(__name__).error("voice accept error: %s", e)
+
+        def _on_cancel():
+            _hide_popup()
+            _stop_thread()
+            _set_idle_style()
+            btn.blockSignals(True)
+            btn.setChecked(False)
+            btn.blockSignals(False)
+
+        accept_btn.clicked.connect(_on_accept)
+        cancel_btn.clicked.connect(_on_cancel)
+
+        def _set_idle_style():
+            btn.setStyleSheet(_STYLE_OFF)
+            btn.setToolTip("Voice command mode")
+
+        def _on_state_changed(state: str):
+            if state == "idle":
+                btn.setStyleSheet(_STYLE_ON)
+                btn.setToolTip("Listening for wake word… (click to stop)")
+            elif state == "listening":
+                btn.setStyleSheet(_STYLE_LISTENING)
+                btn.setToolTip("Recording speech…")
+            elif state == "processing":
+                btn.setStyleSheet(_STYLE_PROCESSING)
+                btn.setToolTip("Generating command…")
+            elif state == "ready":
+                btn.setStyleSheet(_STYLE_ON)
+                btn.setToolTip("Command ready — accept or cancel")
+            elif state.startswith("error:"):
+                msg_text = state[6:]
+                import logging as _log
+                _log.getLogger(__name__).error("VoiceThread error: %s", msg_text)
+                btn.setStyleSheet(_STYLE_OFF)
+                btn.setToolTip(f"Voice error: {msg_text}")
+                btn.blockSignals(True)
+                btn.setChecked(False)
+                btn.blockSignals(False)
+
+        def _on_command_ready(command: str):
+            _show_popup(command)
+
+        def _start_thread():
+            from core.voice.voice_thread import VoiceThread
+            base_dir = _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+            thread = VoiceThread(base_dir=base_dir, parent=None)
+            thread.state_changed.connect(_on_state_changed)
+            thread.command_ready.connect(_on_command_ready)
+            thread.finished.connect(lambda: None)  # prevent Qt warning
+            _state["thread"] = thread
+            thread.start()
+
+        def _stop_thread():
+            thread = _state.get("thread")
+            if thread is not None:
+                # Disconnect signals first so any final emissions don't change button style
+                try:
+                    thread.state_changed.disconnect()
+                    thread.command_ready.disconnect()
+                except Exception:
+                    pass
+                thread.stop()
+                thread.quit()
+                thread.wait(2000)
+                _state["thread"] = None
 
         def _on_clicked(checked):
             if not checked:
-                btn.setStyleSheet(_STYLE_OFF)
-                btn.setToolTip("Voice command mode")
+                _stop_thread()
+                _hide_popup()
+                _set_idle_style()
                 return
 
             # Show confirmation popup before activating
@@ -376,14 +545,12 @@ def build_main_layout(main_window):
             msg.setText("<b>Activate Voice Command Mode?</b>")
             msg.setInformativeText(
                 "Voice Command Mode will:\n\n"
-                "• Access your <b>microphone continuously</b> in the background\n"
-                "• Listen for a wake word to start recording\n"
-                "• Send your speech to the active AI profile\n"
-                "• Paste the generated command into the active terminal\n\n"
-                "<i>You will be asked to confirm (Accept / Cancel) before any "
-                "command is executed.</i>\n\n"
-                "Make sure a vision/speech-capable profile is active.\n"
-                "You can deactivate at any time by clicking the button again."
+                "• Access your microphone continuously in the background\n"
+                "• Listen for the wake word 'Hey Jarvis' to start recording\n"
+                "• Transcribe your speech and generate a shell command via AI\n"
+                "• Show you the command for Accept / Cancel before executing\n\n"
+                "You can deactivate at any time by clicking the button again.\n"
+                "Make sure an AI profile is active in the profile selector."
             )
             msg.setStandardButtons(
                 QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
@@ -393,9 +560,9 @@ def build_main_layout(main_window):
             result = msg.exec()
             if result == QMessageBox.StandardButton.Ok:
                 btn.setStyleSheet(_STYLE_ON)
-                btn.setToolTip("Voice command mode: ACTIVE — click to deactivate")
+                btn.setToolTip("Listening for wake word… (click to stop)")
+                _start_thread()
             else:
-                # User cancelled — revert toggle
                 btn.blockSignals(True)
                 btn.setChecked(False)
                 btn.blockSignals(False)

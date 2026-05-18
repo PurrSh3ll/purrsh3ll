@@ -132,6 +132,13 @@ class PanelManagerMixin:
         if voice_btn is not None:
             voice_btn.move(new_x - voice_btn.width() - 4, new_y)
 
+        voice_popup = self.widgets.get("voice_popup")
+        if voice_popup is not None and voice_popup.isVisible():
+            voice_popup.adjustSize()
+            px = main_window.width() - voice_popup.width() - 4
+            py = main_window.height() - new_y - voice_popup.height() - 6
+            voice_popup.move(px, py)
+
     def _toggle_panel(self, panel_key, button_key, visible_attr, icon_closed, button_y_fn, anim_prefix):
         button = self.widgets[button_key]
         panel = self.widgets[panel_key]
