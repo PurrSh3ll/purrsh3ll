@@ -566,7 +566,10 @@ def build_chat_panel(main_window):
         """Build 'ollama run <model> [flags]' from profile settings."""
         model = profile.get("model", "")
         flags = []
-        # Parse custom_params JSON → CLI flags
+        # disable_thinking checkbox → --think=false
+        if profile.get("disable_thinking"):
+            flags.append("--think=false")
+        # Parse custom_params JSON → CLI flags (may override think)
         raw_params = profile.get("custom_params", "")
         if raw_params:
             try:
