@@ -541,26 +541,58 @@ def build_main_layout(main_window):
                 return
 
             # Show confirmation popup before activating
-            msg = QMessageBox(c.widgets["main_window"])
-            msg.setWindowTitle("Activate Voice Command Mode")
-            msg.setIcon(QMessageBox.Icon.Question)
-            msg.setText("<b>Activate Voice Command Mode?</b>")
-            msg.setInformativeText(
-                "Voice Command Mode will:\n\n"
-                "• Access your microphone continuously in the background\n"
-                "• Listen for the wake word 'Hey Jarvis' to start recording\n"
-                "• Transcribe your speech and generate a shell command via AI\n"
-                "• Show you the command for Accept / Cancel before executing\n\n"
-                "You can deactivate at any time by clicking the button again.\n"
-                "Make sure an AI profile is active in the profile selector."
-            )
-            msg.setStandardButtons(
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
-            )
-            msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            from PyQt6.QtWidgets import QDialogButtonBox
+            dlg = QDialog(c.widgets["main_window"])
+            dlg.setWindowTitle("Activate Voice Command Mode")
+            dlg.setMinimumWidth(360)
+            _dlg_layout = QVBoxLayout(dlg)
+            _dlg_layout.setSpacing(12)
+            _dlg_layout.setContentsMargins(20, 16, 20, 16)
 
-            result = msg.exec()
-            if result == QMessageBox.StandardButton.Ok:
+            _title = QLabel("<b>Activate Voice Command Mode?</b>", dlg)
+            _title.setStyleSheet("font-size: 13px;")
+
+            _wakeword_box = QWidget(dlg)
+            _wakeword_box.setStyleSheet(
+                "QWidget { background: #1a2a1a; border: 1px solid #3a6a3a; border-radius: 4px; }"
+            )
+            _wb_layout = QVBoxLayout(_wakeword_box)
+            _wb_layout.setContentsMargins(12, 8, 12, 8)
+            _wb_layout.setSpacing(2)
+            _ww_label = QLabel("Wake word", _wakeword_box)
+            _ww_label.setStyleSheet("font-size: 10px; color: #888; border: none; background: transparent;")
+            _ww_word = QLabel("<b>Hey Jarvis</b>", _wakeword_box)
+            _ww_word.setStyleSheet("font-size: 15px; color: #88ff88; border: none; background: transparent;")
+            _wb_layout.addWidget(_ww_label)
+            _wb_layout.addWidget(_ww_word)
+
+            _info = QLabel(
+                "<small>"
+                "• Accesses your microphone continuously in the background<br>"
+                "• Transcribes your speech and generates a shell command via AI<br>"
+                "• Shows the command for confirmation before executing<br>"
+                "• Deactivate at any time by clicking the button again<br>"
+                "• Make sure an AI profile is active in the profile selector"
+                "</small>",
+                dlg
+            )
+            _info.setStyleSheet("color: #aaa; font-size: 11px;")
+            _info.setWordWrap(True)
+
+            _buttons = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+                dlg
+            )
+            _buttons.accepted.connect(dlg.accept)
+            _buttons.rejected.connect(dlg.reject)
+
+            _dlg_layout.addWidget(_title)
+            _dlg_layout.addWidget(_wakeword_box)
+            _dlg_layout.addWidget(_info)
+            _dlg_layout.addWidget(_buttons)
+
+            result = dlg.exec()
+            if result == QDialog.DialogCode.Accepted:
                 btn.setStyleSheet(_STYLE_ON)
                 btn.setToolTip("Listening for wake word… (click to stop)")
                 _start_thread()
