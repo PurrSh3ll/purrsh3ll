@@ -113,9 +113,6 @@ def build_chat_panel(main_window):
 
     btn_height = 28
 
-    chat_btn_add = QPushButton("⚙")
-    chat_btn_add.setMinimumHeight(btn_height)
-
     chat_btn_info = QPushButton("ℹ")
     chat_btn_info.setMinimumHeight(btn_height)
 
@@ -133,7 +130,6 @@ def build_chat_panel(main_window):
         chat_btn_run.setText(action.text())
         is_connect = action.text() == "connect"
         chat_combo_custom.setVisible(not is_connect)
-        chat_btn_add.setVisible(not is_connect)
         chat_btn_info.setVisible(not is_connect)
         cmd_preview_widget.setVisible(not is_connect)
         if not is_connect:
@@ -141,7 +137,7 @@ def build_chat_panel(main_window):
 
     _run_mode_menu.triggered.connect(_on_mode_selected)
 
-    for widget in (chat_combo_interface, chat_combo_custom, chat_btn_add, chat_btn_info, chat_btn_run):
+    for widget in (chat_combo_interface, chat_combo_custom, chat_btn_info, chat_btn_run):
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         bottom_row.addWidget(widget)
 
@@ -161,7 +157,7 @@ def build_chat_panel(main_window):
         "QToolButton:hover { background-color: #A52A2A; }"
         "QToolButton:pressed { background-color: #6B1111; }"
     )
-    _controls = [chat_combo_interface, chat_combo_custom, chat_btn_add, chat_btn_info]
+    _controls = [chat_combo_interface, chat_combo_custom, chat_btn_info]
 
     def _enter_running_state():
         _prev_btn_text[0] = chat_btn_run.text()
@@ -260,7 +256,7 @@ def build_chat_panel(main_window):
 
         url_edit = QLineEdit(dlg)
         url_edit.setPlaceholderText("https://example.com")
-        url_edit.setText("http://localhost:8000")
+        url_edit.setText("http://localhost:3000")
         url_edit.selectAll()
         dlg_layout.addWidget(url_edit)
 
@@ -833,7 +829,6 @@ def build_chat_panel(main_window):
 
     chat_combo_interface.currentIndexChanged.connect(lambda: _refresh_custom_combo())
     chat_combo_custom.currentIndexChanged.connect(lambda: _on_custom_changed())
-    chat_btn_add.clicked.connect(_on_options_clicked)
 
     # Load presets on startup
     _refresh_custom_combo()
@@ -883,7 +878,6 @@ def build_chat_panel(main_window):
     c.register_widget("chat_future_label", future_label)
     c.register_widget("chat_combo_interface", chat_combo_interface)
     c.register_widget("chat_combo_custom", chat_combo_custom)
-    c.register_widget("chat_btn_add", chat_btn_add)
     c.register_widget("chat_btn_info", chat_btn_info)
     c.register_widget("chat_cmd_preview", cmd_preview_edit)
     c.register_widget("chat_info_cmd_label", info_cmd_label)
