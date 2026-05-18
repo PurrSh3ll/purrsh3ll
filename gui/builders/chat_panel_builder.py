@@ -167,7 +167,7 @@ def build_chat_panel(main_window):
     def _start_info_blink():
         if _blink_timer[0] is not None:
             return
-        t = QTimer()
+        t = QTimer(chat_panel)
         t.setInterval(500)
         def _toggle():
             _blink_state[0] = not _blink_state[0]
@@ -186,44 +186,41 @@ def build_chat_panel(main_window):
             _poll_timer[0].stop()
             _poll_timer[0] = None
 
-    def _check_port_async(host, port, on_result):
-        import threading, socket
-        def _worker():
+    def _check_port(host, port):
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(0.5)
+        try:
+            return sock.connect_ex((host, port)) == 0
+        except Exception:
+            return False
+        finally:
             try:
-                s = socket.create_connection((host, port), timeout=2)
-                s.close()
-                reachable = True
+                sock.close()
             except Exception:
-                reachable = False
-            QTimer.singleShot(0, lambda r=reachable: on_result(r))
-        threading.Thread(target=_worker, daemon=True).start()
+                pass
 
     def _start_port_poll(host, port):
-        _stop_info_blink()  # reset any previous state
-
-        def _on_initial(reachable):
-            if reachable or not _running[0]:
+        _stop_info_blink()
+        # Blink immediately — user may need to enter sudo or check logs
+        _start_info_blink()
+        t = QTimer(chat_panel)
+        t.setInterval(3000)
+        def _poll():
+            if not _running[0]:
+                _stop_info_blink()
+                t.stop()
+                _poll_timer[0] = None
                 return
-            _start_info_blink()
-            t = QTimer()
-            t.setInterval(4000)
-            def _poll():
-                if not _running[0]:
-                    _stop_info_blink()
-                    t.stop()
-                    _poll_timer[0] = None
-                    return
-                def _on_poll(r):
-                    if r:
-                        _stop_info_blink()
-                        t.stop()
-                        _poll_timer[0] = None
-                _check_port_async(host, port, _on_poll)
-            t.timeout.connect(_poll)
-            t.start()
-            _poll_timer[0] = t
-
-        _check_port_async(host, port, _on_initial)
+            if _check_port(host, port):
+                _stop_info_blink()
+                t.stop()
+                _poll_timer[0] = None
+        t.timeout.connect(_poll)
+        # First check shortly after start — if already running, stop blinking fast
+        QTimer.singleShot(800, _poll)
+        t.start()
+        _poll_timer[0] = t
 
     def _enter_running_state():
         _prev_btn_text[0] = chat_btn_run.text()
@@ -363,13 +360,13 @@ def build_chat_panel(main_window):
         # Populate info dialog with a terminal running the launch command
         _launch_info_terminal(_web_launch_cmd)
 
-        # Check if container is reachable; blink ℹ if not
+        # Blink ℹ immediately; stop when container is reachable on the port
         try:
             from urllib.parse import urlparse
             _parsed = urlparse(raw)
             _host = _parsed.hostname or "localhost"
             _port = _parsed.port or (443 if raw.startswith("https") else 80)
-            QTimer.singleShot(1500, lambda h=_host, p=_port: _start_port_poll(h, p))
+            _start_port_poll(_host, _port)
         except Exception:
             pass
 
