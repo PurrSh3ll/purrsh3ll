@@ -206,11 +206,12 @@ def build_main_layout(main_window):
                 with open(c.config_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 welcome = cfg.get("welcome", {})
-                if "custom_text" not in welcome:
+                saved = welcome.get("custom_text", "__default__")
+                if saved in ("__default__", ) or "custom_text" not in welcome:
                     _is_default[0] = True
                     return _make_default_welcome()
                 _is_default[0] = False
-                return welcome["custom_text"]
+                return saved
             except Exception:
                 _is_default[0] = True
                 return _make_default_welcome()
@@ -361,7 +362,7 @@ def build_main_layout(main_window):
 
             def _do_default_text():
                 _is_default[0] = True
-                _save_welcome_text("")
+                _save_welcome_text("__default__")
                 welcome_label.setText(_make_default_welcome())
                 dlg.accept()
 
