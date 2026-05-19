@@ -30,4 +30,12 @@ appdata/session.json
 appdata/psnotes.txt
 appdata/ob_panel_state.json
 appdata/terminal_fifos/
+appdata/chat_sessions/
+appdata/venv_list.json
+
+# Wygenerowane raporty
+appmodules/Cyb3rCollector/reports/
+
+# Pliki audio
+*.wav
 
