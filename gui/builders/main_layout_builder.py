@@ -262,7 +262,13 @@ def build_main_layout(main_window):
                 if _current_movie[0] is not None:
                     _current_movie[0].stop()
                 label.setPixmap(QPixmap())
+                label._orig_pixmap = None
                 m = QMovie(path)
+                m.jumpToFrame(0)
+                nat = m.currentPixmap().size()
+                label._movie_natural_size = nat
+                if nat.isValid() and nat.width() > 0 and label.width() > 0:
+                    m.setScaledSize(nat.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio))
                 label.setMovie(m)
                 m.start()
                 _current_movie[0] = m
@@ -272,9 +278,14 @@ def build_main_layout(main_window):
                     _current_movie[0].stop()
                     _current_movie[0] = None
                 label.setMovie(None)
+                label._movie_natural_size = None
                 px = QPixmap(path)
                 if not px.isNull():
-                    label.setPixmap(px)
+                    label._orig_pixmap = px
+                    if label.width() > 0:
+                        label.setPixmap(px.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                    else:
+                        label.setPixmap(px)
 
         def _on_gif_double_click():
             dlg = QDialog(c.widgets["main_window"])
@@ -321,8 +332,29 @@ def build_main_layout(main_window):
                 _on_welcome_double_click()
 
         class _GifLabel(QLabel):
+            def __init__(self_):
+                super().__init__()
+                self_._orig_pixmap = None
+                self_._movie_natural_size = None
+                self_.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self_.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                self_.setMinimumSize(1, 1)
+
             def mouseDoubleClickEvent(self_, event):
                 _on_gif_double_click()
+
+            def resizeEvent(self_, event):
+                super().resizeEvent(event)
+                if self_._orig_pixmap and not self_._orig_pixmap.isNull():
+                    self_.setPixmap(self_._orig_pixmap.scaled(
+                        self_.size(),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    ))
+                elif _current_movie[0] is not None and self_._movie_natural_size and self_._movie_natural_size.isValid():
+                    _current_movie[0].setScaledSize(
+                        self_._movie_natural_size.scaled(self_.size(), Qt.AspectRatioMode.KeepAspectRatio)
+                    )
 
         container = QWidget(c.widgets["execution_tabs"])
         welcome_text_layout = QVBoxLayout(container)
@@ -332,7 +364,6 @@ def build_main_layout(main_window):
         welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         welcome_label.setToolTip("Double-click to edit")
         gif_label = _GifLabel()
-        gif_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         gif_label.setToolTip("Double-click to change image")
         _apply_image(_load_image_path(), gif_label)
         welcome_text_layout.addWidget(welcome_label)
