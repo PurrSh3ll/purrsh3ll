@@ -1,4 +1,3 @@
-# PSDESC: internal AI dispatcher — use psask / pschat instead
 psai() {
     local _base="${${(%):-%x}:A:h:h:h}"
     local _py="$_base/.venv/bin/python3"

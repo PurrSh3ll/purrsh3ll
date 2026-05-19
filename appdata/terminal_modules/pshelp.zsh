@@ -37,17 +37,13 @@ pshelp() {
         done < "$_f"
     done
 
-    # List all loaded ps* functions, sorted
-    local _funcs
-    _funcs=($(print -l ${(ok)functions} | grep '^ps'))
-
     echo ""
     echo "  \033[1mPurrSh3ll AI Tools\033[0m"
     echo "  ────────────────────────────────────────────────────"
+    # Only show functions that have a PSDESC annotation, sorted
     local _fn _dsc
-    for _fn in $_funcs; do
-        _dsc="${_desc[$_fn]:-}"
-        printf "  \033[36m%-16s\033[0m  %s\n" "$_fn" "$_dsc"
+    for _fn in ${(ok)_desc}; do
+        printf "  \033[36m%-16s\033[0m  %s\n" "$_fn" "${_desc[$_fn]}"
     done
     echo ""
     echo "  \033[2mpshelp <command>   show detailed help for a command\033[0m"
