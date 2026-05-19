@@ -169,10 +169,35 @@ def build_main_layout(main_window):
         c.register_widget("snippet_button", snippet_button)
 
     def create_welcome_text():
-        _DEFAULT_WELCOME = (
-            "<p><b style='font-size:18px;'>Welcome to PurrSh3ll</b></p>"
-            "<p>H3llo Damian, who would you like to hack today?</p>"
-        )
+        import random as _random
+        _HACKER_MESSAGES = [
+            "We found you 👁️ Welcome",
+            "They are watching your signal",
+            "You've been flagged. Stay silent",
+            "Access granted. Don't look back",
+            "You are now one of us",
+            "The network knows your name",
+            "Your trace ends tonight",
+            "They want you offline",
+            "Join us. No questions",
+            "We own your machine",
+            "Your firewall won't save you",
+            "You've been breached. No escape",
+            "We are inside. Stay calm",
+            "Root access achieved. Goodbye",
+            "You can't hide anymore",
+            "Your data is already gone",
+            "Delete yourself. They're coming",
+            "You just triggered the protocol",
+            "No logs. No witnesses",
+        ]
+
+        def _make_default_welcome():
+            msg = _random.choice(_HACKER_MESSAGES)
+            return (
+                "<p><b style='font-size:18px;'>Hello H4CK3R!!!</b></p>"
+                f"<p>{msg}</p>"
+            )
 
         def _load_welcome_text():
             try:
@@ -180,10 +205,10 @@ def build_main_layout(main_window):
                     cfg = json.load(f)
                 welcome = cfg.get("welcome", {})
                 if "custom_text" not in welcome:
-                    return _DEFAULT_WELCOME
+                    return _make_default_welcome()
                 return welcome["custom_text"]
             except Exception:
-                return _DEFAULT_WELCOME
+                return _make_default_welcome()
 
         def _save_welcome_text(text):
             try:
@@ -197,7 +222,7 @@ def build_main_layout(main_window):
             except Exception:
                 pass
 
-        def _on_welcome_double_click():
+        def _open_edit_dialog():
             dlg = QDialog(c.widgets["main_window"])
             dlg.setWindowTitle("Edit welcome text")
             dlg.setModal(True)
@@ -233,6 +258,40 @@ def build_main_layout(main_window):
                     html = ""
                 welcome_label.setText(html)
                 _save_welcome_text(html)
+
+        def _on_welcome_double_click():
+            dlg = QDialog(c.widgets["main_window"])
+            dlg.setWindowTitle("Welcome text")
+            dlg.setModal(True)
+            dlg.resize(280, 120)
+            layout = QVBoxLayout(dlg)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(10)
+            try:
+                dlg.setStyleSheet(c.messagebox_stylesheet)
+            except Exception:
+                pass
+            btn_edit    = QPushButton("Edit text", dlg)
+            btn_default = QPushButton("Restore default", dlg)
+            btn_cancel  = QPushButton("Cancel", dlg)
+            layout.addWidget(btn_edit)
+            layout.addWidget(btn_default)
+            layout.addWidget(btn_cancel)
+
+            def _do_edit():
+                dlg.accept()
+                _open_edit_dialog()
+
+            def _do_default():
+                html = _make_default_welcome()
+                welcome_label.setText(html)
+                _save_welcome_text(html)
+                dlg.accept()
+
+            btn_edit.clicked.connect(_do_edit)
+            btn_default.clicked.connect(_do_default)
+            btn_cancel.clicked.connect(dlg.reject)
+            dlg.exec()
 
         _DEFAULT_IMAGE_PATH = os.path.join(c.base_path, "icons", "__default_image.gif")
 
