@@ -178,8 +178,10 @@ def build_main_layout(main_window):
             try:
                 with open(c.config_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
-                saved = cfg.get("welcome", {}).get("custom_text", "")
-                return saved if saved else _DEFAULT_WELCOME
+                welcome = cfg.get("welcome", {})
+                if "custom_text" not in welcome:
+                    return _DEFAULT_WELCOME
+                return welcome["custom_text"]
             except Exception:
                 return _DEFAULT_WELCOME
 
@@ -228,7 +230,7 @@ def build_main_layout(main_window):
                     for line in lines[1:]:
                         html += f"<p>{line}</p>" if line.strip() else "<p>&nbsp;</p>"
                 else:
-                    html = _DEFAULT_WELCOME
+                    html = ""
                 welcome_label.setText(html)
                 _save_welcome_text(html)
 
