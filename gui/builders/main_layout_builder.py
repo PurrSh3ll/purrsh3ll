@@ -357,7 +357,14 @@ def build_main_layout(main_window):
                 self_._movie_natural_size = None
                 self_.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self_.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-                self_.setMinimumSize(1, 1)
+
+            def sizeHint(self_):
+                from PyQt6.QtCore import QSize
+                return QSize(100, 100)
+
+            def minimumSizeHint(self_):
+                from PyQt6.QtCore import QSize
+                return QSize(1, 1)
 
             def mouseDoubleClickEvent(self_, event):
                 _on_gif_double_click()
