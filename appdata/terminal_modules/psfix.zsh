@@ -1,3 +1,4 @@
+# PSDESC: explain and fix the last terminal error with AI
 psfix() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
         cat <<'EOF'

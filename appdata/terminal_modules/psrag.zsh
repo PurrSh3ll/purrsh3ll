@@ -1,3 +1,4 @@
+# PSDESC: query the RAG knowledge base with a natural language question
 psrag() {
     if [[ $# -eq 0 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
         cat <<'EOF'

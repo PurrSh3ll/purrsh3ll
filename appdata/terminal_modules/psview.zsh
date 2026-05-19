@@ -1,3 +1,4 @@
+# PSDESC: analyze a screenshot or image with AI vision
 psview() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]] || [[ $# -eq 0 ]]; then
         cat <<'EOF'

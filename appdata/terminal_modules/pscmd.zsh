@@ -1,3 +1,4 @@
+# PSDESC: generate a shell command using AI from a natural language description
 pscmd() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]] || [[ $# -eq 0 ]]; then
         cat <<'EOF'

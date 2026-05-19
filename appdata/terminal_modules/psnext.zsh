@@ -1,3 +1,4 @@
+# PSDESC: suggest next pentest step based on terminal history
 psnext() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
         cat <<'EOF'

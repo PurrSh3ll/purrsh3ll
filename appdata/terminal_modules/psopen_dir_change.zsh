@@ -1,3 +1,4 @@
+# PSDESC: open a file or navigate to a directory in PurrSh3ll
 psopen() {
   if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
     cat <<'USAGE'

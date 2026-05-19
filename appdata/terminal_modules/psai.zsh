@@ -1,3 +1,4 @@
+# PSDESC: internal AI dispatcher — use psask / pschat instead
 psai() {
     local _base="${${(%):-%x}:A:h:h:h}"
     local _py="$_base/.venv/bin/python3"
@@ -15,6 +16,7 @@ psai() {
     "$_py" "$_script" --base-dir "$_base" "$@"
 }
 
+# PSDESC: ask the active AI profile a direct question
 psask() {
     if [[ $# -eq 0 ]] || [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
         cat <<'EOF'
@@ -40,6 +42,7 @@ EOF
     psai ask "$@"
 }
 
+# PSDESC: persistent chat session with the active AI profile
 pschat() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
         cat <<'EOF'

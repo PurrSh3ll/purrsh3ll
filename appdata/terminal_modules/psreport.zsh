@@ -1,3 +1,4 @@
+# PSDESC: generate a pentest report from terminal history using AI
 psreport() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
         cat <<'EOF'

@@ -1,3 +1,4 @@
+# PSDESC: summarize the last command output with AI (TL;DR)
 pstldr() {
     if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
         cat <<'EOF'
