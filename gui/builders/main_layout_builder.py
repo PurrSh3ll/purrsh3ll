@@ -227,7 +227,7 @@ def build_main_layout(main_window):
             except Exception:
                 pass
 
-        def _open_edit_dialog():
+        def _open_edit_text_dialog():
             dlg = QDialog(c.widgets["main_window"])
             dlg.setWindowTitle("Edit welcome text")
             dlg.setModal(True)
@@ -264,41 +264,6 @@ def build_main_layout(main_window):
                 _is_default[0] = False
                 welcome_label.setText(html)
                 _save_welcome_text(html)
-
-        def _on_welcome_double_click():
-            dlg = QDialog(c.widgets["main_window"])
-            dlg.setWindowTitle("Welcome text")
-            dlg.setModal(True)
-            dlg.resize(280, 120)
-            layout = QVBoxLayout(dlg)
-            layout.setContentsMargins(16, 16, 16, 16)
-            layout.setSpacing(10)
-            try:
-                dlg.setStyleSheet(c.messagebox_stylesheet)
-            except Exception:
-                pass
-            btn_edit    = QPushButton("Edit text", dlg)
-            btn_default = QPushButton("Restore default", dlg)
-            btn_cancel  = QPushButton("Cancel", dlg)
-            layout.addWidget(btn_edit)
-            layout.addWidget(btn_default)
-            layout.addWidget(btn_cancel)
-
-            def _do_edit():
-                dlg.accept()
-                _open_edit_dialog()
-
-            def _do_default():
-                _is_default[0] = True
-                _save_welcome_text("")
-                html = _make_default_welcome()
-                welcome_label.setText(html)
-                dlg.accept()
-
-            btn_edit.clicked.connect(_do_edit)
-            btn_default.clicked.connect(_do_default)
-            btn_cancel.clicked.connect(dlg.reject)
-            dlg.exec()
 
         # ── Background image ──────────────────────────────────────────────────────
 
@@ -348,29 +313,81 @@ def build_main_layout(main_window):
                 container._bg_label.hide()
                 container.update()
 
-        def _on_bg_double_click():
+        def _on_double_click():
             dlg = QDialog(c.widgets["main_window"])
-            dlg.setWindowTitle("Background image")
+            dlg.setWindowTitle("Welcome screen")
             dlg.setModal(True)
-            dlg.resize(280, 110)
+            dlg.resize(300, 260)
             layout = QVBoxLayout(dlg)
             layout.setContentsMargins(16, 16, 16, 16)
-            layout.setSpacing(10)
+            layout.setSpacing(6)
             try:
                 dlg.setStyleSheet(c.messagebox_stylesheet)
             except Exception:
                 pass
-            btn_set    = QPushButton("Set background image...", dlg)
-            btn_clear  = QPushButton("Clear background", dlg)
+
+            def _sep(text):
+                lbl = QLabel(f"<b>{text}</b>", dlg)
+                lbl.setStyleSheet("color: #888; font-size: 11px; padding-top: 6px;")
+                layout.addWidget(lbl)
+
+            _sep("Text")
+            btn_edit_text   = QPushButton("Edit text", dlg)
+            btn_default_text = QPushButton("Restore default text", dlg)
+            layout.addWidget(btn_edit_text)
+            layout.addWidget(btn_default_text)
+
+            _sep("Image")
+            btn_choose_img  = QPushButton("Choose image...", dlg)
+            btn_default_img = QPushButton("Set default image", dlg)
+            btn_no_img      = QPushButton("No image", dlg)
+            layout.addWidget(btn_choose_img)
+            layout.addWidget(btn_default_img)
+            layout.addWidget(btn_no_img)
+
+            _sep("Background")
+            btn_set_bg      = QPushButton("Set background image...", dlg)
+            btn_clear_bg    = QPushButton("Clear background", dlg)
+            layout.addWidget(btn_set_bg)
+            layout.addWidget(btn_clear_bg)
+
+            layout.addSpacing(4)
             btn_cancel = QPushButton("Cancel", dlg)
-            layout.addWidget(btn_set)
-            layout.addWidget(btn_clear)
             layout.addWidget(btn_cancel)
 
-            def _do_set():
+            def _do_edit_text():
+                dlg.accept()
+                _open_edit_text_dialog()
+
+            def _do_default_text():
+                _is_default[0] = True
+                _save_welcome_text("")
+                welcome_label.setText(_make_default_welcome())
+                dlg.accept()
+
+            def _do_choose_img():
                 path, _ = QFileDialog.getOpenFileName(
-                    dlg, "Select background image",
-                    os.path.expanduser("~"),
+                    dlg, "Select image", os.path.expanduser("~"),
+                    "Images (*.gif *.png *.jpg *.jpeg *.bmp *.webp)"
+                )
+                if path:
+                    _apply_image(path, gif_label)
+                    _save_image_path(path)
+                dlg.accept()
+
+            def _do_default_img():
+                _apply_image(_DEFAULT_IMAGE_PATH, gif_label)
+                _save_image_path("")
+                dlg.accept()
+
+            def _do_no_img():
+                _apply_image("", gif_label)
+                _save_image_path("none")
+                dlg.accept()
+
+            def _do_set_bg():
+                path, _ = QFileDialog.getOpenFileName(
+                    dlg, "Select background image", os.path.expanduser("~"),
                     "Images (*.gif *.png *.jpg *.jpeg *.bmp *.webp)"
                 )
                 if path:
@@ -378,13 +395,18 @@ def build_main_layout(main_window):
                     _save_bg_path(path)
                 dlg.accept()
 
-            def _do_clear():
+            def _do_clear_bg():
                 _apply_bg("")
                 _save_bg_path("")
                 dlg.accept()
 
-            btn_set.clicked.connect(_do_set)
-            btn_clear.clicked.connect(_do_clear)
+            btn_edit_text.clicked.connect(_do_edit_text)
+            btn_default_text.clicked.connect(_do_default_text)
+            btn_choose_img.clicked.connect(_do_choose_img)
+            btn_default_img.clicked.connect(_do_default_img)
+            btn_no_img.clicked.connect(_do_no_img)
+            btn_set_bg.clicked.connect(_do_set_bg)
+            btn_clear_bg.clicked.connect(_do_clear_bg)
             btn_cancel.clicked.connect(dlg.reject)
             dlg.exec()
 
@@ -401,7 +423,7 @@ def build_main_layout(main_window):
                 self_._bg_label.lower()
 
             def mouseDoubleClickEvent(self_, event):
-                _on_bg_double_click()
+                _on_double_click()
 
             def resizeEvent(self_, event):
                 super().resizeEvent(event)
@@ -477,57 +499,9 @@ def build_main_layout(main_window):
                     label._orig_pixmap = px
                 label.update()
 
-        def _on_gif_double_click():
-            dlg = QDialog(c.widgets["main_window"])
-            dlg.setWindowTitle("Welcome image")
-            dlg.setModal(True)
-            dlg.resize(300, 120)
-            layout = QVBoxLayout(dlg)
-            layout.setContentsMargins(16, 16, 16, 16)
-            layout.setSpacing(10)
-            try:
-                dlg.setStyleSheet(c.messagebox_stylesheet)
-            except Exception:
-                pass
-            btn_choose  = QPushButton("Choose image...", dlg)
-            btn_default = QPushButton("Set default image", dlg)
-            btn_none    = QPushButton("No image", dlg)
-            btn_cancel  = QPushButton("Cancel", dlg)
-            layout.addWidget(btn_choose)
-            layout.addWidget(btn_default)
-            layout.addWidget(btn_none)
-            layout.addWidget(btn_cancel)
-
-            def _choose():
-                path, _ = QFileDialog.getOpenFileName(
-                    dlg, "Select image",
-                    os.path.expanduser("~"),
-                    "Images (*.gif *.png *.jpg *.jpeg *.bmp *.webp)"
-                )
-                if path:
-                    _apply_image(path, gif_label)
-                    _save_image_path(path)
-                dlg.accept()
-
-            def _set_default():
-                _apply_image(_DEFAULT_IMAGE_PATH, gif_label)
-                _save_image_path("")
-                dlg.accept()
-
-            def _set_none():
-                _apply_image("", gif_label)
-                _save_image_path("none")
-                dlg.accept()
-
-            btn_choose.clicked.connect(_choose)
-            btn_default.clicked.connect(_set_default)
-            btn_none.clicked.connect(_set_none)
-            btn_cancel.clicked.connect(dlg.reject)
-            dlg.exec()
-
         class _WelcomeLabel(QLabel):
             def mouseDoubleClickEvent(self_, event):
-                _on_welcome_double_click()
+                _on_double_click()
 
         class _GifLabel(QLabel):
             def __init__(self_):
@@ -546,7 +520,7 @@ def build_main_layout(main_window):
                 return QSize(1, 1)
 
             def mouseDoubleClickEvent(self_, event):
-                _on_gif_double_click()
+                _on_double_click()
 
             def _rescale_gif(self_):
                 if _current_movie[0] is not None and self_._movie_natural_size and self_._movie_natural_size.isValid():
