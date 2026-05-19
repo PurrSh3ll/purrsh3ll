@@ -84,19 +84,14 @@ class _HintOverlay(QFrame):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setObjectName("hint_overlay")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setStyleSheet("""
-            QFrame#hint_overlay {
-                background: rgba(20, 28, 36, 200);
-                border: 1px solid #3a5068;
-                border-radius: 5px;
-            }
-        """)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent; border: none;")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 5, 10, 5)
-        lbl = QLabel("Type <b>pshelp</b> to see available tools")
-        lbl.setStyleSheet("color: #8ab4cc; font-size: 11px; background: transparent;")
+        lay.setContentsMargins(6, 2, 6, 2)
+        lbl = QLabel("# Type <b>pshelp</b> to see available tools")
+        lbl.setStyleSheet(
+            "color: #5a8a6a; font-size: 11px; font-family: Monospace; background: transparent;"
+        )
         lay.addWidget(lbl)
         self.adjustSize()
         self.hide()
