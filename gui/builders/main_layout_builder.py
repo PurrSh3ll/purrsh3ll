@@ -232,7 +232,7 @@ def build_main_layout(main_window):
                 welcome_label.setText(html)
                 _save_welcome_text(html)
 
-        _DEFAULT_IMAGE_PATH = os.path.join(c.base_path, "icons", "test_5.gif")
+        _DEFAULT_IMAGE_PATH = os.path.join(c.base_path, "icons", "__default_image.gif")
 
         def _load_image_path():
             try:
