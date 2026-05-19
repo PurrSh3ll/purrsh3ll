@@ -126,8 +126,9 @@ class TerminalWrapper(QtWidgets.QWidget):
         if not TerminalWrapper._hint_shown:
             TerminalWrapper._hint_shown = True
             self._hint = _HintOverlay(self)
-            self._console.installEventFilter(self)
-            # Show after the widget is painted for the first time
+            # QTermWidget handles keys internally — filter at app level
+            from PyQt6.QtWidgets import QApplication
+            QApplication.instance().installEventFilter(self)
             QtCore.QTimer.singleShot(800, self._show_hint)
 
     # ── hint overlay ──────────────────────────────────────────────────────────
@@ -148,15 +149,16 @@ class TerminalWrapper(QtWidgets.QWidget):
             self._hint.move(max(0, x), max(0, y))
 
     def _hide_hint(self):
-        if self._hint is not None and self._hint.isVisible():
+        if self._hint is not None:
             self._hint.hide()
             try:
-                self._console.removeEventFilter(self)
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().removeEventFilter(self)
             except Exception:
                 pass
 
     def eventFilter(self, obj, event):
-        if obj is self._console and event.type() == QtCore.QEvent.Type.KeyPress:
+        if self._hint is not None and event.type() == QtCore.QEvent.Type.KeyPress:
             self._hide_hint()
         return False
 
