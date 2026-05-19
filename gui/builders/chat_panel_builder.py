@@ -126,14 +126,19 @@ def build_chat_panel(main_window):
     _run_mode_menu.addAction(_action_run)
     _run_mode_menu.addAction(_action_connect)
     chat_btn_run.setMenu(_run_mode_menu)
+    def _update_info_btn_visibility():
+        is_web = chat_combo_interface.currentText() == "web"
+        is_run = chat_btn_run.text() == "run"
+        chat_btn_info.setVisible(is_web and is_run)
+
     def _on_mode_selected(action):
         chat_btn_run.setText(action.text())
         is_connect = action.text() == "connect"
         chat_combo_custom.setVisible(not is_connect)
-        chat_btn_info.setVisible(not is_connect)
         cmd_preview_widget.setVisible(not is_connect)
         if not is_connect:
             _refresh_custom_combo()
+        _update_info_btn_visibility()
 
     _run_mode_menu.triggered.connect(_on_mode_selected)
 
@@ -679,6 +684,7 @@ def build_chat_panel(main_window):
                 # Web run mode: no model needed, just show docker command
                 chat_combo_custom.blockSignals(False)
                 cmd_preview_edit.setPlainText(_WEB_DOCKER_CMD)
+                _update_info_btn_visibility()
                 return
             # Load ollama profile names from global profiles
             profiles = _load_ollama_profiles()
@@ -698,6 +704,7 @@ def build_chat_panel(main_window):
                     chat_combo_custom.addItem(p.get("name", ""))
             chat_combo_custom.blockSignals(False)
             cmd_preview_edit.setPlainText("")
+        _update_info_btn_visibility()
 
     def _on_custom_changed():
         if not _is_run_mode():
