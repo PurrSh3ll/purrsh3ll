@@ -38,7 +38,7 @@ pshelp() {
     done
 
     echo ""
-    echo "  \033[1mPurrSh3ll AI Tools\033[0m"
+    echo "  \033[1mPurrSh3ll Tools\033[0m"
     echo "  ────────────────────────────────────────────────────"
     # Only show functions that have a PSDESC annotation, sorted
     local _fn _dsc
