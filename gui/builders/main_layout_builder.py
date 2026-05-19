@@ -356,7 +356,7 @@ def build_main_layout(main_window):
                 self_._orig_pixmap = None
                 self_._movie_natural_size = None
                 self_.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self_.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+                self_.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
                 self_.setMinimumSize(1, 1)
 
             def mouseDoubleClickEvent(self_, event):
