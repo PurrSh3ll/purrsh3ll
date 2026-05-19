@@ -39,6 +39,7 @@ def build_side_panels(main_window):
         notes_editor = QPlainTextEdit(notes_panel)
         notes_editor.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         notes_editor.setPlaceholderText("Write your notes here...")
+        notes_editor.setViewportMargins(4, 4, 8, 4)
 
         try:
             if os.path.exists(notes_path):
