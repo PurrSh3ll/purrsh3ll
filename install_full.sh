@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# PurrSh3ll — Lite Installer
-# Installs the core application only (no Ollama, Docker images, or AI skills).
+# PurrSh3ll — Full Installer
+# Installs the core application AND all optional open-source components:
+#   • Ollama          — local LLM inference server
+#   • aichat          — CLI frontend for LLMs (multi-provider)
+#   • Docker          — container runtime (if not already installed)
+#   • Open WebUI      — web UI for Ollama (pulled as Docker image)
+#   • WebMap          — Nmap result visualizer (pulled as Docker image)
+#   • AI Skills       — awesome-claude-skills-security + claude-code-pentest
+#
 # Supported: Kali Linux, Debian 12+, Ubuntu 22.04+ (x86_64)
 #
 # Usage:
-#   bash install.sh              # install without voice support
-#   bash install.sh --voice      # include voice/audio dependencies
-#
-# For the full installation (Ollama, Open WebUI, WebMap, AI skills):
-#   bash install_full.sh
+#   bash install_full.sh              # full install with voice support
+#   bash install_full.sh --no-voice   # skip voice/audio dependencies
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -20,12 +24,19 @@ REPO_URL="https://github.com/YOUR_USER/purrsh3ll.git"
 INSTALL_DIR="$HOME/purrsh3ll"
 VENV_DIR="$INSTALL_DIR/.venv"
 
-# After uploading the wheel to GitHub Releases, replace this URL:
 WHEEL_URL="https://github.com/YOUR_USER/purrsh3ll/releases/download/v1.0.0/qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 WHEEL_NAME="qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 
-VOICE=false
-[[ "${1:-}" == "--voice" ]] && VOICE=true
+# aichat — update version number when a new release is available
+AICHAT_VERSION="0.27.0"
+AICHAT_URL="https://github.com/sigoden/aichat/releases/download/v${AICHAT_VERSION}/aichat-v${AICHAT_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+
+# Docker image tags
+OPENWEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
+WEBMAP_IMAGE="reborntc/webmap"
+
+VOICE=true
+[[ "${1:-}" == "--no-voice" ]] && VOICE=false
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 
@@ -40,10 +51,10 @@ die()     { echo -e "${RED}ERROR:${NC} $*" >&2; exit 1; }
 # ── Header ────────────────────────────────────────────────────────────────────
 
 echo ""
-echo -e "${BOLD}  PurrSh3ll — Lite Installer${NC}"
+echo -e "${BOLD}  PurrSh3ll — Full Installer${NC}"
 echo "  ──────────────────────────────────────────"
-echo "  Core app only. For Ollama, Open WebUI, WebMap"
-echo "  and AI skills run: bash install_full.sh"
+echo "  Installs: core app + Ollama + aichat +"
+echo "  Docker + Open WebUI + WebMap + AI skills"
 echo ""
 
 # ── System checks ─────────────────────────────────────────────────────────────
@@ -92,6 +103,10 @@ APT_PACKAGES=(
     python3-dev
     python3-venv
     python3-pip
+    # Misc tools used by optional installers
+    curl
+    ca-certificates
+    gnupg
 )
 
 VOICE_PACKAGES=(
@@ -109,7 +124,7 @@ if [[ "$VOICE" == true ]]; then
         | grep -E "^(Setting up|already)" || true
     success "Voice/audio system packages installed"
 else
-    warn "Voice packages skipped (use --voice to include them)"
+    warn "Voice packages skipped (--no-voice)"
 fi
 
 success "System dependencies ready"
@@ -123,6 +138,11 @@ else
     info "Cloning PurrSh3ll..."
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
+
+info "Initializing AI skill submodules..."
+git -C "$INSTALL_DIR" submodule update --init --recursive
+success "Skills ready (awesome-claude-skills-security, claude-code-pentest)"
+
 success "Repository at $INSTALL_DIR"
 
 cd "$INSTALL_DIR"
@@ -198,6 +218,66 @@ fi
 "$PIP" install --quiet "$WHEEL_CACHE"
 success "QTermWidget installed"
 
+# ── Ollama ────────────────────────────────────────────────────────────────────
+
+if command -v ollama &>/dev/null; then
+    success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
+else
+    info "Installing Ollama..."
+    curl -fsSL https://ollama.com/install.sh | sh
+    success "Ollama installed"
+fi
+
+# ── aichat ───────────────────────────────────────────────────────────────────
+
+if command -v aichat &>/dev/null; then
+    success "aichat already installed ($(aichat --version 2>/dev/null || echo 'unknown version'))"
+else
+    info "Installing aichat v${AICHAT_VERSION}..."
+    AICHAT_TMP=$(mktemp -d)
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$AICHAT_URL" -o "$AICHAT_TMP/aichat.tar.gz"
+    else
+        wget -q "$AICHAT_URL" -O "$AICHAT_TMP/aichat.tar.gz"
+    fi
+    tar -xzf "$AICHAT_TMP/aichat.tar.gz" -C "$AICHAT_TMP"
+    sudo install -m 755 "$AICHAT_TMP/aichat" /usr/local/bin/aichat
+    rm -rf "$AICHAT_TMP"
+    success "aichat installed → /usr/local/bin/aichat"
+fi
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+
+if command -v docker &>/dev/null; then
+    success "Docker already installed ($(docker --version))"
+else
+    info "Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker "$USER"
+    warn "Docker installed. You may need to log out and back in for group membership to take effect."
+    warn "Or run: newgrp docker"
+fi
+
+# ── Open WebUI Docker image ───────────────────────────────────────────────────
+
+info "Pulling Open WebUI Docker image..."
+if sudo docker pull "$OPENWEBUI_IMAGE" 2>&1 | tail -1 | grep -qE "Pull complete|up to date|Status: Image"; then
+    success "Open WebUI image ready"
+else
+    docker pull "$OPENWEBUI_IMAGE"
+    success "Open WebUI image ready"
+fi
+
+# ── WebMap Docker image ───────────────────────────────────────────────────────
+
+info "Pulling WebMap Docker image..."
+if sudo docker pull "$WEBMAP_IMAGE" 2>&1 | tail -1 | grep -qE "Pull complete|up to date|Status: Image"; then
+    success "WebMap image ready"
+else
+    docker pull "$WEBMAP_IMAGE"
+    success "WebMap image ready"
+fi
+
 # ── Desktop shortcut ──────────────────────────────────────────────────────────
 
 DESKTOP_FILE="$HOME/.local/share/applications/purrsh3ll.desktop"
@@ -227,16 +307,28 @@ success "Launch command installed: purrsh3ll"
 # ── Done ──────────────────────────────────────────────────────────────────────
 
 echo ""
-echo -e "${GREEN}${BOLD}  Installation complete! (Lite)${NC}"
+echo -e "${GREEN}${BOLD}  Installation complete! (Full)${NC}"
 echo ""
 echo "  Run PurrSh3ll:"
 echo -e "    ${BOLD}purrsh3ll${NC}"
 echo ""
-if [[ "$VOICE" == false ]]; then
-    echo -e "  ${YELLOW}Voice support was not installed.${NC}"
-    echo "  To add it later:  bash install.sh --voice"
-    echo ""
+echo "  Installed components:"
+echo -e "    ${GREEN}✓${NC}  Core application"
+echo -e "    ${GREEN}✓${NC}  AI skills (submodules)"
+echo -e "    ${GREEN}✓${NC}  Ollama"
+echo -e "    ${GREEN}✓${NC}  aichat"
+echo -e "    ${GREEN}✓${NC}  Docker"
+echo -e "    ${GREEN}✓${NC}  Open WebUI image (${OPENWEBUI_IMAGE})"
+echo -e "    ${GREEN}✓${NC}  WebMap image (${WEBMAP_IMAGE})"
+if [[ "$VOICE" == true ]]; then
+    echo -e "    ${GREEN}✓${NC}  Voice support"
+else
+    echo -e "    ${YELLOW}–${NC}  Voice support skipped"
+    echo "       To add later:  bash install_full.sh"
 fi
-echo "  To install Ollama, Open WebUI, WebMap and AI skills:"
-echo -e "    ${BOLD}bash install_full.sh${NC}"
+echo ""
+echo "  First steps:"
+echo "    1. Start Ollama:        ollama serve"
+echo "    2. Pull a model:        ollama pull llama3.2"
+echo "    3. Launch PurrSh3ll:    purrsh3ll"
 echo ""
