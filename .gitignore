@@ -31,6 +31,3 @@ appdata/psnotes.txt
 appdata/ob_panel_state.json
 appdata/terminal_fifos/
 
-# Skills — zewnętrzne repozytoria git
-appdata/agent_modes/skills/awesome-claude-skills-security/
-appdata/agent_modes/skills/claude-code-pentest/

@@ -1,0 +1,6 @@
+[submodule "appdata/agent_modes/skills/awesome-claude-skills-security"]
+	path = appdata/agent_modes/skills/awesome-claude-skills-security
+	url = https://github.com/Eyadkelleh/awesome-claude-skills-security.git
+[submodule "appdata/agent_modes/skills/claude-code-pentest"]
+	path = appdata/agent_modes/skills/claude-code-pentest
+	url = https://github.com/Orizon-eu/claude-code-pentest.git

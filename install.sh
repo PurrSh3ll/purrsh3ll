@@ -119,6 +119,11 @@ else
     info "Cloning PurrSh3ll..."
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
+
+info "Initializing skill submodules..."
+git -C "$INSTALL_DIR" submodule update --init --recursive
+success "Submodules ready"
+
 success "Repository at $INSTALL_DIR"
 
 cd "$INSTALL_DIR"
