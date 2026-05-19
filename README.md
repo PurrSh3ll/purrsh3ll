@@ -1,180 +1,229 @@
 # PurrSh3ll
 
-A desktop environment for penetration testers and CTF players built on PyQt6. Combines a multi-tab terminal, script manager, file viewer, Nmap integration, and local AI assistant into a single application.
+**AI-powered terminal environment for penetration testers, CTF players, and security learners.**
+
+PurrSh3ll is a desktop application built on Kali Linux that brings together a multi-tab terminal, local AI assistant, RAG knowledge base, voice interface, and a suite of AI-powered CLI tools — all in one place, fully offline.
+
+---
+
+## Why PurrSh3ll?
+
+Security professionals juggle dozens of tools, notes, and context across long engagements. PurrSh3ll keeps everything in one window and makes AI assistance available without sending sensitive data to the cloud.
+
+- **Local-first** — your data never leaves the machine
+- **Context-aware AI** — the assistant knows your terminal history and your notes
+- **Built for the terminal** — not a browser, not an IDE, not a chat app
 
 ---
 
 ## Features
 
 ### Terminal
-- Multi-tab terminal based on QTermWidget with Zsh shell
-- Command history logged to `appdata/logs/terminal_history.jsonl` (with timestamps and exit codes)
-- Per-tab zoom (Ctrl+Scroll), rename, custom environment variables
-- Dynamic variable panel — track variables across sessions in real time
+- Multi-tab Zsh terminal with per-tab renaming, zoom, and custom environment variables
+- Full command history logged to JSONL with timestamps and exit codes
+- Error overlay with AI-powered Explain / Fix / Analyze on failed commands
 
-### Script Manager (.py files)
-- GUI launcher for Python scripts with automatic help/docstring extraction
-- Dependency detection — missing packages can be installed directly from the UI
-- Per-script: execution history, notes, favorites, documentation cache
-- Virtual environment detection and selection
+### AI Assistant (CLI)
+AI tools available directly in the terminal — no GUI required:
 
-### Nmap Integration (.psnmap files)
-- Save and reuse Nmap scan profiles (name, command, description)
-- Full execution history with timestamps
-- **WebMap** — interactive Nmap result visualization via Docker (`reborntc/webmap`)
+| Command | Description |
+|---------|-------------|
+| `psask` | Ask the active AI profile a direct question |
+| `pschat` | Persistent chat session with conversation history |
+| `pscmd` | Generate a shell command from a natural language description |
+| `psfix` | Explain and fix the last terminal error |
+| `psnext` | Suggest next pentest steps based on terminal history |
+| `pstldr` | Summarize the last command output (TL;DR) |
+| `psreport` | Generate a pentest report from terminal history |
+| `psrag` | Query your RAG knowledge base |
+| `psview` | Analyze a screenshot or image with AI vision |
+| `pshelp` | List all available tools |
+
+Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemini, OpenRouter, HuggingFace**. Switch between them without leaving the app.
+
+### RAG Knowledge Base
+- Index your own notes, writeups, and documentation
+- Powered by ChromaDB + sentence-transformers (runs fully offline)
+- Queries are automatically enriched with relevant context from your knowledge base
+- File changes are tracked and re-indexed automatically via watchdog
+
+### Voice Interface
+- Wake word detection — say **"Hey Jarvis"** to activate
+- Speech-to-text transcription via Faster-Whisper (tiny model, CPU, ~75 MB)
+- AI generates a command from your speech
+- Voice confirmation loop — say "accept" or "cancel"
+- Optimized for virtual machines (queue-based audio buffering, no xruns)
+
+### Script Manager
+- Launch, organize, and document Python scripts from a GUI
+- Automatic help/docstring extraction
+- Per-script execution history, notes, and favorites
+- Dependency detection with in-app package installation
 
 ### File Viewer
-- Syntax highlighting for 40+ file types: Python, Bash, PowerShell, C/C++, Java, JavaScript, Go, Lua, Perl, Ruby, PHP, C#, SQL, HTML, JSON, YAML, Markdown and more
+- Syntax highlighting for 40+ file types
 - Chunked loading for large files
-- In-file search with regex support and multi-flag filtering
+- Built-in search with regex support
 
-### Module Tree
-Built-in modules organized into categories:
+### Nmap Integration
+- Save and reuse scan profiles (`.psnmap` format)
+- Full scan history with timestamps
+- WebMap visualization via Docker
 
-| Category | Contents |
-|---|---|
-| **RedTeam** | StealthKit, WiFury, ReconShadow, HumanVector, ScanForge, ExploitForge, HashRipper, PostIntruder, PersistenceKit, TrackCleaner, ZombiCore, PentestReport |
-| **BlueTeam** | Defense tools |
-| **Forensic** | Digital forensics |
-| **BrainDump** | Notes and references |
-| **Cyb3rBreak** | CTF challenges |
-| **Cyb3rCollector** | Listeners, stagers, WebMap |
-| **MissionCenter** | Operation management |
+### AI Chat Panel
+- Embedded web panel for Open WebUI or any OpenAI-compatible frontend
+- Run and manage Docker-based LLM containers from the app
+- Supports Ollama CLI profiles with custom parameters
 
-User modules go in `usermodules/` and appear in the tree automatically.
+### Additional Panels
+- **Notes** — persistent side notes, auto-saved
+- **Snippets** — reusable code/command snippets
+- **Observable Variables** — real-time display of tracked shell variables
+- **Mode Profiles** — terminal environment presets for different tasks
 
-### AI / Chat Panel
-Local LLM integration without sending data to external services:
+---
 
-- **llama.cpp CLI** — run GGUF models directly
-- **llama.cpp Web UI** — browser-based interface via local server
-- **CLI Custom** — any CLI tool (e.g. `ollama run model`)
-- **Web UI Custom** — any Docker-based web UI
+## Who Is It For?
 
-### Panels
-- **Slide panel** — observable variables, updates in real time
-- **Mode panel** — terminal profiles and environment presets
-- **Notes panel** — persistent side notes (auto-saved)
-- **Chat panel** — AI assistant
+| Audience | Key value |
+|----------|-----------|
+| **Penetration testers** | Local AI, pentest report generation, RAG over engagement notes |
+| **CTF players** | `psnext`, `pscmd`, terminal history awareness, embedded CTF games |
+| **Security students** | `psask`, `pschat`, knowledge base that grows with you |
+| **Bug bounty hunters** | Organized notes, `psreport`, multi-provider AI |
 
-### Themes
-Multiple built-in color themes switchable from the menu. Theme is applied instantly, terminals update in the background.
+PurrSh3ll is designed to grow with you — from learning to professional engagements.
 
 ---
 
 ## Requirements
 
-### System
-- Linux (tested on Kali Linux)
-- Zsh (`/bin/zsh`)
-- Docker — required for WebMap and llama.cpp Web UI
-- `sudo` access — required for Docker container management
-- System keyring (for secure password storage)
-
-### Python
-- Python 3.10+
-- PyQt6
-- QTermWidget (`qtpyterminal`)
-- `watchdog`
-- `pyfiglet`
-- `keyring`
-
-Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-### Optional
-- `llama-cli` / `llama-server` — for local LLM inference
-- `ollama` — alternative LLM backend
-- Docker image `reborntc/webmap` — for Nmap visualization
+- **OS:** Kali Linux (recommended), Debian/Ubuntu
+- **Python:** 3.10+
+- **Qt:** PyQt6 + QTermWidget
+- **Optional:** Ollama (for local LLM), Docker (for Open WebUI / WebMap)
+- **Optional (voice):** microphone, `portaudio`
 
 ---
 
 ## Installation
 
 ```bash
-git clone <repo>
-cd App_beta
-pip install -r requirements.txt
-python main.py
+# 1. Clone the repository
+git clone https://github.com/youruser/purrsh3ll.git
+cd purrsh3ll
+
+# 2. Create a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 3. Install dependencies
+pip install PyQt6 PyQt6-WebEngine pyqtermwidget watchdog \
+    chromadb fastembed onnxruntime huggingface-hub \
+    keyring cryptography docker pyfiglet pygame \
+    Pillow pydantic requests PyYAML loguru rich numpy \
+    pyte markdown2 Pygments
+
+# 4. (Optional) Voice support
+pip install faster-whisper openwakeword sounddevice scipy
+
+# 5. Run
+python3 main.py
 ```
 
-To start with debug logging to stderr:
+> **Note:** A full `requirements.txt` with pinned versions will be added in the next release.
+
+---
+
+## Quick Start
+
 ```bash
-python main.py --debug
+# Ask AI a question directly from the terminal
+psask "what is a SSRF vulnerability?"
+
+# Generate a command from natural language
+pscmd "find all SUID binaries on the system"
+
+# Get AI suggestion for the next pentest step
+psnext
+
+# Summarize last command output
+pstldr
+
+# Query your knowledge base
+psrag "how to enumerate SMB shares"
+
+# See all available tools
+pshelp
 ```
 
 ---
 
-## Configuration
-
-Main config file: `appdata/app_config.json`
-
-| Key | Description |
-|---|---|
-| `window.resolution` | Window size `[width, height]` |
-| `window.start_screen` | Window position `[x, y]` |
-| `performance.lightweight_web_browser` | Use lightweight rendering |
-| `behavior.delete_logs_at_close` | Clear terminal history on exit |
-| `behavior.delete_notes_at_close` | Clear notes on exit |
-| `behavior.save_sys_vars_at_close` | Persist system variables |
-| `llama.llm_cli_path` | Path to `llama-cli` binary |
-
----
-
-## Data Layout
+## Project Structure
 
 ```
-appdata/
-├── app_config.json          # Main configuration
-├── themes.json              # Theme definitions
-├── dynamic_variables.json   # User-defined variables
-├── psnotes.txt              # Side notes
-├── ob_panel_state.json      # Observable panel state
-├── logs/
-│   ├── app.log              # Application log (rotated, max 2MB × 3)
-│   └── terminal_history.jsonl  # Terminal command history
-├── scripts_help/            # Extracted --help output cache
-├── scripts_docs/            # Docstring cache
-├── scripts_history/         # Per-script execution history
-├── scripts_favorities/      # Favorite commands
-├── scripts_notes/           # Per-script notes
-├── terminal_modules/        # Zsh environment setup
-│   └── system_vars.zsh
-└── agent_modes/             # Claude agent configurations
-
-appmodules/                  # Built-in modules (read-only)
-usermodules/                 # User modules
-icons/                       # Application icons
+purrsh3ll/
+├── main.py                    # Entry point
+├── core/
+│   ├── controller.py          # Central singleton controller
+│   ├── mixins/                # UI and terminal logic mixins
+│   ├── rag/                   # RAG engine (chunker, embedder, indexer)
+│   ├── voice/                 # Voice pipeline (wake word → STT → AI)
+│   └── stylesheets/           # Modular QSS theme system
+├── gui/
+│   ├── builders/              # UI builder functions
+│   ├── widgets/               # Custom Qt widgets
+│   └── panels/                # Side panel widgets
+├── file_loaders/              # Polymorphic file viewer (50+ formats)
+├── appdata/
+│   ├── terminal_modules/      # AI CLI tools (psask, pscmd, psrag…)
+│   ├── agent_modes/           # Pentest and CTF agent skill sets
+│   └── themes.json            # Theme definitions
+└── appmodules/
+    ├── BrainDump/             # Default RAG knowledge base
+    └── Cyb3rBreak/            # Embedded CTF games
 ```
 
 ---
 
-## Logs
+## Tech Stack
 
-Application logs are written to `appdata/logs/app.log` with rotation (2 MB per file, 3 backups).
-
-Log levels:
-- `DEBUG` — verbose, file only
-- `WARNING` / `ERROR` — file + stderr (always visible in terminal)
-
-Run with `--debug` to show DEBUG level in stderr as well.
-
----
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl+Scroll` | Zoom in/out in terminal or file viewer |
-| `Enter` on tree item | Open file or expand/collapse folder |
-| Double-click tree item | Open file in new tab |
+| Layer | Technology |
+|-------|-----------|
+| GUI | PyQt6, QTermWidget |
+| Vector DB | ChromaDB |
+| Embeddings | sentence-transformers (multilingual MiniLM) |
+| STT | Faster-Whisper (tiny, CPU int8) |
+| Wake word | OpenWakeWord |
+| Audio | sounddevice, scipy |
+| AI inference | ctranslate2, onnxruntime |
+| File watching | watchdog |
+| Web panel | PyQt6-WebEngine |
 
 ---
 
-## Notes
+## License
 
-- WebMap Docker container (`webmap`) is automatically removed on application exit if it was started during the session.
-- Terminal history is deleted on exit by default (configurable in settings).
-- Theme changes are limited to sessions with fewer than 30 open tabs to maintain performance.
+This project is licensed under the **GNU General Public License v3.0**.
+
+See [LICENSE](LICENSE) for the full text.
+
+Because PurrSh3ll uses PyQt6 (GPL v3), any distribution must comply with GPL v3.
+If you need to embed PurrSh3ll in a proprietary product, contact us for a commercial licensing arrangement.
+
+---
+
+## Contributing
+
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+---
+
+## Acknowledgements
+
+- [Ollama](https://github.com/ollama/ollama) — local LLM runtime
+- [Open WebUI](https://github.com/open-webui/open-webui) — web frontend for local models
+- [OpenWakeWord](https://github.com/dscripka/openWakeWord) — wake word detection
+- [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) — efficient Whisper implementation
+- [ChromaDB](https://github.com/chroma-core/chroma) — vector database
+- [WebMap](https://github.com/SabyasachiRana/WebMap) — Nmap result visualization
