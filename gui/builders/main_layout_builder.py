@@ -343,17 +343,23 @@ def build_main_layout(main_window):
             def mouseDoubleClickEvent(self_, event):
                 _on_gif_double_click()
 
+            def _target_size(self_):
+                from PyQt6.QtCore import QSize
+                s = self_.size()
+                return QSize(int(s.width() * 0.75), int(s.height() * 0.75))
+
             def resizeEvent(self_, event):
                 super().resizeEvent(event)
+                target = self_._target_size()
                 if self_._orig_pixmap and not self_._orig_pixmap.isNull():
                     self_.setPixmap(self_._orig_pixmap.scaled(
-                        self_.size(),
+                        target,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation
                     ))
                 elif _current_movie[0] is not None and self_._movie_natural_size and self_._movie_natural_size.isValid():
                     _current_movie[0].setScaledSize(
-                        self_._movie_natural_size.scaled(self_.size(), Qt.AspectRatioMode.KeepAspectRatio)
+                        self_._movie_natural_size.scaled(target, Qt.AspectRatioMode.KeepAspectRatio)
                     )
 
         container = QWidget(c.widgets["execution_tabs"])
