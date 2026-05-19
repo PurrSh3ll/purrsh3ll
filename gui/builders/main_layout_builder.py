@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QDialogButtonBox, QFileDialog, QComboBox, QMessageBox,
 )
 from PyQt6.QtGui import QPixmap, QMovie
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QTimer
 import os
 import json
 
@@ -199,15 +199,20 @@ def build_main_layout(main_window):
                 f"<p>{msg}</p>"
             )
 
+        _is_default = [True]
+
         def _load_welcome_text():
             try:
                 with open(c.config_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 welcome = cfg.get("welcome", {})
                 if "custom_text" not in welcome:
+                    _is_default[0] = True
                     return _make_default_welcome()
+                _is_default[0] = False
                 return welcome["custom_text"]
             except Exception:
+                _is_default[0] = True
                 return _make_default_welcome()
 
         def _save_welcome_text(text):
@@ -256,6 +261,7 @@ def build_main_layout(main_window):
                         html += f"<p>{line}</p>" if line.strip() else "<p>&nbsp;</p>"
                 else:
                     html = ""
+                _is_default[0] = False
                 welcome_label.setText(html)
                 _save_welcome_text(html)
 
@@ -283,9 +289,10 @@ def build_main_layout(main_window):
                 _open_edit_dialog()
 
             def _do_default():
+                _is_default[0] = True
+                _save_welcome_text("")
                 html = _make_default_welcome()
                 welcome_label.setText(html)
-                _save_welcome_text(html)
                 dlg.accept()
 
             btn_edit.clicked.connect(_do_edit)
@@ -472,6 +479,15 @@ def build_main_layout(main_window):
         c.register_widget("welcome_text_layout", welcome_text_layout)
         c.register_widget("welcome_tab_text", container)
         c.register_widget("gif_label", gif_label)
+
+        def _rotate_message():
+            if _is_default[0]:
+                welcome_label.setText(_make_default_welcome())
+
+        _msg_timer = QTimer(container)
+        _msg_timer.setInterval(10000)
+        _msg_timer.timeout.connect(_rotate_message)
+        _msg_timer.start()
 
     def create_voice_button():
         import os as _os
