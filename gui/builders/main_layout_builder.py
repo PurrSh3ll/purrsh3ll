@@ -356,43 +356,41 @@ def build_main_layout(main_window):
                 self_._orig_pixmap = None
                 self_._movie_natural_size = None
                 self_.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self_.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+                self_.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
                 self_.setMinimumSize(1, 1)
 
             def mouseDoubleClickEvent(self_, event):
                 _on_gif_double_click()
 
-            def _target_size(self_):
-                from PyQt6.QtCore import QSize
-                s = self_.size()
-                return QSize(int(s.width() * 0.60), int(s.height() * 0.60))
-
             def resizeEvent(self_, event):
                 super().resizeEvent(event)
-                target = self_._target_size()
+                s = self_.size()
                 if self_._orig_pixmap and not self_._orig_pixmap.isNull():
                     self_.setPixmap(self_._orig_pixmap.scaled(
-                        target,
+                        s,
                         Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation
                     ))
                 elif _current_movie[0] is not None and self_._movie_natural_size and self_._movie_natural_size.isValid():
                     _current_movie[0].setScaledSize(
-                        self_._movie_natural_size.scaled(target, Qt.AspectRatioMode.KeepAspectRatio)
+                        self_._movie_natural_size.scaled(s, Qt.AspectRatioMode.KeepAspectRatio)
                     )
 
         container = QWidget(c.widgets["execution_tabs"])
         welcome_text_layout = QVBoxLayout(container)
+        welcome_text_layout.setContentsMargins(24, 12, 24, 12)
+        welcome_text_layout.setSpacing(8)
         welcome_label = _WelcomeLabel()
         welcome_label.setText(_load_welcome_text())
         welcome_label.setStyleSheet("font-size: 14px;")
         welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        welcome_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         welcome_label.setToolTip("Double-click to edit")
         gif_label = _GifLabel()
         gif_label.setToolTip("Double-click to change image")
         _apply_image(_load_image_path(), gif_label)
-        welcome_text_layout.addWidget(welcome_label)
-        welcome_text_layout.addWidget(gif_label)
+        welcome_text_layout.addWidget(welcome_label, 0)
+        welcome_text_layout.addWidget(gif_label, 1)
         c.register_widget("welcome_label", welcome_label)
         c.register_widget("welcome_text_layout", welcome_text_layout)
         c.register_widget("welcome_tab_text", container)
