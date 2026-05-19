@@ -10,11 +10,3 @@ if [[ -d "$MODULES_DIR" ]]; then
   done
 fi
 
-# Show pshelp hint only in the first terminal opened per system session
-_PURRSH3LL_HINT_FLAG="/tmp/.purrsh3ll_hint_shown"
-if [[ ! -f "$_PURRSH3LL_HINT_FLAG" ]]; then
-  touch "$_PURRSH3LL_HINT_FLAG"
-  echo "\033[2m# Type pshelp to see available tools\033[0m"
-fi
-unset _PURRSH3LL_HINT_FLAG
-
