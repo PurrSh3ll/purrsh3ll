@@ -300,6 +300,128 @@ def build_main_layout(main_window):
             btn_cancel.clicked.connect(dlg.reject)
             dlg.exec()
 
+        # ── Background image ──────────────────────────────────────────────────────
+
+        _bg_movie = [None]
+
+        def _load_bg_path():
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                saved = cfg.get("welcome", {}).get("bg_path", "")
+                return saved if saved and os.path.exists(saved) else ""
+            except Exception:
+                return ""
+
+        def _save_bg_path(path):
+            try:
+                cfg = {}
+                if os.path.exists(c.config_path):
+                    with open(c.config_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f)
+                cfg.setdefault("welcome", {})["bg_path"] = path
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _apply_bg(path):
+            if _bg_movie[0] is not None:
+                _bg_movie[0].stop()
+                _bg_movie[0] = None
+            container._bg_label.setMovie(None)
+            container._bg_pixmap = None
+            if not path:
+                container._bg_label.hide()
+                container.update()
+                return
+            if path.lower().endswith(".gif"):
+                m = QMovie(path)
+                container._bg_label.setMovie(m)
+                container._bg_label.show()
+                m.start()
+                _bg_movie[0] = m
+            else:
+                px = QPixmap(path)
+                if not px.isNull():
+                    container._bg_pixmap = px
+                container._bg_label.hide()
+                container.update()
+
+        def _on_bg_double_click():
+            dlg = QDialog(c.widgets["main_window"])
+            dlg.setWindowTitle("Background image")
+            dlg.setModal(True)
+            dlg.resize(280, 110)
+            layout = QVBoxLayout(dlg)
+            layout.setContentsMargins(16, 16, 16, 16)
+            layout.setSpacing(10)
+            try:
+                dlg.setStyleSheet(c.messagebox_stylesheet)
+            except Exception:
+                pass
+            btn_set    = QPushButton("Set background image...", dlg)
+            btn_clear  = QPushButton("Clear background", dlg)
+            btn_cancel = QPushButton("Cancel", dlg)
+            layout.addWidget(btn_set)
+            layout.addWidget(btn_clear)
+            layout.addWidget(btn_cancel)
+
+            def _do_set():
+                path, _ = QFileDialog.getOpenFileName(
+                    dlg, "Select background image",
+                    os.path.expanduser("~"),
+                    "Images (*.gif *.png *.jpg *.jpeg *.bmp *.webp)"
+                )
+                if path:
+                    _apply_bg(path)
+                    _save_bg_path(path)
+                dlg.accept()
+
+            def _do_clear():
+                _apply_bg("")
+                _save_bg_path("")
+                dlg.accept()
+
+            btn_set.clicked.connect(_do_set)
+            btn_clear.clicked.connect(_do_clear)
+            btn_cancel.clicked.connect(dlg.reject)
+            dlg.exec()
+
+        # ── Welcome container class ───────────────────────────────────────────────
+
+        class _WelcomeContainer(QWidget):
+            def __init__(self_, parent):
+                super().__init__(parent)
+                self_._bg_pixmap = None
+                self_._bg_label = QLabel(self_)
+                self_._bg_label.setScaledContents(True)
+                self_._bg_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                self_._bg_label.hide()
+                self_._bg_label.lower()
+
+            def mouseDoubleClickEvent(self_, event):
+                _on_bg_double_click()
+
+            def resizeEvent(self_, event):
+                super().resizeEvent(event)
+                self_._bg_label.resize(self_.size())
+
+            def paintEvent(self_, event):
+                super().paintEvent(event)
+                if self_._bg_pixmap and not self_._bg_pixmap.isNull():
+                    from PyQt6.QtGui import QPainter
+                    painter = QPainter(self_)
+                    s = self_.size()
+                    scaled = self_._bg_pixmap.scaled(
+                        s,
+                        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
+                    x = (s.width() - scaled.width()) // 2
+                    y = (s.height() - scaled.height()) // 2
+                    painter.drawPixmap(x, y, scaled)
+
         _DEFAULT_IMAGE_PATH = os.path.join(c.base_path, "icons", "__default_image.gif")
 
         def _load_image_path():
@@ -460,7 +582,7 @@ def build_main_layout(main_window):
                 else:
                     super().paintEvent(event)
 
-        container = QWidget(c.widgets["execution_tabs"])
+        container = _WelcomeContainer(c.widgets["execution_tabs"])
         welcome_text_layout = QVBoxLayout(container)
         welcome_text_layout.setContentsMargins(24, 12, 24, 12)
         welcome_text_layout.setSpacing(8)
@@ -479,6 +601,8 @@ def build_main_layout(main_window):
         c.register_widget("welcome_text_layout", welcome_text_layout)
         c.register_widget("welcome_tab_text", container)
         c.register_widget("gif_label", gif_label)
+
+        _apply_bg(_load_bg_path())
 
         def _rotate_message():
             if _is_default[0]:
