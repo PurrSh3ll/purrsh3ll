@@ -412,6 +412,16 @@ def build_menu(main_window):
             • <a href="https://pypi.org/project/Pygments/">Pygments 2.19.2</a> – BSD 2-Clause<br>
             • <a href="https://pypi.org/project/jeepney/">jeepney 0.9.0</a> – MIT<br><br>
 
+            <b>Voice &amp; Audio</b><br>
+            • <a href="https://github.com/SYSTRAN/faster-whisper">faster-whisper 1.2.1</a> – MIT<br>
+            • <a href="https://github.com/dscripka/openWakeWord">openwakeword 0.4.0</a> – Apache 2.0<br>
+            • <a href="https://pypi.org/project/sounddevice/">sounddevice 0.5.5</a> – MIT<br>
+            • <a href="https://pypi.org/project/scipy/">scipy 1.17.1</a> – BSD 3-Clause<br>
+            • <a href="https://opennmt.net">ctranslate2 4.7.1</a> – MIT<br>
+            • <a href="https://pypi.org/project/av/">av (PyAV) 17.0.1</a> – BSD 3-Clause<br>
+            • <a href="https://scikit-learn.org">scikit-learn 1.8.0</a> – BSD 3-Clause<br>
+            • <a href="https://github.com/huggingface/tokenizers">tokenizers 0.23.1</a> – Apache 2.0<br><br>
+
             <hr>
             <b>External Tools &amp; Resources</b><br>
             • <a href="https://github.com/ollama/ollama">Ollama</a> – MIT<br>
