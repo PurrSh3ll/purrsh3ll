@@ -79,7 +79,33 @@ class _ErrorOverlay(QFrame):
         self._lbl.setText(f"✗ exit {code}")
 
 
+class _HintOverlay(QFrame):
+    """One-shot hint shown bottom-left on the first terminal."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("hint_overlay")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("""
+            QFrame#hint_overlay {
+                background: rgba(20, 28, 36, 200);
+                border: 1px solid #3a5068;
+                border-radius: 5px;
+            }
+        """)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 5, 10, 5)
+        lbl = QLabel("Type <b>pshelp</b> to see available tools")
+        lbl.setStyleSheet("color: #8ab4cc; font-size: 11px; background: transparent;")
+        lay.addWidget(lbl)
+        self.adjustSize()
+        self.hide()
+
+
 class TerminalWrapper(QtWidgets.QWidget):
+
+    _hint_shown = False  # show only once per app session
+
     def __init__(self, console_widget, min_h=40, pref_h=300, parent=None):
         super().__init__(parent)
         self._console = console_widget
@@ -90,11 +116,49 @@ class TerminalWrapper(QtWidgets.QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._pref_h = pref_h
         self._overlay: _ErrorOverlay | None = None
+        self._hint: _HintOverlay | None = None
 
         try:
             self._console.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         except Exception:
             pass
+
+        if not TerminalWrapper._hint_shown:
+            TerminalWrapper._hint_shown = True
+            self._hint = _HintOverlay(self)
+            self._console.installEventFilter(self)
+            # Show after the widget is painted for the first time
+            QtCore.QTimer.singleShot(800, self._show_hint)
+
+    # ── hint overlay ──────────────────────────────────────────────────────────
+
+    def _show_hint(self):
+        if self._hint is None:
+            return
+        self._hint.adjustSize()
+        self._place_hint()
+        self._hint.show()
+        self._hint.raise_()
+
+    def _place_hint(self):
+        if self._hint is not None:
+            margin = 10
+            x = margin
+            y = self.height() - self._hint.height() - margin
+            self._hint.move(max(0, x), max(0, y))
+
+    def _hide_hint(self):
+        if self._hint is not None and self._hint.isVisible():
+            self._hint.hide()
+            try:
+                self._console.removeEventFilter(self)
+            except Exception:
+                pass
+
+    def eventFilter(self, obj, event):
+        if obj is self._console and event.type() == QtCore.QEvent.Type.KeyPress:
+            self._hide_hint()
+        return False
 
     # ── overlay helpers ───────────────────────────────────────────────────────
 
@@ -114,6 +178,8 @@ class TerminalWrapper(QtWidgets.QWidget):
         super().resizeEvent(event)
         if self._overlay is not None and self._overlay.isVisible():
             self._place_overlay()
+        if self._hint is not None and self._hint.isVisible():
+            self._place_hint()
 
     def show_error_overlay(self, exit_code: int):
         ov = self._get_overlay()
