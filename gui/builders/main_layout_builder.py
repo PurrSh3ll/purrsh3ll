@@ -239,6 +239,8 @@ def build_main_layout(main_window):
                 with open(c.config_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
                 saved = cfg.get("welcome", {}).get("image_path", "")
+                if saved == "none":
+                    return ""
                 return saved if saved and os.path.exists(saved) else _DEFAULT_IMAGE_PATH
             except Exception:
                 return _DEFAULT_IMAGE_PATH
@@ -258,6 +260,15 @@ def build_main_layout(main_window):
         _current_movie = [None]
 
         def _apply_image(path, label):
+            if not path:
+                if _current_movie[0] is not None:
+                    _current_movie[0].stop()
+                    _current_movie[0] = None
+                label.setMovie(None)
+                label.setPixmap(QPixmap())
+                label._orig_pixmap = None
+                label._movie_natural_size = None
+                return
             if path.lower().endswith(".gif"):
                 if _current_movie[0] is not None:
                     _current_movie[0].stop()
@@ -301,9 +312,11 @@ def build_main_layout(main_window):
                 pass
             btn_choose  = QPushButton("Choose image...", dlg)
             btn_default = QPushButton("Set default image", dlg)
+            btn_none    = QPushButton("No image", dlg)
             btn_cancel  = QPushButton("Cancel", dlg)
             layout.addWidget(btn_choose)
             layout.addWidget(btn_default)
+            layout.addWidget(btn_none)
             layout.addWidget(btn_cancel)
 
             def _choose():
@@ -322,8 +335,14 @@ def build_main_layout(main_window):
                 _save_image_path("")
                 dlg.accept()
 
+            def _set_none():
+                _apply_image("", gif_label)
+                _save_image_path("none")
+                dlg.accept()
+
             btn_choose.clicked.connect(_choose)
             btn_default.clicked.connect(_set_default)
+            btn_none.clicked.connect(_set_none)
             btn_cancel.clicked.connect(dlg.reject)
             dlg.exec()
 
@@ -346,7 +365,7 @@ def build_main_layout(main_window):
             def _target_size(self_):
                 from PyQt6.QtCore import QSize
                 s = self_.size()
-                return QSize(int(s.width() * 0.75), int(s.height() * 0.75))
+                return QSize(int(s.width() * 0.60), int(s.height() * 0.60))
 
             def resizeEvent(self_, event):
                 super().resizeEvent(event)
