@@ -81,6 +81,9 @@ Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemin
 - **Observable Variables** — real-time display of tracked shell variables
 - **Mode Profiles** — terminal environment presets for different tasks
 
+### Themes & Customization
+PurrSh3ll ships with a large collection of built-in color themes and allows full visual customization — colors, fonts, and layout. The welcome screen (text, image, background) is editable directly from the UI with a double-click.
+
 ---
 
 ## Who Is It For?
