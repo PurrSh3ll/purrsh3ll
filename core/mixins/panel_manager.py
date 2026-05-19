@@ -14,11 +14,8 @@ class PanelManagerMixin:
             self._set_panel_position(panel_key)
 
     def center_welcome_text(self):
-        label_width = self.widgets["welcome_tab_text"].width()
-        label_height = self.widgets["welcome_tab_text"].height()
-        center_x = (self.widgets["execution_tabs"].width() - label_width) // 2
-        center_y = (self.widgets["execution_tabs"].height() - label_height) // 2
-        self.widgets["welcome_tab_text"].move(center_x, center_y)
+        tabs = self.widgets["execution_tabs"]
+        self.widgets["welcome_tab_text"].setGeometry(0, 0, tabs.width(), tabs.height())
 
     def _set_panel_position(self, panel_key):
         panel = self.widgets[panel_key]
