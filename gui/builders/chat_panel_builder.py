@@ -672,10 +672,13 @@ def build_chat_panel(main_window):
         return chat_btn_run.text() == "run"
 
     def _refresh_custom_combo():
+        if not _is_run_mode():
+            chat_combo_custom.setVisible(False)
+            return
         category = chat_combo_interface.currentText()
         is_web = category == "web"
         # Hide model combobox for web — model selection happens inside Open WebUI
-        chat_combo_custom.setVisible(not is_web and _is_run_mode() or not _is_run_mode())
+        chat_combo_custom.setVisible(not is_web)
         chat_combo_custom.blockSignals(True)
         chat_combo_custom.clear()
 
