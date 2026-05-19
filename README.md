@@ -108,27 +108,50 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 
 ## Installation
 
+Two installers are provided depending on your needs.
+
+### Option A — Lite (core app only)
+
+Installs PurrSh3ll with all Python dependencies and QTermWidget. No Ollama, no Docker images, no AI skills.
+
 ```bash
-# 1. Clone the repository
-git clone https://github.com/youruser/purrsh3ll.git
-cd purrsh3ll
+bash install.sh            # without voice support
+bash install.sh --voice    # with voice/audio support
+```
 
-# 2. Create a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+What's included:
+- Core application and all Python packages
+- QTermWidget (downloaded from GitHub Releases)
+- Desktop shortcut and `purrsh3ll` launch command
 
-# 3. Install dependencies
-pip install PyQt6 PyQt6-WebEngine pyqtermwidget watchdog \
-    chromadb fastembed onnxruntime huggingface-hub \
-    keyring cryptography docker pyfiglet pygame \
-    Pillow pydantic requests PyYAML loguru rich numpy \
-    pyte markdown2 Pygments
+### Option B — Full (recommended)
 
-# 4. (Optional) Voice support
-pip install faster-whisper openwakeword sounddevice scipy
+Installs everything in Lite plus all optional open-source components.
 
-# 5. Run
-python3 main.py
+```bash
+bash install_full.sh             # with voice support (default)
+bash install_full.sh --no-voice  # skip voice/audio
+```
+
+What's included, on top of Lite:
+- **Ollama** — local LLM inference server
+- **aichat** — CLI frontend for LLMs (multi-provider)
+- **Docker** — container runtime (if not already installed)
+- **Open WebUI** — web UI for Ollama (Docker image pre-pulled)
+- **WebMap** — Nmap result visualizer (Docker image pre-pulled)
+- **AI Skills** — `awesome-claude-skills-security` + `claude-code-pentest` (git submodules)
+
+### After installation
+
+```bash
+# Start Ollama (Full only)
+ollama serve
+
+# Pull a model (Full only)
+ollama pull llama3.2
+
+# Launch PurrSh3ll
+purrsh3ll
 ```
 
 > **Note:** A full `requirements.txt` with pinned versions will be added in the next release.
