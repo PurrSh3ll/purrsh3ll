@@ -1,6 +1,16 @@
 # Store modules dir at source time when %x reliably points to this file
 _PSHELP_MODULES_DIR="${${(%):-%x}:A:h}"
 
+# Show hint before first prompt, only in first terminal per system session
+autoload -Uz add-zsh-hook
+_pshelp_hint_precmd() {
+    add-zsh-hook -d precmd _pshelp_hint_precmd
+    [[ -f /tmp/.purrsh3ll_hint_shown ]] && return
+    touch /tmp/.purrsh3ll_hint_shown
+    print -P "%F{240}# Type pshelp to see available tools%f"
+}
+add-zsh-hook precmd _pshelp_hint_precmd
+
 # PSDESC: list all available AI tools with descriptions
 pshelp() {
     local modules_dir="$_PSHELP_MODULES_DIR"
