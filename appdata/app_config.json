@@ -27,7 +27,7 @@
   },
   "llama": {
     "llm_cli_path": "",
-    "logs_terminal_cmd": "",
+    "logs_terminal_cmd": "claude --dangerously-skip-permissions",
     "agent_role": "ctf_mode",
     "skills_set": "default"
   },
