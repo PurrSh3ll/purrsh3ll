@@ -238,6 +238,22 @@ purrsh3ll/
 
 ---
 
+## Roadmap
+
+PurrSh3ll is under active development. This is not the final form.
+
+I have more ideas than time — building this solo alongside a full-time job means progress is steady but not instant. What's coming:
+
+- **Function calling & agentic loops** — AI that actually executes actions, not just suggests them
+- **MCP client support** — connect to the growing ecosystem of Model Context Protocol servers
+- **Expanded file support** — video, audio, and binary file handling
+- **Deeper pentest automation** — multi-step AI agents for recon, enumeration, and reporting
+- **Better multi-agent workflows** — specialized agents collaborating on complex tasks
+
+If any of this sounds useful to you — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
+
+---
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0**.
