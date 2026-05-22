@@ -4,6 +4,8 @@
 
 PurrSh3ll is a desktop application built on Kali Linux that brings together a multi-tab terminal, local AI assistant, RAG knowledge base, voice interface, and a suite of AI-powered CLI tools — all in one place, fully offline.
 
+<img src="docs/images/app_image1.png" width="900"/>
+
 ---
 
 ## Why PurrSh3ll?
@@ -83,6 +85,8 @@ Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemin
 
 ### Themes & Customization
 PurrSh3ll ships with a large collection of built-in color themes and allows full visual customization — colors, fonts, and layout. The welcome screen (text, image, background) is editable directly from the UI with a double-click.
+
+<img src="docs/images/cool_themes.png" width="900"/>
 
 ---
 
@@ -209,6 +213,8 @@ purrsh3ll/
     ├── BrainDump/             # Default RAG knowledge base
     └── Cyb3rBreak/            # Embedded CTF games
 ```
+
+<img src="docs/images/ai_and_opensource.png" width="900"/>
 
 ---
 
