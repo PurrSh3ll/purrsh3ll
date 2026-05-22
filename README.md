@@ -275,6 +275,8 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 
 ## Acknowledgements
 
+- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) — Qt6 bindings for Python (GPL v3)
+- [QTermWidget](https://github.com/lxqt/qtermwidget) — terminal emulator widget for Qt
 - [Ollama](https://github.com/ollama/ollama) — local LLM runtime
 - [Open WebUI](https://github.com/open-webui/open-webui) — web frontend for local models
 - [OpenWakeWord](https://github.com/dscripka/openWakeWord) — wake word detection
