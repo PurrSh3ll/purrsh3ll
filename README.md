@@ -10,6 +10,8 @@ PurrSh3ll is a desktop application built on Kali Linux that brings together a mu
 
 [![PurrSh3ll — 6-Minute Feature Demo](https://img.youtube.com/vi/kpUUVxBdFqE/maxresdefault.jpg)](https://www.youtube.com/watch?v=kpUUVxBdFqE)
 
+https://www.youtube.com/watch?v=kpUUVxBdFqE
+
 ---
 
 ## Why PurrSh3ll?
