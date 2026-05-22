@@ -26,20 +26,10 @@
     "terminal_history_disabled": false
   },
   "llama": {
-    "llama_cli_path": "/home/kali/llama/llama-b8809/llama-cli",
-    "llama_server_path": "/home/kali/llama/llama-b8809/llama-server",
-    "mmproj_file": "/home/kali/llama/models/mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf",
-    "model_path": "/home/kali/llama/models/Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
-    "disable_thinking": true,
-    "llm_cli_path": "/home/kali/llama/aichat",
-    "cli_custom_cmd": "ollama run gemma4-8B-uncensored --think=false",
-    "webui_custom_cmd": "sudo docker rm -f open-webui; sudo docker run -d --network=host -e OLLAMA_BASE_URL=http://localhost:11434 -e PORT=3000 -v open-webui:/app/backend/data --name open-webui ghcr.io/open-webui/open-webui:main",
-    "logs_terminal_cmd": "claude --dangerously-skip-permissions",
+    "llm_cli_path": "",
+    "logs_terminal_cmd": "",
     "agent_role": "ctf_mode",
-    "skills_set": "default",
-    "ollama_model": "fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN",
-    "ollama_disable_thinking": true,
-    "ollama_fast_answers": false
+    "skills_set": "default"
   },
   "rag": {
     "knowledge_base": "braindump",
@@ -48,7 +38,12 @@
     "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
   },
   "welcome": {
-    "custom_text": "<p><b style='font-size:18px;'>Hello Daria</b></p><p>⚡⚡Let's hack the World⚡⚡</p>",
-    "image_path": "/home/kali/Desktop/lastsmall-ezgif.com-resize.gif"
+    "custom_text": "__default__",
+    "image_path": "",
+    "bg_path": ""
+  },
+  "api_providers": {
+    "active": "",
+    "profiles": []
   }
 }
