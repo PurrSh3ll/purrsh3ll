@@ -32,6 +32,11 @@ appdata/ob_panel_state.json
 appdata/terminal_fifos/
 appdata/chat_sessions/
 appdata/venv_list.json
+appdata/scripts_docs/
+appdata/scripts_help/
+appdata/scripts_history/
+appdata/scripts_notes/
+appdata/scripts_favorities/
 
 # Wygenerowane raporty
 appmodules/Cyb3rCollector/reports/

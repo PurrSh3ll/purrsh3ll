@@ -81,6 +81,12 @@
             "description": "Runs default Nmap scripts against the target to gather common information about services."
         }
     ],
-    "history": [],
+    "history": [
+        {
+            "profile_name": "sample scan",
+            "command": "sudo nmap -sS -sU -T4 -A -v localhost",
+            "datetime": "2026-05-21 08:34:35"
+        }
+    ],
     "port": 8000
 }
