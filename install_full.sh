@@ -252,9 +252,17 @@ if command -v docker &>/dev/null; then
     success "Docker already installed ($(docker --version))"
 else
     info "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
+    # Kali Linux uses kali-rolling which is not supported by get.docker.com script.
+    # Use docker.io from apt instead.
+    if grep -qi "kali" /etc/os-release 2>/dev/null; then
+        sudo apt-get install -y --no-install-recommends docker.io 2>&1 \
+            | grep -E "^(Setting up|already)" || true
+    else
+        curl -fsSL https://get.docker.com | sh
+    fi
     sudo usermod -aG docker "$USER"
-    warn "Docker installed. You may need to log out and back in for group membership to take effect."
+    success "Docker installed"
+    warn "You may need to log out and back in for Docker group membership to take effect."
     warn "Or run: newgrp docker"
 fi
 
