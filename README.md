@@ -154,6 +154,17 @@ What's included, on top of Lite:
 - **WebMap** — Nmap result visualizer (Docker image pre-pulled)
 - **AI Skills** — `awesome-claude-skills-security` + `claude-code-pentest` (git submodules)
 
+### Disk space requirements
+
+| Variant | Approx. size |
+|---------|-------------|
+| `install.sh` (lite, no voice) | ~1.8 GB |
+| `install.sh --voice` | ~1.9 GB |
+| `install_full.sh --no-voice` | ~5.3 GB |
+| `install_full.sh` (full + voice) | ~5.4 GB |
+
+> Sizes include Python venv (~1.4 GB, dominated by PyQt6 + onnxruntime) and Docker images for Open WebUI and WebMap (~3 GB combined). Ollama LLM models are **not** included — each model is downloaded separately on demand (typically 2–8 GB per model).
+
 ### After installation
 
 ```bash
