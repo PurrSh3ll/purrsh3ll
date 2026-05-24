@@ -263,6 +263,8 @@ I have more ideas than time — building this solo alongside a full-time job mea
 - **Deeper pentest automation** — multi-step AI agents for recon, enumeration, and reporting
 - **Better multi-agent workflows** — specialized agents collaborating on complex tasks
 
+I’m aware there are still areas that need improvement, such as widget colors, some untested tools, and parts of the UI. I have these in mind and will be addressing them over time.
+
 If any of this sounds useful to you — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
 
 ---
