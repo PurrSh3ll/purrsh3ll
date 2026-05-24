@@ -62,7 +62,7 @@ PurrSh3ll uses a real terminal emulator (QTermWidget / zsh). Multiple tabs are s
 - **Rename a tab** by clicking on the tab label
 - Adjust terminal font size with `Ctrl + Mouse Scroll`
 
-**Terminal history** is saved automatically to `appdata/logs/terminal_history.jsonl`. This history is used by AI tools like `psfix`, `psnext`, and `psreport` to provide context-aware responses.
+**Full session recording** — every terminal session is recorded automatically to `appdata/logs/terminal_history.jsonl`. This includes not just executed commands but also the full input and output streams, giving AI tools like `psfix`, `psnext`, and `psreport` complete context of everything that happened in the terminal.
 
 ---
 
@@ -72,7 +72,7 @@ PurrSh3ll includes a suite of AI-powered terminal commands. All tools use the ac
 
 Type `pshelp` in any terminal to list all available tools:
 
-[Run pshelp](action://run/command/pshelp)
+[Run pshelp](action://run/command/pshelp%0A)
 
 Use `pshelp <command>` to show detailed help for a specific tool:
 
@@ -255,7 +255,7 @@ PurrSh3ll supports Markdown files with live rendering in the Notes panel.
 **Action links** embedded in Markdown files allow you to execute terminal commands directly from the document by clicking a link. Example:
 
 ```markdown
-[Run nmap scan](action://run/command/nmap -sV 10.10.10.1)
+[Run nmap scan](action://run/command/nmap%20-sV%2010.10.10.1%0A)
 [Switch to Cyberpunk theme](action://change/theme/Cyberpunk)
 ```
 
@@ -310,9 +310,9 @@ Double-click the welcome screen to open the editor. You can set:
 
 **Try it out:**
 
-[Show available AI tools](action://run/command/pshelp)
+[Show available AI tools](action://run/command/pshelp%0A)
 
-[Launch Matrix animation](action://run/command/cmatrix -ab)
+[Launch Matrix animation](action://run/command/cmatrix%20-ab%0A)
 
 ---
 
