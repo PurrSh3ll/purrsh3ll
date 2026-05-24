@@ -260,6 +260,7 @@ else
     else
         curl -fsSL https://get.docker.com | sh
     fi
+    sudo systemctl enable docker --now 2>/dev/null || true
     sudo usermod -aG docker "$USER"
     success "Docker installed"
     warn "You may need to log out and back in for Docker group membership to take effect."
@@ -269,22 +270,14 @@ fi
 # ── Open WebUI Docker image ───────────────────────────────────────────────────
 
 info "Pulling Open WebUI Docker image..."
-if sudo docker pull "$OPENWEBUI_IMAGE" 2>&1 | tail -1 | grep -qE "Pull complete|up to date|Status: Image"; then
-    success "Open WebUI image ready"
-else
-    docker pull "$OPENWEBUI_IMAGE"
-    success "Open WebUI image ready"
-fi
+sudo docker pull "$OPENWEBUI_IMAGE" 2>&1 | tail -1 || true
+success "Open WebUI image ready"
 
 # ── WebMap Docker image ───────────────────────────────────────────────────────
 
 info "Pulling WebMap Docker image..."
-if sudo docker pull "$WEBMAP_IMAGE" 2>&1 | tail -1 | grep -qE "Pull complete|up to date|Status: Image"; then
-    success "WebMap image ready"
-else
-    docker pull "$WEBMAP_IMAGE"
-    success "WebMap image ready"
-fi
+sudo docker pull "$WEBMAP_IMAGE" 2>&1 | tail -1 || true
+success "WebMap image ready"
 
 # ── Desktop shortcut ──────────────────────────────────────────────────────────
 
