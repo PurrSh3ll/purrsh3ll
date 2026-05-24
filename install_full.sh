@@ -224,7 +224,8 @@ if command -v ollama &>/dev/null; then
     success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
 else
     info "Installing Ollama..."
-    curl -fsSL https://ollama.com/install.sh | sh
+    curl -fsSL https://ollama.com/install.sh | sh 2>&1 \
+        | grep -E "^(>>>|WARNING)" || true
     success "Ollama installed"
 fi
 
@@ -255,10 +256,11 @@ else
     # Kali Linux uses kali-rolling which is not supported by get.docker.com script.
     # Use docker.io from apt instead.
     if grep -qi "kali" /etc/os-release 2>/dev/null; then
-        sudo apt-get install -y --no-install-recommends docker.io 2>&1 \
+        sudo apt-get install -y --no-install-recommends docker.io docker-cli containerd 2>&1 \
             | grep -E "^(Setting up|already)" || true
     else
-        curl -fsSL https://get.docker.com | sh
+        curl -fsSL https://get.docker.com | sh 2>&1 \
+            | grep -E "^(\+|Executing|WARNING)" || true
     fi
     sudo systemctl enable docker --now 2>/dev/null || true
     sudo usermod -aG docker "$USER"
@@ -270,14 +272,20 @@ fi
 # ── Open WebUI Docker image ───────────────────────────────────────────────────
 
 info "Pulling Open WebUI Docker image..."
-sudo docker pull "$OPENWEBUI_IMAGE" 2>&1 | tail -1 || true
-success "Open WebUI image ready"
+if sudo docker pull "$OPENWEBUI_IMAGE" 2>&1 | tail -1; then
+    success "Open WebUI image ready"
+else
+    warn "Could not pull Open WebUI image — start Docker and run: sudo docker pull $OPENWEBUI_IMAGE"
+fi
 
 # ── WebMap Docker image ───────────────────────────────────────────────────────
 
 info "Pulling WebMap Docker image..."
-sudo docker pull "$WEBMAP_IMAGE" 2>&1 | tail -1 || true
-success "WebMap image ready"
+if sudo docker pull "$WEBMAP_IMAGE" 2>&1 | tail -1; then
+    success "WebMap image ready"
+else
+    warn "Could not pull WebMap image — start Docker and run: sudo docker pull $WEBMAP_IMAGE"
+fi
 
 # ── Desktop shortcut ──────────────────────────────────────────────────────────
 
