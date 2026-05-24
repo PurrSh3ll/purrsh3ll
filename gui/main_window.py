@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
         self.c.get_widget("about_qterm_action").triggered.connect(self.c.open_qterm_help)
         self.c.get_widget("about_qt_action").triggered.connect(self.c.open_qt_help)
         self.c.get_widget("about_licenses_action").triggered.connect(self.c.open_licenses_help)
+        self.c.get_widget("author_action").triggered.connect(self.c.open_author_dialog)
         self.c.get_widget("user_guide_action").triggered.connect(
             lambda: self.c.open_new_tab_for_terminal(file=self.c.user_guide_path))
         self.c.get_widget("manual_action").triggered.connect(

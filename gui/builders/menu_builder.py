@@ -1628,8 +1628,44 @@ def build_menu(main_window):
         except Exception:
             pass
 
+    def create_author_dialog():
+        author_dialog = QDialog()
+        author_dialog.setWindowTitle("Author")
+        author_dialog.setModal(True)
+        layout = QVBoxLayout()
+        author_label = QLabel("""
+        <div style="text-align: center; padding: 16px;">
+            <b style="font-size: 15px;">PurrSh3ll</b><br>
+            <span style="color: gray;">AI-powered terminal environment for pentesters</span><br><br>
+
+            <b>Damian Ząbek</b><br>
+            Cybersecurity Specialist<br><br>
+
+            <a href="https://github.com/PurrSh3ll/purrsh3ll">github.com/PurrSh3ll/purrsh3ll</a><br>
+            <a href="https://www.linkedin.com/in/damian-z%C4%85bek-905518364/">linkedin.com/in/damian-ząbek</a><br>
+            <a href="mailto:purrsh3ll@gmail.com">purrsh3ll@gmail.com</a><br><br>
+
+            <b>Demo</b><br>
+            <a href="https://youtu.be/kpUUVxBdFqE">youtu.be/kpUUVxBdFqE</a><br><br>
+
+            <span style="color: gray; font-size: 11px;">Released under the GNU General Public License v3.0</span>
+        </div>
+        """)
+        author_label.setTextFormat(Qt.TextFormat.RichText)
+        author_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        author_label.setOpenExternalLinks(True)
+        author_label.setWordWrap(True)
+        layout.addWidget(author_label)
+        author_dialog.setLayout(layout)
+        author_dialog.resize(380, 300)
+        try:
+            c.register_widget("author_dialog", author_dialog)
+        except Exception:
+            pass
+
     create_settings_dialog()
     create_ai_settings_dialog()
     create_about_qterm_dialog()
     create_about_qt_dialog()
     create_licenses_dialog()
+    create_author_dialog()

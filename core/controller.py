@@ -545,4 +545,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     def open_licenses_help(self):
         Controller.widgets["licenses_dialog"].exec()
 
+    def open_author_dialog(self):
+        Controller.widgets["author_dialog"].exec()
+
 controller_instance = Controller()
