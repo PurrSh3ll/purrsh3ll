@@ -15,7 +15,7 @@
 5. [Chat Panel](#chat-panel)
 6. [RAG Knowledge Base](#rag-knowledge-base)
 7. [Script Manager](#script-manager)
-8. [Notes](#notes)
+8. [Markdown Support](#markdown-support)
 9. [File Viewer](#file-viewer)
 10. [Environment Variables & Aliases](#environment-variables--aliases)
 11. [Voice Control](#voice-control)
@@ -43,22 +43,24 @@ Type `pshelp` in any terminal to see all available AI tools.
 
 The interface is divided into three main areas:
 
+- **Top menu bar** — access to Settings, Help, Licenses, and application controls
 - **Left panel** — Chat, Script Manager, Notes, File Viewer, Environment Variables
 - **Center** — Terminal tabs and execution area
 - **Right panel** — Secondary tools and output
 
-Panels can be resized by dragging the splitters. Layouts adapt to the current mode.
+The left and right panels can be resized by dragging the splitters. Layouts adapt to the current mode.
 
 ---
 
 ## Terminal
 
-PurrSh3ll uses a real terminal emulator (QTermWidget / zsh). Multiple tabs are supported.
+PurrSh3ll uses a real terminal emulator (QTermWidget / zsh). Multiple tabs are supported and can be managed directly from the tab bar.
 
 **Tab management:**
-- Open a new tab: `Ctrl+T` or the `+` button
-- Close a tab: `Ctrl+W`
-- Switch between tabs: `Ctrl+Tab`
+- Open a new tab using the `+` button in the tab bar
+- Close a tab using the `×` button on the tab
+- **Rename a tab** by clicking on the tab label
+- Adjust terminal font size with `Ctrl + Mouse Scroll`
 
 **Terminal history** is saved automatically to `appdata/logs/terminal_history.jsonl`. This history is used by AI tools like `psfix`, `psnext`, and `psreport` to provide context-aware responses.
 
@@ -68,20 +70,37 @@ PurrSh3ll uses a real terminal emulator (QTermWidget / zsh). Multiple tabs are s
 
 PurrSh3ll includes a suite of AI-powered terminal commands. All tools use the active AI provider configured in **Settings → AI Settings → API Providers**.
 
-Type `pshelp` to list all available tools and their usage.
+Type `pshelp` in any terminal to list all available tools:
+
+[Run pshelp](action://run/command/pshelp)
+
+Use `pshelp <command>` to show detailed help for a specific tool:
+
+```bash
+pshelp psrag
+pshelp psfix
+```
 
 ---
 
-### psai — AI Assistant
+### psask — Ask AI
 
-General-purpose AI assistant. Two modes available:
+Ask the active AI profile a direct question:
 
 ```bash
-psai ask "explain what is SSRF"
-psai chat                        # interactive conversation
+psask "what is SSRF and how to exploit it"
+psask "explain the output of this nmap scan: ..."
 ```
 
-Supports streaming output and multi-turn conversations.
+---
+
+### pschat — Chat with AI
+
+Start a persistent interactive chat session with the active AI profile:
+
+```bash
+pschat
+```
 
 ---
 
@@ -94,8 +113,6 @@ pscmd "find all SUID binaries on the system"
 pscmd "scan ports 80 and 443 on 192.168.1.0/24 with nmap"
 ```
 
-The generated command is printed and ready to copy or execute.
-
 ---
 
 ### psfix — Error Explainer
@@ -104,7 +121,6 @@ Automatically reads the last failed command from terminal history and asks the A
 
 ```bash
 psfix
-psfix --last 3    # analyze last 3 commands
 ```
 
 ---
@@ -115,7 +131,6 @@ Reads recent terminal history and suggests the most promising next steps for the
 
 ```bash
 psnext
-psnext --last 20    # use last 20 commands as context
 ```
 
 Useful when you are stuck or want a second opinion on attack paths.
@@ -128,8 +143,7 @@ Query your local knowledge base and receive an AI-synthesized answer:
 
 ```bash
 psrag "how to enumerate SMB shares"
-psrag -n 5 "SQL injection bypass techniques"
-psrag --show-sources "lateral movement with pass the hash"
+psrag -n 5 --show-sources "SQL injection bypass techniques"
 ```
 
 Flags:
@@ -139,14 +153,26 @@ Flags:
 
 ---
 
+### psreport — Pentest Report Generator
+
+Generate a structured Markdown/HTML pentest report from terminal history:
+
+```bash
+psreport              # fast mode
+psreport --deep       # thorough Map-Reduce mode (multiple LLM calls)
+```
+
+Reports are saved to `appmodules/Cyb3rCollector/reports/`.
+
+---
+
 ### pstldr — TL;DR Summarizer
 
-Summarize any text, file, or piped output:
+Summarize the last command output, a file, or piped input:
 
 ```bash
 pstldr report.txt
 nmap -sV 10.10.10.1 | pstldr
-pstldr "paste long text here..."
 ```
 
 ---
@@ -164,17 +190,15 @@ Analysis results are saved to terminal history so `psnext` and `psreport` can us
 
 ---
 
-### psreport — Pentest Report Generator
+### psopen — Open File in PurrSh3ll
 
-Generate a structured Markdown/HTML pentest report from terminal history:
+Open any file or navigate to a directory directly from the terminal:
 
 ```bash
-psreport                  # fast mode — smart-filtered history
-psreport --deep           # thorough Map-Reduce mode (multiple LLM calls)
-psreport -o my_report     # custom output filename
+psopen notes.md
+psopen /tmp/report.txt
+psopen -f /tmp/exploit.py
 ```
-
-Reports are saved to `appmodules/Cyb3rCollector/reports/`.
 
 ---
 
@@ -224,33 +248,24 @@ Scripts are stored in `usermodules/` and `appmodules/`.
 
 ---
 
-## Notes
+## Markdown Support
 
-The Notes panel supports Markdown with live rendering. Notes are stored in `notes/` and can be integrated with the application.
+PurrSh3ll supports Markdown files with live rendering in the Notes panel.
 
-**Clickable action links** embedded in notes allow you to:
-- Run terminal commands directly from a note
-- Change the application theme
+**Action links** embedded in Markdown files allow you to execute terminal commands directly from the document by clicking a link. Example:
 
-Example in a note:
 ```markdown
 [Run nmap scan](action://run/command/nmap -sV 10.10.10.1)
-[Switch to dark theme](action://change/theme/Legacy%20Hacker)
+[Switch to Cyberpunk theme](action://change/theme/Cyberpunk)
 ```
+
+This makes it possible to build interactive runbooks and checklists directly inside your notes.
 
 ---
 
 ## File Viewer
 
-Open and view files of various types directly within PurrSh3ll without leaving the application.
-
-From any terminal tab:
-```bash
-psopen filename.txt
-psopen /path/to/file.py
-```
-
-Supported types include text files, Markdown, Python scripts, logs, and more.
+Open and view files of various types directly within PurrSh3ll without leaving the application. Use `psopen` from any terminal tab to open a file in the viewer.
 
 ---
 
@@ -267,33 +282,37 @@ Manage shell environment variables and aliases through the GUI panel.
 
 ## Voice Control
 
-Voice control requires optional voice packages (installed with `--voice` flag).
+Voice control requires optional voice packages (installed with `--voice` flag during installation).
 
 **Capabilities:**
 - **Wake word detection** — activate listening hands-free
 - **Speech-to-text** — Whisper-based transcription
 - **Voice commands** — control the application or query AI by speaking
 
-Voice settings are accessible in the settings panel. The voice button in the toolbar activates/deactivates listening.
+The voice button in the toolbar activates/deactivates listening.
 
 ---
 
 ## Themes & Customization
 
-PurrSh3ll includes multiple built-in themes. Switch from Settings or from a terminal:
+PurrSh3ll includes multiple built-in themes. Switch theme from **Settings → Theme** or click the links below:
 
-**Available themes include:**
-- Default
-- Legacy Hacker
-- Cyberpunk
-- Red Team
-- and more
+- [Legacy Hacker](action://change/theme/Legacy%20Hacker)
+- [Cyberpunk](action://change/theme/Cyberpunk)
+- [Red Team](action://change/theme/Red%20Team)
+- [Default](action://change/theme/default)
 
 **Welcome screen customization:**
 Double-click the welcome screen to open the editor. You can set:
 - **Text** — custom welcome message (rotates hacker quotes every 10s by default)
 - **Image** — display a custom image or GIF
 - **Background** — set a background image or GIF for the welcome area
+
+**Try it out:**
+
+[Show available AI tools](action://run/command/pshelp)
+
+[Launch Matrix animation](action://run/command/cmatrix -ab)
 
 ---
 
