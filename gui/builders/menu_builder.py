@@ -1641,12 +1641,24 @@ def build_menu(main_window):
             <b>Damian Ząbek</b><br>
             Cybersecurity Specialist<br><br>
 
-            <a href="https://github.com/PurrSh3ll/purrsh3ll">github.com/PurrSh3ll/purrsh3ll</a><br>
-            <a href="https://www.linkedin.com/in/damian-z%C4%85bek-905518364/">linkedin.com/in/damian-ząbek</a><br>
-            <a href="mailto:purrsh3ll@gmail.com">purrsh3ll@gmail.com</a><br><br>
-
-            <b>Demo</b><br>
-            <a href="https://youtu.be/kpUUVxBdFqE">youtu.be/kpUUVxBdFqE</a><br><br>
+            <table cellspacing="8" style="margin: 0 auto;">
+                <tr>
+                    <td>🐱&nbsp;<b>GitHub</b></td>
+                    <td><a href="https://github.com/PurrSh3ll/purrsh3ll">github.com/PurrSh3ll/purrsh3ll</a></td>
+                </tr>
+                <tr>
+                    <td>💼&nbsp;<b>LinkedIn</b></td>
+                    <td><a href="https://www.linkedin.com/in/damian-z%C4%85bek-905518364/">linkedin.com/in/damian-ząbek</a></td>
+                </tr>
+                <tr>
+                    <td>📧&nbsp;<b>Email</b></td>
+                    <td><a href="mailto:purrsh3ll@gmail.com">purrsh3ll@gmail.com</a></td>
+                </tr>
+                <tr>
+                    <td>▶️&nbsp;<b>Demo</b></td>
+                    <td><a href="https://youtu.be/kpUUVxBdFqE">youtu.be/kpUUVxBdFqE</a></td>
+                </tr>
+            </table><br>
 
             <span style="color: gray; font-size: 11px;">Released under the GNU General Public License v3.0</span>
         </div>
@@ -1657,7 +1669,7 @@ def build_menu(main_window):
         author_label.setWordWrap(True)
         layout.addWidget(author_label)
         author_dialog.setLayout(layout)
-        author_dialog.resize(380, 300)
+        author_dialog.resize(420, 300)
         try:
             c.register_widget("author_dialog", author_dialog)
         except Exception:
