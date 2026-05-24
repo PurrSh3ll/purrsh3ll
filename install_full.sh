@@ -48,6 +48,26 @@ success() { echo -e "${GREEN} ✓${NC}  $*"; }
 warn()    { echo -e "${YELLOW}  !${NC}  $*"; }
 die()     { echo -e "${RED}ERROR:${NC} $*" >&2; exit 1; }
 
+# Runs a command silently in background, shows animated spinner, returns exit code.
+# Usage: run_with_spinner "Label" cmd arg1 arg2 ...
+run_with_spinner() {
+    local label="$1"; shift
+    local spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=0
+    printf "${CYAN}==>${NC} ${BOLD}%s${NC} " "$label"
+    "$@" >/tmp/_purrsh3ll_install.log 2>&1 &
+    local pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r${CYAN}==>${NC} ${BOLD}%s${NC} %s " "$label" "${spin[$i]}"
+        i=$(( (i+1) % ${#spin[@]} ))
+        sleep 0.1
+    done
+    wait "$pid"
+    local rc=$?
+    printf "\r${CYAN}==>${NC} ${BOLD}%s${NC}   \n" "$label"
+    return $rc
+}
+
 # ── Header ────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -223,9 +243,8 @@ success "QTermWidget installed"
 if command -v ollama &>/dev/null; then
     success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
 else
-    info "Installing Ollama..."
-    curl -fsSL https://ollama.com/install.sh | sh 2>&1 \
-        | grep -E "^(>>>|WARNING)" || true
+    run_with_spinner "Installing Ollama..." \
+        bash -c 'curl -fsSL https://ollama.com/install.sh | sh'
     success "Ollama installed"
 fi
 
@@ -271,8 +290,8 @@ fi
 
 # ── Open WebUI Docker image ───────────────────────────────────────────────────
 
-info "Pulling Open WebUI Docker image..."
-if sudo docker pull "$OPENWEBUI_IMAGE" 2>&1 | tail -1; then
+if run_with_spinner "Pulling Open WebUI Docker image..." \
+        sudo docker pull --quiet "$OPENWEBUI_IMAGE"; then
     success "Open WebUI image ready"
 else
     warn "Could not pull Open WebUI image — start Docker and run: sudo docker pull $OPENWEBUI_IMAGE"
@@ -280,8 +299,8 @@ fi
 
 # ── WebMap Docker image ───────────────────────────────────────────────────────
 
-info "Pulling WebMap Docker image..."
-if sudo docker pull "$WEBMAP_IMAGE" 2>&1 | tail -1; then
+if run_with_spinner "Pulling WebMap Docker image..." \
+        sudo docker pull --quiet "$WEBMAP_IMAGE"; then
     success "WebMap image ready"
 else
     warn "Could not pull WebMap image — start Docker and run: sudo docker pull $WEBMAP_IMAGE"
