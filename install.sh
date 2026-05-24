@@ -16,12 +16,11 @@ set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-REPO_URL="https://github.com/YOUR_USER/purrsh3ll.git"
+REPO_URL="https://github.com/PurrSh3ll/purrsh3ll.git"
 INSTALL_DIR="$HOME/purrsh3ll"
 VENV_DIR="$INSTALL_DIR/.venv"
 
-# After uploading the wheel to GitHub Releases, replace this URL:
-WHEEL_URL="https://github.com/YOUR_USER/purrsh3ll/releases/download/v1.0.0/qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
+WHEEL_URL="https://github.com/PurrSh3ll/purrsh3ll/releases/download/v1.0.0/qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 WHEEL_NAME="qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 
 VOICE=false
