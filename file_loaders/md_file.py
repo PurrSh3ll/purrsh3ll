@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QTextEdit, QApplication, QSplitter, QTextBrowser,
     QButtonGroup, QMenu, QMessageBox, QToolTip
 )
-from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression, QEvent
+from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression, QEvent, QSizeF
 from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction, QTextImageFormat, QImage
 
 from gui.widgets.custom_line_edit import ExpandingLineEdit
@@ -680,11 +680,15 @@ class Markdown_file(ChunkedFileLoader):
             def _rescale_images():
                 if preview_widget is None:
                     return
-                doc_margin = int(preview_widget.document().documentMargin())
-                viewport_w = preview_widget.viewport().width() - 2 * doc_margin
-                if viewport_w <= 0:
+                full_viewport_w = preview_widget.viewport().width()
+                if full_viewport_w <= 0:
                     return
+                doc_margin = int(preview_widget.document().documentMargin())
+                viewport_w = full_viewport_w - 2 * doc_margin
                 doc = preview_widget.document()
+
+                # Collect changes first, apply after — avoids iterator invalidation
+                changes = []
                 block = doc.begin()
                 while block.isValid():
                     it = block.begin()
@@ -703,19 +707,25 @@ class Markdown_file(ChunkedFileLoader):
                                     _img_natural_sizes[img_path] = (qimg.width(), qimg.height())
                             if img_path in _img_natural_sizes:
                                 nat_w, nat_h = _img_natural_sizes[img_path]
-                                target_w = min(nat_w, viewport_w)
+                                target_w = min(nat_w, max(1, viewport_w))
                                 target_h = int(target_w * nat_h / nat_w) if nat_w > 0 else target_w
-                                new_fmt = QTextImageFormat()
-                                new_fmt.setName(name)
-                                new_fmt.setWidth(target_w)
-                                new_fmt.setHeight(target_h)
-                                pos = frag.position()
-                                c = QTextCursor(doc)
-                                c.setPosition(pos)
-                                c.setPosition(pos + frag.length(), QTextCursor.MoveMode.KeepAnchor)
-                                c.setCharFormat(new_fmt)
+                                changes.append((frag.position(), frag.length(), name, target_w, target_h))
                         it += 1
                     block = block.next()
+
+                for pos, length, name, w, h in changes:
+                    new_fmt = QTextImageFormat()
+                    new_fmt.setName(name)
+                    new_fmt.setWidth(w)
+                    new_fmt.setHeight(h)
+                    c = QTextCursor(doc)
+                    c.setPosition(pos)
+                    c.setPosition(pos + length, QTextCursor.MoveMode.KeepAnchor)
+                    c.setCharFormat(new_fmt)
+
+                # Force document reflow at the correct viewport width —
+                # equivalent to what QTextEdit::resizeEvent does internally
+                doc.setPageSize(QSizeF(full_viewport_w, -1))
 
             def update_preview():
                 text = self.text_widget.toPlainText()
@@ -724,7 +734,7 @@ class Markdown_file(ChunkedFileLoader):
                 doc.setBaseUrl(QUrl.fromLocalFile(str(self.base_dir) + "/"))
 
                 preview_widget.setMarkdown(text if text.strip() else "")
-                _rescale_images()
+                QTimer.singleShot(0, _rescale_images)
 
             self.text_widget.textChanged.connect(update_preview)
 
