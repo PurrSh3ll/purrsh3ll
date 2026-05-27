@@ -727,6 +727,8 @@ class Markdown_file(ChunkedFileLoader):
                 if zoom_state["level"] < MAX_ZOOM:
                     try:
                         self.text_widget.zoomIn(1)
+                        if preview_widget is not None:
+                            preview_widget.zoomIn(1)
                         zoom_state["level"] += 1
                     except Exception as e:
                         pass
@@ -736,6 +738,8 @@ class Markdown_file(ChunkedFileLoader):
                 if zoom_state["level"] > MIN_ZOOM:
                     try:
                         self.text_widget.zoomOut(1)
+                        if preview_widget is not None:
+                            preview_widget.zoomOut(1)
                         zoom_state["level"] -= 1
                     except Exception as e:
                         pass
