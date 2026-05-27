@@ -30,7 +30,7 @@ class MainWindow(QMainWindow):
         self._install_filters()
 
     def _setup_window(self):
-        self.setWindowTitle("PurrSh3ll v.1.0.0 (CTF mode)")
+        self.setWindowTitle("PurrSh3ll v.1.0.0 — Early Access")
         self.setGeometry(self.c.start_x, self.c.start_y, self.c.width, self.c.height)
         self.c.register_widget("main_window", self)
         self.c.SERVICE = KEYRING_SERVICE
