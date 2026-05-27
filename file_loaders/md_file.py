@@ -28,12 +28,20 @@ from file_loaders.chunked_file_loader import ChunkedFileLoader
 class _ZoomEventFilter(QObject):
     """Intercepts Ctrl+Scroll on a widget's viewport and routes it through
     the provided zoom callbacks, consuming the event so the widget's own
-    wheelEvent does not fire a second time."""
+    wheelEvent does not fire a second time.
+    Also intercepts Resize events on the preview widget itself and triggers
+    a debounced rescale so images always fill the preview pane width."""
 
-    def __init__(self, on_zoom_in, on_zoom_out, parent=None):
+    def __init__(self, on_zoom_in, on_zoom_out, on_resize=None, parent=None):
         super().__init__(parent)
         self._on_zoom_in = on_zoom_in
         self._on_zoom_out = on_zoom_out
+        self._on_resize = on_resize
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(60)
+        if on_resize:
+            self._resize_timer.timeout.connect(on_resize)
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.Type.Wheel:
@@ -43,6 +51,8 @@ class _ZoomEventFilter(QObject):
                 elif event.angleDelta().y() < 0:
                     self._on_zoom_out()
                 return True
+        if event.type() == QEvent.Type.Resize and self._on_resize:
+            self._resize_timer.start()
         return False
 
 
@@ -669,6 +679,9 @@ class Markdown_file(ChunkedFileLoader):
             def _rescale_images():
                 if preview_widget is None:
                     return
+                viewport_w = preview_widget.viewport().width()
+                if viewport_w <= 0:
+                    return
                 zoom_factor = max(0.1, 1.0 + zoom_state["level"] * 0.1)
                 doc = preview_widget.document()
                 block = doc.begin()
@@ -689,10 +702,12 @@ class Markdown_file(ChunkedFileLoader):
                                     _img_natural_sizes[img_path] = (qimg.width(), qimg.height())
                             if img_path in _img_natural_sizes:
                                 nat_w, nat_h = _img_natural_sizes[img_path]
+                                target_w = int(viewport_w * zoom_factor)
+                                target_h = int(target_w * nat_h / nat_w) if nat_w > 0 else target_w
                                 new_fmt = QTextImageFormat()
                                 new_fmt.setName(name)
-                                new_fmt.setWidth(int(nat_w * zoom_factor))
-                                new_fmt.setHeight(int(nat_h * zoom_factor))
+                                new_fmt.setWidth(target_w)
+                                new_fmt.setHeight(target_h)
                                 pos = frag.position()
                                 c = QTextCursor(doc)
                                 c.setPosition(pos)
@@ -810,9 +825,10 @@ class Markdown_file(ChunkedFileLoader):
             zoom_in_btn.clicked.connect(_zoom_in)
             zoom_out_btn.clicked.connect(_zoom_out)
 
-            _zoom_filter = _ZoomEventFilter(_zoom_in, _zoom_out)
+            _zoom_filter = _ZoomEventFilter(_zoom_in, _zoom_out, on_resize=_rescale_images)
             self.text_widget.viewport().installEventFilter(_zoom_filter)
             preview_widget.viewport().installEventFilter(_zoom_filter)
+            preview_widget.installEventFilter(_zoom_filter)
             self._zoom_filter = _zoom_filter
 
             _update_zoom_buttons()

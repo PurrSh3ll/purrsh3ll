@@ -6,6 +6,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+#### Markdown File Viewer
+- Zoom buttons (➕/➖) now also scale images in the preview pane, not only text
+  (`QTextImageFormat` width/height updated via `_rescale_images()` after each zoom step)
+- `Ctrl+Scroll` now synchronizes both editor and preview pane zoom, and rescales images
+  (added `_ZoomEventFilter` on `viewport()` of both widgets — consumes the event before
+  the widget's own `wheelEvent` fires, preventing double-zoom)
+- Images in the preview pane now always fit the pane width automatically:
+  small images are enlarged and large images are shrunk to match the current viewport width.
+  Zoom level acts as a multiplier on top of the fitted width (zoom=0 → 100% of pane width).
+  Images rescale dynamically when the splitter is resized (debounced at 60 ms).
+
+---
+
 ## [1.0.0] — 2026-05-27 — Early Access
 
 ### Added
