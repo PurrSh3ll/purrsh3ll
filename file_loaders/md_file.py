@@ -682,7 +682,6 @@ class Markdown_file(ChunkedFileLoader):
                 viewport_w = preview_widget.viewport().width()
                 if viewport_w <= 0:
                     return
-                zoom_factor = max(0.1, 1.0 + zoom_state["level"] * 0.1)
                 doc = preview_widget.document()
                 block = doc.begin()
                 while block.isValid():
@@ -702,7 +701,7 @@ class Markdown_file(ChunkedFileLoader):
                                     _img_natural_sizes[img_path] = (qimg.width(), qimg.height())
                             if img_path in _img_natural_sizes:
                                 nat_w, nat_h = _img_natural_sizes[img_path]
-                                target_w = int(viewport_w * zoom_factor)
+                                target_w = viewport_w
                                 target_h = int(target_w * nat_h / nat_w) if nat_w > 0 else target_w
                                 new_fmt = QTextImageFormat()
                                 new_fmt.setName(name)
