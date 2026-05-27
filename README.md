@@ -154,6 +154,8 @@ What's included, on top of Lite:
 - **WebMap** — Nmap result visualizer (Docker image pre-pulled)
 - **AI Skills** — `awesome-claude-skills-security` + `claude-code-pentest` (git submodules)
 
+> **Note:** The full installation may take **10–20 minutes** depending on your internet speed. Ollama and Docker container images are downloaded during the process — grab a coffee and let it run.
+
 ### Disk space requirements
 
 | Variant | Approx. size |
