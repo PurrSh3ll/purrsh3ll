@@ -806,7 +806,7 @@ class Markdown_file(ChunkedFileLoader):
                         if preview_widget is not None:
                             preview_widget.zoomIn(1)
                         zoom_state["level"] += 1
-                        _rescale_images()
+                        QTimer.singleShot(0, _rescale_images)
                     except Exception as e:
                         pass
                 _update_zoom_buttons()
@@ -818,7 +818,7 @@ class Markdown_file(ChunkedFileLoader):
                         if preview_widget is not None:
                             preview_widget.zoomOut(1)
                         zoom_state["level"] -= 1
-                        _rescale_images()
+                        QTimer.singleShot(0, _rescale_images)
                     except Exception as e:
                         pass
                 _update_zoom_buttons()
