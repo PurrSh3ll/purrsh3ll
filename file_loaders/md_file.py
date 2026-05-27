@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QMenu, QMessageBox, QToolTip
 )
 from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression
-from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction
+from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction, QTextImageFormat, QImage
 
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from file_loaders.viewer_widgets import Worker, LineNumberArea, TextEditWithLineNumbers
@@ -638,6 +638,47 @@ class Markdown_file(ChunkedFileLoader):
                 _show_path_not_found_tooltip(str(resolved_path))
 
             preview_widget.anchorClicked.connect(on_link_clicked)
+
+            zoom_state = {"level": 0}
+            MIN_ZOOM = -10
+            MAX_ZOOM = 40
+            _img_natural_sizes = {}
+
+            def _rescale_images():
+                if preview_widget is None:
+                    return
+                zoom_factor = max(0.1, 1.0 + zoom_state["level"] * 0.1)
+                doc = preview_widget.document()
+                block = doc.begin()
+                while block.isValid():
+                    it = block.begin()
+                    while not it.atEnd():
+                        frag = it.fragment()
+                        fmt = frag.charFormat()
+                        if fmt.isImageFormat():
+                            img_fmt = fmt.toImageFormat()
+                            name = img_fmt.name()
+                            img_path = unquote(name)
+                            if not os.path.isabs(img_path):
+                                img_path = str(self.base_dir / img_path)
+                            if img_path not in _img_natural_sizes:
+                                qimg = QImage(img_path)
+                                if not qimg.isNull():
+                                    _img_natural_sizes[img_path] = (qimg.width(), qimg.height())
+                            if img_path in _img_natural_sizes:
+                                nat_w, nat_h = _img_natural_sizes[img_path]
+                                new_fmt = QTextImageFormat()
+                                new_fmt.setName(name)
+                                new_fmt.setWidth(int(nat_w * zoom_factor))
+                                new_fmt.setHeight(int(nat_h * zoom_factor))
+                                pos = frag.position()
+                                c = QTextCursor(doc)
+                                c.setPosition(pos)
+                                c.setPosition(pos + frag.length(), QTextCursor.MoveMode.KeepAnchor)
+                                c.setCharFormat(new_fmt)
+                        it += 1
+                    block = block.next()
+
             def update_preview():
                 text = self.text_widget.toPlainText()
 
@@ -645,6 +686,7 @@ class Markdown_file(ChunkedFileLoader):
                 doc.setBaseUrl(QUrl.fromLocalFile(str(self.base_dir) + "/"))
 
                 preview_widget.setMarkdown(text if text.strip() else "")
+                _rescale_images()
 
             self.text_widget.textChanged.connect(update_preview)
 
@@ -712,11 +754,6 @@ class Markdown_file(ChunkedFileLoader):
 
             self.text_widget.textChanged.connect(update_file_info)
 
-            zoom_state = {"level": 0}
-            MIN_ZOOM = -10
-            MAX_ZOOM = 40
-            PREVIEW_ZOOM_STEP = 0.1
-
             def _update_zoom_buttons():
                 try:
                     zoom_out_btn.setEnabled(zoom_state["level"] > MIN_ZOOM)
@@ -729,10 +766,9 @@ class Markdown_file(ChunkedFileLoader):
                     try:
                         self.text_widget.zoomIn(1)
                         if preview_widget is not None:
-                            preview_widget.setTextSizeMultiplier(
-                                preview_widget.textSizeMultiplier() + PREVIEW_ZOOM_STEP
-                            )
+                            preview_widget.zoomIn(1)
                         zoom_state["level"] += 1
+                        _rescale_images()
                     except Exception as e:
                         pass
                 _update_zoom_buttons()
@@ -742,10 +778,9 @@ class Markdown_file(ChunkedFileLoader):
                     try:
                         self.text_widget.zoomOut(1)
                         if preview_widget is not None:
-                            preview_widget.setTextSizeMultiplier(
-                                max(0.1, preview_widget.textSizeMultiplier() - PREVIEW_ZOOM_STEP)
-                            )
+                            preview_widget.zoomOut(1)
                         zoom_state["level"] -= 1
+                        _rescale_images()
                     except Exception as e:
                         pass
                 _update_zoom_buttons()
