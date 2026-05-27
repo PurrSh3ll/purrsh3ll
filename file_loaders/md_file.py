@@ -586,6 +586,7 @@ class Markdown_file(ChunkedFileLoader):
 
             preview_widget = QTextBrowser(self.content_area)
             preview_widget.setReadOnly(True)
+            preview_widget.document().setDocumentMargin(20)
 
             preview_widget.setOpenLinks(False)
             preview_widget.setOpenExternalLinks(False)
@@ -679,7 +680,8 @@ class Markdown_file(ChunkedFileLoader):
             def _rescale_images():
                 if preview_widget is None:
                     return
-                viewport_w = preview_widget.viewport().width()
+                doc_margin = int(preview_widget.document().documentMargin())
+                viewport_w = preview_widget.viewport().width() - 2 * doc_margin
                 if viewport_w <= 0:
                     return
                 doc = preview_widget.document()
