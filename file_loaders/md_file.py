@@ -51,7 +51,7 @@ class _ZoomEventFilter(QObject):
                 elif event.angleDelta().y() < 0:
                     self._on_zoom_out()
                 return True
-        if event.type() == QEvent.Type.Resize and self._on_resize:
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show) and self._on_resize:
             self._resize_timer.start()
         return False
 
@@ -831,6 +831,7 @@ class Markdown_file(ChunkedFileLoader):
             preview_widget.viewport().installEventFilter(_zoom_filter)
             preview_widget.installEventFilter(_zoom_filter)
             self._zoom_filter = _zoom_filter
+            QTimer.singleShot(0, _rescale_images)
 
             _update_zoom_buttons()
 
