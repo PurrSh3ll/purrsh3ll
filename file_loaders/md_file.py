@@ -715,6 +715,7 @@ class Markdown_file(ChunkedFileLoader):
             zoom_state = {"level": 0}
             MIN_ZOOM = -10
             MAX_ZOOM = 40
+            PREVIEW_ZOOM_STEP = 0.1
 
             def _update_zoom_buttons():
                 try:
@@ -728,7 +729,9 @@ class Markdown_file(ChunkedFileLoader):
                     try:
                         self.text_widget.zoomIn(1)
                         if preview_widget is not None:
-                            preview_widget.zoomIn(1)
+                            preview_widget.setTextSizeMultiplier(
+                                preview_widget.textSizeMultiplier() + PREVIEW_ZOOM_STEP
+                            )
                         zoom_state["level"] += 1
                     except Exception as e:
                         pass
@@ -739,7 +742,9 @@ class Markdown_file(ChunkedFileLoader):
                     try:
                         self.text_widget.zoomOut(1)
                         if preview_widget is not None:
-                            preview_widget.zoomOut(1)
+                            preview_widget.setTextSizeMultiplier(
+                                max(0.1, preview_widget.textSizeMultiplier() - PREVIEW_ZOOM_STEP)
+                            )
                         zoom_state["level"] -= 1
                     except Exception as e:
                         pass
