@@ -117,6 +117,15 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 - **Optional:** Ollama (for local LLM), Docker (for Open WebUI / WebMap)
 - **Optional (voice):** microphone, `portaudio`
 
+**RAM usage:**
+
+| Configuration | RAM |
+|---------------|-----|
+| App only (idle to multiple tabs + browser) | 200 MB – 1 GB |
+| + Open WebUI (Docker) | +500 MB – 1 GB |
+| + WebMap (Docker) | +200 – 400 MB |
+| Full stack with a large LLM model (~8B) | ~12 GB+ |
+
 ---
 
 ## Installation
