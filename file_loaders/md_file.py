@@ -17,12 +17,34 @@ from PyQt6.QtWidgets import (
     QCheckBox, QTextEdit, QApplication, QSplitter, QTextBrowser,
     QButtonGroup, QMenu, QMessageBox, QToolTip
 )
-from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression
+from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression, QEvent
 from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction, QTextImageFormat, QImage
 
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from file_loaders.viewer_widgets import Worker, LineNumberArea, TextEditWithLineNumbers
 from file_loaders.chunked_file_loader import ChunkedFileLoader
+
+
+class _ZoomEventFilter(QObject):
+    """Intercepts Ctrl+Scroll on a widget's viewport and routes it through
+    the provided zoom callbacks, consuming the event so the widget's own
+    wheelEvent does not fire a second time."""
+
+    def __init__(self, on_zoom_in, on_zoom_out, parent=None):
+        super().__init__(parent)
+        self._on_zoom_in = on_zoom_in
+        self._on_zoom_out = on_zoom_out
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+                if event.angleDelta().y() > 0:
+                    self._on_zoom_in()
+                elif event.angleDelta().y() < 0:
+                    self._on_zoom_out()
+                return True
+        return False
+
 
 class Markdown_file(ChunkedFileLoader):
     def __init__(self):
@@ -787,6 +809,11 @@ class Markdown_file(ChunkedFileLoader):
 
             zoom_in_btn.clicked.connect(_zoom_in)
             zoom_out_btn.clicked.connect(_zoom_out)
+
+            _zoom_filter = _ZoomEventFilter(_zoom_in, _zoom_out)
+            self.text_widget.viewport().installEventFilter(_zoom_filter)
+            preview_widget.viewport().installEventFilter(_zoom_filter)
+            self._zoom_filter = _zoom_filter
 
             _update_zoom_buttons()
 
