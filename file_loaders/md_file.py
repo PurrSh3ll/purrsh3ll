@@ -703,7 +703,7 @@ class Markdown_file(ChunkedFileLoader):
                                     _img_natural_sizes[img_path] = (qimg.width(), qimg.height())
                             if img_path in _img_natural_sizes:
                                 nat_w, nat_h = _img_natural_sizes[img_path]
-                                target_w = viewport_w
+                                target_w = min(nat_w, viewport_w)
                                 target_h = int(target_w * nat_h / nat_w) if nat_w > 0 else target_w
                                 new_fmt = QTextImageFormat()
                                 new_fmt.setName(name)
