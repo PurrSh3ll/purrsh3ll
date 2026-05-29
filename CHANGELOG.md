@@ -19,7 +19,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Terminal**: `psopen` now opens files from split terminals the same way as the primary terminal
 - **Terminal**: split terminal now receives silent variable/alias injection from Observable Panel (own FIFO assigned at creation, cleaned up on unsplit)
 - **Terminal**: split terminal right-click menu now includes Find option with theme-aware search bar styling
-- **Terminal**: removed `_TermRepaintFilter` workaround and `sizeHint` override from `TerminalWrapper` — eliminates black band artifacts on resize in primary terminal
+- **Terminal**: reduced visual artifacts after search bar toggle and split/unsplit — improved repaint logic using `setTerminalFont` to trigger full character grid recalculation (known issue: artifacts may still appear in some cases)
 
 ---
 
