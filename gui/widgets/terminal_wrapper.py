@@ -202,10 +202,3 @@ class TerminalWrapper(QtWidgets.QWidget):
                 pass
             btn.clicked.connect(fn)
 
-    # ── size hints ────────────────────────────────────────────────────────────
-
-    def sizeHint(self):
-        return QtCore.QSize(self.width(), self._pref_h)
-
-    def minimumSizeHint(self):
-        return QtCore.QSize(0, self.minimumHeight())
