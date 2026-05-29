@@ -20,6 +20,21 @@ _PROMPT_RE = re.compile(r'[$%#]\s*$')
 
 
 
+def _force_term_repaint(term):
+    """Force QTermWidget to recalculate its character grid and repaint fully.
+    setTerminalFont with the same font triggers internal propagateSize + update,
+    which fills the entire widget area — unlike plain update() which only repaints
+    the already-known character grid region."""
+    try:
+        font = term.getTerminalFont()
+        term.setTerminalFont(font)
+    except Exception:
+        try:
+            term.update()
+        except Exception:
+            pass
+
+
 class TerminalTabsMixin:
     def _on_terminal_received(self, data: str):
         data = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
@@ -187,7 +202,7 @@ class TerminalTabsMixin:
         act_find.triggered.connect(lambda checked=False, t=term: (
             t.toggleShowSearchBar(),
             QTimer.singleShot(30, lambda: _apply_search_bar_style(t)),
-            QTimer.singleShot(50, t.update)
+            QTimer.singleShot(50, lambda: _force_term_repaint(t))
         ))
 
         def _on_context_menu(pos):
@@ -860,7 +875,7 @@ class TerminalTabsMixin:
 
         wrapper_widget._split_term = new_term
         wrapper_widget._split_splitter = splitter
-        QTimer.singleShot(50, term.update)
+        QTimer.singleShot(50, lambda: _force_term_repaint(term))
 
     def _unsplit_terminal(self, wrapper_widget):
         split_term = getattr(wrapper_widget, '_split_term', None)
@@ -873,7 +888,7 @@ class TerminalTabsMixin:
 
         if term:
             layout.addWidget(term)
-            QTimer.singleShot(50, term.update)
+            QTimer.singleShot(50, lambda: _force_term_repaint(term))
 
         self.wrapper_to_console.pop(split_term, None)
 
@@ -1042,7 +1057,7 @@ class TerminalTabsMixin:
             act_find.triggered.connect(lambda checked=False, tt=t: (
                 tt.toggleShowSearchBar(),
                 QTimer.singleShot(30, lambda: _apply_search_bar_style(tt)),
-                QTimer.singleShot(50, tt.update)
+                QTimer.singleShot(50, lambda: _force_term_repaint(tt))
             ))
             menu.addAction(act_find)
             menu.addSeparator()
