@@ -975,6 +975,7 @@ class TerminalTabsMixin:
                     _state["output"].append(clean)
 
         term.receivedData.connect(_on_split_log)
+        term.receivedData.connect(self._on_terminal_received)
 
         term.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
