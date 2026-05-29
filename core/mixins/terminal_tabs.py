@@ -1008,6 +1008,31 @@ class TerminalTabsMixin:
 
         term.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
+        def _apply_search_bar_style(t=term):
+            fg = self.actual_theme.get('foreground', {})
+            bg = self.actual_theme.get('background', {})
+            text = fg.get('text', '#ffffff')
+            bg_main = bg.get('main_window', '#2B2D30')
+            bg_btn = bg.get('buttons', '#37373B')
+            bg_hover = bg.get('buttons_hover', '#6C6C73')
+            bg_input = bg.get('tab_bar', '#3B3E40')
+            border = bg.get('buttons_pressed', '#2C5F8F')
+            for child in t.findChildren(QWidget):
+                if isinstance(child, QLineEdit):
+                    child.setStyleSheet(
+                        f"QLineEdit {{ background: {bg_input}; color: {text};"
+                        f" border: 1px solid {border}; border-radius: 3px; padding: 2px 4px; }}"
+                    )
+                elif isinstance(child, (QToolButton, QPushButton)):
+                    child.setStyleSheet(
+                        f"QToolButton, QPushButton {{ background: {bg_btn}; color: {text};"
+                        f" border: none; border-radius: 3px; padding: 2px 6px; }}"
+                        f"QToolButton:hover, QPushButton:hover {{ background: {bg_hover}; }}"
+                        f"QToolButton:pressed, QPushButton:pressed {{ background: {border}; }}"
+                    )
+                elif child is not t and not hasattr(child, 'sendText'):
+                    child.setStyleSheet(f"background: {bg_main}; color: {text};")
+
         def _on_ctx(pos, t=term, w=wrapper_widget):
             menu = QMenu(self.widgets["terminal_groupbox"])
             menu.addAction("Copy selection", lambda: (hasattr(t, "copySelection") and t.copySelection()) or (hasattr(t, "copyClipboard") and t.copyClipboard()))
@@ -1024,6 +1049,13 @@ class TerminalTabsMixin:
             menu.addAction(act_zi)
             menu.addAction(act_zo)
             menu.addAction(act_zr)
+            menu.addSeparator()
+            act_find = QAction("Find", menu)
+            act_find.triggered.connect(lambda checked=False, tt=t: (
+                tt.toggleShowSearchBar(),
+                QTimer.singleShot(30, lambda: _apply_search_bar_style(tt))
+            ))
+            menu.addAction(act_find)
             menu.addSeparator()
             _scheme_menu = QMenu("Color scheme", menu)
             try:
