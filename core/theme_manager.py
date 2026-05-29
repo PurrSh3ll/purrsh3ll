@@ -355,20 +355,12 @@ def change_theme(controller):
     _terminal_stylesheet = s["terminal_qss_scroll"]
     _colorscheme = terminal_color["colorscheme"]
 
-    _wrapper_bg = bg.get('scroll_area', '#1E1F22')
-
     def _apply_terminal_schemes():
         for terminal in list(c.__class__.terminals.values()):
             try:
                 terminal.setStyleSheet(_terminal_stylesheet)
                 terminal.setColorScheme(_colorscheme)
                 terminal.update()
-            except Exception:
-                pass
-        for wrapper in list(c.wrapper_to_console.keys()):
-            try:
-                wrapper.setAutoFillBackground(True)
-                wrapper.setStyleSheet(f"background: {_wrapper_bg};")
             except Exception:
                 pass
         _chat_term_widget = c.widgets.get("chat_term_active")
