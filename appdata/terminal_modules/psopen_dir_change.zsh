@@ -88,7 +88,7 @@ PY
 
   # send single OSC JSON object {file, mode}
   # Use safe python heredoc invocation so python never IndexErrors
-  payload=$(python3 - "$file" "$mode" <<'PY'
+  payload=$(python3 - "$file_resolved" "$mode" <<'PY'
 import sys, json
 args = sys.argv[1:]
 obj = {"file": None, "mode": None}
