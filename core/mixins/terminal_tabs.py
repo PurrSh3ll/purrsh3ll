@@ -242,11 +242,11 @@ class TerminalTabsMixin:
                     lambda checked=False, w=_w: self._unsplit_terminal(w)
                 )
             else:
-                _act_h = menu.addAction("Split View Top-Bottom")
+                _act_h = menu.addAction("Split View Left-Right")
                 _act_h.triggered.connect(
                     lambda checked=False, w=_w, t=term: self._split_terminal_in_tab(w, t, Qt.Orientation.Horizontal)
                 )
-                _act_v = menu.addAction("Split View Left-Right")
+                _act_v = menu.addAction("Split View Top-Bottom")
                 _act_v.triggered.connect(
                     lambda checked=False, w=_w, t=term: self._split_terminal_in_tab(w, t, Qt.Orientation.Vertical)
                 )
