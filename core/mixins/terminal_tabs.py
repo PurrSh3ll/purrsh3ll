@@ -961,7 +961,7 @@ class TerminalTabsMixin:
             def eventFilter(self_, watched, event):
                 if event.type() == QEvent.Type.Wheel:
                     if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
-                        if watched is term or term.isAncestorOf(watched):
+                        if watched is term or (isinstance(watched, QWidget) and term.isAncestorOf(watched)):
                             delta = event.angleDelta().y()
                             try:
                                 if delta > 0 and hasattr(term, "zoom"):
