@@ -21,18 +21,20 @@ _PROMPT_RE = re.compile(r'[$%#]\s*$')
 
 
 def _force_term_repaint(term):
-    """Force QTermWidget to recalculate its character grid and repaint fully.
-    setTerminalFont with the same font triggers internal propagateSize + update,
-    which fills the entire widget area — unlike plain update() which only repaints
-    the already-known character grid region."""
+    """Force QTermWidget to fully repaint by triggering a genuine resize event.
+    Constraining height by 1px forces the layout to emit a real QResizeEvent,
+    which causes QTermWidget to recalculate its character grid and repaint the
+    entire widget area — including regions not yet covered by the character grid."""
     try:
-        font = term.getTerminalFont()
-        term.setTerminalFont(font)
+        h = term.height()
+        if h > 2:
+            term.setMaximumHeight(h - 1)
+            QTimer.singleShot(16, lambda: term.setMaximumHeight(16777215))
+        else:
+            font = term.getTerminalFont()
+            term.setTerminalFont(font)
     except Exception:
-        try:
-            term.update()
-        except Exception:
-            pass
+        pass
 
 
 class TerminalTabsMixin:
@@ -265,6 +267,12 @@ class TerminalTabsMixin:
         wrapper_widget = TerminalWrapper(console_widget=term, min_h=0,
                                          pref_h=0, parent=self.widgets["terminal_tabs"])
         _wrapper_ref[0] = wrapper_widget
+        try:
+            _bg = self.actual_theme.get('background', {}).get('scroll_area', '#1E1F22')
+            wrapper_widget.setAutoFillBackground(True)
+            wrapper_widget.setStyleSheet(f"background: {_bg};")
+        except Exception:
+            pass
 
         def _inject_and_hide(text, _t=term, _w=wrapper_widget):
             try:
