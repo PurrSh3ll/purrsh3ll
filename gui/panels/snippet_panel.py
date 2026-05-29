@@ -9,12 +9,62 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
     QPushButton, QScrollArea, QLabel, QDialog, QPlainTextEdit,
-    QCheckBox, QInputDialog, QApplication, QSizePolicy, QFrame,
+    QCheckBox, QApplication, QSizePolicy, QFrame,
 )
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CATEGORIES = ["Recon", "Exploit", "Post", "Web", "Crypto", "Misc"]
+
+
+class _PlaceholderDialog(QDialog):
+    """Non-modal dialog for filling snippet placeholder values.
+    Allows interacting with terminal and other tabs while open."""
+
+    def __init__(self, parent, placeholders, on_accept, stylesheet=""):
+        super().__init__(parent)
+        self.setWindowTitle("Fill in values")
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setMinimumWidth(360)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self._on_accept = on_accept
+        self._fields = {}
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        for name in placeholders:
+            layout.addWidget(QLabel(f"{name}:"))
+            edit = QLineEdit()
+            edit.setPlaceholderText(f"Value for {{{name}}}…")
+            edit.returnPressed.connect(self._accept)
+            self._fields[name] = edit
+            layout.addWidget(edit)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        run_btn = QPushButton("Run")
+        run_btn.setDefault(True)
+        cancel_btn = QPushButton("Cancel")
+        run_btn.clicked.connect(self._accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(run_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        if stylesheet:
+            self.setStyleSheet(stylesheet)
+
+        # focus first field
+        if self._fields:
+            next(iter(self._fields.values())).setFocus()
+
+    def _accept(self):
+        values = {name: edit.text() for name, edit in self._fields.items()}
+        self._on_accept(values)
+        self.accept()
 
 
 class SnippetAddEditDialog(QDialog):
@@ -131,22 +181,7 @@ class SnippetRow(QWidget):
         sep.setObjectName("snippet_sep")
         layout.addWidget(sep)
 
-    def _resolve_placeholders(self, content):
-        placeholders = re.findall(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', content)
-        for name in placeholders:
-            value, ok = QInputDialog.getText(
-                self, "Placeholder", f"Value for {{{name}}}:"
-            )
-            if not ok:
-                return None
-            content = content.replace(f"{{{name}}}", value)
-        return content
-
-    def _send_to_terminal(self):
-        content = self._snippet.get("content", "")
-        resolved = self._resolve_placeholders(content)
-        if resolved is None:
-            return
+    def _do_send(self, content):
         c = self._panel.c
         term_tabs = c.widgets.get("terminal_tabs")
         if not term_tabs:
@@ -158,9 +193,28 @@ class SnippetRow(QWidget):
         if term is None:
             return
         try:
-            term.sendText(resolved + "\n")
+            term.sendText(content + "\n")
         except Exception:
             logger.error("Failed to send snippet to terminal", exc_info=True)
+
+    def _send_to_terminal(self):
+        content = self._snippet.get("content", "")
+        placeholders = list(dict.fromkeys(re.findall(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', content)))
+        if not placeholders:
+            self._do_send(content)
+            return
+
+        def on_accept(values):
+            resolved = content
+            for name, value in values.items():
+                resolved = resolved.replace(f"{{{name}}}", value)
+            self._do_send(resolved)
+
+        dlg = _PlaceholderDialog(
+            self, placeholders, on_accept,
+            stylesheet=self._panel.c.dialog_stylesheet
+        )
+        dlg.show()
 
     def _copy_to_clipboard(self):
         QApplication.clipboard().setText(self._snippet.get("content", ""))
