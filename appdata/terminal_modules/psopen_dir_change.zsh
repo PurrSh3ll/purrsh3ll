@@ -76,15 +76,20 @@ USAGE
     return 1
   fi
 
-  # compute resolved absolute path for printing only (expand ~ and resolve symlinks)
+  # compute resolved absolute path (expand ~ and resolve symlinks)
   # IMPORTANT: pass "$file" as an arg to the heredoc python (args before <<)
   file_resolved=$(python3 - "$file" <<'PY'
 import os,sys
 f = sys.argv[1] if len(sys.argv) > 1 else ""
-# expand ~ and resolve symlinks; if empty, print empty string
 print(os.path.realpath(os.path.expanduser(f)) if f else "")
 PY
 )
+
+  # if target is a directory — open in default file manager and exit
+  if [ -d "$file_resolved" ]; then
+    xdg-open "$file_resolved" 2>/dev/null &
+    return 0
+  fi
 
   # send single OSC JSON object {file, mode}
   # Use safe python heredoc invocation so python never IndexErrors
