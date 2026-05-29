@@ -926,8 +926,11 @@ class TerminalTabsMixin:
             act_zi.triggered.connect(lambda checked=False, tt=t: (tt.setFocus(), QTimer.singleShot(0, self._zoom_in)))
             act_zo = QAction("Zoom Out", menu)
             act_zo.triggered.connect(lambda checked=False, tt=t: (tt.setFocus(), QTimer.singleShot(0, self._zoom_out)))
+            act_zr = QAction("Zoom Reset", menu)
+            act_zr.triggered.connect(lambda checked=False, tt=t: (tt.setFocus(), QTimer.singleShot(0, self._zoom_reset)))
             menu.addAction(act_zi)
             menu.addAction(act_zo)
+            menu.addAction(act_zr)
             menu.addSeparator()
             _scheme_menu = QMenu("Color scheme", menu)
             try:
