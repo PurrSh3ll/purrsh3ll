@@ -922,6 +922,8 @@ class TerminalTabsMixin:
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
 
         def _on_split_log(data: str, _state=_log_state, _tid=f"split_{_split_idx}"):
+            if getattr(wrapper_widget, "_agent_monitoring_paused", False):
+                return
             for typ, payload, ts, cwd_b64 in _osc_re.findall(data):
                 if typ == "cmd":
                     try:
