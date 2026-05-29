@@ -316,9 +316,9 @@ class TerminalSetupMixin:
                 if not (QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier):
                     return False
                 try:
+                    delta = event.angleDelta().y()
                     for term in list(self._mapping.values()):
                         if term is watched or term.isAncestorOf(watched):
-                            delta = event.angleDelta().y()
                             if delta > 0:
                                 try:
                                     if hasattr(term, "zoom"):
@@ -335,6 +335,26 @@ class TerminalSetupMixin:
                                 except Exception:
                                     pass
                                 _self._zoom_out()
+                            return True
+                    for wrapper in list(self._mapping.keys()):
+                        split_term = getattr(wrapper, '_split_term', None)
+                        if split_term is None:
+                            continue
+                        if split_term is watched or split_term.isAncestorOf(watched):
+                            if delta > 0:
+                                try:
+                                    if hasattr(split_term, "zoom"):
+                                        split_term.zoom(1)
+                                        return True
+                                except Exception:
+                                    pass
+                            elif delta < 0:
+                                try:
+                                    if hasattr(split_term, "zoom"):
+                                        split_term.zoom(-1)
+                                        return True
+                                except Exception:
+                                    pass
                             return True
                 except Exception:
                     pass
