@@ -23,6 +23,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **psopen**: rewrote file opening to use OSC escape sequence protocol — fixes paths with spaces, eliminates race conditions between terminals
 - **psopen**: directories now open silently in the default file manager (`xdg-open`)
 - **psopen**: removed `PurrSh3ll opened >>` confirmation text from terminal output
+- **Snippets**: placeholder dialog is now non-modal — other windows (terminal, tabs) remain accessible while filling in values; all placeholders shown at once in a single form
 
 ---
 
