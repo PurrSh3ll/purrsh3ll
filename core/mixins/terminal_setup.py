@@ -31,6 +31,17 @@ class TerminalSetupMixin:
         widget = self.widgets["terminal_tabs"].widget(idx)
         if widget is None:
             return None
+
+        # Prefer the focused QTermWidget — handles split terminals correctly
+        focused = QApplication.focusWidget()
+        if focused is not None:
+            w = focused
+            while w is not None:
+                if isinstance(w, QTermWidget):
+                    return w
+                w = w.parent()
+
+        # Fallback: primary terminal for this tab
         term = self.wrapper_to_console.get(widget)
         if term is not None:
             return term
