@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Syntax highlighting**: all 19 hand-written regex highlighters replaced by a single `PygmentsHighlighter` backed by the Pygments library — 500+ languages supported, edge-cases handled by the community, colors still driven by `qss_QPainter` theme
 - **HTML viewer**: three view mode buttons (`</>` code, `◫` split, `≡` preview) added before the browser button — split view is the default
 
 ### Fixed
