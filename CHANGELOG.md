@@ -15,6 +15,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Terminal**: split view labels corrected — "Split View Left-Right" and "Split View Top-Bottom"
 - **Terminal**: zoom (buttons, Ctrl+Scroll, right-click menu) now works correctly in split terminals, including Zoom Reset option
 - **Terminal**: commands executed in split terminals are now logged to `terminal_history.jsonl` (visible to `psfix`, `psnext`, `psreport`)
+- **Terminal**: Pause Agent Monitoring now also pauses history logging for the split terminal in the same tab
+- **Terminal**: `psopen` now opens files from split terminals the same way as the primary terminal
 
 ---
 
