@@ -19,20 +19,6 @@ _ANSI_RE = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07')
 _PROMPT_RE = re.compile(r'[$%#]\s*$')
 
 
-class _TermRepaintFilter(QObject):
-    """Debounced resize → full repaint to eliminate black bands after geometry changes."""
-    def __init__(self, terminal):
-        super().__init__(terminal)
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(50)
-        self._timer.timeout.connect(terminal.update)
-        terminal.installEventFilter(self)
-
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Resize:
-            self._timer.start()
-        return False
 
 class TerminalTabsMixin:
     def _on_terminal_received(self, data: str):
@@ -321,7 +307,6 @@ class TerminalTabsMixin:
         self.wrapper_to_console[wrapper_widget] = term
         self.terminals[f"terminal_{idx}"] = term
         term._style_children_cache = None
-        term._repaint_filter = _TermRepaintFilter(term)
 
         self.update_dropdown_terminals()
         self.update_dropdown_menu_terminals()
