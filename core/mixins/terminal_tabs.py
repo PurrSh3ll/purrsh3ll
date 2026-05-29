@@ -186,7 +186,8 @@ class TerminalTabsMixin:
 
         act_find.triggered.connect(lambda checked=False, t=term: (
             t.toggleShowSearchBar(),
-            QTimer.singleShot(30, lambda: _apply_search_bar_style(t))
+            QTimer.singleShot(30, lambda: _apply_search_bar_style(t)),
+            QTimer.singleShot(50, t.update)
         ))
 
         def _on_context_menu(pos):
@@ -859,6 +860,7 @@ class TerminalTabsMixin:
 
         wrapper_widget._split_term = new_term
         wrapper_widget._split_splitter = splitter
+        QTimer.singleShot(50, term.update)
 
     def _unsplit_terminal(self, wrapper_widget):
         split_term = getattr(wrapper_widget, '_split_term', None)
@@ -871,6 +873,7 @@ class TerminalTabsMixin:
 
         if term:
             layout.addWidget(term)
+            QTimer.singleShot(50, term.update)
 
         self.wrapper_to_console.pop(split_term, None)
 
@@ -1038,7 +1041,8 @@ class TerminalTabsMixin:
             act_find = QAction("Find", menu)
             act_find.triggered.connect(lambda checked=False, tt=t: (
                 tt.toggleShowSearchBar(),
-                QTimer.singleShot(30, lambda: _apply_search_bar_style(tt))
+                QTimer.singleShot(30, lambda: _apply_search_bar_style(tt)),
+                QTimer.singleShot(50, tt.update)
             ))
             menu.addAction(act_find)
             menu.addSeparator()
