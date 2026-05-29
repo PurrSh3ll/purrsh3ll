@@ -87,7 +87,7 @@ PY
 
   # if target is a directory — open in default file manager and exit
   if [ -d "$file_resolved" ]; then
-    xdg-open "$file_resolved" 2>/dev/null &
+    (xdg-open "$file_resolved" &>/dev/null &)
     return 0
   fi
 
