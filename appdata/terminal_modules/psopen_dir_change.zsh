@@ -101,13 +101,6 @@ PY
 )
 
   printf '\033]1337;PSOPEN=%s\007' "$payload"
-
-  # print confirmation using full resolved path (only change is using $file_resolved)
-  if [ -n "$mode" ]; then
-    printf 'PurrSh3ll opened >> %s %s\n' "$file_resolved" "$mode"
-  else
-    printf 'PurrSh3ll opened >> %s\n' "$file_resolved"
-  fi
 }
 
 # zsh completion: support -f/--file with file completion and -m/--mode treated as free string
