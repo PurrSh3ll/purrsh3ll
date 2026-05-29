@@ -889,6 +889,19 @@ class TerminalTabsMixin:
 
         self.wrapper_to_console.pop(split_term, None)
 
+        # Clean up FIFO for this specific split terminal
+        _fifo_key = getattr(split_term, "_fifo_key", None)
+        if _fifo_key and _fifo_key in self.terminal_fifos:
+            fifo_path, fifo_fd = self.terminal_fifos.pop(_fifo_key)
+            try:
+                os.close(fifo_fd)
+            except Exception:
+                pass
+            try:
+                os.unlink(fifo_path)
+            except Exception:
+                pass
+
         try:
             split_term.receivedData.disconnect()
         except Exception:
@@ -909,10 +922,26 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         try:
             term.setShellProgram("/bin/zsh")
-            term.setEnvironment(self._term_env)
+            _fifo_dir = os.path.join(self.base_path, "appdata", "terminal_fifos")
+            os.makedirs(_fifo_dir, exist_ok=True)
+            _fifo_key = f"split_{_split_idx}"
+            _fifo_path = os.path.join(_fifo_dir, f"{_fifo_key}.fifo")
+            if os.path.exists(_fifo_path):
+                os.unlink(_fifo_path)
+            os.mkfifo(_fifo_path)
+            _fifo_fd = os.open(_fifo_path, os.O_RDWR | os.O_NONBLOCK)
+            self.terminal_fifos[_fifo_key] = (_fifo_path, _fifo_fd)
+            term._fifo_key = _fifo_key
+            _term_env_with_fifo = list(self._term_env) + [f"PURRSH_FIFO={_fifo_path}"]
+            term.setEnvironment(_term_env_with_fifo)
             term.startShellProgram()
         except Exception:
-            pass
+            self.terminal_fifos.pop(f"split_{_split_idx}", None)
+            try:
+                term.setEnvironment(self._term_env)
+                term.startShellProgram()
+            except Exception:
+                pass
         try:
             term.setTerminalFont(QFont("Monospace", 11))
         except Exception:
