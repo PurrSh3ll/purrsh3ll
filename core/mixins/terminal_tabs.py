@@ -17,6 +17,7 @@ from gui.widgets.terminal_wrapper import TerminalWrapper
 
 _ANSI_RE = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07')
 _PROMPT_RE = re.compile(r'[$%#]\s*$')
+_PSOPEN_RE = re.compile(r'\x1b\]1337;PSOPEN=(\{[^\x07]*\})\x07')
 
 
 
@@ -37,23 +38,15 @@ def _force_term_repaint(term):
 
 class TerminalTabsMixin:
     def _on_terminal_received(self, data: str):
-        data = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
-        data = re.sub(r'\x1b\][^\x07]*\x07', '', data)
-        type(self).terminal_buffer += data
-
-        pattern = re.compile(r'PurrSh3ll opened >>\s*(.*?)(?=\r?\n|$)', re.DOTALL)
-        while True:
-            m = pattern.search(type(self).terminal_buffer)
-            if not m:
-                break
-            result = m.group(1).strip().split()
-            filepath = result[0]
-            mode = result[1] if len(result) == 2 else None
-            if mode:
-                self.open_new_tab_for_terminal(file=filepath, mode=mode)
-            else:
-                self.open_new_tab_for_terminal(file=filepath)
-            type(self).terminal_buffer = type(self).terminal_buffer[m.end():]
+        for m in _PSOPEN_RE.finditer(data):
+            try:
+                payload = json.loads(m.group(1))
+                filepath = payload.get("file")
+                mode = payload.get("mode") or None
+                if filepath:
+                    self.open_new_tab_for_terminal(file=filepath, mode=mode)
+            except Exception:
+                pass
 
     def _add_new_terminal_tab(self, name=None, command=None, workdir=None):
         type(self).terminal_idx += 1

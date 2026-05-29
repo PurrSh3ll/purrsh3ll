@@ -54,7 +54,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     terminals_stylesheet = ""
     terminal_qss_scroll = ""
     qss_QInputDialog_terminal = ""
-    terminal_buffer = ""
     qss_info = ""
 
     files_category = FILES_CATEGORY
