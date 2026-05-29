@@ -900,6 +900,9 @@ class TerminalTabsMixin:
         wrapper_widget._split_splitter = None
 
     def _create_split_terminal(self, wrapper_widget):
+        type(self).terminal_idx += 1
+        _split_idx = type(self).terminal_idx
+
         term = QTermWidget(0)
         term.setScrollBarPosition(QTermWidget.ScrollBarPosition.ScrollBarRight)
         term.setStyleSheet(self.terminal_qss_scroll)
@@ -914,6 +917,62 @@ class TerminalTabsMixin:
             term.setTerminalFont(QFont("Monospace", 11))
         except Exception:
             pass
+
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": ""}
+        _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
+
+        def _on_split_log(data: str, _state=_log_state, _tid=f"split_{_split_idx}"):
+            for typ, payload, ts, cwd_b64 in _osc_re.findall(data):
+                if typ == "cmd":
+                    try:
+                        cmd = base64.b64decode(payload + "==").decode("utf-8", errors="replace").strip()
+                    except Exception:
+                        cmd = payload
+                    _state["cmd"] = cmd
+                    _state["ts_start"] = int(ts)
+                    _state["output"] = []
+                    _state["cwd"] = ""
+                    if cwd_b64:
+                        try:
+                            _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
+                        except Exception:
+                            pass
+                elif typ == "end" and _state["cmd"] is not None:
+                    exit_code = int(payload)
+                    entry = {
+                        "ts": _state["ts_start"],
+                        "ts_end": int(ts),
+                        "terminal": _tid,
+                        "cmd": _state["cmd"],
+                        "exit_code": exit_code,
+                        "output": "".join(_state["output"]).strip()
+                    }
+                    _state["cmd"] = None
+                    _state["output"] = []
+                    if not getattr(self, "terminal_history_disabled", False):
+                        log_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.jsonl")
+                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                        try:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                            _max = getattr(self, "terminal_history_max_entries", 5000)
+                            try:
+                                with open(log_path, "r", encoding="utf-8") as f:
+                                    lines = f.readlines()
+                                if len(lines) > _max:
+                                    with open(log_path, "w", encoding="utf-8") as f:
+                                        f.writelines(lines[-_max:])
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+            if _state["cmd"] is not None:
+                clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
+                clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
+                if clean.strip():
+                    _state["output"].append(clean)
+
+        term.receivedData.connect(_on_split_log)
 
         term.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
