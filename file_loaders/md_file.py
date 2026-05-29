@@ -587,6 +587,7 @@ class Markdown_file(ChunkedFileLoader):
             preview_widget = QTextBrowser(self.content_area)
             preview_widget.setReadOnly(True)
             preview_widget.document().setDocumentMargin(20)
+            preview_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
             preview_widget.setOpenLinks(False)
             preview_widget.setOpenExternalLinks(False)
