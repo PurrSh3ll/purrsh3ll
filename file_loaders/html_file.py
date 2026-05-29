@@ -20,7 +20,8 @@ from PyQt6.QtWebEngineCore import QWebEngineSettings
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from gui.widgets.web_preview import WebPreview
 from file_loaders.viewer_widgets import Worker, LineNumberArea, TextEditWithLineNumbers, CustomUnsupportedLabel
-from file_loaders.highlighters.html_highlighter import HtmlHighlighter
+from file_loaders.highlighters.pygments_highlighter import PygmentsHighlighter
+from pygments.lexers import HtmlLexer
 from file_loaders.chunked_file_loader import ChunkedFileLoader
 
 class Html_file(ChunkedFileLoader):
@@ -742,8 +743,7 @@ class Html_file(ChunkedFileLoader):
                         unsupported_info_label.setVisible(True)
                     elif num_lines <= 1000:
                         if not hasattr(self, "syntax_highlighter") or self.syntax_highlighter is None:
-                            self.syntax_highlighter = 1
-                            self.syntax_highlighter = HtmlHighlighter(self.text_widget.document(), self._controller)
+                            self.syntax_highlighter = PygmentsHighlighter(self.text_widget.document(), self._controller, HtmlLexer())
                             self._controller.text_highlighters.append(self.syntax_highlighter)
                         unsupported_info_label.setVisible(False)
                 except:

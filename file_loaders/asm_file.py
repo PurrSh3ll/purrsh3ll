@@ -5,7 +5,8 @@ from PyQt6.QtCore import QRegularExpression
 
 from file_loaders.base_file_loader import BaseFileLoader
 from file_loaders.viewer_widgets import CustomUnsupportedLabel
-from file_loaders.highlighters.nasm_highlighter import NasmHighlighter
+from file_loaders.highlighters.pygments_highlighter import PygmentsHighlighter
+from pygments.lexers import NasmLexer
 
 class Asm_file(BaseFileLoader):
     def _extra_layout_widgets(self, layout):
@@ -31,7 +32,7 @@ class Asm_file(BaseFileLoader):
                 self._unsupported_info_label.setVisible(True)
             else:
                 if not hasattr(self, "syntax_highlighter") or self.syntax_highlighter is None:
-                    self.syntax_highlighter = NasmHighlighter(self.text_widget.document(), self.parent)
+                    self.syntax_highlighter = PygmentsHighlighter(self.text_widget.document(), self.parent, NasmLexer())
                     self.parent.text_highlighters.append(self.syntax_highlighter)
                 self._unsupported_info_label.setVisible(False)
         except Exception:
