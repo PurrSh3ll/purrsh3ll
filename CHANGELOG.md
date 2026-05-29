@@ -17,6 +17,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Terminal**: commands executed in split terminals are now logged to `terminal_history.jsonl` (visible to `psfix`, `psnext`, `psreport`)
 - **Terminal**: Pause Agent Monitoring now also pauses history logging for the split terminal in the same tab
 - **Terminal**: `psopen` now opens files from split terminals the same way as the primary terminal
+- **Terminal**: split terminal now receives silent variable/alias injection from Observable Panel (own FIFO assigned at creation, cleaned up on unsplit)
 
 ---
 
