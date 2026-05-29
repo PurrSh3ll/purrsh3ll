@@ -12,8 +12,7 @@ from functools import partial
 import os
 import subprocess
 import shutil
-import keyring
-from core.constants import KEYRING_SERVICE
+import ctypes
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -33,8 +32,6 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PurrSh3ll v.1.0.0 — Early Access")
         self.setGeometry(self.c.start_x, self.c.start_y, self.c.width, self.c.height)
         self.c.register_widget("main_window", self)
-        self.c.SERVICE = KEYRING_SERVICE
-        self.c.USER = os.getenv("USER") or os.getlogin()
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(30)
@@ -313,12 +310,10 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.removeEventFilter(self.filter)
 
-        try:
-            # Use the SecretService backend directly to avoid fallback backends
-            # that may open GUI dialogs when D-Bus is disconnecting on shutdown.
-            from keyring.backends.SecretService import Keyring as _SSKeyring
-            pw = _SSKeyring().get_password(self.c.SERVICE, self.c.USER)
-            if pw:
+        pw_buf = getattr(self.c, 'sudo_password', None)
+        if pw_buf:
+            try:
+                pw = pw_buf.decode('utf-8')
                 result = subprocess.run(
                     ["sudo", "-S", "--", "docker", "rm", "-f", "webmap"],
                     input=pw + "\n",
@@ -330,13 +325,14 @@ class MainWindow(QMainWindow):
                         "docker rm -f webmap exited with code %d: %s",
                         result.returncode, result.stderr.strip()
                     )
-        except Exception:
-            logger.debug("Skipping Docker webmap cleanup — keyring unavailable at shutdown")
-
-        try:
-            keyring.delete_password(self.c.SERVICE, self.c.USER)
-        except Exception:
-            pass
+            except Exception:
+                logger.debug("Skipping Docker webmap cleanup")
+            finally:
+                try:
+                    ctypes.memset((ctypes.c_char * len(pw_buf)).from_buffer(pw_buf), 0, len(pw_buf))
+                except Exception:
+                    pass
+                self.c.sudo_password = None
 
         if getattr(self.c, "delete_logs_at_close", True):
             log_path = os.path.join(self.c.base_path, "appdata", "logs", "terminal_history.jsonl")

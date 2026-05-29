@@ -55,6 +55,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     terminal_qss_scroll = ""
     qss_QInputDialog_terminal = ""
     qss_info = ""
+    sudo_password = None  # bytearray; cached for session, zeroed at shutdown
 
     files_category = FILES_CATEGORY
 
