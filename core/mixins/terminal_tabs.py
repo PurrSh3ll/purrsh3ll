@@ -956,4 +956,23 @@ class TerminalTabsMixin:
             menu.exec(t.mapToGlobal(pos))
 
         term.customContextMenuRequested.connect(_on_ctx)
+
+        class _SplitWheelFilter(QObject):
+            def eventFilter(self_, watched, event):
+                if event.type() == QEvent.Type.Wheel:
+                    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+                        delta = event.angleDelta().y()
+                        try:
+                            if delta > 0 and hasattr(term, "zoom"):
+                                term.zoom(1)
+                            elif delta < 0 and hasattr(term, "zoom"):
+                                term.zoom(-1)
+                        except Exception:
+                            pass
+                        return True
+                return False
+
+        term._split_wheel_filter = _SplitWheelFilter(term)
+        term.installEventFilter(term._split_wheel_filter)
+
         return term
