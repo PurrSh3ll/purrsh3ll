@@ -20,6 +20,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Terminal**: split terminal now receives silent variable/alias injection from Observable Panel (own FIFO assigned at creation, cleaned up on unsplit)
 - **Terminal**: split terminal right-click menu now includes Find option with theme-aware search bar styling
 - **Terminal**: reduced visual artifacts after search bar toggle and split/unsplit — improved repaint logic using `setTerminalFont` to trigger full character grid recalculation (known issue: artifacts may still appear in some cases)
+- **psopen**: rewrote file opening to use OSC escape sequence protocol — fixes paths with spaces, eliminates race conditions between terminals
+- **psopen**: directories now open silently in the default file manager (`xdg-open`)
+- **psopen**: removed `PurrSh3ll opened >>` confirmation text from terminal output
 
 ---
 
