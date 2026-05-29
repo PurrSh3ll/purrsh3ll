@@ -3,6 +3,38 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtWidgets import QApplication, QStyle, QTreeWidgetItem
 
+# Extensions that are well-known formats the app cannot open meaningfully.
+# Everything NOT in this set and NOT in FILES_CATEGORY gets a neutral icon
+# (__noextension_file) because the app may still open it (e.g. via Pygments).
+_KNOWN_UNSUPPORTED = {
+    # Video
+    "mkv", "mov", "flv", "webm", "m4v", "3gp", "rmvb", "vob", "ogv",
+    # Audio
+    "m4a", "opus", "aiff", "mid", "midi", "ra", "amr",
+    # Archives
+    "gz", "bz2", "xz", "rar", "lzma", "zst", "tgz",
+    "cab", "deb", "rpm", "pkg", "dmg", "iso",
+    # Presentations / proprietary documents
+    "ppt", "pptx", "odp", "key", "pages", "numbers",
+    # Fonts
+    "ttf", "otf", "woff", "woff2", "eot",
+    # Executables / system binaries
+    "exe", "msi", "dll", "so", "dylib", "bin", "sys", "apk", "ipa",
+    # Compiled bytecode / JVM
+    "pyc", "pyo", "class", "jar", "war", "ear",
+    # Object files / static libraries
+    "o", "a", "obj", "lib",
+    # Database internals
+    "mdb", "accdb", "frm", "ibd", "myd",
+    # Raw / proprietary images and design files
+    "raw", "cr2", "cr3", "nef", "nrw", "arw", "dng",
+    "heic", "heif", "avif", "psd", "ai", "eps",
+    # 3D models / game assets
+    "fbx", "blend", "stl", "dae", "3ds", "pak", "wad", "bsp",
+    # Binary certificates
+    "p12", "pfx", "der", "cer",
+}
+
 class ModuleTreeMixin:
 
     def filter_tree(self, text):
@@ -87,7 +119,12 @@ class ModuleTreeMixin:
 
             icon_category = None
             if ext:
-                category = self.files_category.get(ext, "__unsupported_file")
+                if ext in self.files_category:
+                    category = self.files_category[ext]
+                elif ext in _KNOWN_UNSUPPORTED:
+                    category = "__unsupported_file"
+                else:
+                    category = "__noextension_file"
                 if ext == "purr":
                     stem = os.path.splitext(basename)[0].lower()
                     if stem == "psc2":
