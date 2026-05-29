@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "myapp"
+version = "1.2.0"
+description = "A sample Python application"
+authors = [{ name = "Dev", email = "dev@example.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "flask>=3.0",
+    "sqlalchemy>=2.0",
+    "pydantic>=2.0",
+    "pygments>=2.18",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
