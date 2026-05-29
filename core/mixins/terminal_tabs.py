@@ -887,6 +887,8 @@ class TerminalTabsMixin:
         if term:
             layout.addWidget(term)
 
+        self.wrapper_to_console.pop(split_term, None)
+
         try:
             split_term.receivedData.disconnect()
         except Exception:
@@ -957,29 +959,8 @@ class TerminalTabsMixin:
 
         term.customContextMenuRequested.connect(_on_ctx)
 
-        class _SplitWheelFilter(QObject):
-            def eventFilter(self_, watched, event):
-                if event.type() == QEvent.Type.Wheel:
-                    if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
-                        try:
-                            if not term.underMouse():
-                                return False
-                        except Exception:
-                            return False
-                        delta = event.angleDelta().y()
-                        try:
-                            if delta > 0 and hasattr(term, "zoom"):
-                                term.zoom(1)
-                            elif delta < 0 and hasattr(term, "zoom"):
-                                term.zoom(-1)
-                        except Exception:
-                            pass
-                        return True
-                return False
-
-        term._split_wheel_filter = _SplitWheelFilter(term)
-        app_instance = QApplication.instance()
-        if app_instance is not None:
-            app_instance.installEventFilter(term._split_wheel_filter)
+        # Register in wrapper_to_console so the app-level TerminalEventFilter
+        # picks up Ctrl+Scroll events for this split terminal (same as primary terminals)
+        self.wrapper_to_console[term] = term
 
         return term
