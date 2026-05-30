@@ -1656,7 +1656,7 @@ def build_menu(main_window):
                 </tr>
                 <tr>
                     <td>💼&nbsp;<b>LinkedIn</b></td>
-                    <td><a href="https://www.linkedin.com/in/damian-z%C4%85bek-905518364/">linkedin.com/in/damian-ząbek</a></td>
+                    <td><a href="https://www.linkedin.com/in/damian-ząbek-905518364/">linkedin.com/in/damian-ząbek</a></td>
                 </tr>
                 <tr>
                     <td>📧&nbsp;<b>Email</b></td>

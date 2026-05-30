@@ -4,6 +4,8 @@ import hashlib
 import threading
 import time
 
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+
 # SDL audio driver preference order — tried at mixer init time, not at import.
 # pipewire: direct, fewest buffer stages, SDL 2.28+
 # pulseaudio: goes through pipewire-pulse compat layer
