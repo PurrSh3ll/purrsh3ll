@@ -1,15 +1,13 @@
 import os
 import stat
 import hashlib
+import json
+import subprocess
 import threading
 import time
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
-# SDL audio driver preference order — tried at mixer init time, not at import.
-# pipewire: direct, fewest buffer stages, SDL 2.28+
-# pulseaudio: goes through pipewire-pulse compat layer
-# (empty): let SDL auto-detect
 _SDL_DRIVER_ORDER = ["pipewire", "pulseaudio", ""]
 
 from PyQt6.QtWidgets import (
@@ -31,6 +29,14 @@ try:
 except ImportError:
     _MUTAGEN_OK = False
 
+_EXIFTOOL = None
+try:
+    _et = subprocess.run(['exiftool', '-ver'], capture_output=True, text=True, timeout=3)
+    if _et.returncode == 0:
+        _EXIFTOOL = 'exiftool'
+except Exception:
+    pass
+
 
 def _fmt_time(seconds):
     seconds = max(0, int(seconds))
@@ -41,12 +47,45 @@ def _fmt_time(seconds):
     return f"{m}:{s:02d}"
 
 
-# Metadata tag keys that are most relevant for OSINT/security analysis — shown first
+# Easy-mode tags shown first (OSINT priority)
 _PRIORITY_TAGS = [
     "title", "artist", "album", "date", "comment", "description",
     "encoder", "encoded-by", "encodedby", "tool", "software",
     "author", "composer", "copyright", "lyrics", "website",
     "contact", "location", "performer", "organization", "isrc",
+]
+
+# exiftool fields shown first in the exiftool section — audio OSINT priority
+_EXIFTOOL_PRIORITY = [
+    'LameVersion', 'LameEncoderSettings', 'VBRMethod', 'VBRQuality',
+    'BitrateMode', 'EncoderDelay', 'EncoderPadding',
+    'MPEGAudioVersion', 'AudioLayer', 'ChannelMode', 'ModeExtension',
+    'CopyrightFlag', 'OriginalMedia', 'Emphasis',
+    'ReplayGainPeakLevel', 'ReplayGainTrackGain',
+    'VendorString',
+    'Originator', 'OriginatorReference', 'DateTimeOriginal',
+    'TimeReference', 'UMID', 'CodingHistory',
+    'CreateDate', 'ModifyDate',
+    'MIMEType', 'FileType',
+]
+
+# Fields to skip in exiftool section — already shown via mutagen
+_EXIFTOOL_SKIP = {
+    'SourceFile', 'ExifToolVersion', 'FileName', 'Directory',
+    'FileSize', 'FileModifyDate', 'FileAccessDate', 'FileInodeChangeDate',
+    'FilePermissions', 'Duration', 'SampleRate', 'NumChannels',
+    'BitsPerSample', 'AvgBitrate', 'NominalBitrate', 'AudioBitrate',
+    'AudioSampleRate', 'AudioChannels', 'AudioBitsPerSample',
+}
+
+# Technical fields placed in File Info panel (not Metadata)
+_FILE_INFO_EXIFTOOL_FIELDS = [
+    'ChannelMode', 'BitrateMode', 'MPEGAudioVersion', 'AudioLayer',
+    'LameVersion', 'LameEncoderSettings', 'VBRMethod', 'VBRQuality',
+    'EncoderDelay', 'EncoderPadding', 'CopyrightFlag', 'OriginalMedia',
+    'Emphasis', 'ReplayGainPeakLevel', 'ReplayGainTrackGain',
+    'VendorString', 'Originator', 'OriginatorReference',
+    'DateTimeOriginal', 'TimeReference', 'UMID', 'CodingHistory',
 ]
 
 
@@ -63,11 +102,13 @@ class Audio_file:
 
         self._playing = False
         self._paused = False
-        self._play_offset = 0.0       # seconds already played before current play()
-        self._play_start_ts = 0.0     # wall-clock time when play() was called
+        self._play_offset = 0.0
+        self._play_start_ts = 0.0
 
         self._mixer_initialized = False
         self._poll_timer = None
+        self._hash_poll_timer = None
+        self._exiftool_poll_timer = None
         self._slider_dragging = False
 
         self._play_btn = None
@@ -77,42 +118,60 @@ class Audio_file:
         self._volume_slider = None
         self._anomaly_label = None
 
+        # Set by _build_* methods, populated by exiftool poll callback
+        self._file_info_exiftool_layout = None
+        self._file_info_exiftool_loading = None
+        self._meta_exiftool_layout = None
+        self._meta_exiftool_status = None
+        self._exiftool_result = {}
+
     # ------------------------------------------------------------------
-    # Public interface (matches game_file.py pattern)
+    # Public interface
     # ------------------------------------------------------------------
 
     def load_file(self, path, parent=None, target_widget=None, threads_list=None):
         self._current_path = path
         self._parent = parent
+        try:
+            self._file_size_bytes = os.path.getsize(path)
+        except Exception:
+            pass
 
         outer = QWidget(parent=parent.widgets['execution_tabs'])
         outer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         outer_layout = QVBoxLayout(outer)
-        outer_layout.setContentsMargins(10, 10, 10, 10)
-        outer_layout.setSpacing(8)
-
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
         outer._loader = self
         self.target_widget = outer if target_widget is None else target_widget
         self._container = outer
 
-        self._build_ui(outer_layout, path)
+        # Wrap in scroll area — content can be tall with all sections
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(10, 10, 10, 10)
+        content_layout.setSpacing(8)
+
+        self._start_exiftool(path)
+        self._build_ui(content_layout, path)
+
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
 
         return outer
 
     def cleanup(self, timeout_ms=100):
-        try:
-            if self._poll_timer:
-                self._poll_timer.stop()
-                self._poll_timer = None
-        except Exception:
-            pass
-        try:
-            ht = getattr(self, "_hash_poll_timer", None)
-            if ht:
-                ht.stop()
-                self._hash_poll_timer = None
-        except Exception:
-            pass
+        for attr in ('_poll_timer', '_hash_poll_timer', '_exiftool_poll_timer'):
+            try:
+                t = getattr(self, attr, None)
+                if t:
+                    t.stop()
+                    setattr(self, attr, None)
+            except Exception:
+                pass
         try:
             if self._mixer_initialized and (self._playing or self._paused):
                 pygame.mixer.music.stop()
@@ -122,13 +181,70 @@ class Audio_file:
         self._paused = False
 
     # ------------------------------------------------------------------
+    # Background — exiftool
+    # ------------------------------------------------------------------
+
+    def _start_exiftool(self, path):
+        if _EXIFTOOL is None:
+            self._exiftool_result = {
+                'done': True,
+                'error': 'exiftool not found — install: sudo apt install libimage-exiftool-perl',
+            }
+            return
+
+        def run():
+            try:
+                proc = subprocess.run(
+                    [_EXIFTOOL, '-json', '-a', path],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if proc.returncode == 0:
+                    data = json.loads(proc.stdout)
+                    self._exiftool_result['data'] = data[0] if data else {}
+                else:
+                    self._exiftool_result['error'] = proc.stderr.strip() or 'exiftool error'
+            except Exception as e:
+                self._exiftool_result['error'] = str(e)
+            finally:
+                self._exiftool_result['done'] = True
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _start_exiftool_poll(self):
+        """Single poll timer that updates both File Info and Metadata when exiftool finishes."""
+        poll = QTimer()
+        poll.setInterval(100)
+
+        def check():
+            if not self._exiftool_result.get('done'):
+                return
+            poll.stop()
+            self._exiftool_poll_timer = None
+            if 'error' in self._exiftool_result:
+                try:
+                    self._meta_exiftool_status.setText(
+                        f"Error: {self._exiftool_result['error']}"
+                    )
+                    if self._file_info_exiftool_loading:
+                        self._file_info_exiftool_loading.setVisible(False)
+                except Exception:
+                    pass
+            else:
+                data = self._exiftool_result.get('data', {})
+                self._populate_file_info_exiftool(data)
+                self._populate_meta_exiftool(data)
+
+        poll.timeout.connect(check)
+        poll.start()
+        self._exiftool_poll_timer = poll
+
+    # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
 
     def _build_ui(self, layout, path):
         filename = os.path.basename(path)
 
-        # Title
         title = QLabel(f"🎵  {filename}")
         f = QFont()
         f.setPointSize(13)
@@ -136,35 +252,32 @@ class Audio_file:
         title.setFont(f)
         layout.addWidget(title)
 
-        # Player bar
         self._build_player_bar(layout, path)
 
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line)
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.HLine)
+        sep1.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep1)
 
-        # Info row: file info (left) + metadata tags (right)
         info_row = QWidget()
         info_row_layout = QHBoxLayout(info_row)
         info_row_layout.setContentsMargins(0, 0, 0, 0)
         info_row_layout.setSpacing(16)
-
-        file_info_widget = self._build_file_info_widget(path)
-        meta_widget = self._build_metadata_widget(path)
-        info_row_layout.addWidget(file_info_widget, stretch=1)
-        info_row_layout.addWidget(meta_widget, stretch=2)
+        info_row_layout.addWidget(self._build_file_info_widget(path), stretch=1)
+        info_row_layout.addWidget(self._build_metadata_widget(path), stretch=2)
         layout.addWidget(info_row)
 
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.Shape.HLine)
-        line2.setFrameShadow(QFrame.Shadow.Sunken)
-        layout.addWidget(line2)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.HLine)
+        sep2.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(sep2)
 
-        # Hashes + anomaly check
         self._build_hash_section(layout, path)
-
         layout.addStretch()
+
+        # Start single exiftool poll after both panels are built
+        if _EXIFTOOL:
+            self._start_exiftool_poll()
 
     def _build_player_bar(self, layout, path):
         bar = QWidget()
@@ -183,9 +296,7 @@ class Audio_file:
 
         self._time_label = QLabel("0:00 / 0:00")
         self._time_label.setMinimumWidth(95)
-        self._time_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
+        self._time_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         vol_label = QLabel("🔊")
         self._volume_slider = QSlider(Qt.Orientation.Horizontal)
@@ -202,10 +313,6 @@ class Audio_file:
         bar_layout.addWidget(self._volume_slider)
         layout.addWidget(bar)
 
-        # Init pygame mixer. Try audio drivers in preference order so that the
-        # best available driver is used without hard-failing if one is unavailable.
-        # buffer=8192 gives ~186ms headroom for Qt's event loop (matches PipeWire
-        # max-quantum from the VM fix config).
         if _PYGAME_OK:
             if pygame.mixer.get_init():
                 self._mixer_initialized = True
@@ -231,9 +338,8 @@ class Audio_file:
             self._play_btn.setToolTip("Audio playback unavailable (pygame not initialized)")
             self._stop_btn.setEnabled(False)
 
-        # Duration from mutagen.
-        # NOTE: mutagen objects are falsy when they have no tags (e.g. plain WAV
-        # without ID3). Must check `is not None` instead of truthiness.
+        # NOTE: mutagen objects are falsy when tagless (e.g. plain WAV without ID3).
+        # Must use `is not None` instead of truthiness.
         if _MUTAGEN_OK:
             try:
                 audio = MutagenFile(path)
@@ -244,14 +350,12 @@ class Audio_file:
 
         self._update_time_label(0)
 
-        # Signals
         self._play_btn.clicked.connect(self._on_play_pause)
         self._stop_btn.clicked.connect(self._on_stop)
         self._seek_slider.sliderPressed.connect(self._on_slider_pressed)
         self._seek_slider.sliderReleased.connect(self._on_slider_released)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
 
-        # Poll timer for position updates
         self._poll_timer = QTimer()
         self._poll_timer.setInterval(200)
         self._poll_timer.timeout.connect(self._poll_position)
@@ -262,14 +366,13 @@ class Audio_file:
         vlayout.setContentsMargins(0, 0, 0, 0)
         vlayout.setSpacing(3)
 
-        header = QLabel("File Info")
+        hdr = QLabel("File Info")
         hf = QFont()
         hf.setBold(True)
-        header.setFont(hf)
-        vlayout.addWidget(header)
+        hdr.setFont(hf)
+        vlayout.addWidget(hdr)
 
         rows = []
-
         try:
             size = os.path.getsize(path)
             self._file_size_bytes = size
@@ -286,14 +389,12 @@ class Audio_file:
         if _MUTAGEN_OK:
             try:
                 audio = MutagenFile(path)
-                # Use `is not None` — mutagen objects are falsy when tagless (e.g. WAV)
                 if audio is not None and audio.info is not None:
                     info = audio.info
                     dur = float(info.length)
                     self._audio_duration = dur
                     rows.append(("Duration", _fmt_time(dur)))
                     if hasattr(info, "bitrate") and info.bitrate:
-                        # mutagen returns bitrate in bps — convert to kbps
                         self._audio_bitrate = info.bitrate // 1000
                         rows.append(("Bitrate", f"{self._audio_bitrate} kbps"))
                     if hasattr(info, "sample_rate"):
@@ -302,34 +403,32 @@ class Audio_file:
                         ch = info.channels
                         ch_str = "Mono" if ch == 1 else "Stereo" if ch == 2 else f"{ch} ch"
                         rows.append(("Channels", ch_str))
-                    fmt = type(audio).__name__.replace("FLAC", "FLAC").replace("MP3", "MP3")
-                    rows.append(("Format", fmt))
+                    rows.append(("Format", type(audio).__name__))
             except Exception:
                 pass
 
         try:
-            st = os.stat(path)
-            rows.append(("Permissions", stat.filemode(st.st_mode)))
+            rows.append(("Permissions", stat.filemode(os.stat(path).st_mode)))
         except Exception:
             pass
 
         for key, val in rows:
-            row_w = QWidget()
-            row_l = QHBoxLayout(row_w)
-            row_l.setContentsMargins(0, 0, 0, 0)
-            row_l.setSpacing(4)
-            key_lbl = QLabel(f"{key}:")
-            key_lbl.setEnabled(False)
-            key_lbl.setFixedWidth(90)
-            val_lbl = QLabel(val)
-            val_lbl.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            val_lbl.setWordWrap(True)
-            row_l.addWidget(key_lbl)
-            row_l.addWidget(val_lbl, stretch=1)
-            vlayout.addWidget(row_w)
+            vlayout.addWidget(self._kv_row(key, val))
 
+        # Async exiftool technical fields — container populated by poll callback
+        et_container = QWidget()
+        et_layout = QVBoxLayout(et_container)
+        et_layout.setContentsMargins(0, 0, 0, 0)
+        et_layout.setSpacing(3)
+        self._file_info_exiftool_layout = et_layout
+
+        if _EXIFTOOL:
+            loading = QLabel("exiftool: loading...")
+            loading.setEnabled(False)
+            et_layout.addWidget(loading)
+            self._file_info_exiftool_loading = loading
+
+        vlayout.addWidget(et_container)
         vlayout.addStretch()
         return widget
 
@@ -337,72 +436,110 @@ class Audio_file:
         widget = QWidget()
         vlayout = QVBoxLayout(widget)
         vlayout.setContentsMargins(0, 0, 0, 0)
-        vlayout.setSpacing(3)
+        vlayout.setSpacing(4)
 
-        header = QLabel("Metadata Tags")
+        # ── Section 1: Easy tags ───────────────────────────────────────
+        hdr1 = QLabel("Metadata Tags")
         hf = QFont()
         hf.setBold(True)
-        header.setFont(hf)
-        vlayout.addWidget(header)
+        hdr1.setFont(hf)
+        vlayout.addWidget(hdr1)
 
         if not _MUTAGEN_OK:
             vlayout.addWidget(QLabel("mutagen library not installed"))
-            vlayout.addStretch()
-            return widget
+        else:
+            easy_rows = []
+            try:
+                audio = MutagenFile(path, easy=True)
+                if audio is not None:
+                    shown = set()
+                    for k in _PRIORITY_TAGS:
+                        if k in audio:
+                            v = audio[k]
+                            val_str = "; ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
+                            easy_rows.append((k, val_str))
+                            shown.add(k)
+                    for k, v in sorted(audio.items()):
+                        if k not in shown:
+                            val_str = "; ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
+                            easy_rows.append((k, val_str))
+            except Exception as e:
+                easy_rows.append(("Error reading tags", str(e)))
 
-        rows = []
-        try:
-            audio = MutagenFile(path, easy=True)
-            if audio is not None:
-                shown = set()
-                for k in _PRIORITY_TAGS:
-                    if k in audio:
-                        v = audio[k]
-                        val_str = "; ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
-                        rows.append((k, val_str))
-                        shown.add(k)
-                for k, v in sorted(audio.items()):
-                    if k not in shown:
-                        val_str = "; ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
-                        rows.append((k, val_str))
-        except Exception as e:
-            rows.append(("Error reading tags", str(e)))
+            if not easy_rows:
+                vlayout.addWidget(QLabel("No metadata tags found"))
+            else:
+                scroll1 = QScrollArea()
+                scroll1.setWidgetResizable(True)
+                scroll1.setFrameShape(QFrame.Shape.NoFrame)
+                scroll1.setMaximumHeight(180)
+                inner1 = QWidget()
+                il1 = QVBoxLayout(inner1)
+                il1.setContentsMargins(0, 0, 0, 0)
+                il1.setSpacing(1)
+                for key, val in easy_rows:
+                    il1.addWidget(self._kv_row(key, val))
+                il1.addStretch()
+                scroll1.setWidget(inner1)
+                vlayout.addWidget(scroll1)
 
-        if not rows:
-            vlayout.addWidget(QLabel("No metadata tags found"))
-            vlayout.addStretch()
-            return widget
+            # ── Section 2: Raw Frames (synchronous) ───────────────────
+            raw_rows = self._extract_raw_frames_info(path)
+            if raw_rows:
+                sep_r = QFrame()
+                sep_r.setFrameShape(QFrame.Shape.HLine)
+                sep_r.setFrameShadow(QFrame.Shadow.Sunken)
+                vlayout.addWidget(sep_r)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setMaximumHeight(220)
+                hdr2 = QLabel("Raw Frames")
+                hf2 = QFont()
+                hf2.setBold(True)
+                hdr2.setFont(hf2)
+                vlayout.addWidget(hdr2)
 
-        inner = QWidget()
-        inner_layout = QVBoxLayout(inner)
-        inner_layout.setContentsMargins(0, 0, 0, 0)
-        inner_layout.setSpacing(1)
+                scroll2 = QScrollArea()
+                scroll2.setWidgetResizable(True)
+                scroll2.setFrameShape(QFrame.Shape.NoFrame)
+                scroll2.setMaximumHeight(160)
+                inner2 = QWidget()
+                il2 = QVBoxLayout(inner2)
+                il2.setContentsMargins(0, 0, 0, 0)
+                il2.setSpacing(1)
+                for key, val in raw_rows:
+                    il2.addWidget(self._kv_row(key, val))
+                il2.addStretch()
+                scroll2.setWidget(inner2)
+                vlayout.addWidget(scroll2)
 
-        for key, val in rows:
-            row_w = QWidget()
-            row_l = QHBoxLayout(row_w)
-            row_l.setContentsMargins(0, 0, 0, 0)
-            row_l.setSpacing(4)
-            key_lbl = QLabel(f"{key}:")
-            key_lbl.setEnabled(False)
-            key_lbl.setFixedWidth(110)
-            val_lbl = QLabel(val)
-            val_lbl.setTextInteractionFlags(
-                Qt.TextInteractionFlag.TextSelectableByMouse
-            )
-            val_lbl.setWordWrap(True)
-            row_l.addWidget(key_lbl)
-            row_l.addWidget(val_lbl, stretch=1)
-            inner_layout.addWidget(row_w)
+        # ── Section 3: exiftool (async) ────────────────────────────────
+        if _EXIFTOOL:
+            sep_e = QFrame()
+            sep_e.setFrameShape(QFrame.Shape.HLine)
+            sep_e.setFrameShadow(QFrame.Shadow.Sunken)
+            vlayout.addWidget(sep_e)
 
-        inner_layout.addStretch()
-        scroll.setWidget(inner)
-        vlayout.addWidget(scroll)
+            hdr3 = QLabel("Metadata (exiftool)")
+            hf3 = QFont()
+            hf3.setBold(True)
+            hdr3.setFont(hf3)
+            vlayout.addWidget(hdr3)
+
+            et_status = QLabel("loading...")
+            et_status.setEnabled(False)
+            vlayout.addWidget(et_status)
+            self._meta_exiftool_status = et_status
+
+            scroll3 = QScrollArea()
+            scroll3.setWidgetResizable(True)
+            scroll3.setFrameShape(QFrame.Shape.NoFrame)
+            scroll3.setMaximumHeight(200)
+            inner3 = QWidget()
+            il3 = QVBoxLayout(inner3)
+            il3.setContentsMargins(0, 0, 0, 0)
+            il3.setSpacing(1)
+            scroll3.setWidget(inner3)
+            vlayout.addWidget(scroll3)
+            self._meta_exiftool_layout = il3
 
         return widget
 
@@ -425,12 +562,14 @@ class Audio_file:
         self._anomaly_label.setWordWrap(True)
         vlayout.addWidget(self._anomaly_label)
 
+        # Steganography indicators from mutagen raw (synchronous)
+        for indicator in self._compute_stego_indicators(path):
+            lbl = QLabel(indicator)
+            lbl.setWordWrap(True)
+            vlayout.addWidget(lbl)
+
         layout.addWidget(widget)
 
-        # QTimer.singleShot cannot be called from threading.Thread — it has no
-        # Qt event loop and the callback never fires. Instead: compute hashes in
-        # a background thread writing to a shared dict, then poll from a QTimer
-        # running in the main thread.
         _result = {}
 
         def compute_hashes():
@@ -467,34 +606,332 @@ class Audio_file:
 
         poll.timeout.connect(_check)
         poll.start()
-        self._hash_poll_timer = poll  # keep reference so GC doesn't collect it
+        self._hash_poll_timer = poll
+
+    # ------------------------------------------------------------------
+    # exiftool populate callbacks
+    # ------------------------------------------------------------------
+
+    def _populate_file_info_exiftool(self, data):
+        """Add technical exiftool fields to the File Info panel."""
+        try:
+            layout = self._file_info_exiftool_layout
+            if layout is None:
+                return
+
+            # Remove loading label
+            if self._file_info_exiftool_loading:
+                try:
+                    self._file_info_exiftool_loading.setVisible(False)
+                except Exception:
+                    pass
+
+            rows = [(f, str(data[f])) for f in _FILE_INFO_EXIFTOOL_FIELDS if f in data]
+            if not rows:
+                return
+
+            sep = QFrame()
+            sep.setFrameShape(QFrame.Shape.HLine)
+            sep.setFrameShadow(QFrame.Shadow.Sunken)
+            layout.addWidget(sep)
+
+            sub_hdr = QLabel("Encoder / Advanced")
+            sf = QFont()
+            sf.setBold(True)
+            sf.setPointSize(8)
+            sub_hdr.setFont(sf)
+            sub_hdr.setEnabled(False)
+            layout.addWidget(sub_hdr)
+
+            for key, val in rows:
+                layout.addWidget(self._kv_row(key, val))
+
+        except Exception:
+            pass
+
+    def _populate_meta_exiftool(self, data):
+        """Populate the exiftool metadata section in the Metadata panel."""
+        try:
+            layout = self._meta_exiftool_layout
+            if layout is None:
+                return
+
+            try:
+                self._meta_exiftool_status.setVisible(False)
+            except Exception:
+                pass
+
+            shown = set()
+            rows = []
+            for field in _EXIFTOOL_PRIORITY:
+                if field in data and field not in _EXIFTOOL_SKIP:
+                    rows.append((field, str(data[field])))
+                    shown.add(field)
+            for field, val in sorted(data.items()):
+                if field not in shown and field not in _EXIFTOOL_SKIP:
+                    rows.append((field, str(val)))
+
+            if not rows:
+                layout.addWidget(QLabel("No additional data from exiftool"))
+                return
+
+            for key, val in rows:
+                layout.addWidget(self._kv_row(key, val))
+            layout.addStretch()
+
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Mutagen raw frames
+    # ------------------------------------------------------------------
+
+    def _extract_raw_frames_info(self, path):
+        """Extract forensically relevant raw frame info via mutagen (non-easy mode)."""
+        rows = []
+        if not _MUTAGEN_OK:
+            return rows
+        try:
+            audio = MutagenFile(path)
+            if audio is None:
+                return rows
+
+            tags = audio.tags
+
+            # FLAC/OGG: vendor string (exact encoder software + version)
+            if hasattr(tags, 'vendor') and tags.vendor:
+                rows.append(("Vendor string", tags.vendor))
+
+            # FLAC: pictures (not in ID3 tags object)
+            if hasattr(audio, 'pictures') and audio.pictures:
+                for i, pic in enumerate(audio.pictures):
+                    size = len(pic.data) if hasattr(pic, 'data') else 0
+                    mime = getattr(pic, 'mime', '?')
+                    rows.append((f"Cover art {i + 1}", f"{mime}, {size / 1024:.1f} KB"))
+
+            # FLAC: audio MD5 signature (in stream info block)
+            if hasattr(audio, 'info') and hasattr(audio.info, 'md5_signature'):
+                sig = audio.info.md5_signature
+                if sig:
+                    rows.append(("FLAC audio MD5", format(sig, '032x')))
+                else:
+                    rows.append(("FLAC audio MD5", "⚠ zero — audio may have been modified"))
+
+            if tags is None:
+                return rows
+
+            # ID3 version
+            if hasattr(tags, 'version'):
+                v = tags.version
+                rows.append(("ID3 Version", f"v{v[0]}.{v[1]}"))
+
+            # ID3 tag block size and padding
+            if hasattr(tags, '_size') and tags._size:
+                rows.append(("ID3 Tag size", f"{tags._size / 1024:.1f} KB"))
+            if hasattr(tags, '_padding') and tags._padding:
+                rows.append(("ID3 Padding", f"{tags._padding} bytes"))
+
+            # APIC — embedded cover art
+            for k in sorted(tags.keys()):
+                if not k.startswith('APIC'):
+                    continue
+                frame = tags[k]
+                size = len(frame.data) if hasattr(frame, 'data') else 0
+                mime = getattr(frame, 'mime', '?')
+                pic_type = getattr(frame, 'type', 0)
+                desc = getattr(frame, 'desc', '') or f"type {pic_type}"
+                rows.append((f"APIC ({desc})", f"{mime}, {size / 1024:.1f} KB"))
+
+            # PRIV — private frames (owner identifier reveals software)
+            for k in sorted(tags.keys()):
+                if not k.startswith('PRIV'):
+                    continue
+                frame = tags[k]
+                owner = getattr(frame, 'owner', k)
+                size = len(frame.data) if hasattr(frame, 'data') else 0
+                rows.append((f"PRIV ({owner})", f"{size} bytes"))
+
+            # GEOB — general encapsulated object (arbitrary embedded file)
+            for k in sorted(tags.keys()):
+                if not k.startswith('GEOB'):
+                    continue
+                frame = tags[k]
+                mime = getattr(frame, 'mime', '?')
+                filename = getattr(frame, 'filename', '') or '?'
+                size = len(frame.data) if hasattr(frame, 'data') else 0
+                rows.append((f"GEOB ({filename})", f"{mime}, {size / 1024:.1f} KB"))
+
+            # TXXX — user-defined text (custom software fields)
+            for k in sorted(tags.keys()):
+                if not (k.startswith('TXXX:') or k == 'TXXX'):
+                    continue
+                frame = tags[k]
+                desc = getattr(frame, 'desc', k.replace('TXXX:', ''))
+                text = getattr(frame, 'text', [''])[0] if hasattr(frame, 'text') else str(frame)
+                rows.append((f"TXXX:{desc}", str(text)))
+
+            # UFID — unique file identifier (MusicBrainz Track ID etc.)
+            for k in sorted(tags.keys()):
+                if not k.startswith('UFID'):
+                    continue
+                frame = tags[k]
+                owner = getattr(frame, 'owner', k)
+                data_bytes = getattr(frame, 'data', b'')
+                try:
+                    val = data_bytes.decode('ascii').strip('\x00')
+                except Exception:
+                    val = data_bytes.hex()
+                rows.append((f"UFID ({owner})", val))
+
+            # URL frames — WOAS/WORS/WOAF/WCOM/WPUB/WOAR
+            for prefix in ['WOAS', 'WORS', 'WOAF', 'WCOM', 'WPUB', 'WOAR']:
+                if prefix in tags:
+                    frame = tags[prefix]
+                    url = getattr(frame, 'url', str(frame))
+                    rows.append((prefix, url))
+
+            # WXXX — user-defined URL
+            for k in sorted(tags.keys()):
+                if not (k.startswith('WXXX:') or k == 'WXXX'):
+                    continue
+                frame = tags[k]
+                desc = getattr(frame, 'desc', k.replace('WXXX:', ''))
+                url = getattr(frame, 'url', str(frame))
+                rows.append((f"WXXX:{desc}", url))
+
+            # ID3v2 date frames (multiple can coexist — discrepancy is suspicious)
+            for frame_id in ['TDRC', 'TDRL', 'TDTG', 'TYER', 'TDAT', 'TLAN']:
+                if frame_id in tags:
+                    frame = tags[frame_id]
+                    if hasattr(frame, 'text') and frame.text:
+                        rows.append((frame_id, str(frame.text[0])))
+
+        except Exception as e:
+            rows.append(("Error (raw frames)", str(e)))
+
+        return rows
+
+    # ------------------------------------------------------------------
+    # Steganography indicators (synchronous)
+    # ------------------------------------------------------------------
+
+    def _compute_stego_indicators(self, path):
+        """Compute steganography indicators from mutagen raw. Returns list of warning strings."""
+        indicators = []
+        if not _MUTAGEN_OK:
+            return indicators
+        try:
+            audio = MutagenFile(path)
+            if audio is None:
+                return indicators
+
+            tags = audio.tags
+            file_size = self._file_size_bytes
+
+            if tags is not None:
+                # Large ID3 header relative to file size
+                if hasattr(tags, '_size') and tags._size and file_size > 0:
+                    tag_ratio = tags._size / file_size
+                    if tag_ratio > 0.10:
+                        indicators.append(
+                            f"⚠  Large ID3 header: {tags._size / 1024:.1f} KB "
+                            f"({tag_ratio * 100:.1f}% of file) — unusual ratio"
+                        )
+
+                # Unusual padding (common in steganography tools that inject after tags)
+                if hasattr(tags, '_padding') and tags._padding > 2048:
+                    indicators.append(
+                        f"⚠  Unusual ID3 padding: {tags._padding / 1024:.1f} KB "
+                        f"— can conceal data"
+                    )
+
+                # APIC (cover art) size and count
+                apic_keys = [k for k in tags.keys() if k.startswith('APIC')]
+                apic_total = sum(
+                    len(tags[k].data) for k in apic_keys
+                    if hasattr(tags[k], 'data')
+                )
+                if len(apic_keys) > 1:
+                    indicators.append(f"⚠  Multiple embedded images: {len(apic_keys)} APIC frames")
+                if apic_total > 2 * 1024 * 1024:
+                    indicators.append(
+                        f"⚠  Large embedded images: {apic_total / 1024 / 1024:.1f} MB total"
+                    )
+
+                # GEOB — arbitrary embedded file
+                geob_total = sum(
+                    len(tags[k].data) for k in tags.keys()
+                    if k.startswith('GEOB') and hasattr(tags[k], 'data')
+                )
+                if geob_total > 0:
+                    indicators.append(
+                        f"⚠  Embedded object (GEOB): {geob_total / 1024:.1f} KB "
+                        f"— can contain any file type"
+                    )
+
+                # PRIV with large payload
+                priv_total = sum(
+                    len(tags[k].data) for k in tags.keys()
+                    if k.startswith('PRIV') and hasattr(tags[k], 'data')
+                )
+                if priv_total > 4096:
+                    indicators.append(
+                        f"⚠  Large PRIV payload: {priv_total / 1024:.1f} KB"
+                    )
+
+            # FLAC: zero MD5 signature means audio data was modified without updating header
+            if hasattr(audio, 'info') and hasattr(audio.info, 'md5_signature'):
+                if audio.info.md5_signature == 0:
+                    indicators.append(
+                        "⚠  FLAC: audio MD5 signature is zero "
+                        "— audio data may have been modified externally"
+                    )
+
+        except Exception:
+            pass
+
+        return indicators
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _kv_row(self, key, val):
+        row = QWidget()
+        row_l = QHBoxLayout(row)
+        row_l.setContentsMargins(0, 0, 0, 0)
+        row_l.setSpacing(4)
+        key_lbl = QLabel(f"{key}:")
+        key_lbl.setEnabled(False)
+        key_lbl.setFixedWidth(110)
+        val_lbl = QLabel(str(val))
+        val_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        val_lbl.setWordWrap(True)
+        row_l.addWidget(key_lbl)
+        row_l.addWidget(val_lbl, stretch=1)
+        return row
 
     def _add_hash_row(self, label_text, initial_val, parent_layout):
         row = QWidget()
         row_l = QHBoxLayout(row)
         row_l.setContentsMargins(0, 0, 0, 0)
         row_l.setSpacing(6)
-
         key_lbl = QLabel(f"{label_text}:")
         key_lbl.setEnabled(False)
         key_lbl.setFixedWidth(60)
-
         val_lbl = QLabel(initial_val)
         val_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         mf = QFont("Monospace")
         mf.setPointSize(9)
         val_lbl.setFont(mf)
-
         copy_btn = QPushButton("📋")
         copy_btn.setFixedSize(24, 24)
         copy_btn.setToolTip(f"Copy {label_text} to clipboard")
         copy_btn.clicked.connect(lambda: QApplication.clipboard().setText(val_lbl.text()))
-
         row_l.addWidget(key_lbl)
         row_l.addWidget(val_lbl, stretch=1)
         row_l.addWidget(copy_btn)
         parent_layout.addWidget(row)
-
         return val_lbl
 
     def _set_hash_label(self, label, value):
@@ -508,7 +945,6 @@ class Audio_file:
             duration = self._audio_duration
             bitrate = self._audio_bitrate
             size = self._file_size_bytes
-
             if duration > 0 and size > 0:
                 actual_kbps = (size * 8) / (duration * 1000)
                 if bitrate > 0:
@@ -525,9 +961,7 @@ class Audio_file:
                             f"(declared {bitrate} kbps)"
                         )
                 else:
-                    self._anomaly_label.setText(
-                        f"Size/duration: {actual_kbps:.0f} kbps"
-                    )
+                    self._anomaly_label.setText(f"Size/duration: {actual_kbps:.0f} kbps")
         except Exception:
             pass
 
@@ -551,8 +985,7 @@ class Audio_file:
                 self._poll_timer.start()
             elif self._playing and not self._paused:
                 pygame.mixer.music.pause()
-                elapsed = time.monotonic() - self._play_start_ts
-                self._play_offset += elapsed
+                self._play_offset += time.monotonic() - self._play_start_ts
                 self._paused = True
                 self._playing = False
                 self._play_btn.setText("▶  Play")
@@ -633,8 +1066,7 @@ class Audio_file:
             pos = self._play_offset + elapsed
             self._update_time_label(pos)
             if self._duration_sec > 0 and not self._slider_dragging:
-                slider_val = int(min(pos / self._duration_sec, 1.0) * 1000)
-                self._seek_slider.setValue(slider_val)
+                self._seek_slider.setValue(int(min(pos / self._duration_sec, 1.0) * 1000))
         except Exception:
             pass
 
