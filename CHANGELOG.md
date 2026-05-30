@@ -18,6 +18,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Audio file viewer**: integrity hashes (MD5/SHA256) were permanently stuck on "computing..." — `QTimer.singleShot` called from a `threading.Thread` has no Qt event loop so the callback never fired; replaced with a shared-dict result and a polling `QTimer` in the main thread
+- **Audio file viewer**: duration showed `/ 0:00` for WAV files without ID3 tags — mutagen objects are falsy when tagless (`bool(audio) == False`) so the `if audio and audio.info` check silently skipped them; changed to `is not None`
+- **Audio file viewer**: size/duration anomaly check triggered on every file — mutagen returns `info.bitrate` in bps (e.g. 320000) while `actual_kbps` was computed in kbps (~320), giving ratio ≈ 0.001; fixed by converting to kbps (`// 1000`) at storage time
+- **Audio file viewer**: playback buttons disabled on file open — `SDL_AUDIODRIVER` set at module import time failed inside the Qt app context; replaced with a driver fallback chain tried at init time: `pipewire → pulseaudio → SDL auto-detect`
+- **Audio file viewer**: in-app audio stuttering — switched SDL to native PipeWire driver (SDL 2.28+) and aligned mixer buffer to `max-quantum = 8192` from the PipeWire VM fix config
 - **Terminal**: `pshelp` hint no longer printed in the terminal on startup — only the overlay widget remains
 - **Security**: sudo password no longer stored in GNOME Keyring — now kept in a `bytearray` in RAM for the session duration and securely zeroed at shutdown via `ctypes.memset`; eliminates "Unlock Login Keyring" popup on application exit
 - **Markdown preview**: zoom (buttons + Ctrl+Scroll) now scales images alongside text; images fit the preview width automatically and never upscale beyond natural size
