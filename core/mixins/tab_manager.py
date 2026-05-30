@@ -39,6 +39,7 @@ from file_loaders.unsupported_file import Unsupported_file
 from file_loaders.visualbasic_file import Visualbasic_file
 from file_loaders.audio_file import Audio_file
 from file_loaders.video_file import Video_file
+from file_loaders.pdf_file import Pdf_file
 
 FILE_LOADERS = {
     "Text_file": Text_file,
@@ -73,6 +74,7 @@ FILE_LOADERS = {
     "Visualbasic_file": Visualbasic_file,
     "Audio_file": Audio_file,
     "Video_file": Video_file,
+    "Pdf_file": Pdf_file,
 }
 
 class TabManagerMixin:

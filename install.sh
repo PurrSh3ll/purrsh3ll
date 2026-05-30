@@ -166,7 +166,8 @@ info "Installing Python packages..."
     pyte \
     markdown2 \
     Pygments \
-    jeepney
+    jeepney \
+    pymupdf
 
 success "Core packages installed"
 
