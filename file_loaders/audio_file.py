@@ -4,10 +4,12 @@ import hashlib
 import threading
 import time
 
-# Force SDL2 to use PulseAudio (via PipeWire's compatibility layer) instead of
-# opening ALSA directly. Must be set before pygame initialises its audio subsystem.
-# This prevents SDL buffer mismatches with PipeWire's configured period-size.
-os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+# Use SDL2's native PipeWire driver (available since SDL 2.28, confirmed working
+# on SDL 2.32.8). This bypasses the PulseAudio compatibility layer, eliminating
+# one buffer stage in the chain (pygame → PipeWire instead of pygame → PA → PipeWire)
+# which prevents cascade underruns inside a Qt event loop.
+# Falls back to PulseAudio automatically if the PipeWire driver is unavailable.
+os.environ.setdefault("SDL_AUDIODRIVER", "pipewire")
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -203,7 +205,10 @@ class Audio_file:
                         frequency=44100,
                         size=-16,      # S16LE — matches audio.format in PipeWire config
                         channels=2,
-                        buffer=4096,   # matches api.alsa.period-size in PipeWire config
+                        buffer=8192,   # matches max-quantum in PipeWire config;
+                                       # doubled from period-size to give Qt's main
+                                       # thread ~186ms of headroom before an xrun
+                        allowedchanges=0,  # prevent SDL from silently changing format
                     )
                     pygame.mixer.init()
                 self._mixer_initialized = True
