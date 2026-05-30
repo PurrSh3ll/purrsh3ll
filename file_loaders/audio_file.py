@@ -291,8 +291,9 @@ class Audio_file:
                     self._audio_duration = dur
                     rows.append(("Duration", _fmt_time(dur)))
                     if hasattr(info, "bitrate") and info.bitrate:
-                        self._audio_bitrate = info.bitrate
-                        rows.append(("Bitrate", f"{info.bitrate} kbps"))
+                        # mutagen returns bitrate in bps — convert to kbps
+                        self._audio_bitrate = info.bitrate // 1000
+                        rows.append(("Bitrate", f"{self._audio_bitrate} kbps"))
                     if hasattr(info, "sample_rate"):
                         rows.append(("Sample rate", f"{info.sample_rate} Hz"))
                     if hasattr(info, "channels"):
