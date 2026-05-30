@@ -10,7 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Audio file viewer**: audio files (mp3, flac, ogg, wav, aac, wma) now open in a dedicated viewer with a full playback player (play/pause/stop, seek bar, volume), file info panel (format, duration, bitrate, sample rate, channels, size, permissions), metadata tags panel (ID3/Vorbis/MP4 — all tags including OSINT-relevant fields: artist, comment, encoder, location, software, embedded URLs), and an integrity section with MD5 + SHA256 hashes (copyable) plus an anomaly check (size/duration ratio — flags potential steganography); powered by `pygame` (playback) and `mutagen` (metadata)
+- **Audio file viewer**: audio files (mp3, flac, ogg, wav, aac, wma, opus, aiff, aif, aifc, oga, mp2) now open in a dedicated viewer with a full playback player (play/pause/stop, seek bar, volume), file info panel (format, duration, bitrate, sample rate, channels, size, permissions), metadata tags panel (ID3/Vorbis/MP4 — all tags including OSINT-relevant fields: artist, comment, encoder, location, software, embedded URLs), and an integrity section with MD5 + SHA256 hashes (copyable) plus an anomaly check (size/duration ratio — flags potential steganography); powered by `pygame` (playback) and `mutagen` (metadata)
 - **Syntax highlighting**: all 19 hand-written regex highlighters replaced by a single `PygmentsHighlighter` backed by the Pygments library — 500+ languages supported, edge-cases handled by the community, colors still driven by `qss_QPainter` theme
 - **Syntax highlighting**: files with unknown extensions (`.yaml`, `.toml`, `.css`, `.rs`, `.ts`, `.env`, `Dockerfile`, `Makefile` etc.) now auto-detect language via `guess_lexer_for_filename()` and receive syntax highlighting automatically
 - **File icons**: unknown extensions now show a neutral icon instead of "unsupported"; the unsupported icon is reserved for 62 known binary/non-openable formats (video, audio, archives, executables, fonts, 3D assets etc.)
@@ -18,6 +18,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Audio file viewer**: pygame startup banner no longer printed to terminal on every application launch — suppressed via `PYGAME_HIDE_SUPPORT_PROMPT=1`
 - **Audio file viewer**: integrity hashes (MD5/SHA256) were permanently stuck on "computing..." — `QTimer.singleShot` called from a `threading.Thread` has no Qt event loop so the callback never fired; replaced with a shared-dict result and a polling `QTimer` in the main thread
 - **Audio file viewer**: duration showed `/ 0:00` for WAV files without ID3 tags — mutagen objects are falsy when tagless (`bool(audio) == False`) so the `if audio and audio.info` check silently skipped them; changed to `is not None`
 - **Audio file viewer**: size/duration anomaly check triggered on every file — mutagen returns `info.bitrate` in bps (e.g. 320000) while `actual_kbps` was computed in kbps (~320), giving ratio ≈ 0.001; fixed by converting to kbps (`// 1000`) at storage time
