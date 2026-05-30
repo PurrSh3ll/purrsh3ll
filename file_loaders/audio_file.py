@@ -4,6 +4,11 @@ import hashlib
 import threading
 import time
 
+# Force SDL2 to use PulseAudio (via PipeWire's compatibility layer) instead of
+# opening ALSA directly. Must be set before pygame initialises its audio subsystem.
+# This prevents SDL buffer mismatches with PipeWire's configured period-size.
+os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QScrollArea, QSizePolicy, QApplication, QFrame,
@@ -187,10 +192,19 @@ class Audio_file:
         bar_layout.addWidget(self._volume_slider)
         layout.addWidget(bar)
 
-        # Init pygame mixer
+        # Init pygame mixer with settings matching the PipeWire VM fix config:
+        #   44100 Hz, S16LE (-16), stereo, buffer=4096 samples (= period-size).
+        # pre_init() must be called before init() and has no effect if the mixer
+        # is already running (idempotent for subsequent Audio_file instances).
         if _PYGAME_OK:
             try:
                 if not pygame.mixer.get_init():
+                    pygame.mixer.pre_init(
+                        frequency=44100,
+                        size=-16,      # S16LE — matches audio.format in PipeWire config
+                        channels=2,
+                        buffer=4096,   # matches api.alsa.period-size in PipeWire config
+                    )
                     pygame.mixer.init()
                 self._mixer_initialized = True
             except Exception:
