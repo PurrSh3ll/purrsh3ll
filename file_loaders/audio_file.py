@@ -222,11 +222,13 @@ class Audio_file:
             self._play_btn.setToolTip("Audio playback unavailable (pygame not initialized)")
             self._stop_btn.setEnabled(False)
 
-        # Duration from mutagen
+        # Duration from mutagen.
+        # NOTE: mutagen objects are falsy when they have no tags (e.g. plain WAV
+        # without ID3). Must check `is not None` instead of truthiness.
         if _MUTAGEN_OK:
             try:
                 audio = MutagenFile(path)
-                if audio and audio.info:
+                if audio is not None and audio.info is not None:
                     self._duration_sec = float(audio.info.length)
             except Exception:
                 pass
@@ -275,7 +277,8 @@ class Audio_file:
         if _MUTAGEN_OK:
             try:
                 audio = MutagenFile(path)
-                if audio and audio.info:
+                # Use `is not None` — mutagen objects are falsy when tagless (e.g. WAV)
+                if audio is not None and audio.info is not None:
                     info = audio.info
                     dur = float(info.length)
                     self._audio_duration = dur
@@ -340,7 +343,7 @@ class Audio_file:
         rows = []
         try:
             audio = MutagenFile(path, easy=True)
-            if audio:
+            if audio is not None:
                 shown = set()
                 for k in _PRIORITY_TAGS:
                     if k in audio:
