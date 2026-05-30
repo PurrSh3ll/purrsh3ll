@@ -4,12 +4,11 @@ import hashlib
 import threading
 import time
 
-# Use SDL2's native PipeWire driver (available since SDL 2.28, confirmed working
-# on SDL 2.32.8). This bypasses the PulseAudio compatibility layer, eliminating
-# one buffer stage in the chain (pygame → PipeWire instead of pygame → PA → PipeWire)
-# which prevents cascade underruns inside a Qt event loop.
-# Falls back to PulseAudio automatically if the PipeWire driver is unavailable.
-os.environ.setdefault("SDL_AUDIODRIVER", "pipewire")
+# SDL audio driver preference order — tried at mixer init time, not at import.
+# pipewire: direct, fewest buffer stages, SDL 2.28+
+# pulseaudio: goes through pipewire-pulse compat layer
+# (empty): let SDL auto-detect
+_SDL_DRIVER_ORDER = ["pipewire", "pulseaudio", ""]
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -194,28 +193,29 @@ class Audio_file:
         bar_layout.addWidget(self._volume_slider)
         layout.addWidget(bar)
 
-        # Init pygame mixer with settings matching the PipeWire VM fix config:
-        #   44100 Hz, S16LE (-16), stereo, buffer=4096 samples (= period-size).
-        # pre_init() must be called before init() and has no effect if the mixer
-        # is already running (idempotent for subsequent Audio_file instances).
+        # Init pygame mixer. Try audio drivers in preference order so that the
+        # best available driver is used without hard-failing if one is unavailable.
+        # buffer=8192 gives ~186ms headroom for Qt's event loop (matches PipeWire
+        # max-quantum from the VM fix config).
         if _PYGAME_OK:
-            try:
-                if not pygame.mixer.get_init():
-                    pygame.mixer.pre_init(
-                        frequency=44100,
-                        size=-16,    # S16LE — matches audio.format in PipeWire config
-                        channels=2,
-                        buffer=8192, # matches max-quantum in PipeWire config (~186ms)
-                    )
-                    pygame.mixer.init()
+            if pygame.mixer.get_init():
                 self._mixer_initialized = True
-            except Exception:
-                # Fallback: try with SDL defaults (let SDL negotiate format freely)
-                try:
-                    pygame.mixer.init()
-                    self._mixer_initialized = True
-                except Exception:
-                    self._mixer_initialized = False
+            else:
+                for driver in _SDL_DRIVER_ORDER:
+                    try:
+                        if driver:
+                            os.environ["SDL_AUDIODRIVER"] = driver
+                        else:
+                            os.environ.pop("SDL_AUDIODRIVER", None)
+                        pygame.mixer.pre_init(44100, -16, 2, 8192)
+                        pygame.mixer.init()
+                        self._mixer_initialized = True
+                        break
+                    except Exception:
+                        try:
+                            pygame.mixer.quit()
+                        except Exception:
+                            pass
 
         if not self._mixer_initialized:
             self._play_btn.setEnabled(False)
