@@ -44,3 +44,6 @@ appmodules/Cyb3rCollector/reports/
 # Pliki audio
 *.wav
 
+# Pliki testowe (licencje — nie wrzucamy na GitHub)
+usermodules/testfolder/
+
