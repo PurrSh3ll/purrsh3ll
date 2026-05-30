@@ -19,6 +19,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Audio/Video file viewer**: opening a tab no longer shifts the file tree splitter — tab page now returns `QSize(0, 0)` from `sizeHint()` and `minimumSizeHint()` so Qt treats it as having no preferred size; filename in the tab label clips gracefully and reveals itself as the splitter is widened
 - **Audio file viewer**: pygame startup banner no longer printed to terminal on every application launch — suppressed via `PYGAME_HIDE_SUPPORT_PROMPT=1`
 - **Audio file viewer**: integrity hashes (MD5/SHA256) were permanently stuck on "computing..." — `QTimer.singleShot` called from a `threading.Thread` has no Qt event loop so the callback never fired; replaced with a shared-dict result and a polling `QTimer` in the main thread
 - **Audio file viewer**: duration showed `/ 0:00` for WAV files without ID3 tags — mutagen objects are falsy when tagless (`bool(audio) == False`) so the `if audio and audio.info` check silently skipped them; changed to `is not None`
