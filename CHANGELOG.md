@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Audio file viewer**: audio files (mp3, flac, ogg, wav, aac, wma) now open in a dedicated viewer with a full playback player (play/pause/stop, seek bar, volume), file info panel (format, duration, bitrate, sample rate, channels, size, permissions), metadata tags panel (ID3/Vorbis/MP4 — all tags including OSINT-relevant fields: artist, comment, encoder, location, software, embedded URLs), and an integrity section with MD5 + SHA256 hashes (copyable) plus an anomaly check (size/duration ratio — flags potential steganography); powered by `pygame` (playback) and `mutagen` (metadata)
 - **Syntax highlighting**: all 19 hand-written regex highlighters replaced by a single `PygmentsHighlighter` backed by the Pygments library — 500+ languages supported, edge-cases handled by the community, colors still driven by `qss_QPainter` theme
 - **Syntax highlighting**: files with unknown extensions (`.yaml`, `.toml`, `.css`, `.rs`, `.ts`, `.env`, `Dockerfile`, `Makefile` etc.) now auto-detect language via `guess_lexer_for_filename()` and receive syntax highlighting automatically
 - **File icons**: unknown extensions now show a neutral icon instead of "unsupported"; the unsupported icon is reserved for 62 known binary/non-openable formats (video, audio, archives, executables, fonts, 3D assets etc.)

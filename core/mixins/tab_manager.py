@@ -37,6 +37,7 @@ from file_loaders.psnmap_file import Purr_file
 from file_loaders.psc2_file import Psc2_file
 from file_loaders.unsupported_file import Unsupported_file
 from file_loaders.visualbasic_file import Visualbasic_file
+from file_loaders.audio_file import Audio_file
 
 FILE_LOADERS = {
     "Text_file": Text_file,
@@ -69,6 +70,7 @@ FILE_LOADERS = {
     "Psc2_file": Psc2_file,
     "Unsupported_file": Unsupported_file,
     "Visualbasic_file": Visualbasic_file,
+    "Audio_file": Audio_file,
 }
 
 class TabManagerMixin:
