@@ -98,6 +98,13 @@ FILES_CATEGORY = {
     "mp4": "__video_file",
     "wmv": "__video_file",
     "mpeg4": "__video_file",
+    "mkv": "__video_file",
+    "mov": "__video_file",
+    "flv": "__video_file",
+    "webm": "__video_file",
+    "m4v": "__video_file",
+    "3gp": "__video_file",
+    "ogv": "__video_file",
     "game": "__game_file",
     "purr": "__purr_file",
 }

@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QApplication, QStyle, QTreeWidgetItem
 # (__noextension_file) because the app may still open it (e.g. via Pygments).
 _KNOWN_UNSUPPORTED = {
     # Video
-    "mkv", "mov", "flv", "webm", "m4v", "3gp", "rmvb", "vob", "ogv",
+    "rmvb", "vob",
     # Audio
     "m4a", "mid", "midi", "ra", "amr",
     # Archives
