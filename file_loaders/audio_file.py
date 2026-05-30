@@ -235,6 +235,12 @@ class Audio_file:
         info_btn.clicked.connect(self._show_info_dialog)
         title_layout.addWidget(info_btn)
 
+        open_btn = QPushButton("↗ Open in system player")
+        open_btn.setFixedHeight(28)
+        open_btn.setToolTip("Open with the system default audio player (xdg-open)")
+        open_btn.clicked.connect(lambda: subprocess.Popen(['xdg-open', path]))
+        title_layout.addWidget(open_btn)
+
         layout.addWidget(title_bar)
 
         # Player bar
