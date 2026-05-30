@@ -87,6 +87,11 @@ APT_PACKAGES=(
     # OpenGL (required by Qt)
     libgl1
     libegl1
+    # Qt6 Multimedia (required by video viewer — not installed by default on Kali)
+    python3-pyqt6.qtmultimedia
+    libqt6multimedia6
+    # Metadata extraction (required by video viewer for OSINT fields, GPS, codec info)
+    libimage-exiftool-perl
     # Python build tools
     python3-dev
     python3-venv
