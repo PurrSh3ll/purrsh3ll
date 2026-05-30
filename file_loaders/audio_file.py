@@ -105,6 +105,13 @@ class Audio_file:
         except Exception:
             pass
         try:
+            ht = getattr(self, "_hash_poll_timer", None)
+            if ht:
+                ht.stop()
+                self._hash_poll_timer = None
+        except Exception:
+            pass
+        try:
             if self._mixer_initialized and (self._playing or self._paused):
                 pygame.mixer.music.stop()
         except Exception:
@@ -417,6 +424,12 @@ class Audio_file:
 
         layout.addWidget(widget)
 
+        # QTimer.singleShot cannot be called from threading.Thread — it has no
+        # Qt event loop and the callback never fires. Instead: compute hashes in
+        # a background thread writing to a shared dict, then poll from a QTimer
+        # running in the main thread.
+        _result = {}
+
         def compute_hashes():
             try:
                 md5 = hashlib.md5()
@@ -425,15 +438,33 @@ class Audio_file:
                     for chunk in iter(lambda: f.read(65536), b""):
                         md5.update(chunk)
                         sha256.update(chunk)
-                md5_val = md5.hexdigest()
-                sha256_val = sha256.hexdigest()
-                QTimer.singleShot(0, lambda: self._set_hash_label(md5_lbl, md5_val))
-                QTimer.singleShot(0, lambda: self._set_hash_label(sha256_lbl, sha256_val))
-                QTimer.singleShot(0, self._update_anomaly)
-            except Exception:
-                pass
+                _result["md5"] = md5.hexdigest()
+                _result["sha256"] = sha256.hexdigest()
+            except Exception as e:
+                _result["error"] = str(e)
+            finally:
+                _result["done"] = True
 
         threading.Thread(target=compute_hashes, daemon=True).start()
+
+        poll = QTimer()
+        poll.setInterval(100)
+
+        def _check():
+            if not _result.get("done"):
+                return
+            poll.stop()
+            if "error" in _result:
+                self._set_hash_label(md5_lbl, "error")
+                self._set_hash_label(sha256_lbl, "error")
+            else:
+                self._set_hash_label(md5_lbl, _result["md5"])
+                self._set_hash_label(sha256_lbl, _result["sha256"])
+            self._update_anomaly()
+
+        poll.timeout.connect(_check)
+        poll.start()
+        self._hash_poll_timer = poll  # keep reference so GC doesn't collect it
 
     def _add_hash_row(self, label_text, initial_val, parent_layout):
         row = QWidget()
