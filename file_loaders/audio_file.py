@@ -130,6 +130,7 @@ class Audio_file:
 
         outer = QWidget(parent=parent.widgets['execution_tabs'])
         outer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        outer.setMinimumWidth(0)
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
@@ -216,6 +217,7 @@ class Audio_file:
         # Title bar
         title_bar = QWidget()
         title_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        title_bar.setMinimumWidth(0)
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(10, 8, 10, 4)
         title_layout.setSpacing(8)
@@ -227,16 +229,19 @@ class Audio_file:
         f.setBold(True)
         title.setFont(f)
         title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        title.setMinimumWidth(0)
         title_layout.addWidget(title)
 
         info_btn = QPushButton("ℹ  Info")
         info_btn.setFixedHeight(28)
+        info_btn.setMinimumWidth(0)
         info_btn.setToolTip("Show file info, metadata and hashes in a separate window")
         info_btn.clicked.connect(self._show_info_dialog)
         title_layout.addWidget(info_btn)
 
         open_btn = QPushButton("↗ Open in system player")
         open_btn.setFixedHeight(28)
+        open_btn.setMinimumWidth(0)
         open_btn.setToolTip("Open with the system default audio player (xdg-open)")
         open_btn.clicked.connect(lambda: subprocess.Popen(['xdg-open', path]))
         title_layout.addWidget(open_btn)
