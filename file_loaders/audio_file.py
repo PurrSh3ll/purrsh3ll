@@ -203,17 +203,19 @@ class Audio_file:
                 if not pygame.mixer.get_init():
                     pygame.mixer.pre_init(
                         frequency=44100,
-                        size=-16,      # S16LE — matches audio.format in PipeWire config
+                        size=-16,    # S16LE — matches audio.format in PipeWire config
                         channels=2,
-                        buffer=8192,   # matches max-quantum in PipeWire config;
-                                       # doubled from period-size to give Qt's main
-                                       # thread ~186ms of headroom before an xrun
-                        allowedchanges=0,  # prevent SDL from silently changing format
+                        buffer=8192, # matches max-quantum in PipeWire config (~186ms)
                     )
                     pygame.mixer.init()
                 self._mixer_initialized = True
             except Exception:
-                self._mixer_initialized = False
+                # Fallback: try with SDL defaults (let SDL negotiate format freely)
+                try:
+                    pygame.mixer.init()
+                    self._mixer_initialized = True
+                except Exception:
+                    self._mixer_initialized = False
 
         if not self._mixer_initialized:
             self._play_btn.setEnabled(False)
