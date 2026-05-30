@@ -10,7 +10,7 @@ _KNOWN_UNSUPPORTED = {
     # Video
     "mkv", "mov", "flv", "webm", "m4v", "3gp", "rmvb", "vob", "ogv",
     # Audio
-    "m4a", "opus", "aiff", "mid", "midi", "ra", "amr",
+    "m4a", "mid", "midi", "ra", "amr",
     # Archives
     "gz", "bz2", "xz", "rar", "lzma", "zst", "tgz",
     "cab", "deb", "rpm", "pkg", "dmg", "iso",
