@@ -15,8 +15,17 @@ from PyQt6.QtWidgets import (
     QSlider, QScrollArea, QSizePolicy, QApplication, QFrame,
     QDialog, QDialogButtonBox,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QFont
+
+
+class _TabPage(QWidget):
+    """Tab page with zero sizeHint so it never forces the splitter to resize."""
+    def sizeHint(self):
+        return QSize(0, 0)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
 
 try:
     import pygame
@@ -128,9 +137,8 @@ class Audio_file:
         except Exception:
             pass
 
-        outer = QWidget(parent=parent.widgets['execution_tabs'])
+        outer = _TabPage(parent=parent.widgets['execution_tabs'])
         outer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        outer.setMinimumWidth(0)
         outer_layout = QVBoxLayout(outer)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
