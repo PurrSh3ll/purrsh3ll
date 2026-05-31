@@ -206,7 +206,8 @@ info "Installing Python packages..."
     markdown2 \
     Pygments \
     jeepney \
-    pymupdf
+    pymupdf \
+    mutagen
 
 success "Core packages installed"
 

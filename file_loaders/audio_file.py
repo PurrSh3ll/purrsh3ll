@@ -1,3 +1,4 @@
+import io
 import os
 import stat
 import hashlib
@@ -5,6 +6,7 @@ import json
 import subprocess
 import threading
 import time
+import wave
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -849,6 +851,33 @@ class Audio_file:
         row_l.addWidget(val_lbl, stretch=1)
         return row
 
+    def _load_wav_from(self, path, pos_sec):
+        """Return a BytesIO WAV buffer starting at pos_sec, or None on failure.
+
+        pygame.mixer.music.play(start=X) does not support seeking in WAV files.
+        Workaround: slice the WAV at the correct frame offset using the stdlib
+        wave module, write the remaining frames into a BytesIO, and load that.
+        """
+        try:
+            with wave.open(path, 'rb') as wf:
+                framerate = wf.getframerate()
+                nchannels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                nframes = wf.getnframes()
+                start_frame = min(int(pos_sec * framerate), nframes)
+                wf.setpos(start_frame)
+                data = wf.readframes(nframes - start_frame)
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as out:
+                out.setnchannels(nchannels)
+                out.setsampwidth(sampwidth)
+                out.setframerate(framerate)
+                out.writeframes(data)
+            buf.seek(0)
+            return buf
+        except Exception:
+            return None
+
     def _add_hash_row(self, label_text, initial_val, parent_layout):
         row = QWidget()
         row_l = QHBoxLayout(row)
@@ -939,9 +968,23 @@ class Audio_file:
             if not was_playing and not was_paused:
                 return
             pygame.mixer.music.stop()
-            pygame.mixer.music.load(self._current_path)
-            pygame.mixer.music.set_volume(self._volume_slider.value() / 100.0)
-            pygame.mixer.music.play(start=pos_sec)
+
+            # pygame.mixer.music.play(start=X) does not seek in WAV files —
+            # use the wave module to slice the file from the target position.
+            if self._current_path.lower().endswith('.wav'):
+                buf = self._load_wav_from(self._current_path, pos_sec)
+                if buf is not None:
+                    pygame.mixer.music.load(buf, namehint='.wav')
+                else:
+                    pygame.mixer.music.load(self._current_path)
+                    pos_sec = 0.0
+                pygame.mixer.music.set_volume(self._volume_slider.value() / 100.0)
+                pygame.mixer.music.play()
+            else:
+                pygame.mixer.music.load(self._current_path)
+                pygame.mixer.music.set_volume(self._volume_slider.value() / 100.0)
+                pygame.mixer.music.play(start=pos_sec)
+
             self._play_offset = pos_sec
             self._play_start_ts = time.monotonic()
             if was_paused and not was_playing:
