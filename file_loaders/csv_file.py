@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QScrollArea, QApplication
 )
 from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt, QRegularExpression, QTimer
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QRegularExpression, QTimer
 
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from file_loaders.viewer_widgets import CustomTextEdit
@@ -72,6 +72,26 @@ class Worker(QObject):
             content = f"__ERROR__:{e}"
             self.finished.emit(self.file_path, content)
 
+class _FinishedRelay(QObject):
+    """Routes Worker.finished to Csv_file._on_finished in the main thread.
+
+    Csv_file is not a QObject, so connecting worker.finished directly to
+    self._on_finished uses DirectConnection — the slot runs in the worker
+    thread and crashes with SIGSEGV when it modifies Qt UI objects.
+    This relay is a QObject that lives in the main thread, so PyQt6
+    automatically uses QueuedConnection for the cross-thread signal,
+    ensuring _on_finished always runs in the main (GUI) thread.
+    """
+
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self._cb = callback
+
+    @pyqtSlot(str, str)
+    def dispatch(self, path, content):
+        self._cb(path, content)
+
+
 class Csv_file(ChunkedFileLoader):
     def __init__(self):
         self.thread = None
@@ -81,13 +101,9 @@ class Csv_file(ChunkedFileLoader):
 
     def load_file(self, path, parent=None, target_widget=None, threads_list=None):
         self.parent = parent
-        scroll = QScrollArea(parent=parent.widgets['execution_tabs'])
-        scroll.setWidgetResizable(True)
-        container = QWidget(parent=scroll)
+        container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(6, 6, 6, 6)
-        scroll.setWidget(container)
-        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         file_name = os.path.basename(path)
         label = QLabel(f"⏳ Loading {file_name} ...", container)
@@ -120,7 +136,12 @@ class Csv_file(ChunkedFileLoader):
 
         th.started.connect(self.worker.run)
 
-        self.worker.finished.connect(self._on_finished)
+        # Route _on_finished through a QObject relay so it always runs in the
+        # main thread. Csv_file is not a QObject — without the relay PyQt6
+        # uses DirectConnection and _on_finished runs in the worker thread,
+        # causing SIGSEGV when it modifies Qt UI objects.
+        self._relay = _FinishedRelay(self._on_finished)
+        self.worker.finished.connect(self._relay.dispatch)
         self.worker.finished.connect(th.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         th.finished.connect(th.deleteLater)
@@ -450,7 +471,7 @@ class Csv_file(ChunkedFileLoader):
             options_btn.clicked.connect(toggle_flags)
 
             total_chunks = 0
-            parent_ref = getattr(self.worker, "parent", None)
+            parent_ref = self.parent
             if parent_ref is not None and hasattr(parent_ref, "text_chunks"):
                 chunks = parent_ref.text_chunks.get(path, [])
                 if chunks:
@@ -1133,8 +1154,6 @@ class Csv_file(ChunkedFileLoader):
             if total_chunks > 1:
                 update_view()
 
-        if self.thread is not None:
-            self.thread.quit()
 
     def cleanup(self, timeout_ms=100):
         try:
@@ -1162,13 +1181,7 @@ class Csv_file(ChunkedFileLoader):
             try:
                 if hasattr(self, "worker") and self.worker is not None:
                     try:
-                        try:
-                            self.worker.finished.disconnect(self._on_finished)
-                        except Exception:
-                            try:
-                                self.worker.finished.disconnect()
-                            except Exception:
-                                pass
+                        self.worker.finished.disconnect()
                     except Exception:
                         pass
 
