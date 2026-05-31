@@ -14,6 +14,8 @@ _KNOWN_UNSUPPORTED = {
     # Archives
     "gz", "bz2", "xz", "rar", "lzma", "zst", "tgz",
     "cab", "deb", "rpm", "pkg", "dmg", "iso",
+    # Spreadsheets (no viewer implemented)
+    "xlsx", "xls", "xlsb", "xlsm", "ods",
     # Presentations / proprietary documents
     "ppt", "pptx", "odp", "key", "pages", "numbers",
     # Fonts
