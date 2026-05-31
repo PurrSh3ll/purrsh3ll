@@ -9,7 +9,7 @@ import re
 from PyQt6.sip import isdeleted
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QTextEdit,
-    QComboBox, QListView, QPushButton, QLineEdit, QCheckBox,
+    QPushButton, QLineEdit, QCheckBox,
     QSizePolicy, QScrollArea, QApplication, QTableView,
     QAbstractItemView, QHeaderView,
 )
@@ -357,15 +357,6 @@ class Csv_file(ChunkedFileLoader):
         ctrl_layout.addWidget(table_btn)
         ctrl_layout.addWidget(raw_btn)
 
-        # Separator selector
-        ctrl_layout.addWidget(QLabel("Sep:"))
-        sep_box = QComboBox()
-        sep_box.setView(QListView())
-        sep_box.addItems(["auto", ",", ";", "tab", "|"])
-        _sep_display = {",": ",", ";": ";", "\t": "tab", "|": "|"}
-        sep_box.setCurrentText(_sep_display.get(csv_state["separator"], "auto"))
-        sep_box.setFixedWidth(60)
-        ctrl_layout.addWidget(sep_box)
 
         # Header checkbox
         header_chk = QCheckBox("Header")
@@ -747,14 +738,9 @@ class Csv_file(ChunkedFileLoader):
             except Exception:
                 pass
 
-        def on_sep_changed(text):
-            sep_map = {"auto": ",", ",": ",", ";": ";", "tab": "\t", "|": "|"}
-            _reload(new_sep=sep_map.get(text, ","))
-
         def on_header_toggled(state):
             _reload(new_has_header=bool(state))
 
-        sep_box.currentTextChanged.connect(on_sep_changed)
         header_chk.stateChanged.connect(on_header_toggled)
 
         # ── Page navigation ────────────────────────────────────────────────
