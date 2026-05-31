@@ -20,6 +20,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **PDF file viewer**: `pymupdf` missing from `install_full.sh` — the two installers maintain independent pip lists; added `pymupdf` to `install_full.sh` so PDF viewer works regardless of which installer was used
 - **testfolder**: removed `usermodules/testfolder/` from git tracking — folder is now ignored via `.gitignore` and will no longer appear in the repository; files remain locally
 - **PDF file viewer**: `Pdf_file` is a plain Python class (not a `QObject` subclass) — `installEventFilter(self)` raised `TypeError`; replaced with a dedicated `_CtrlScrollFilter(QObject)` helper that holds the zoom callbacks and is installed on the scroll area viewport
 - **Audio/Video file viewer**: opening a tab no longer shifts the file tree splitter — tab page now returns `QSize(0, 0)` from `sizeHint()` and `minimumSizeHint()` so Qt treats it as having no preferred size; filename in the tab label clips gracefully and reveals itself as the splitter is widened
