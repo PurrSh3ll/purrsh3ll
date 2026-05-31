@@ -333,8 +333,9 @@ class Csv_file(ChunkedFileLoader):
 
         total_pages = max(1, (total_rows + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE)
         page_state = {"index": 0, "total": total_pages}
-        view_mode = {"mode": "table"}
+        view_mode  = {"mode": "table"}
         zoom_state = {"level": 0}
+        raw_dirty  = {"val": False}
 
         # ── Build model ────────────────────────────────────────────────────
         model = CsvTableModel(csv_state["headers"], csv_state["all_rows"])
@@ -487,8 +488,10 @@ class Csv_file(ChunkedFileLoader):
             tot = page_state["total"]
             page_edit.setText(str(idx + 1))
             page_info.setText(f"/{tot} pages")
-            page_prev_btn.setEnabled(idx > 0)
-            page_next_btn.setEnabled(idx < tot - 1)
+            in_raw_edit = edit_chk.isChecked() and view_mode["mode"] == "raw"
+            page_prev_btn.setEnabled(not in_raw_edit and idx > 0)
+            page_next_btn.setEnabled(not in_raw_edit and idx < tot - 1)
+            page_edit.setEnabled(not in_raw_edit)
 
         # ── Load a page ────────────────────────────────────────────────────
         def load_page(idx):
@@ -507,6 +510,10 @@ class Csv_file(ChunkedFileLoader):
 
         # ── View toggle ────────────────────────────────────────────────────
         def switch_to_table():
+            # Sync raw edits before switching
+            if view_mode["mode"] == "raw" and raw_dirty["val"]:
+                _sync_raw_to_csv_state()
+                raw_dirty["val"] = False
             view_mode["mode"] = "table"
             table_btn.setChecked(True)
             raw_btn.setChecked(False)
@@ -514,6 +521,7 @@ class Csv_file(ChunkedFileLoader):
             raw_widget.setVisible(False)
             zoom_out_btn.setVisible(False)
             zoom_in_btn.setVisible(False)
+            refresh_page_ui()
             _refresh_table_search(search_field.text().strip())
 
         def switch_to_raw():
@@ -524,6 +532,12 @@ class Csv_file(ChunkedFileLoader):
             table_view.setVisible(False)
             zoom_out_btn.setVisible(True)
             zoom_in_btn.setVisible(True)
+            # In edit mode show full reconstructed text so table edits are visible
+            if edit_chk.isChecked():
+                raw_widget.setPlainText(_reconstruct_full_raw())
+            else:
+                raw_widget.setPlainText(get_raw_page(page_state["index"]))
+            refresh_page_ui()
             _refresh_raw_search(search_field.text().strip())
 
         table_btn.clicked.connect(switch_to_table)
@@ -668,16 +682,86 @@ class Csv_file(ChunkedFileLoader):
         def on_edit_toggled(state):
             checked = bool(state)
             model.set_editable(checked)
+            raw_widget.setReadOnly(not checked)
+
             if checked:
                 table_view.setEditTriggers(
                     QAbstractItemView.EditTrigger.DoubleClicked |
                     QAbstractItemView.EditTrigger.EditKeyPressed
                 )
+                # Entering raw edit mode: show full reconstructed text
+                if view_mode["mode"] == "raw":
+                    raw_widget.setPlainText(_reconstruct_full_raw())
             else:
                 table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-                _save_csv()
+                if view_mode["mode"] == "raw":
+                    if raw_dirty["val"]:
+                        _sync_raw_to_csv_state()
+                        _save_raw_text()
+                        raw_dirty["val"] = False
+                    # Restore paginated view
+                    raw_widget.setPlainText(get_raw_page(page_state["index"]))
+                else:
+                    _save_csv()
+            refresh_page_ui()
 
         edit_chk.stateChanged.connect(on_edit_toggled)
+
+        def on_raw_text_changed():
+            if edit_chk.isChecked() and view_mode["mode"] == "raw":
+                raw_dirty["val"] = True
+
+        raw_widget.textChanged.connect(on_raw_text_changed)
+
+        # ── Raw edit helpers ───────────────────────────────────────────────
+        def _reconstruct_full_raw():
+            """Serialize all_rows back to CSV text (used when entering raw edit mode)."""
+            buf = io.StringIO()
+            w = csv.writer(buf, delimiter=csv_state["separator"])
+            if csv_state["has_header"]:
+                w.writerow(csv_state["headers"])
+            for row in csv_state["all_rows"]:
+                w.writerow(row)
+            return buf.getvalue()
+
+        def _sync_raw_to_csv_state():
+            """Re-parse raw widget text and update csv_state + model."""
+            text = raw_widget.toPlainText()
+            try:
+                parsed = list(csv.reader(io.StringIO(text), delimiter=csv_state["separator"]))
+                if parsed and csv_state["has_header"]:
+                    new_headers   = parsed[0]
+                    new_data_rows = parsed[1:]
+                elif parsed:
+                    new_headers   = [f"Col {i + 1}" for i in range(len(parsed[0]))]
+                    new_data_rows = parsed
+                else:
+                    new_headers, new_data_rows = [], []
+                nc = len(new_headers)
+                for r in new_data_rows:
+                    if len(r) < nc:
+                        r.extend([""] * (nc - len(r)))
+                csv_state["headers"]  = new_headers
+                csv_state["all_rows"] = new_data_rows
+                model.reset_data(new_headers, new_data_rows)
+                new_total = max(1, (len(new_data_rows) + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE)
+                page_state["index"] = 0
+                page_state["total"] = new_total
+                update_status()
+            except Exception:
+                pass
+
+        def _save_raw_text():
+            """Write raw widget text directly to disk (preserves original formatting)."""
+            try:
+                text = raw_widget.toPlainText()
+                threading.Thread(
+                    target=self._write_chunks_to_disk,
+                    args=([text], path),
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
 
         # ── Save CSV ───────────────────────────────────────────────────────
         def _save_csv():
