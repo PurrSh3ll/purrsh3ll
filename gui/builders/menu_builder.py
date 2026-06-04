@@ -1191,6 +1191,10 @@ def build_menu(main_window):
             f_provider.addItems(_PROVIDER_TYPES)
             if d.get("provider") in _PROVIDER_TYPES:
                 f_provider.setCurrentText(d["provider"])
+            try:
+                f_provider.setStyleSheet(c.combo_stylesheet)
+            except Exception:
+                pass
             f_url = QLineEdit(d.get("url", ""))
 
             # Model: editable combo + Fetch button
@@ -1201,6 +1205,10 @@ def build_menu(main_window):
                 f_model.addItem(d["model"])
                 f_model.setCurrentText(d["model"])
             f_model.lineEdit().setPlaceholderText("e.g. llama3.2 / gpt-4o")
+            try:
+                f_model.setStyleSheet(c.combo_stylesheet)
+            except Exception:
+                pass
 
             fetch_status = QLabel("")
             fetch_status.setStyleSheet("font-size: 11px; color: gray;")

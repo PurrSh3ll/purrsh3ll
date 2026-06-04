@@ -39,11 +39,11 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
     QComboBox {{
         background-color: qlineargradient(
             x1:0, y1:0, x2:1, y2:1,
-            stop:0 {bg.get("gradient_start", "#2E323C")},
-            stop:1 {bg.get("gradient_stop", "#1E2127")}
+            stop:0 {bg.get("gradient_start_ob_panel", "#2E323C")},
+            stop:1 {bg.get("gradient_stop_ob_panel", "#1E2127")}
         );
-        color: {fg.get("text", "#ffffff")};
-        border: {bd.get("gradient", "#3A3D44")};
+        color: {fg.get("text_ob_panel", "#ffffff")};
+        border: {bd.get("gradient_ob_panel", "#3A3D44")};
         border-radius: 6px;
         padding: 4px 8px;
     }}
@@ -51,11 +51,11 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
     QComboBox[confirmed="true"] {{
         background-color: qlineargradient(
             x1:0, y1:0, x2:1, y2:1,
-            stop:0 {bg.get("buttons_pressed", "#2C5F8F")},
-            stop:1 {bg.get("buttons_pressed", "#2C5F8F")}
+            stop:0 {bg.get("buttons_pressed_ob_panel", "#2C5F8F")},
+            stop:1 {bg.get("buttons_pressed_ob_panel", "#2C5F8F")}
         );
-        color: {fg.get("text_activated", "#ffffff")};
-        border: {bd.get("gradient", "#3A3D44")};
+        color: {fg.get("text_activated_ob_panel", "#ffffff")};
+        border: {bd.get("gradient_ob_panel", "#3A3D44")};
         border-radius: 6px;
         padding: 4px 8px;
     }}
@@ -63,27 +63,27 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
     QComboBox:hover {{
         background-color: qlineargradient(
             x1:0, y1:0, x2:1, y2:1,
-            stop:0 {bg.get("gradient_hover_start", "#353A46")},
-            stop:1 {bg.get("gradient_hover_stop", "#23262D")}
+            stop:0 {bg.get("gradient_hover_start_ob_panel", "#353A46")},
+            stop:1 {bg.get("gradient_hover_stop_ob_panel", "#23262D")}
         );
-        border: {bd.get("gradient_hover", "#4C8DFF")};
+        border: {bd.get("gradient_hover_ob_panel", "#4C8DFF")};
     }}
 
     QListView {{
-        background-color: {bg.get("combo_box_abst", "#343436")};
-        color: {fg.get("text", "#ffffff")};
+        background-color: {bg.get("combo_box_abst_ob_panel", "#343436")};
+        color: {fg.get("text_ob_panel", "#ffffff")};
         border-radius: 6px;
         padding: 4px;
     }}
 
     QListView::item {{
-        background-color: {bg.get("combo_box_abst", "#343436")};
-        color: {fg.get("text", "#ffffff")};
+        background-color: {bg.get("combo_box_abst_ob_panel", "#343436")};
+        color: {fg.get("text_ob_panel", "#ffffff")};
     }}
 
     QListView::item:hover {{
-        background-color: {bg.get("buttons_pressed", "#2B2D30")};
-        color: {fg.get("combo_item_hover", "#ffffff")};
+        background-color: {bg.get("buttons_pressed_ob_panel", "#2B2D30")};
+        color: {fg.get("combo_item_hover_ob_panel", "#ffffff")};
         color: #000000;
     }}
     """

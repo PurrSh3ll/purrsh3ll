@@ -266,6 +266,10 @@ def change_theme(controller):
         licenses_dialog.setStyleSheet(s["qss_QDialog_global"])
         if author_dialog:
             author_dialog.setStyleSheet(s["qss_QDialog_global"])
+        for _wk in ("ai_active_profile_combo", "ai_settings_agent_role_combo", "ai_settings_skills_combo"):
+            _w = c.widgets.get(_wk)
+            if _w is not None:
+                _w.setStyleSheet(s["qss_QComboBox"])
         ai_settings_dialog = c.widgets.get("ai_settings_dialog")
         if ai_settings_dialog:
             ai_settings_dialog.setStyleSheet(
@@ -323,6 +327,7 @@ def change_theme(controller):
         )
         c.__class__.messagebox_stylesheet = s["qss_QMesssageBox"]
         c.__class__.button_stylesheet = s["qss_QPushButton"]
+        c.__class__.combo_stylesheet = s["qss_QComboBox"]
         c.__class__.dialog_stylesheet = s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"]
         c.__class__.chat_panel_dialog_stylesheet = (
             s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
