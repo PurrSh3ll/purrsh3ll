@@ -88,6 +88,29 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
     }}
     """
 
+    qss_QComboBox_view = f"""
+    QAbstractItemView {{
+        background-color: {bg.get("combo_box_abst_ob_panel", "#343436")};
+        color: {fg.get("text_ob_panel", "#ffffff")};
+        border-radius: 6px;
+        padding: 4px;
+        outline: none;
+    }}
+    QAbstractItemView::item {{
+        background-color: {bg.get("combo_box_abst_ob_panel", "#343436")};
+        color: {fg.get("text_ob_panel", "#ffffff")};
+        padding: 2px 6px;
+    }}
+    QAbstractItemView::item:hover {{
+        background-color: {bg.get("buttons_pressed_ob_panel", "#264A6D")};
+        color: {fg.get("combo_item_hover_ob_panel", "#ffffff")};
+    }}
+    QAbstractItemView::item:selected {{
+        background-color: {bg.get("buttons_pressed_ob_panel", "#264A6D")};
+        color: {fg.get("text_ob_panel", "#ffffff")};
+    }}
+    """
+
     qss_QWidget_tabs = f"""
     QWidget {{
         background-color: {bg.get("tab_bar_selected", "#1E1F22")};
@@ -129,6 +152,7 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
         "qss_QTreeWidget": qss_QTreeWidget,
         "qss_QTabWidget": qss_QTabWidget,
         "qss_QComboBox": qss_QComboBox,
+        "qss_QComboBox_view": qss_QComboBox_view,
         "qss_QWidget_tabs": qss_QWidget_tabs,
         "qss_QScrollArea_tabs": qss_QScrollArea_tabs,
         "qss_QTable": qss_QTable,

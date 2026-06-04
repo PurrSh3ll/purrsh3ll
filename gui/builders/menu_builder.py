@@ -1193,6 +1193,7 @@ def build_menu(main_window):
                 f_provider.setCurrentText(d["provider"])
             try:
                 f_provider.setStyleSheet(c.combo_stylesheet)
+                f_provider.view().setStyleSheet(c.combo_view_stylesheet)
             except Exception:
                 pass
             f_url = QLineEdit(d.get("url", ""))
@@ -1207,6 +1208,7 @@ def build_menu(main_window):
             f_model.lineEdit().setPlaceholderText("e.g. llama3.2 / gpt-4o")
             try:
                 f_model.setStyleSheet(c.combo_stylesheet)
+                f_model.view().setStyleSheet(c.combo_view_stylesheet)
             except Exception:
                 pass
 
@@ -1646,6 +1648,7 @@ def build_menu(main_window):
             c.register_widget("ai_settings_logs_terminal_edit", logs_terminal_edit)
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
+            c.register_widget("ai_settings_rag_model_combo",    rag_model_combo)
         except Exception:
             pass
 

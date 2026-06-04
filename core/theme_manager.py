@@ -90,6 +90,16 @@ def change_theme(controller):
     s.update(build_panel_styles(bg, fg, bd))
     s.update(build_terminal_styles(bg, fg, bd))
 
+    def _style_combo(combo):
+        """Apply combo widget style + popup view style directly to guarantee correct dropdown colors."""
+        if combo is None:
+            return
+        try:
+            combo.setStyleSheet(s["qss_QComboBox"])
+            combo.view().setStyleSheet(s["qss_QComboBox_view"])
+        except Exception:
+            pass
+
     # Rozwiązanie 1: setUpdatesEnabled — blokuje ~50 pośrednich repaintów,
     # wykonuje jedno przerysowanie po zakończeniu bloku.
     main_window.setUpdatesEnabled(False)
@@ -140,20 +150,15 @@ def change_theme(controller):
                 voice_button.setStyleSheet(_voice_off)
 
         # Profile combobox in the toolbar
-        active_profile_combo = c.widgets.get("global_active_profile_combo")
-        if active_profile_combo is not None:
-            active_profile_combo.setStyleSheet(s["qss_QComboBox"])
+        _style_combo(c.widgets.get("global_active_profile_combo"))
         welcome_label.setStyleSheet(s["qss_QLabel_welcome"])
 
         chat_panel.setStyleSheet(s["qss_QFrame"])
         if chat_future_label:
             chat_future_label.setStyleSheet(s["qss_QLabel"])
-        if chat_combo_interface:
-            chat_combo_interface.setStyleSheet(s["qss_QComboBox"])
-        if chat_combo_input:
-            chat_combo_input.setStyleSheet(s["qss_QComboBox"])
-        if chat_combo_context:
-            chat_combo_context.setStyleSheet(s["qss_QComboBox"])
+        _style_combo(chat_combo_interface)
+        _style_combo(chat_combo_input)
+        _style_combo(chat_combo_context)
         if chat_btn_settings:
             chat_btn_settings.setStyleSheet(s["qss_QPushButton"])
         if chat_btn_info:
@@ -164,8 +169,7 @@ def change_theme(controller):
             chat_btn_run_menu.setStyleSheet(s["qss_QMenu"])
         if chat_cmd_preview:
             chat_cmd_preview.setStyleSheet(s["qss_QPlainTextEdit_terminal"] + s["qss_QScrollArea"])
-        if chat_combo_custom:
-            chat_combo_custom.setStyleSheet(s["qss_QComboBox"])
+        _style_combo(chat_combo_custom)
         if chat_btn_add:
             chat_btn_add.setStyleSheet(s["qss_QPushButton"])
         chat_info_cmd_label = c.widgets.get("chat_info_cmd_label")
@@ -266,10 +270,6 @@ def change_theme(controller):
         licenses_dialog.setStyleSheet(s["qss_QDialog_global"])
         if author_dialog:
             author_dialog.setStyleSheet(s["qss_QDialog_global"])
-        for _wk in ("ai_active_profile_combo", "ai_settings_agent_role_combo", "ai_settings_skills_combo"):
-            _w = c.widgets.get(_wk)
-            if _w is not None:
-                _w.setStyleSheet(s["qss_QComboBox"])
         ai_settings_dialog = c.widgets.get("ai_settings_dialog")
         if ai_settings_dialog:
             ai_settings_dialog.setStyleSheet(
@@ -299,6 +299,9 @@ def change_theme(controller):
                 }}
                 """
             )
+        for _wk in ("ai_active_profile_combo", "ai_settings_agent_role_combo",
+                    "ai_settings_skills_combo", "ai_settings_rag_model_combo"):
+            _style_combo(c.widgets.get(_wk))
         if chat_webui_dialog:
             chat_webui_dialog.setStyleSheet(s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QLabel"])
         chat_llama_dialog = c.widgets.get("chat_llama_dialog")
@@ -328,6 +331,7 @@ def change_theme(controller):
         c.__class__.messagebox_stylesheet = s["qss_QMesssageBox"]
         c.__class__.button_stylesheet = s["qss_QPushButton"]
         c.__class__.combo_stylesheet = s["qss_QComboBox"]
+        c.__class__.combo_view_stylesheet = s["qss_QComboBox_view"]
         c.__class__.dialog_stylesheet = s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"]
         c.__class__.chat_panel_dialog_stylesheet = (
             s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
