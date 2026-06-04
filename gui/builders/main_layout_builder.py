@@ -601,7 +601,7 @@ def build_main_layout(main_window):
         _STYLE_OFF = (
             "QPushButton { background: transparent; border: 1px solid #555; "
             "border-radius: 3px; font-size: 13px; color: #aaa; }"
-            "QPushButton:hover { border-color: #888; color: #fff; }"
+            "QPushButton:hover { background: #3d6ed4; border-color: #5588ff; color: #ffffff; }"
         )
         _STYLE_ON = (
             "QPushButton { background: #6a1a1a; border: 1px solid #e05555; "

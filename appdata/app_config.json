@@ -26,7 +26,7 @@
     "terminal_history_disabled": false
   },
   "llama": {
-    "llm_cli_path": "",
+    "llm_cli_path": "aichat",
     "logs_terminal_cmd": "claude --dangerously-skip-permissions",
     "agent_role": "ctf_mode",
     "skills_set": "default"
