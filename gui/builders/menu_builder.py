@@ -1178,7 +1178,7 @@ def build_menu(main_window):
             pdlg.setModal(True)
             pdlg.resize(420, 290)
             try:
-                pdlg.setStyleSheet(c.messagebox_stylesheet)
+                pdlg.setStyleSheet(c.messagebox_stylesheet + c.combo_stylesheet)
             except Exception:
                 pass
             form = QFormLayout(pdlg)
@@ -1191,11 +1191,6 @@ def build_menu(main_window):
             f_provider.addItems(_PROVIDER_TYPES)
             if d.get("provider") in _PROVIDER_TYPES:
                 f_provider.setCurrentText(d["provider"])
-            try:
-                f_provider.setStyleSheet(c.combo_stylesheet)
-                f_provider.view().setStyleSheet(c.combo_view_stylesheet)
-            except Exception:
-                pass
             f_url = QLineEdit(d.get("url", ""))
 
             # Model: editable combo + Fetch button
