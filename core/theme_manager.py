@@ -118,6 +118,30 @@ def change_theme(controller):
         chat_button.setStyleSheet(s["qss_QPushButton"])
         notes_button.setStyleSheet(s["qss_QPushButton"])
         mode_button.setStyleSheet(s["qss_QPushButton"])
+
+        # Voice button — OFF state uses theme colors; active states keep
+        # semantic colors (red/green/blue) so they stay visible on any theme.
+        voice_button = c.widgets.get("voice_button")
+        if voice_button is not None:
+            _voice_off = (
+                f"QPushButton {{ "
+                f"background: {bg.get('buttons', '#37373B')}; "
+                f"border: 1px solid {bd.get('default', '#555555')}; "
+                f"border-radius: 3px; font-size: 13px; "
+                f"color: {fg.get('text', '#cccccc')}; }}"
+                f"QPushButton:hover {{ "
+                f"background: {bg.get('buttons_hover', '#6C6C73')}; "
+                f"border-color: {bd.get('gradient_hover', bd.get('default', '#888888'))}; "
+                f"color: {fg.get('text_hover', fg.get('text', '#ffffff'))}; }}"
+            )
+            c.widgets["_voice_off_style"] = _voice_off
+            if not voice_button.isChecked():
+                voice_button.setStyleSheet(_voice_off)
+
+        # Profile combobox in the toolbar
+        active_profile_combo = c.widgets.get("global_active_profile_combo")
+        if active_profile_combo is not None:
+            active_profile_combo.setStyleSheet(s["qss_QComboBox"])
         welcome_label.setStyleSheet(s["qss_QLabel_welcome"])
 
         chat_panel.setStyleSheet(s["qss_QFrame"])

@@ -719,7 +719,7 @@ def build_main_layout(main_window):
         cancel_btn.clicked.connect(_on_cancel)
 
         def _set_idle_style():
-            btn.setStyleSheet(_STYLE_OFF)
+            btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
             btn.setToolTip("Voice command mode")
 
         def _on_state_changed(state: str):
@@ -739,7 +739,7 @@ def build_main_layout(main_window):
                 msg_text = state[6:]
                 import logging as _log
                 _log.getLogger(__name__).error("VoiceThread error: %s", msg_text)
-                btn.setStyleSheet(_STYLE_OFF)
+                btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
                 btn.setToolTip(f"Voice error: {msg_text}")
                 btn.blockSignals(True)
                 btn.setChecked(False)
@@ -846,7 +846,7 @@ def build_main_layout(main_window):
                 btn.blockSignals(True)
                 btn.setChecked(False)
                 btn.blockSignals(False)
-                btn.setStyleSheet(_STYLE_OFF)
+                btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
 
         btn.clicked.connect(_on_clicked)
         c.register_widget("voice_button", btn)
