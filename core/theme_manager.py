@@ -77,6 +77,7 @@ def change_theme(controller):
     qterminal_dialog = c.widgets.get("qterminal_dialog")
     qt_dialog = c.widgets.get("qt_dialog")
     licenses_dialog = c.widgets.get("licenses_dialog")
+    author_dialog = c.widgets.get("author_dialog")
 
     bg = theme.get("background", {})
     fg = theme.get("foreground", {})
@@ -263,6 +264,8 @@ def change_theme(controller):
         qterminal_dialog.setStyleSheet(s["qss_QDialog_global"])
         qt_dialog.setStyleSheet(s["qss_QDialog_global"])
         licenses_dialog.setStyleSheet(s["qss_QDialog_global"])
+        if author_dialog:
+            author_dialog.setStyleSheet(s["qss_QDialog_global"])
         if chat_webui_dialog:
             chat_webui_dialog.setStyleSheet(s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QLabel"])
         chat_llama_dialog = c.widgets.get("chat_llama_dialog")
