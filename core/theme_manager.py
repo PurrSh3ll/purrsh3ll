@@ -266,6 +266,35 @@ def change_theme(controller):
         licenses_dialog.setStyleSheet(s["qss_QDialog_global"])
         if author_dialog:
             author_dialog.setStyleSheet(s["qss_QDialog_global"])
+        ai_settings_dialog = c.widgets.get("ai_settings_dialog")
+        if ai_settings_dialog:
+            ai_settings_dialog.setStyleSheet(
+                s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
+                s["qss_QGroupBox"] + s["qss_QTable"] + s["qss_QScrollArea"] +
+                f"""
+                QScrollArea#ai_settings_scroll {{
+                    background-color: {_bg_main};
+                    border: none;
+                }}
+                QScrollArea#ai_settings_scroll > QWidget {{
+                    background-color: {_bg_main};
+                }}
+                QWidget#ai_settings_scroll_content {{
+                    background-color: {_bg_main};
+                }}
+                QRadioButton {{
+                    color: {fg.get("text", "#ffffff")};
+                    background: transparent;
+                }}
+                QRadioButton:hover {{
+                    color: {fg.get("text_hover", "#ffffff")};
+                }}
+                QPushButton:focus {{
+                    border: 1px solid {bd.get("default", "#555555")};
+                    outline: none;
+                }}
+                """
+            )
         if chat_webui_dialog:
             chat_webui_dialog.setStyleSheet(s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QLabel"])
         chat_llama_dialog = c.widgets.get("chat_llama_dialog")

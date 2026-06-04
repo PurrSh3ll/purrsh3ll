@@ -1165,6 +1165,7 @@ def build_menu(main_window):
         btn_remove_provider.setEnabled(False)
         for _b in (btn_add_provider, btn_edit_provider, btn_remove_provider):
             _b.setFixedWidth(70)
+            _b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             tbl_btn_row.addWidget(_b)
         tbl_btn_row.addStretch(1)
         grp_providers_layout.addLayout(tbl_btn_row)
@@ -1205,6 +1206,7 @@ def build_menu(main_window):
             fetch_status.setStyleSheet("font-size: 11px; color: gray;")
             btn_fetch = QPushButton("Fetch models")
             btn_fetch.setFixedWidth(100)
+            btn_fetch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             model_row = QHBoxLayout()
             model_row.addWidget(f_model, 1)
             model_row.addWidget(btn_fetch)
@@ -1312,6 +1314,8 @@ def build_menu(main_window):
             btn_cancel = QPushButton("Cancel")
             btn_ok.setFixedWidth(80)
             btn_cancel.setFixedWidth(80)
+            btn_ok.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn_cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn_row.addStretch(1)
             btn_row.addWidget(btn_ok)
             btn_row.addWidget(btn_cancel)
@@ -1616,6 +1620,7 @@ def build_menu(main_window):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
         btn_close = QPushButton("Close", dlg)
+        btn_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_close.clicked.connect(dlg.accept)
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
