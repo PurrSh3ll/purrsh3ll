@@ -414,6 +414,12 @@ class Csv_file(ChunkedFileLoader):
 
         layout.addWidget(ctrl)
 
+        # ── Status bar ─────────────────────────────────────────────────────
+        status_label = QLabel()
+        status_label.setStyleSheet("font-style: italic;")
+        status_label.setEnabled(False)
+        layout.addWidget(status_label)
+
         # ── Table view ─────────────────────────────────────────────────────
         table_view = QTableView()
         table_view.setModel(model)
@@ -441,12 +447,6 @@ class Csv_file(ChunkedFileLoader):
 
         if self.parent is not None and hasattr(self.parent, "text_loaders"):
             self.parent.text_loaders.append(raw_widget)
-
-        # ── Status bar ─────────────────────────────────────────────────────
-        status_label = QLabel()
-        status_label.setStyleSheet("font-style: italic;")
-        status_label.setEnabled(False)
-        layout.addWidget(status_label)
 
         # ── Raw page helpers ───────────────────────────────────────────────
         raw_lines = raw_text.splitlines(keepends=True)
