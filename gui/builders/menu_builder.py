@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
     QListView, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QAction, QIntValidator
 import os
@@ -1532,6 +1532,34 @@ def build_menu(main_window):
                 )
                 _ollama_model = profile.get("model", "")
 
+                class _NumCtxRelay(QObject):
+                    got_ctx = pyqtSignal(int)
+                    failed  = pyqtSignal()
+
+                _relay = _NumCtxRelay()
+
+                def _on_got_ctx(n):
+                    try:
+                        from PyQt6.sip import isdeleted
+                        if isdeleted(sb_ctx):
+                            return
+                        _ctx_default[0] = n
+                        sb_ctx.setSpecialValueText(f"default ({n:,})")
+                    except Exception:
+                        pass
+
+                def _on_failed():
+                    try:
+                        from PyQt6.sip import isdeleted
+                        if isdeleted(sb_ctx):
+                            return
+                        sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:,})")
+                    except Exception:
+                        pass
+
+                _relay.got_ctx.connect(_on_got_ctx)
+                _relay.failed.connect(_on_failed)
+
                 def _fetch_num_ctx():
                     try:
                         body = json.dumps({"name": _ollama_model}).encode()
@@ -1543,13 +1571,11 @@ def build_menu(main_window):
                         )
                         with _urllib_req.urlopen(req, timeout=5) as resp:
                             data = json.loads(resp.read())
-                        # Try model_info first (any key ending in context_length)
                         num_ctx = None
                         for k, v in data.get("model_info", {}).items():
                             if k.endswith("context_length") and isinstance(v, int):
                                 num_ctx = v
                                 break
-                        # Fallback: parse parameters string for num_ctx
                         if num_ctx is None:
                             for line in data.get("parameters", "").splitlines():
                                 parts = line.split()
@@ -1560,42 +1586,11 @@ def build_menu(main_window):
                                         pass
                                     break
                         if num_ctx and num_ctx > 0:
-                            def _apply():
-                                try:
-                                    from PyQt6.sip import isdeleted
-                                    if isdeleted(sb_ctx):
-                                        return
-                                    _ctx_default[0] = num_ctx
-                                    sb_ctx.setSpecialValueText(
-                                        f"default ({num_ctx:,})"
-                                    )
-                                except Exception:
-                                    pass
-                            QTimer.singleShot(0, _apply)
+                            _relay.got_ctx.emit(num_ctx)
                         else:
-                            def _apply_fallback():
-                                try:
-                                    from PyQt6.sip import isdeleted
-                                    if isdeleted(sb_ctx):
-                                        return
-                                    sb_ctx.setSpecialValueText(
-                                        f"default ({_ctx_default[0]:,})"
-                                    )
-                                except Exception:
-                                    pass
-                            QTimer.singleShot(0, _apply_fallback)
+                            _relay.failed.emit()
                     except Exception:
-                        def _apply_fallback():
-                            try:
-                                from PyQt6.sip import isdeleted
-                                if isdeleted(sb_ctx):
-                                    return
-                                sb_ctx.setSpecialValueText(
-                                    f"default ({_ctx_default[0]:,})"
-                                )
-                            except Exception:
-                                pass
-                        QTimer.singleShot(0, _apply_fallback)
+                        _relay.failed.emit()
 
                 threading.Thread(target=_fetch_num_ctx, daemon=True).start()
             else:
