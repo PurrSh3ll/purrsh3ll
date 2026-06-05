@@ -647,11 +647,12 @@ def build_chat_panel(main_window):
     def _build_ollama_run_cmd(profile: dict) -> str:
         """Build 'ollama run <model> [flags]' from profile settings."""
         model = profile.get("model", "")
+        env_prefix = ""
         flags = []
-        # context_tokens → --num-ctx
+        # context_tokens → OLLAMA_NUM_CTX env var (--num-ctx is not a valid ollama run flag)
         ctx = int(profile.get("context_tokens") or 0)
         if ctx > 0:
-            flags.append(f"--num-ctx {ctx}")
+            env_prefix = f"OLLAMA_NUM_CTX={ctx} "
         # fast_answers → --system with brevity instruction
         if profile.get("fast_answers"):
             flags.append('--system "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."')
@@ -670,7 +671,7 @@ def build_chat_panel(main_window):
                         flags.append(f"--{k}={v}")
             except Exception:
                 pass
-        cmd = f"ollama run {model}"
+        cmd = f"{env_prefix}ollama run {model}"
         if flags:
             cmd += " " + " ".join(flags)
         return cmd
