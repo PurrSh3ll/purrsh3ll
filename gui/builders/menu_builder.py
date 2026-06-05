@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
-    QListView,
+    QListView, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication
@@ -1521,10 +1521,7 @@ def build_menu(main_window):
             sb_ctx.setSingleStep(1_000)
             sb_ctx.setSpecialValueText("default (16 000)")
             sb_ctx.setValue(int(profile.get("context_tokens", 0)))
-            ctx_info_btn = QPushButton("ⓘ")
-            ctx_info_btn.setFixedSize(22, 22)
-            ctx_info_btn.setFlat(True)
-            ctx_info_btn.setToolTip(
+            _CTX_INFO_TEXT = (
                 "Used in app calculations to determine how to split data\n"
                 "(e.g. report generation, psai functions).\n\n"
                 "For Ollama: changing this value sets the actual context window\n"
@@ -1532,6 +1529,23 @@ def build_menu(main_window):
                 "For external API providers: this value is used only for\n"
                 "calculations; it does not affect the remote model."
             )
+            ctx_info_btn = QPushButton("ⓘ")
+            ctx_info_btn.setFixedSize(22, 22)
+            ctx_info_btn.setFlat(True)
+            ctx_info_btn.setToolTip(_CTX_INFO_TEXT)
+
+            def _show_ctx_info():
+                msg = QMessageBox(bdlg)
+                msg.setWindowTitle("Context limit")
+                msg.setText(_CTX_INFO_TEXT)
+                msg.setIcon(QMessageBox.Icon.Information)
+                try:
+                    msg.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+                msg.exec()
+
+            ctx_info_btn.clicked.connect(_show_ctx_info)
             ctx_row.addWidget(ctx_label)
             ctx_row.addWidget(sb_ctx)
             ctx_row.addWidget(ctx_info_btn)
