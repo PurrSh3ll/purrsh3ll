@@ -215,6 +215,7 @@ def change_theme(controller):
                 QFrame#snippet_sep {{ color: {bd.get("default", "#555")}; }}
                 """
             )
+            _style_combo(c.widgets.get("snippet_cat_filter"))
         if snippet_button:
             snippet_button.setStyleSheet(s["qss_QPushButton"])
 
