@@ -299,9 +299,6 @@ def change_theme(controller):
                 }}
                 """
             )
-        for _wk in ("ai_active_profile_combo", "ai_settings_agent_role_combo",
-                    "ai_settings_skills_combo", "ai_settings_rag_model_combo"):
-            _style_combo(c.widgets.get(_wk))
         if chat_webui_dialog:
             chat_webui_dialog.setStyleSheet(s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QLabel"])
         chat_llama_dialog = c.widgets.get("chat_llama_dialog")
