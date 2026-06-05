@@ -28,7 +28,7 @@
   "llama": {
     "llm_cli_path": "aichat",
     "logs_terminal_cmd": "claude --dangerously-skip-permissions",
-    "agent_role": "ctf_mode",
+    "agent_role": "none",
     "skills_set": "default"
   },
   "rag": {
@@ -43,7 +43,18 @@
     "bg_path": ""
   },
   "api_providers": {
-    "active": "",
-    "profiles": []
+    "active": "gemma:local",
+    "profiles": [
+      {
+        "name": "gemma:local",
+        "provider": "ollama",
+        "model": "fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN",
+        "url": "",
+        "disable_thinking": true,
+        "fast_answers": false,
+        "custom_params": "",
+        "context_tokens": 0
+      }
+    ]
   }
 }
