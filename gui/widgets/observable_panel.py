@@ -1,10 +1,38 @@
 from PyQt6.QtWidgets import (
     QWidget, QComboBox, QLabel, QLineEdit, QPushButton,
-    QHBoxLayout, QVBoxLayout, QListView, QScrollArea, QSizePolicy, QMessageBox
+    QHBoxLayout, QVBoxLayout, QListView, QScrollArea, QSizePolicy, QMessageBox, QToolTip
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QObject, QEvent, QTimer, QPoint
 import re, os, json, sys
 import shutil, subprocess
+
+
+def _install_delayed_tooltip(widget, get_text, delay_ms=1400):
+    """Show tooltip only after the cursor has rested on the widget for delay_ms."""
+    timer = QTimer(widget)
+    timer.setSingleShot(True)
+
+    class _Watcher(QObject):
+        def eventFilter(self, obj, event):
+            t = event.type()
+            if t == QEvent.Type.Enter:
+                timer.start(delay_ms)
+            elif t in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress):
+                timer.stop()
+                QToolTip.hideText()
+            return False
+
+    watcher = _Watcher(widget)
+    widget.installEventFilter(watcher)
+    widget._tt_watcher = watcher  # keep reference — prevents GC
+
+    def _show():
+        text = get_text()
+        if text:
+            pos = widget.mapToGlobal(QPoint(0, widget.height()))
+            QToolTip.showText(pos, text, widget)
+
+    timer.timeout.connect(_show)
 
 class ObserverRow:
     WIDGET_KEYS = (
@@ -23,14 +51,19 @@ class ObserverRow:
         self.on_type_changed()
 
     def _build_widgets(self):
+        # Outer wrapper: content row + separator
         row = QWidget()
-        row.setFixedHeight(ObserverPanel.ROW_HEIGHT)
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        outer_layout = QVBoxLayout(row)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        layout = QHBoxLayout(row)
+        # Content row
+        content_widget = QWidget()
+        content_widget.setFixedHeight(ObserverPanel.ROW_HEIGHT)
+        layout = QHBoxLayout(content_widget)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(6)
-        layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         type_combo = QComboBox()
         try:
@@ -55,14 +88,14 @@ class ObserverRow:
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Name")
         name_edit.setFixedHeight(ObserverPanel.BTN_SIZE)
-        name_edit.setFixedWidth(ObserverPanel.NAME_MIN_WIDTH)
-        name_edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        name_edit.setMinimumWidth(ObserverPanel.NAME_MIN_WIDTH)
+        name_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         value_edit = QLineEdit()
         value_edit.setPlaceholderText("Value")
         value_edit.setFixedHeight(ObserverPanel.BTN_SIZE)
-        value_edit.setFixedWidth(ObserverPanel.VALUE_MIN_WIDTH)
-        value_edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        value_edit.setMinimumWidth(ObserverPanel.VALUE_MIN_WIDTH)
+        value_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         user_vars_list = self.c.dynamic_vars.get("user_variables", [])
         names = [var.get("name") for var in user_vars_list if var.get("name")]
@@ -77,6 +110,7 @@ class ObserverRow:
         dynamic_name_combo.addItems(names)
         dynamic_name_combo.setVisible(False)
         dynamic_name_combo.setFixedHeight(ObserverPanel.BTN_SIZE)
+        dynamic_name_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         dynamic_value_label = QLineEdit()
         dynamic_value_label.setPlaceholderText("N/A")
@@ -84,17 +118,21 @@ class ObserverRow:
         dynamic_value_label.setFixedHeight(ObserverPanel.BTN_SIZE)
         dynamic_value_label.setReadOnly(True)
         dynamic_value_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        dynamic_value_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        dynamic_value_label.setFixedWidth(ObserverPanel.VALUE_MIN_WIDTH)
+        dynamic_value_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        dynamic_value_label.setMinimumWidth(ObserverPanel.VALUE_MIN_WIDTH)
 
+        # New order: type | fields | stretch | action buttons
         layout.addWidget(type_combo)
-        layout.addWidget(remove_button)
-        layout.addWidget(confirm_button)
-        layout.addWidget(refresh_button)
         layout.addWidget(name_edit)
         layout.addWidget(value_edit)
         layout.addWidget(dynamic_name_combo)
         layout.addWidget(dynamic_value_label)
+        layout.addStretch(1)
+        layout.addWidget(confirm_button)
+        layout.addWidget(refresh_button)
+        layout.addWidget(remove_button)
+
+        outer_layout.addWidget(content_widget)
 
         self.row = row
         self.type_combo = type_combo
@@ -120,16 +158,11 @@ class ObserverRow:
         self.confirm_button.clicked.connect(self.toggle_confirm)
         self.refresh_button.clicked.connect(self.toggle_refresh)
         self.type_combo.currentIndexChanged.connect(self.on_type_changed)
-        self.name_edit.textChanged.connect(
-            lambda: p._auto_expand_line_edit(self.name_edit, p.NAME_MIN_WIDTH, p.FIELD_MAX_WIDTH)
-        )
-        self.value_edit.textChanged.connect(
-            lambda: p._auto_expand_line_edit(self.value_edit, p.VALUE_MIN_WIDTH, p.FIELD_MAX_WIDTH)
-        )
-        self.dynamic_value_label.textChanged.connect(
-            lambda: p._auto_expand_line_edit(self.dynamic_value_label, p.VALUE_MIN_WIDTH, p.FIELD_MAX_WIDTH)
-        )
         self.dynamic_name_combo.activated.connect(lambda: self.dynamic_value_label.setText(""))
+        _install_delayed_tooltip(self.name_edit,          lambda: self.name_edit.text())
+        _install_delayed_tooltip(self.value_edit,         lambda: self.value_edit.text())
+        _install_delayed_tooltip(self.dynamic_name_combo, lambda: self.dynamic_name_combo.currentText())
+        _install_delayed_tooltip(self.dynamic_value_label, lambda: self.dynamic_value_label.text())
 
     def _all_widgets(self):
         return {k: getattr(self, k) for k in self.WIDGET_KEYS}
@@ -384,6 +417,7 @@ class ObserverPanel(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
