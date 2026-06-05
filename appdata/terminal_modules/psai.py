@@ -156,7 +156,7 @@ def _parse_custom_params(profile: dict) -> dict | None:
 
 def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: str,
                            disable_thinking: bool = False, provider: str = "openai",
-                           custom_params: dict = None) -> str:
+                           custom_params: dict = None, num_ctx: int = 0) -> str:
     """POST to /chat/completions, stream tokens to stdout, return full response text."""
     url = base_url.rstrip("/") + "/chat/completions"
 
@@ -168,6 +168,9 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
             msgs.insert(0, {"role": "system", "content": system})
 
     body = {"model": model, "messages": msgs, "stream": True}
+
+    if provider == "ollama" and num_ctx > 0:
+        body["options"] = {"num_ctx": num_ctx}
 
     if custom_params:
         body.update(custom_params)
@@ -271,7 +274,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
 
 
 def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
-             disable_thinking: bool = False, custom_params: dict = None) -> str:
+             disable_thinking: bool = False, custom_params: dict = None, num_ctx: int = 0) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
     if provider == "anthropic":
         return _stream_anthropic(model, messages, url, api_key, disable_thinking)
@@ -292,7 +295,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
                     messages[i] = {**messages[i], "content": "/no_think\n" + messages[i]["content"]}
                     break
 
-    return _stream_openai_compat(model, messages, url, api_key, disable_thinking, provider, custom_params)
+    return _stream_openai_compat(model, messages, url, api_key, disable_thinking, provider, custom_params, num_ctx)
 
 
 # ── Chat session ──────────────────────────────────────────────────────────────
@@ -428,7 +431,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     ctx_info = f", limit {context_limit // 1000}k tok" + (f", dropped {trimmed} old msg{'s' if trimmed != 1 else ''}" if trimmed else "")
     _info(f"Chatting with {model} via {provider} ({turns} turn{'s' if turns != 1 else ''} in context{ctx_info})…\n")
 
-    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
+    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params, context_limit)
 
     if response:
         history.append({"role": "assistant", "content": response})
