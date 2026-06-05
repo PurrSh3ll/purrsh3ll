@@ -1,38 +1,10 @@
 from PyQt6.QtWidgets import (
     QWidget, QComboBox, QLabel, QLineEdit, QPushButton,
-    QHBoxLayout, QVBoxLayout, QListView, QScrollArea, QSizePolicy, QMessageBox, QToolTip
+    QHBoxLayout, QVBoxLayout, QListView, QScrollArea, QSizePolicy, QMessageBox
 )
-from PyQt6.QtCore import Qt, QObject, QEvent, QTimer, QPoint
+from PyQt6.QtCore import Qt
 import re, os, json, sys
 import shutil, subprocess
-
-
-def _install_delayed_tooltip(widget, get_text, delay_ms=1400):
-    """Show tooltip only after the cursor has rested on the widget for delay_ms."""
-    timer = QTimer(widget)
-    timer.setSingleShot(True)
-
-    class _Watcher(QObject):
-        def eventFilter(self, obj, event):
-            t = event.type()
-            if t == QEvent.Type.Enter:
-                timer.start(delay_ms)
-            elif t in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress):
-                timer.stop()
-                QToolTip.hideText()
-            return False
-
-    watcher = _Watcher(widget)
-    widget.installEventFilter(watcher)
-    widget._tt_watcher = watcher  # keep reference — prevents GC
-
-    def _show():
-        text = get_text()
-        if text:
-            pos = widget.mapToGlobal(QPoint(0, widget.height()))
-            QToolTip.showText(pos, text, widget)
-
-    timer.timeout.connect(_show)
 
 class ObserverRow:
     WIDGET_KEYS = (
@@ -159,10 +131,10 @@ class ObserverRow:
         self.refresh_button.clicked.connect(self.toggle_refresh)
         self.type_combo.currentIndexChanged.connect(self.on_type_changed)
         self.dynamic_name_combo.activated.connect(lambda: self.dynamic_value_label.setText(""))
-        _install_delayed_tooltip(self.name_edit,          lambda: self.name_edit.text())
-        _install_delayed_tooltip(self.value_edit,         lambda: self.value_edit.text())
-        _install_delayed_tooltip(self.dynamic_name_combo, lambda: self.dynamic_name_combo.currentText())
-        _install_delayed_tooltip(self.dynamic_value_label, lambda: self.dynamic_value_label.text())
+        self.name_edit.textChanged.connect(lambda t: self.name_edit.setToolTip(t))
+        self.value_edit.textChanged.connect(lambda t: self.value_edit.setToolTip(t))
+        self.dynamic_name_combo.currentTextChanged.connect(lambda t: self.dynamic_name_combo.setToolTip(t))
+        self.dynamic_value_label.textChanged.connect(lambda t: self.dynamic_value_label.setToolTip(t))
 
     def _all_widgets(self):
         return {k: getattr(self, k) for k in self.WIDGET_KEYS}
