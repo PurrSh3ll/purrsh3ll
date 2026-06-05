@@ -200,6 +200,10 @@ class TerminalTabsMixin:
 
         def _on_context_menu(pos):
             menu = QMenu(self.widgets["terminal_groupbox"])
+            try:
+                menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             menu.addAction(self._act_copy_selection)
             menu.addAction(self._act_paste_selection)
             menu.addSeparator()
@@ -218,6 +222,10 @@ class TerminalTabsMixin:
             menu.addAction(act_find)
             menu.addSeparator()
             _scheme_menu = QMenu("Color scheme", menu)
+            try:
+                _scheme_menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             try:
                 _scheme_dir = "/usr/share/qtermwidget6/color-schemes"
                 _schemes = sorted(
@@ -769,6 +777,10 @@ class TerminalTabsMixin:
                 idx = tabs.currentIndex()
 
             menu = QMenu(tabbar)
+            try:
+                menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             rename_action = QAction("Rename", menu)
             close_action = QAction("Close tab", menu)
             close_others_action = QAction("Close Others", menu)
@@ -1045,6 +1057,10 @@ class TerminalTabsMixin:
 
         def _on_ctx(pos, t=term, w=wrapper_widget):
             menu = QMenu(self.widgets["terminal_groupbox"])
+            try:
+                menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             menu.addAction("Copy selection", lambda: (hasattr(t, "copySelection") and t.copySelection()) or (hasattr(t, "copyClipboard") and t.copyClipboard()))
             menu.addAction("Paste selection", lambda: (hasattr(t, "pasteSelection") and t.pasteSelection()) or (hasattr(t, "pasteClipboard") and t.pasteClipboard()))
             menu.addSeparator()
@@ -1069,6 +1085,10 @@ class TerminalTabsMixin:
             menu.addAction(act_find)
             menu.addSeparator()
             _scheme_menu = QMenu("Color scheme", menu)
+            try:
+                _scheme_menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             try:
                 _scheme_dir = "/usr/share/qtermwidget6/color-schemes"
                 _schemes = sorted(
