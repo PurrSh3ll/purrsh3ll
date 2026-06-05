@@ -3149,7 +3149,7 @@
     },
     "C=64 Reborn": {
       "background": {
-        "main_window": "#867ADE",
+        "main_window": "#2C2470",
         "main_window_start": "#867ADE",
         "main_window_stop": "#867ADE",
         "buttons": "#352C7A",
@@ -3597,5 +3597,5 @@
       }
     }
   },
-  "current_theme": "default"
+  "current_theme": "C=64 Reborn"
 }
