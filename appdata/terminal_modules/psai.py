@@ -374,6 +374,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
     context_limit    = int(profile.get("context_tokens") or 0) or _default_ctx(provider)
 
     if args.clear:
@@ -416,6 +417,8 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     # Build messages for API: history (with plain query) replaced by RAG version for last entry
     msgs_to_send = _trim_history(history, context_limit)
+    if fast_answers and not any(m["role"] == "system" for m in msgs_to_send):
+        msgs_to_send = [{"role": "system", "content": "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."}] + list(msgs_to_send)
     if query_for_api != query and msgs_to_send:
         msgs_to_send = list(msgs_to_send)
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}

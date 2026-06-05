@@ -652,6 +652,9 @@ def build_chat_panel(main_window):
         ctx = int(profile.get("context_tokens") or 0)
         if ctx > 0:
             flags.append(f"--num-ctx {ctx}")
+        # fast_answers → --system with brevity instruction
+        if profile.get("fast_answers"):
+            flags.append('--system "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."')
         # disable_thinking checkbox → --think=false
         if profile.get("disable_thinking"):
             flags.append("--think=false")
