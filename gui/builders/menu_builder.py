@@ -1544,7 +1544,7 @@ def build_menu(main_window):
                         if isdeleted(sb_ctx):
                             return
                         _ctx_default[0] = n
-                        sb_ctx.setSpecialValueText(f"default ({n:,})")
+                        sb_ctx.setSpecialValueText(f"default ({n:_})".replace("_", " "))
                     except Exception:
                         pass
 
@@ -1553,7 +1553,7 @@ def build_menu(main_window):
                         from PyQt6.sip import isdeleted
                         if isdeleted(sb_ctx):
                             return
-                        sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:,})")
+                        sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:_})".replace("_", " "))
                     except Exception:
                         pass
 
@@ -1594,7 +1594,7 @@ def build_menu(main_window):
 
                 threading.Thread(target=_fetch_num_ctx, daemon=True).start()
             else:
-                sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:,})")
+                sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:_})".replace("_", " "))
             _CTX_INFO_TEXT = (
                 "Used in app calculations to determine how to split data\n"
                 "(e.g. report generation, psai functions).\n\n"
