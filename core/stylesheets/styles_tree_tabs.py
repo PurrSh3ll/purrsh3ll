@@ -84,7 +84,6 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
     QListView::item:hover {{
         background-color: {bg.get("buttons_pressed_ob_panel", "#2B2D30")};
         color: {fg.get("combo_item_hover_ob_panel", "#ffffff")};
-        color: #000000;
     }}
     """
 
