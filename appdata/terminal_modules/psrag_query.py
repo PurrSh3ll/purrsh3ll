@@ -69,14 +69,19 @@ def _embed(query: str, model_name: str, cache_dir: str) -> list:
     if cache_dir:
         kwargs["cache_dir"] = cache_dir
     import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        model = TextEmbedding(**kwargs)
     try:
-        vec = [v.tolist() for v in model.embed([query])][0]
-    finally:
-        del model
-        gc.collect()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = TextEmbedding(**kwargs)
+        try:
+            vec = [v.tolist() for v in model.embed([query])][0]
+        finally:
+            del model
+            gc.collect()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     return vec
 
 
@@ -199,6 +204,11 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
                     except OSError:
                         pass
                     break
+            except KeyboardInterrupt:
+                proc.terminate()
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                sys.exit(130)
             except OSError:
                 break
 
@@ -286,6 +296,10 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
                 except Exception:
                     pass
         print()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code} from {url}: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -339,6 +353,10 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
                 except Exception:
                     pass
         print()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code} from Anthropic: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -525,4 +543,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
