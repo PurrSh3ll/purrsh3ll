@@ -79,71 +79,92 @@ class Indexer:
         Full incremental index of kb_path.
         progress_callback(current, total, filename) called for each file processed.
         """
-        meta     = _load_meta(self._meta_path)
+        meta      = _load_meta(self._meta_path)
         all_files = _collect_files(self.kb_path)
         total     = len(all_files)
 
         # Track which absolute paths still exist (for cleanup)
         existing_abs = set(all_files)
 
-        for idx, abs_path in enumerate(all_files):
-            filename = os.path.basename(abs_path)
-            if progress_callback:
-                progress_callback(idx + 1, total, filename)
-
+        # Determine which files actually need (re)indexing before loading the model
+        to_index = []
+        for abs_path in all_files:
             file_hash = _sha256(abs_path)
             if not file_hash:
                 continue
-
             cached = meta.get(abs_path, {})
-            if cached.get("sha256") == file_hash:
-                continue  # unchanged — skip
+            if cached.get("sha256") != file_hash:
+                to_index.append((abs_path, file_hash))
 
-            # Remove stale chunks for this file
-            old_ids = cached.get("chunk_ids", [])
-            if old_ids:
-                try:
-                    self._collection.delete(ids=old_ids)
-                except Exception:
-                    pass
+        # Load embedding model once for the entire indexing run
+        model = None
+        if to_index:
+            model = emb.load_model(self.model_name, self._cache_dir)
 
-            # Chunk
-            chunks = chunker.chunk_file(abs_path, self.kb_path)
-            if not chunks:
-                meta[abs_path] = {"sha256": file_hash, "chunk_ids": []}
-                continue
+        try:
+            for idx, abs_path in enumerate(all_files):
+                filename = os.path.basename(abs_path)
+                if progress_callback:
+                    progress_callback(idx + 1, total, filename)
 
-            # Embed in batches
-            all_ids       = []
-            all_docs      = []
-            all_metas     = []
-            all_embeddings = []
+                file_hash = _sha256(abs_path)
+                if not file_hash:
+                    continue
 
-            texts = [c["text"] for c in chunks]
-            metas = [c["metadata"] for c in chunks]
+                cached = meta.get(abs_path, {})
+                if cached.get("sha256") == file_hash:
+                    continue  # unchanged — skip
 
-            for batch_start in range(0, len(texts), _BATCH_SIZE):
-                batch_texts = texts[batch_start:batch_start + _BATCH_SIZE]
-                batch_metas = metas[batch_start:batch_start + _BATCH_SIZE]
+                # Remove stale chunks for this file
+                old_ids = cached.get("chunk_ids", [])
+                if old_ids:
+                    try:
+                        self._collection.delete(ids=old_ids)
+                    except Exception:
+                        pass
 
-                vectors = emb.embed(batch_texts, self.model_name, self._cache_dir)
+                # Chunk
+                chunks = chunker.chunk_file(abs_path, self.kb_path)
+                if not chunks:
+                    meta[abs_path] = {"sha256": file_hash, "chunk_ids": []}
+                    continue
 
-                for text, meta_item, vec in zip(batch_texts, batch_metas, vectors):
-                    chunk_id = str(uuid.uuid4())
-                    all_ids.append(chunk_id)
-                    all_docs.append(text)
-                    all_metas.append(meta_item)
-                    all_embeddings.append(vec)
+                # Embed in batches — reuse already-loaded model
+                all_ids        = []
+                all_docs       = []
+                all_metas      = []
+                all_embeddings = []
 
-            # Store in ChromaDB
-            self._collection.add(
-                ids=all_ids,
-                documents=all_docs,
-                metadatas=all_metas,
-                embeddings=all_embeddings,
-            )
+                texts = [c["text"] for c in chunks]
+                metas = [c["metadata"] for c in chunks]
 
-            meta[abs_path] = {"sha256": file_hash, "chunk_ids": all_ids}
+                for batch_start in range(0, len(texts), _BATCH_SIZE):
+                    batch_texts = texts[batch_start:batch_start + _BATCH_SIZE]
+                    batch_metas = metas[batch_start:batch_start + _BATCH_SIZE]
+
+                    vectors = emb.embed_batch(model, batch_texts)
+
+                    for text, meta_item, vec in zip(batch_texts, batch_metas, vectors):
+                        chunk_id = str(uuid.uuid4())
+                        all_ids.append(chunk_id)
+                        all_docs.append(text)
+                        all_metas.append(meta_item)
+                        all_embeddings.append(vec)
+
+                # Store in ChromaDB
+                self._collection.add(
+                    ids=all_ids,
+                    documents=all_docs,
+                    metadatas=all_metas,
+                    embeddings=all_embeddings,
+                )
+
+                meta[abs_path] = {"sha256": file_hash, "chunk_ids": all_ids}
+
+        finally:
+            # Always release model regardless of errors
+            if model is not None:
+                emb.unload_model(model)
 
         # Remove deleted files from DB and meta
         for abs_path in list(meta.keys()):
