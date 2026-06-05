@@ -362,6 +362,10 @@ class ObserverRow:
         msg.setIcon(icon)
         msg.setWindowTitle(title)
         msg.setText(text)
+        try:
+            msg.setStyleSheet(self.c.messagebox_stylesheet)
+        except Exception:
+            pass
         msg.exec()
 
 class ObserverPanel(QWidget):
