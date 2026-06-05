@@ -82,6 +82,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.save_system_vars = True
             self.delete_logs_at_close = True
             self.delete_notes_at_close = False
+            self.clear_chat_history_on_exit = False
             self.terminal_history_max_entries = 5000
             self.terminal_history_disabled = False
 
@@ -106,6 +107,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                     self.session_restore_enabled = behavior.get("restore_session_at_start", True)
                     self.terminal_history_max_entries = behavior.get("terminal_history_max_entries", 5000)
                     self.terminal_history_disabled = behavior.get("terminal_history_disabled", False)
+                    self.clear_chat_history_on_exit = config.get("llama", {}).get("clear_chat_history_on_exit", False)
 
                 except Exception as e:
                     logger.warning("Failed to load config from %s", self.config_path, exc_info=True)

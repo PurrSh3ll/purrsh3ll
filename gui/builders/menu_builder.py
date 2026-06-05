@@ -608,6 +608,17 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills set:", settings_skills_combo)
 
+        clear_chat_history_checkbox = QCheckBox("Clear pschat history on exit", grp_llm)
+        clear_chat_history_checkbox.setChecked(bool(llama_cfg.get("clear_chat_history_on_exit", False)))
+        form_llm.addRow(clear_chat_history_checkbox)
+
+        def _on_clear_chat_history_changed(state):
+            val = clear_chat_history_checkbox.isChecked()
+            _save_llama_key("clear_chat_history_on_exit", val)
+            c.clear_chat_history_on_exit = val
+
+        clear_chat_history_checkbox.stateChanged.connect(_on_clear_chat_history_changed)
+
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         form_rag = QFormLayout(grp_rag)

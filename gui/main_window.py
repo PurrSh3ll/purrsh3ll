@@ -349,3 +349,16 @@ class MainWindow(QMainWindow):
                     open(notes_path, "w").close()
             except Exception as e:
                 pass
+
+        if getattr(self.c, "clear_chat_history_on_exit", False):
+            sessions_dir = os.path.join(self.c.base_path, "appdata", "chat_sessions")
+            try:
+                if os.path.isdir(sessions_dir):
+                    for _f in os.listdir(sessions_dir):
+                        if _f.endswith(".json"):
+                            try:
+                                os.remove(os.path.join(sessions_dir, _f))
+                            except Exception:
+                                pass
+            except Exception:
+                pass
