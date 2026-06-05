@@ -229,9 +229,23 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         worker = IndexWorker(kb_path, self.base_path, model_name)
         self._rag_index_worker = worker
 
+        def _show_rag_label(current, total, filename):
+            lbl = self.widgets.get("rag_index_status_label")
+            if lbl is None:
+                return
+            short = filename[:18] + "…" if len(filename) > 20 else filename
+            lbl.setText(f"⟳ {current}/{total}  {short}")
+            if not lbl.isVisible():
+                lbl.show()
+                self.set_position_active_profile_combo()
+
         def _done(_result):
             self._rag_index_worker = None
+            lbl = self.widgets.get("rag_index_status_label")
+            if lbl is not None:
+                lbl.hide()
 
+        worker.progress.connect(_show_rag_label)
         worker.finished.connect(_done)
         worker.start()
 

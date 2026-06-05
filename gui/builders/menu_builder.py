@@ -876,6 +876,13 @@ def build_menu(main_window):
             def _on_progress(current, total, filename):
                 short = filename[:28] + "…" if len(filename) > 30 else filename
                 rag_status_label.setText(f"{current}/{total}  {short}")
+                global_lbl = c.widgets.get("rag_index_status_label")
+                if global_lbl is not None:
+                    short_g = filename[:18] + "…" if len(filename) > 20 else filename
+                    global_lbl.setText(f"⟳ {current}/{total}  {short_g}")
+                    if not global_lbl.isVisible():
+                        global_lbl.show()
+                        c.set_position_active_profile_combo()
 
             def _on_finished(result):
                 spinner_timer.stop()
@@ -889,6 +896,9 @@ def build_menu(main_window):
                     rag_status_label.setText(f"✖ {result}")
                     rag_status_label.setStyleSheet("color: red; font-size: 11px;")
                 c._rag_index_worker = None
+                global_lbl = c.widgets.get("rag_index_status_label")
+                if global_lbl is not None:
+                    global_lbl.hide()
 
             worker.progress.connect(_on_progress)
             worker.finished.connect(_on_finished)
