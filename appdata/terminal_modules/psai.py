@@ -169,8 +169,12 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
 
     body = {"model": model, "messages": msgs, "stream": True}
 
-    if provider == "ollama" and num_ctx > 0:
-        body["options"] = {"num_ctx": num_ctx}
+    if provider == "ollama":
+        ollama_opts = {}
+        if num_ctx > 0:
+            ollama_opts["num_ctx"] = num_ctx
+        ollama_opts["think"] = not disable_thinking
+        body["options"] = ollama_opts
 
     if custom_params:
         body.update(custom_params)
