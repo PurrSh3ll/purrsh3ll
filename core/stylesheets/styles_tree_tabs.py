@@ -85,6 +85,11 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
         background-color: {bg.get("buttons_pressed_ob_panel", "#2B2D30")};
         color: {fg.get("combo_item_hover_ob_panel", "#ffffff")};
     }}
+
+    QListView::item:selected {{
+        background-color: {bg.get("buttons_pressed_ob_panel", "#2B2D30")};
+        color: {fg.get("combo_item_hover_ob_panel", "#ffffff")};
+    }}
     """
 
     qss_QComboBox_view = f"""
@@ -106,7 +111,7 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
     }}
     QAbstractItemView::item:selected {{
         background-color: {bg.get("buttons_pressed_ob_panel", "#264A6D")};
-        color: {fg.get("text_ob_panel", "#ffffff")};
+        color: {fg.get("combo_item_hover_ob_panel", "#ffffff")};
     }}
     """
 
