@@ -154,6 +154,66 @@ def _parse_custom_params(profile: dict) -> dict | None:
 
 # ── LLM runners ───────────────────────────────────────────────────────────────
 
+def _stream_ollama_native(model: str, messages: list, base_url: str,
+                          disable_thinking: bool = False, num_ctx: int = 0) -> str:
+    """POST to Ollama native /api/chat — correctly honors think:false."""
+    url = base_url.rstrip("/")
+    # strip /v1 suffix if present — native API is at root
+    if url.endswith("/v1"):
+        url = url[:-3]
+    url += "/api/chat"
+
+    body = {"model": model, "messages": messages, "stream": True,
+            "think": not disable_thinking}
+    if num_ctx > 0:
+        body["options"] = {"num_ctx": num_ctx}
+
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    collected = []
+    _in_thinking = [False]
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    msg = d.get("message", {})
+                    thinking = msg.get("thinking", "")
+                    content  = msg.get("content", "")
+                    if thinking:
+                        if not _in_thinking[0]:
+                            sys.stdout.write("\033[2m💭 ")
+                            sys.stdout.flush()
+                            _in_thinking[0] = True
+                        sys.stdout.write(thinking)
+                        sys.stdout.flush()
+                    if content:
+                        if _in_thinking[0]:
+                            sys.stdout.write("\033[0m\n")
+                            sys.stdout.flush()
+                            _in_thinking[0] = False
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                        collected.append(content)
+                    if d.get("done"):
+                        break
+                except Exception:
+                    pass
+        if _in_thinking[0]:
+            sys.stdout.write("\033[0m\n")
+        print()
+    except urllib.error.HTTPError as e:
+        _err(f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
+        sys.exit(1)
+    except Exception as e:
+        _err(f"Request failed: {e}")
+        sys.exit(1)
+    return "".join(collected)
+
+
 def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: str,
                            disable_thinking: bool = False, provider: str = "openai",
                            custom_params: dict = None, num_ctx: int = 0) -> str:
@@ -168,11 +228,6 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
             msgs.insert(0, {"role": "system", "content": system})
 
     body = {"model": model, "messages": msgs, "stream": True}
-
-    if provider == "ollama":
-        body["think"] = not disable_thinking
-        if num_ctx > 0:
-            body["options"] = {"num_ctx": num_ctx}
 
     if custom_params:
         body.update(custom_params)
@@ -297,7 +352,12 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
     if provider == "anthropic":
         return _stream_anthropic(model, messages, url, api_key, disable_thinking)
 
-    # Ollama: ensure /v1 suffix for OpenAI-compat endpoint
+    # Ollama: use native /api/chat (correctly honors think:false)
+    # Fall back to OpenAI-compat only when custom_params are set
+    if provider == "ollama" and not custom_params:
+        return _stream_ollama_native(model, messages, url, disable_thinking, num_ctx)
+
+    # Ollama with custom_params: ensure /v1 suffix for OpenAI-compat endpoint
     if provider == "ollama":
         base = url.rstrip("/")
         if not base.endswith("/v1"):
