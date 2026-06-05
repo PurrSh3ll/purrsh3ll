@@ -66,6 +66,7 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
             stop:0 {bg.get("gradient_hover_start_ob_panel", "#353A46")},
             stop:1 {bg.get("gradient_hover_stop_ob_panel", "#23262D")}
         );
+        color: {fg.get("text_hover_ob_panel", "#ffffff")};
         border: {bd.get("gradient_hover_ob_panel", "#4C8DFF")};
     }}
 
