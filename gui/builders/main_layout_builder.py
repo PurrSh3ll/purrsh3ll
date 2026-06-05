@@ -568,7 +568,7 @@ def build_main_layout(main_window):
         welcome_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         welcome_label.setToolTip("Double-click to edit")
         gif_label = _GifLabel()
-        gif_label.setToolTip("Double-click to change image")
+        gif_label.setToolTip("Double-click to edit")
         _apply_image(_load_image_path(), gif_label)
         welcome_text_layout.addWidget(welcome_label, 0)
         welcome_text_layout.addWidget(gif_label, 1)
