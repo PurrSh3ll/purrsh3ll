@@ -1631,8 +1631,18 @@ def build_menu(main_window):
                 msg.exec()
 
             ctx_info_btn.clicked.connect(_show_ctx_info)
+
+            ctx_reset_btn = QPushButton("Default")
+            ctx_reset_btn.setFixedWidth(60)
+            ctx_reset_btn.setToolTip("Reset to default (0 = use provider default)")
+
+            def _on_ctx_reset():
+                sb_ctx.setValue(0)
+
+            ctx_reset_btn.clicked.connect(_on_ctx_reset)
             ctx_row.addWidget(ctx_label)
             ctx_row.addWidget(sb_ctx)
+            ctx_row.addWidget(ctx_reset_btn)
             ctx_row.addWidget(ctx_info_btn)
 
             bform.addWidget(cb_think)
