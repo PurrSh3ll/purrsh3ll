@@ -1505,9 +1505,18 @@ def build_menu(main_window):
 
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
+            _CTX_DEFAULT = 16_000
+
+            class _CtxSpinBox(QSpinBox):
+                def stepBy(self, steps):
+                    if self.value() == 0 and steps > 0:
+                        self.setValue(_CTX_DEFAULT + steps * self.singleStep())
+                    else:
+                        super().stepBy(steps)
+
             ctx_row = QHBoxLayout()
             ctx_label = QLabel("Context limit (tokens):")
-            sb_ctx = QSpinBox()
+            sb_ctx = _CtxSpinBox()
             sb_ctx.setRange(0, 500_000)
             sb_ctx.setSingleStep(1_000)
             sb_ctx.setSpecialValueText("default (16 000)")
