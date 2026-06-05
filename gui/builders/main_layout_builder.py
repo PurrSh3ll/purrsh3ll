@@ -323,7 +323,7 @@ def build_main_layout(main_window):
             layout.setContentsMargins(16, 16, 16, 16)
             layout.setSpacing(6)
             try:
-                dlg.setStyleSheet(c.messagebox_stylesheet)
+                dlg.setStyleSheet(c.dialog_stylesheet)
             except Exception:
                 pass
 

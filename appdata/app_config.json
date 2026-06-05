@@ -39,8 +39,8 @@
   },
   "welcome": {
     "custom_text": "__default__",
-    "image_path": "",
-    "bg_path": ""
+    "image_path": "/home/kali/Desktop/PixVerse_V6_Image_Text_540P_Create_a_dramatic_1-ezgif.com-effects.gif",
+    "bg_path": "/home/kali/Desktop/ezgif.com-crop.gif"
   },
   "api_providers": {
     "active": "gemma:local",
