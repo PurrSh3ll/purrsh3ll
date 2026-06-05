@@ -9,7 +9,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
     QPushButton, QScrollArea, QLabel, QDialog, QPlainTextEdit,
-    QCheckBox, QApplication, QSizePolicy, QFrame,
+    QCheckBox, QApplication, QSizePolicy, QFrame, QListView,
 )
 
 logger = logging.getLogger(__name__)
@@ -274,6 +274,13 @@ class SnippetPanel(QWidget):
         toolbar.addWidget(self._search)
 
         self._cat_filter = QComboBox()
+        try:
+            self._cat_filter.setStyleSheet(self.c.combo_stylesheet)
+            _cfv = QListView()
+            _cfv.setStyleSheet(self.c.combo_view_stylesheet)
+            self._cat_filter.setView(_cfv)
+        except Exception:
+            pass
         self._cat_filter.addItem("All")
         self._cat_filter.setFixedWidth(90)
         self._cat_filter.currentTextChanged.connect(self._refresh)
