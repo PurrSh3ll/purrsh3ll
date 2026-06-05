@@ -205,6 +205,12 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
         if _in_thinking[0]:
             sys.stdout.write("\033[0m\n")
         print()
+    except KeyboardInterrupt:
+        if _in_thinking[0]:
+            sys.stdout.write("\033[0m")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -285,6 +291,12 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         if _in_thinking[0]:
             sys.stdout.write("\033[0m\n")
         print()
+    except KeyboardInterrupt:
+        if _in_thinking[0]:
+            sys.stdout.write("\033[0m")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -336,6 +348,10 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                 except Exception:
                     pass
         print()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code} from Anthropic: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -571,4 +587,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
