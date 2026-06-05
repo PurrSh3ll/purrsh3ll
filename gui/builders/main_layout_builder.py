@@ -142,30 +142,35 @@ def build_main_layout(main_window):
         slide_button = QPushButton("👁️", c.widgets["central_widget"])
         slide_button.setFixedWidth(20)
         slide_button.setFixedHeight(50)
+        slide_button.setToolTip("Observable Variables")
         c.register_widget("slide_button", slide_button)
 
     def create_chat_button():
         chat_button = QPushButton("🤖", c.widgets["central_widget"])
         chat_button.setFixedWidth(20)
         chat_button.setFixedHeight(50)
+        chat_button.setToolTip("AI Chat")
         c.register_widget("chat_button", chat_button)
 
     def create_notes_button():
         notes_button = QPushButton("📝", c.widgets["central_widget"])
         notes_button.setFixedWidth(20)
         notes_button.setFixedHeight(50)
+        notes_button.setToolTip("Notes")
         c.register_widget("notes_button", notes_button)
 
     def create_mode_button():
         mode_button = QPushButton("🔧", c.widgets["central_widget"])
         mode_button.setFixedWidth(20)
         mode_button.setFixedHeight(50)
+        mode_button.setToolTip("System Info")
         c.register_widget("mode_button", mode_button)
 
     def create_snippet_button():
         snippet_button = QPushButton("✂️", c.widgets["central_widget"])
         snippet_button.setFixedWidth(20)
         snippet_button.setFixedHeight(50)
+        snippet_button.setToolTip("Snippets")
         c.register_widget("snippet_button", snippet_button)
 
     def create_welcome_text():
@@ -593,7 +598,7 @@ def build_main_layout(main_window):
         central_widget = c.widgets["central_widget"]
         btn = QPushButton("🎙", central_widget)
         btn.setFixedSize(26, 22)
-        btn.setToolTip("Voice command mode")
+        btn.setToolTip("Voice mode — wake word + speech-to-command")
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setCheckable(True)
         btn.setChecked(False)
@@ -720,7 +725,7 @@ def build_main_layout(main_window):
 
         def _set_idle_style():
             btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
-            btn.setToolTip("Voice command mode")
+            btn.setToolTip("Voice mode — wake word + speech-to-command")
 
         def _on_state_changed(state: str):
             if state == "idle":
@@ -856,7 +861,7 @@ def build_main_layout(main_window):
         combo = QComboBox(central_widget)
         combo.setFixedHeight(22)
         combo.setFixedWidth(170)
-        combo.setToolTip("Active API profile")
+        combo.setToolTip("Active AI profile — used by psai tools and AI chat")
         combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         def _reload(keep=None):

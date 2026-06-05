@@ -197,7 +197,7 @@ class TerminalSetupMixin:
     def _setup_corner_buttons(self):
         btn_add_left = QPushButton()
         btn_add_left.setFixedSize(24, 24)
-        btn_add_left.setToolTip("Add terminal tab")
+        btn_add_left.setToolTip("Open Claude Code agent")
         btn_add_left.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_add_left.setIcon(self.get_icon("claude-icon.svg", QIcon()))
         btn_add_left.setIconSize(QSize(16, 16))

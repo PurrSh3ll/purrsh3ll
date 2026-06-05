@@ -21,6 +21,7 @@ def build_menu(main_window):
 
     menu_button = QPushButton("⋯", c.widgets["central_widget"])
     menu_button.setGeometry(10, 0, 40, 12)
+    menu_button.setToolTip("Menu")
     c.register_widget("menu_button", menu_button)
 
     menu_bar = main_window.menuBar()
