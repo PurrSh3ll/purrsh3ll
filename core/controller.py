@@ -242,8 +242,22 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         def _done(_result):
             self._rag_index_worker = None
             lbl = self.widgets.get("rag_index_status_label")
-            if lbl is not None:
+            if lbl is None:
+                return
+            from PyQt6.QtCore import QTimer
+            if _result == "OK":
+                lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
+                lbl.setText("✔ indexing complete")
+            else:
+                lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
+                lbl.setText(f"✖ {_result[:40]}")
+            lbl.show()
+
+            def _reset():
                 lbl.hide()
+                lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+
+            QTimer.singleShot(5000, _reset)
 
         worker.progress.connect(_show_rag_label)
         worker.finished.connect(_done)

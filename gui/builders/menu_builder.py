@@ -898,7 +898,19 @@ def build_menu(main_window):
                 c._rag_index_worker = None
                 global_lbl = c.widgets.get("rag_index_status_label")
                 if global_lbl is not None:
-                    global_lbl.hide()
+                    if result == "OK":
+                        global_lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
+                        global_lbl.setText("✔ indexing complete")
+                    else:
+                        global_lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
+                        global_lbl.setText(f"✖ {result[:40]}")
+                    global_lbl.show()
+
+                    def _reset_global():
+                        global_lbl.hide()
+                        global_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+
+                    QTimer.singleShot(5000, _reset_global)
 
             worker.progress.connect(_on_progress)
             worker.finished.connect(_on_finished)
