@@ -648,6 +648,10 @@ def build_chat_panel(main_window):
         """Build 'ollama run <model> [flags]' from profile settings."""
         model = profile.get("model", "")
         flags = []
+        # context_tokens → --num-ctx
+        ctx = int(profile.get("context_tokens") or 0)
+        if ctx > 0:
+            flags.append(f"--num-ctx {ctx}")
         # disable_thinking checkbox → --think=false
         if profile.get("disable_thinking"):
             flags.append("--think=false")
