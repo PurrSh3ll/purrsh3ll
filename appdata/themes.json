@@ -3593,7 +3593,7 @@
         "table": "#3D1010"
       },
       "terminal": {
-        "colorscheme": "Kali-Dark"
+        "colorscheme": "Kali-Light"
       }
     },
     "Sakura Protocol": {
@@ -3743,7 +3743,7 @@
         "table": "#3D1A28"
       },
       "terminal": {
-        "colorscheme": "WhiteOnBlack"
+        "colorscheme": "BlackOnLightYellow"
       }
     },
     "Tropical Brazil": {
@@ -3893,7 +3893,7 @@
         "table": "#1A3A1A"
       },
       "terminal": {
-        "colorscheme": "GreenOnBlack"
+        "colorscheme": "BlackOnLightYellow"
       }
     },
     "MS-DOS": {
@@ -4047,5 +4047,5 @@
       }
     }
   },
-  "current_theme": "default"
+  "current_theme": "Bankroll-bot"
 }
