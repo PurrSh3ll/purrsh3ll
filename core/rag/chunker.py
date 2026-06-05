@@ -3,7 +3,7 @@ import os
 SUPPORTED_EXTENSIONS = {
     "md", "txt", "py", "sh", "js", "ts", "json",
     "purr", "game", "yaml", "yml", "toml", "rst",
-    "csv", "xml", "html", "htm", "css",
+    "csv", "xml", "html", "htm", "css", "pdf",
 }
 
 _SPLIT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
@@ -93,6 +93,74 @@ def _recursive_split(text: str, separators: list, chunk_size: int, overlap: int)
         chunks = overlapped
 
     return [c for c in chunks if c.strip()]
+
+
+def _chunk_pdf(abs_path: str, kb_root: str) -> list[dict]:
+    """Extract text from a PDF via PyMuPDF and return chunks with page metadata."""
+    try:
+        import fitz
+    except ImportError:
+        return []
+
+    try:
+        doc = fitz.open(abs_path)
+    except Exception:
+        return []
+
+    try:
+        rel_path = os.path.relpath(abs_path, kb_root)
+    except ValueError:
+        rel_path = abs_path
+
+    file_modified = 0.0
+    try:
+        file_modified = os.path.getmtime(abs_path)
+    except OSError:
+        pass
+
+    # Extract text per page, keep page number
+    pages = []
+    try:
+        for page_num in range(len(doc)):
+            try:
+                text = doc[page_num].get_text()
+                if text.strip():
+                    pages.append((page_num + 1, text))
+            except Exception:
+                continue
+    finally:
+        doc.close()
+
+    if not pages:
+        return []
+
+    # Chunk each page and tag with page number
+    all_chunks = []
+    for page_num, text in pages:
+        raw = _recursive_split(text, _SPLIT_SEPARATORS, _CHUNK_SIZE, _CHUNK_OVERLAP)
+        for chunk_text in raw:
+            if chunk_text.strip():
+                all_chunks.append((page_num, chunk_text))
+
+    if not all_chunks:
+        return []
+
+    total = len(all_chunks)
+    return [
+        {
+            "text": chunk_text,
+            "metadata": {
+                "source":        rel_path,
+                "filename":      os.path.basename(abs_path),
+                "extension":     "pdf",
+                "chunk_index":   i,
+                "chunk_total":   total,
+                "file_modified": file_modified,
+                "heading":       f"page {page_num}",
+            },
+        }
+        for i, (page_num, chunk_text) in enumerate(all_chunks)
+    ]
 
 
 def chunk_file(abs_path: str, kb_root: str) -> list[dict]:
