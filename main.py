@@ -20,10 +20,9 @@ os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
 os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
 import sys
 from gui.main_window import MainWindow
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QIcon
-from PyQt6.QtCore import QProxyStyle, QStyle
 from core.app_logger import setup_logging
 
 _BASE_PATH = os.path.dirname(os.path.abspath(__file__))
