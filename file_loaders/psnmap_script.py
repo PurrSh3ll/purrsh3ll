@@ -954,6 +954,7 @@ class ScriptLauncher(QWidget):
             _pcv = QListView()
             _pcv.setStyleSheet(self.controller.combo_view_stylesheet)
             self.profile_combo.setView(_pcv)
+            self.controller.__class__.tracked_combos.append(self.profile_combo)
         except Exception:
             pass
         self.profile_combo.setFixedWidth(250)

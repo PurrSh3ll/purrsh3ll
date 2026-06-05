@@ -256,6 +256,7 @@ class BaseFileLoader:
             _mv = QListView()
             _mv.setStyleSheet(self._controller.combo_view_stylesheet)
             self._method_box.setView(_mv)
+            self._controller.__class__.tracked_combos.append(self._method_box)
         except Exception:
             self._method_box.setView(QListView())
         self._method_box.addItems(["find", "replace", "regex", "replace regex"])

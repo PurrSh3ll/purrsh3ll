@@ -135,6 +135,7 @@ class Html_file(ChunkedFileLoader):
                 _hv = QListView()
                 _hv.setStyleSheet(self._controller.combo_view_stylesheet)
                 method_box.setView(_hv)
+                self._controller.__class__.tracked_combos.append(method_box)
             except Exception:
                 method_box.setView(QListView())
 

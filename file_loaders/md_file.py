@@ -169,6 +169,7 @@ class Markdown_file(ChunkedFileLoader):
                 _mdv = QListView()
                 _mdv.setStyleSheet(self._controller.combo_view_stylesheet)
                 method_box.setView(_mdv)
+                self._controller.__class__.tracked_combos.append(method_box)
             except Exception:
                 method_box.setView(QListView())
 

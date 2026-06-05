@@ -410,6 +410,10 @@ def change_theme(controller):
             if hasattr(highlighter, "update_colors"):
                 highlighter.update_colors()
 
+        c.__class__.tracked_combos[:] = [obj for obj in c.__class__.tracked_combos if not isdeleted(obj)]
+        for _combo in c.__class__.tracked_combos:
+            _style_combo(_combo)
+
         # app.setStyleSheet wewnątrz bloku — main_window nie repaintuje
         # podczas rekalkukacji stylu globalnego
         app.setStyleSheet(s["qss_QToolTip"])

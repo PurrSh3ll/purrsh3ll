@@ -170,6 +170,7 @@ class UIMixin:
             _iv = QListView()
             _iv.setStyleSheet(self.controller.combo_view_stylesheet)
             self.cmb_interpreter.setView(_iv)
+            self.controller.__class__.tracked_combos.append(self.cmb_interpreter)
         except Exception:
             pass
         row1.addWidget(lbl_interpreter)
@@ -375,6 +376,7 @@ class UIMixin:
             _pv = QListView()
             _pv.setStyleSheet(self.controller.combo_view_stylesheet)
             self.cmb_priority.setView(_pv)
+            self.controller.__class__.tracked_combos.append(self.cmb_priority)
         except Exception:
             pass
         self.cmb_priority.addItems(priority_levels)

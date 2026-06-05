@@ -144,6 +144,7 @@ class Psc2_file(QWidget):
                     _cv = QListView()
                     _cv.setStyleSheet(self._controller.combo_view_stylesheet)
                     right.setView(_cv)
+                    self._controller.__class__.tracked_combos.append(right)
                 except Exception:
                     pass
                 if isinstance(value, list):
