@@ -90,6 +90,11 @@ class SnippetAddEditDialog(QDialog):
 
         self._cat_combo = QComboBox()
         self._cat_combo.setEditable(True)
+        try:
+            self._cat_combo.setStyleSheet(self.c.combo_stylesheet)
+            self._cat_combo.view().setStyleSheet(self.c.combo_view_stylesheet)
+        except Exception:
+            pass
         for cat in _DEFAULT_CATEGORIES:
             self._cat_combo.addItem(cat)
         saved_cat = self._snippet.get("category", "")

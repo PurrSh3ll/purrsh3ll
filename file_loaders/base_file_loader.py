@@ -251,7 +251,13 @@ class BaseFileLoader:
         control_bar_layout.addWidget(self._search_field)
 
         self._method_box = QComboBox(parent=control_bar_widget)
-        self._method_box.setView(QListView())
+        try:
+            self._method_box.setStyleSheet(self._controller.combo_stylesheet)
+            _mv = QListView()
+            _mv.setStyleSheet(self._controller.combo_view_stylesheet)
+            self._method_box.setView(_mv)
+        except Exception:
+            self._method_box.setView(QListView())
         self._method_box.addItems(["find", "replace", "regex", "replace regex"])
         control_bar_layout.addWidget(self._method_box)
 

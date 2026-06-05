@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QComboBox, QDialog, QPlainTextEdit, QFrame, QToolButton, QMenu, QLineEdit,
-    QFormLayout,
+    QFormLayout, QListView,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QMovie, QAction, QTextOption
@@ -759,6 +759,13 @@ def build_chat_panel(main_window):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         cat_combo = QComboBox(dlg)
+        try:
+            cat_combo.setStyleSheet(c.combo_stylesheet)
+            _cav = QListView()
+            _cav.setStyleSheet(c.combo_view_stylesheet)
+            cat_combo.setView(_cav)
+        except Exception:
+            pass
         cat_combo.addItems(["cli", "web"])
         cat_combo.setCurrentText(chat_combo_interface.currentText())
         form.addRow("Category:", cat_combo)

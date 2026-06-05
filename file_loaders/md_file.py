@@ -163,8 +163,14 @@ class Markdown_file(ChunkedFileLoader):
             search_field.setMinimumWidth(120)
             control_bar_layout.addWidget(search_field)
 
-            method_box = QComboBox(parent= control_bar_widget)
-            method_box.setView(QListView())
+            method_box = QComboBox(parent=control_bar_widget)
+            try:
+                method_box.setStyleSheet(self._controller.combo_stylesheet)
+                _mdv = QListView()
+                _mdv.setStyleSheet(self._controller.combo_view_stylesheet)
+                method_box.setView(_mdv)
+            except Exception:
+                method_box.setView(QListView())
 
             method_box.addItems(["find", "replace", "regex", "replace regex"])
 

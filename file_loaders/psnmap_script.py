@@ -14,7 +14,8 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStackedLayout,
     QComboBox,
-    QInputDialog
+    QInputDialog,
+    QListView,
 )
 
 from PyQt6.QtWidgets import (
@@ -948,6 +949,13 @@ class ScriptLauncher(QWidget):
         top_row.addWidget(self.target_input, 1)
 
         self.profile_combo = QComboBox(self)
+        try:
+            self.profile_combo.setStyleSheet(self.controller.combo_stylesheet)
+            _pcv = QListView()
+            _pcv.setStyleSheet(self.controller.combo_view_stylesheet)
+            self.profile_combo.setView(_pcv)
+        except Exception:
+            pass
         self.profile_combo.setFixedWidth(250)
         self.profile_combo.setFixedHeight(28)
 
