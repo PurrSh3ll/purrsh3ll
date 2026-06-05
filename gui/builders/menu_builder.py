@@ -10,6 +10,7 @@ from PyQt6.QtGui import QAction, QIntValidator
 import os
 import json
 import subprocess
+import threading
 
 from core.controller import controller_instance
 
@@ -1505,12 +1506,12 @@ def build_menu(main_window):
 
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
-            _CTX_DEFAULT = 16_000
+            _ctx_default = [16_000]
 
             class _CtxSpinBox(QSpinBox):
                 def stepBy(self, steps):
                     if self.value() == 0 and steps > 0:
-                        self.setValue(_CTX_DEFAULT + steps * self.singleStep())
+                        self.setValue(_ctx_default[0] + steps * self.singleStep())
                     else:
                         super().stepBy(steps)
 
@@ -1519,8 +1520,86 @@ def build_menu(main_window):
             sb_ctx = _CtxSpinBox()
             sb_ctx.setRange(0, 500_000)
             sb_ctx.setSingleStep(1_000)
-            sb_ctx.setSpecialValueText("default (16 000)")
+            sb_ctx.setSpecialValueText("default (?)")
             sb_ctx.setValue(int(profile.get("context_tokens", 0)))
+
+            if profile.get("provider") == "ollama":
+                import urllib.request as _urllib_req
+
+                _ollama_base = (
+                    profile.get("url", "").rstrip("/")
+                    or _PROVIDER_BASE_URL.get("ollama", "http://localhost:11434")
+                )
+                _ollama_model = profile.get("model", "")
+
+                def _fetch_num_ctx():
+                    try:
+                        body = json.dumps({"name": _ollama_model}).encode()
+                        req = _urllib_req.Request(
+                            f"{_ollama_base}/api/show",
+                            data=body,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with _urllib_req.urlopen(req, timeout=5) as resp:
+                            data = json.loads(resp.read())
+                        # Try model_info first (any key ending in context_length)
+                        num_ctx = None
+                        for k, v in data.get("model_info", {}).items():
+                            if k.endswith("context_length") and isinstance(v, int):
+                                num_ctx = v
+                                break
+                        # Fallback: parse parameters string for num_ctx
+                        if num_ctx is None:
+                            for line in data.get("parameters", "").splitlines():
+                                parts = line.split()
+                                if len(parts) == 2 and parts[0] == "num_ctx":
+                                    try:
+                                        num_ctx = int(parts[1])
+                                    except ValueError:
+                                        pass
+                                    break
+                        if num_ctx and num_ctx > 0:
+                            def _apply():
+                                try:
+                                    from PyQt6.sip import isdeleted
+                                    if isdeleted(sb_ctx):
+                                        return
+                                    _ctx_default[0] = num_ctx
+                                    sb_ctx.setSpecialValueText(
+                                        f"default ({num_ctx:,})"
+                                    )
+                                except Exception:
+                                    pass
+                            QTimer.singleShot(0, _apply)
+                        else:
+                            def _apply_fallback():
+                                try:
+                                    from PyQt6.sip import isdeleted
+                                    if isdeleted(sb_ctx):
+                                        return
+                                    sb_ctx.setSpecialValueText(
+                                        f"default ({_ctx_default[0]:,})"
+                                    )
+                                except Exception:
+                                    pass
+                            QTimer.singleShot(0, _apply_fallback)
+                    except Exception:
+                        def _apply_fallback():
+                            try:
+                                from PyQt6.sip import isdeleted
+                                if isdeleted(sb_ctx):
+                                    return
+                                sb_ctx.setSpecialValueText(
+                                    f"default ({_ctx_default[0]:,})"
+                                )
+                            except Exception:
+                                pass
+                        QTimer.singleShot(0, _apply_fallback)
+
+                threading.Thread(target=_fetch_num_ctx, daemon=True).start()
+            else:
+                sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:,})")
             _CTX_INFO_TEXT = (
                 "Used in app calculations to determine how to split data\n"
                 "(e.g. report generation, psai functions).\n\n"
