@@ -170,11 +170,9 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     body = {"model": model, "messages": msgs, "stream": True}
 
     if provider == "ollama":
-        ollama_opts = {}
+        body["think"] = not disable_thinking
         if num_ctx > 0:
-            ollama_opts["num_ctx"] = num_ctx
-        ollama_opts["think"] = not disable_thinking
-        body["options"] = ollama_opts
+            body["options"] = {"num_ctx": num_ctx}
 
     if custom_params:
         body.update(custom_params)
@@ -198,6 +196,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
     collected = []
+    _in_thinking = [False]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -208,13 +207,28 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                 if data_str == "[DONE]":
                     break
                 try:
-                    delta = json.loads(data_str)["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        sys.stdout.write(delta)
+                    d = json.loads(data_str)["choices"][0]["delta"]
+                    thinking = d.get("reasoning", "")
+                    content  = d.get("content", "")
+                    if thinking:
+                        if not _in_thinking[0]:
+                            sys.stdout.write("\033[2m💭 ")
+                            sys.stdout.flush()
+                            _in_thinking[0] = True
+                        sys.stdout.write(thinking)
                         sys.stdout.flush()
-                        collected.append(delta)
+                    if content:
+                        if _in_thinking[0]:
+                            sys.stdout.write("\033[0m\n")
+                            sys.stdout.flush()
+                            _in_thinking[0] = False
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
+                        collected.append(content)
                 except Exception:
                     pass
+        if _in_thinking[0]:
+            sys.stdout.write("\033[0m\n")
         print()
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code}: {e.read().decode('utf-8', errors='replace')}")
