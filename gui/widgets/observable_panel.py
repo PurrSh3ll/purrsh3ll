@@ -33,7 +33,13 @@ class ObserverRow:
         layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         type_combo = QComboBox()
-        type_combo.setView(QListView())
+        try:
+            type_combo.setStyleSheet(self.c.combo_stylesheet)
+            _tv = QListView()
+            _tv.setStyleSheet(self.c.combo_view_stylesheet)
+            type_combo.setView(_tv)
+        except Exception:
+            type_combo.setView(QListView())
         type_combo.addItems(["static", "dynamic", "command"])
 
         remove_button = QPushButton("🗑️")
@@ -61,6 +67,13 @@ class ObserverRow:
         user_vars_list = self.c.dynamic_vars.get("user_variables", [])
         names = [var.get("name") for var in user_vars_list if var.get("name")]
         dynamic_name_combo = QComboBox()
+        try:
+            dynamic_name_combo.setStyleSheet(self.c.combo_stylesheet)
+            _dv = QListView()
+            _dv.setStyleSheet(self.c.combo_view_stylesheet)
+            dynamic_name_combo.setView(_dv)
+        except Exception:
+            pass
         dynamic_name_combo.addItems(names)
         dynamic_name_combo.setVisible(False)
         dynamic_name_combo.setFixedHeight(ObserverPanel.BTN_SIZE)
