@@ -858,7 +858,7 @@ def build_main_layout(main_window):
 
     def create_rag_status_label():
         lbl = QLabel("", c.widgets["central_widget"])
-        lbl.setFixedWidth(160)
+        lbl.setFixedWidth(180)
         lbl.setFixedHeight(22)
         lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")

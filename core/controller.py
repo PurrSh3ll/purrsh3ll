@@ -247,7 +247,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             from PyQt6.QtCore import QTimer
             if _result == "OK":
                 lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
-                lbl.setText("✔ indexing complete")
+                lbl.setText("✔ RAG indexing complete")
             else:
                 lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
                 lbl.setText(f"✖ {_result[:40]}")

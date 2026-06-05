@@ -900,7 +900,7 @@ def build_menu(main_window):
                 if global_lbl is not None:
                     if result == "OK":
                         global_lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
-                        global_lbl.setText("✔ indexing complete")
+                        global_lbl.setText("✔ RAG indexing complete")
                     else:
                         global_lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
                         global_lbl.setText(f"✖ {result[:40]}")
