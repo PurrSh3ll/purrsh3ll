@@ -185,6 +185,10 @@ def chunk_file(abs_path: str, kb_root: str) -> list[dict]:
     if ext and ext not in SUPPORTED_EXTENSIONS:
         return []
 
+    # PDF: dedicated extractor (binary file — must bypass binary check)
+    if ext == "pdf":
+        return _chunk_pdf(abs_path, kb_root)
+
     if _is_binary(abs_path):
         return []
 
