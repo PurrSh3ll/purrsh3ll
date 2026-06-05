@@ -11,7 +11,7 @@ from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QColor, QIcon, QCursor
 from PyQt6.QtWidgets import (QApplication, QMenu, QToolButton, QPushButton, QWidget,
                               QHBoxLayout, QVBoxLayout, QLineEdit, QLabel, QDialog,
-                              QComboBox, QInputDialog, QSplitter, QFileDialog, QMessageBox)
+                              QComboBox, QInputDialog, QSplitter, QFileDialog, QMessageBox, QListView)
 from QTermWidget import QTermWidget
 from gui.widgets.terminal_wrapper import TerminalWrapper
 
@@ -406,6 +406,13 @@ class TerminalTabsMixin:
         _saved_agent_role = _cfg.get("agent_role", "")
         if _saved_agent_role in _agent_roles:
             _agent_role_combo.setCurrentText(_saved_agent_role)
+        try:
+            _agent_role_combo.setStyleSheet(self.__class__.combo_stylesheet)
+            _rv = QListView()
+            _rv.setStyleSheet(self.__class__.combo_view_stylesheet)
+            _agent_role_combo.setView(_rv)
+        except Exception:
+            pass
         _btn_add_role = QPushButton("+", dlg)
         _btn_add_role.setFixedWidth(24)
         _btn_add_role.setToolTip("Import agent role file")
@@ -432,6 +439,13 @@ class TerminalTabsMixin:
         _saved_skills = _cfg.get("skills_set", "")
         if _saved_skills in _skills:
             _skills_combo.setCurrentText(_saved_skills)
+        try:
+            _skills_combo.setStyleSheet(self.__class__.combo_stylesheet)
+            _sv = QListView()
+            _sv.setStyleSheet(self.__class__.combo_view_stylesheet)
+            _skills_combo.setView(_sv)
+        except Exception:
+            pass
         _btn_add_skills = QPushButton("+", dlg)
         _btn_add_skills.setFixedWidth(24)
         _btn_add_skills.setToolTip("Import skills set folder")
