@@ -47,6 +47,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     text_loaders = []
     text_highlighters = []
     tracked_combos = []
+    tracked_tables = []
     change_theme_limit_tabs = 30
     open_loaders = {}
     threads = []

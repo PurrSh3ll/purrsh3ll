@@ -336,6 +336,7 @@ def change_theme(controller):
         c.__class__.button_stylesheet = s["qss_QPushButton"]
         c.__class__.combo_stylesheet = s["qss_QComboBox"]
         c.__class__.combo_view_stylesheet = s["qss_QComboBox_view"]
+        c.__class__.table_stylesheet = s["qss_QTable"]
         c.__class__.dialog_stylesheet = s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"]
         c.__class__.chat_panel_dialog_stylesheet = (
             s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
@@ -413,6 +414,10 @@ def change_theme(controller):
         c.__class__.tracked_combos[:] = [obj for obj in c.__class__.tracked_combos if not isdeleted(obj)]
         for _combo in c.__class__.tracked_combos:
             _style_combo(_combo)
+
+        c.__class__.tracked_tables[:] = [obj for obj in c.__class__.tracked_tables if not isdeleted(obj)]
+        for _table in c.__class__.tracked_tables:
+            _table.setStyleSheet(s["qss_QTable"])
 
         # app.setStyleSheet wewnątrz bloku — main_window nie repaintuje
         # podczas rekalkukacji stylu globalnego

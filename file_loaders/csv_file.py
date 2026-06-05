@@ -430,6 +430,11 @@ class Csv_file(ChunkedFileLoader):
         table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        try:
+            table_view.setStyleSheet(self.parent.table_stylesheet)
+            self.parent.__class__.tracked_tables.append(table_view)
+        except Exception:
+            pass
         layout.addWidget(table_view)
 
         # ── Raw text view ──────────────────────────────────────────────────

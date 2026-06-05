@@ -131,25 +131,35 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
         """
 
     qss_QTable = f"""
-        QTableWidget {{
+        QTableWidget, QTableView {{
             background-color: {bg.get("side_frame", "#343436")};
             gridline-color: {gl.get("table", "#555555")};
             selection-background-color: {bg.get("buttons_pressed", "#2C5F8F")};
             selection-color: {fg.get("text", "#ffffff")};
             alternate-background-color: {bg.get("table_alt", "#3D3D40")};
             color: {fg.get("text", "#ffffff")};
-
         }}
-        QTableWidget::item:selected {{
+        QTableWidget::item, QTableView::item {{
+            background-color: {bg.get("side_frame", "#343436")};
+            color: {fg.get("text", "#ffffff")};
+        }}
+        QTableWidget::item:selected, QTableView::item:selected {{
             background-color: {bg.get("buttons_pressed", "#2C5F8F")};
             color: {fg.get("table_selected", "#ffffff")};
         }}
-
+        QTableWidget::item:alternate, QTableView::item:alternate {{
+            background-color: {bg.get("table_alt", "#3D3D40")};
+            color: {fg.get("text", "#ffffff")};
+        }}
         QHeaderView::section {{
             background-color: {bg.get("table_header", "#2B2D30")};
             color: {fg.get("text", "#ffffff")};
             border: 1px solid {gl.get("table", "#555555")};
             padding: 4px;
+        }}
+        QTableCornerButton::section {{
+            background-color: {bg.get("table_header", "#2B2D30")};
+            border: 1px solid {gl.get("table", "#555555")};
         }}
         """
 
