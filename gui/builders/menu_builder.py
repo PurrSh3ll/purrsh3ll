@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
+    QListView,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QApplication
@@ -1191,6 +1192,13 @@ def build_menu(main_window):
             f_provider.addItems(_PROVIDER_TYPES)
             if d.get("provider") in _PROVIDER_TYPES:
                 f_provider.setCurrentText(d["provider"])
+            try:
+                f_provider.setStyleSheet(c.combo_stylesheet)
+                _pv = QListView()
+                _pv.setStyleSheet(c.combo_view_stylesheet)
+                f_provider.setView(_pv)
+            except Exception:
+                pass
             f_url = QLineEdit(d.get("url", ""))
 
             # Model: editable combo + Fetch button

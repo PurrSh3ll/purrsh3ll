@@ -1,5 +1,5 @@
 from gui.widgets.observable_panel import ObserverPanel
-from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QToolButton, QPushButton
+from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QToolButton, QPushButton, QListView
 from PyQt6.QtCore import QTimer
 from PyQt6.sip import isdeleted
 
@@ -91,12 +91,14 @@ def change_theme(controller):
     s.update(build_terminal_styles(bg, fg, bd))
 
     def _style_combo(combo):
-        """Apply combo widget style + popup view style directly to guarantee correct dropdown colors."""
+        """Apply combo widget style + install a pre-styled QListView as the popup view."""
         if combo is None:
             return
         try:
             combo.setStyleSheet(s["qss_QComboBox"])
-            combo.view().setStyleSheet(s["qss_QComboBox_view"])
+            _view = QListView()
+            _view.setStyleSheet(s["qss_QComboBox_view"])
+            combo.setView(_view)
         except Exception:
             pass
 
