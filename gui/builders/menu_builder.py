@@ -686,14 +686,50 @@ def build_menu(main_window):
         rag_path_row.addWidget(rag_browse_btn)
         form_rag.addRow("Path:", rag_path_row)
 
+        _custom_emb_models = _rag_cfg.get("custom_embedding_models", [])
+
         rag_model_combo = QComboBox(grp_rag)
         for _label, _val in _RAG_MODELS:
             rag_model_combo.addItem(_label, _val)
+        for _cm in _custom_emb_models:
+            if _cm.get("type") == "hf":
+                _cv = f"hf:{_cm['model_id']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
+            else:
+                _cv = f"local:{_cm['path']}"
+            rag_model_combo.addItem(f"[custom] {_cm.get('label', _cv)}", _cv)
         _saved_idx = next(
-            (i for i, (_, v) in enumerate(_RAG_MODELS) if v == _saved_model), 0
+            (i for i in range(rag_model_combo.count())
+             if rag_model_combo.itemData(i) == _saved_model), 0
         )
         rag_model_combo.setCurrentIndex(_saved_idx)
         form_rag.addRow("Embedding model:", rag_model_combo)
+
+        # ── Custom embedding model ─────────────────────────────────────────────
+        _emb_radio_hf    = QRadioButton("HuggingFace ID", grp_rag)
+        _emb_radio_local = QRadioButton("Local file",     grp_rag)
+        _emb_radio_hf.setChecked(True)
+        _emb_radio_row = QHBoxLayout()
+        _emb_radio_row.addWidget(_emb_radio_hf)
+        _emb_radio_row.addWidget(_emb_radio_local)
+        _emb_radio_row.addStretch(1)
+        form_rag.addRow("Custom embed:", _emb_radio_row)
+
+        _emb_custom_input = QLineEdit(grp_rag)
+        _emb_custom_input.setPlaceholderText("org/model-name")
+        _emb_custom_onnx  = QLineEdit(grp_rag)
+        _emb_custom_onnx.setText("onnx/model.onnx")
+        _emb_custom_onnx.setFixedWidth(130)
+        _emb_custom_browse = QPushButton("Browse", grp_rag)
+        _emb_custom_browse.setFixedWidth(60)
+        _emb_custom_browse.setVisible(False)
+        _emb_custom_add = QPushButton("+ Add", grp_rag)
+        _emb_custom_add.setFixedWidth(50)
+        _emb_input_row = QHBoxLayout()
+        _emb_input_row.addWidget(_emb_custom_input)
+        _emb_input_row.addWidget(_emb_custom_onnx)
+        _emb_input_row.addWidget(_emb_custom_browse)
+        _emb_input_row.addWidget(_emb_custom_add)
+        form_rag.addRow("", _emb_input_row)
 
         _rag_auto_index = _rag_cfg.get("auto_index", False)
         rag_auto_checkbox = QCheckBox("Enable automatic indexing", grp_rag)
@@ -735,16 +771,51 @@ def build_menu(main_window):
         ]
         _DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
         _saved_rerank_model   = _rag_cfg.get("rerank_model", _DEFAULT_RERANK_MODEL)
+        _custom_rerank_models = _rag_cfg.get("custom_rerank_models", [])
 
         rag_rerank_combo = QComboBox(grp_rag)
         for _label, _val in _RERANK_MODELS:
             rag_rerank_combo.addItem(_label, _val)
+        for _cm in _custom_rerank_models:
+            if _cm.get("type") == "hf":
+                _cv = f"hf:{_cm['model_id']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
+            else:
+                _cv = f"local:{_cm['path']}"
+            rag_rerank_combo.addItem(f"[custom] {_cm.get('label', _cv)}", _cv)
         _saved_rerank_idx = next(
-            (i for i, (_, v) in enumerate(_RERANK_MODELS) if v == _saved_rerank_model), 0
+            (i for i in range(rag_rerank_combo.count())
+             if rag_rerank_combo.itemData(i) == _saved_rerank_model), 0
         )
         rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
         rag_rerank_combo.setEnabled(bool(_rag_rerank))
         form_rag.addRow("Rerank model:", rag_rerank_combo)
+
+        # ── Custom rerank model ────────────────────────────────────────────────
+        _rnk_radio_hf    = QRadioButton("HuggingFace ID", grp_rag)
+        _rnk_radio_local = QRadioButton("Local file",     grp_rag)
+        _rnk_radio_hf.setChecked(True)
+        _rnk_radio_row = QHBoxLayout()
+        _rnk_radio_row.addWidget(_rnk_radio_hf)
+        _rnk_radio_row.addWidget(_rnk_radio_local)
+        _rnk_radio_row.addStretch(1)
+        form_rag.addRow("Custom rerank:", _rnk_radio_row)
+
+        _rnk_custom_input = QLineEdit(grp_rag)
+        _rnk_custom_input.setPlaceholderText("org/model-name")
+        _rnk_custom_onnx  = QLineEdit(grp_rag)
+        _rnk_custom_onnx.setText("onnx/model.onnx")
+        _rnk_custom_onnx.setFixedWidth(130)
+        _rnk_custom_browse = QPushButton("Browse", grp_rag)
+        _rnk_custom_browse.setFixedWidth(60)
+        _rnk_custom_browse.setVisible(False)
+        _rnk_custom_add = QPushButton("+ Add", grp_rag)
+        _rnk_custom_add.setFixedWidth(50)
+        _rnk_input_row = QHBoxLayout()
+        _rnk_input_row.addWidget(_rnk_custom_input)
+        _rnk_input_row.addWidget(_rnk_custom_onnx)
+        _rnk_input_row.addWidget(_rnk_custom_browse)
+        _rnk_input_row.addWidget(_rnk_custom_add)
+        form_rag.addRow("", _rnk_input_row)
 
         rag_status_label = QLabel("", grp_rag)
         rag_status_label.setStyleSheet("color: gray; font-size: 11px;")
@@ -893,6 +964,114 @@ def build_menu(main_window):
         def _on_rag_rerank_model_changed(idx):
             _save_rag_key("rerank_model", rag_rerank_combo.itemData(idx))
 
+        # ── Custom embedding model handlers ────────────────────────────────────
+        def _emb_mode_toggled():
+            is_local = _emb_radio_local.isChecked()
+            _emb_custom_onnx.setVisible(not is_local)
+            _emb_custom_browse.setVisible(is_local)
+            _emb_custom_input.setPlaceholderText(
+                "Select .onnx file via Browse" if is_local else "org/model-name"
+            )
+
+        def _emb_browse():
+            from PyQt6.QtWidgets import QFileDialog
+            path, _ = QFileDialog.getOpenFileName(
+                dlg, "Select ONNX model file", "", "ONNX files (*.onnx)"
+            )
+            if path:
+                _emb_custom_input.setText(path)
+
+        def _emb_add():
+            from PyQt6.QtWidgets import QMessageBox
+            text = _emb_custom_input.text().strip()
+            if not text:
+                QMessageBox.warning(dlg, "Custom model", "Please enter a model ID or select a file.")
+                return
+            if _emb_radio_local.isChecked():
+                if not os.path.isfile(text):
+                    QMessageBox.warning(dlg, "Custom model", f"File not found:\n{text}")
+                    return
+                val   = f"local:{text}"
+                label = f"[custom] {os.path.basename(text)}"
+                entry = {"type": "local", "label": os.path.basename(text), "path": text}
+            else:
+                onnx_path = _emb_custom_onnx.text().strip() or "onnx/model.onnx"
+                val   = f"hf:{text}:{onnx_path}"
+                label = f"[custom] {text}"
+                entry = {"type": "hf", "label": text, "model_id": text, "onnx_path": onnx_path}
+            # Check duplicate
+            for i in range(rag_model_combo.count()):
+                if rag_model_combo.itemData(i) == val:
+                    QMessageBox.information(dlg, "Custom model", "This model is already in the list.")
+                    return
+            rag_model_combo.addItem(label, val)
+            rag_model_combo.setCurrentIndex(rag_model_combo.count() - 1)
+            # Save to config
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                _cfg.setdefault("rag", {}).setdefault("custom_embedding_models", []).append(entry)
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(_cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+            _emb_custom_input.clear()
+
+        # ── Custom rerank model handlers ───────────────────────────────────────
+        def _rnk_mode_toggled():
+            is_local = _rnk_radio_local.isChecked()
+            _rnk_custom_onnx.setVisible(not is_local)
+            _rnk_custom_browse.setVisible(is_local)
+            _rnk_custom_input.setPlaceholderText(
+                "Select .onnx file via Browse" if is_local else "org/model-name"
+            )
+
+        def _rnk_browse():
+            from PyQt6.QtWidgets import QFileDialog
+            path, _ = QFileDialog.getOpenFileName(
+                dlg, "Select ONNX reranker file", "", "ONNX files (*.onnx)"
+            )
+            if path:
+                _rnk_custom_input.setText(path)
+
+        def _rnk_add():
+            from PyQt6.QtWidgets import QMessageBox
+            text = _rnk_custom_input.text().strip()
+            if not text:
+                QMessageBox.warning(dlg, "Custom model", "Please enter a model ID or select a file.")
+                return
+            if _rnk_radio_local.isChecked():
+                if not os.path.isfile(text):
+                    QMessageBox.warning(dlg, "Custom model", f"File not found:\n{text}")
+                    return
+                val   = f"local:{text}"
+                label = f"[custom] {os.path.basename(text)}"
+                entry = {"type": "local", "label": os.path.basename(text), "path": text}
+            else:
+                onnx_path = _rnk_custom_onnx.text().strip() or "onnx/model.onnx"
+                val   = f"hf:{text}:{onnx_path}"
+                label = f"[custom] {text}"
+                entry = {"type": "hf", "label": text, "model_id": text, "onnx_path": onnx_path}
+            for i in range(rag_rerank_combo.count()):
+                if rag_rerank_combo.itemData(i) == val:
+                    QMessageBox.information(dlg, "Custom model", "This model is already in the list.")
+                    return
+            rag_rerank_combo.addItem(label, val)
+            rag_rerank_combo.setCurrentIndex(rag_rerank_combo.count() - 1)
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                _cfg.setdefault("rag", {}).setdefault("custom_rerank_models", []).append(entry)
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(_cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+            _rnk_custom_input.clear()
+
         _spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         _spinner_idx = [0]
 
@@ -1009,6 +1188,14 @@ def build_menu(main_window):
         rag_auto_checkbox.stateChanged.connect(_on_rag_auto_index_changed)
         rag_rerank_checkbox.stateChanged.connect(_on_rag_rerank_changed)
         rag_rerank_combo.currentIndexChanged.connect(_on_rag_rerank_model_changed)
+        _emb_radio_hf.toggled.connect(_emb_mode_toggled)
+        _emb_radio_local.toggled.connect(_emb_mode_toggled)
+        _emb_custom_browse.clicked.connect(_emb_browse)
+        _emb_custom_add.clicked.connect(_emb_add)
+        _rnk_radio_hf.toggled.connect(_rnk_mode_toggled)
+        _rnk_radio_local.toggled.connect(_rnk_mode_toggled)
+        _rnk_custom_browse.clicked.connect(_rnk_browse)
+        _rnk_custom_add.clicked.connect(_rnk_add)
         rag_reindex_btn.clicked.connect(_on_rag_reindex)
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)

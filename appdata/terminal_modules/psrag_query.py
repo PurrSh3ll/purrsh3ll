@@ -58,21 +58,61 @@ def _active_profile(config: dict) -> dict:
 
 # ── RAG pipeline ──────────────────────────────────────────────────────────────
 
+def _load_embedding_model(model_name: str, cache_dir: str):
+    """Load embedding model — supports built-in, custom HF ('hf:org/repo:onnx/path')
+    and local ONNX ('local:/path/to/model.onnx') models."""
+    import warnings
+    kwargs = {}
+    if cache_dir:
+        kwargs["cache_dir"] = cache_dir
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if model_name.startswith("hf:"):
+            from fastembed.text.custom_text_embedding import CustomTextEmbedding
+            from fastembed.common.model_description import DenseModelDescription, ModelSource, PoolingType
+            rest     = model_name[3:]
+            parts    = rest.split(":", 1)
+            hf_id    = parts[0]
+            onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            if not any(m["model"] == hf_id for m in CustomTextEmbedding.list_supported_models()):
+                CustomTextEmbedding.add_model(
+                    DenseModelDescription(model=hf_id, sources=ModelSource(hf=hf_id),
+                                         model_file=onnx_rel, description=f"Custom: {hf_id}",
+                                         license="unknown", size_in_GB=0.5),
+                    PoolingType.MEAN, True,
+                )
+            return CustomTextEmbedding(model_name=hf_id, **kwargs)
+        if model_name.startswith("local:"):
+            from fastembed.text.custom_text_embedding import CustomTextEmbedding
+            from fastembed.common.model_description import DenseModelDescription, ModelSource, PoolingType
+            local_path = model_name[6:]
+            model_dir  = os.path.dirname(os.path.abspath(local_path))
+            onnx_file  = os.path.basename(local_path)
+            model_key  = f"local:{local_path}"
+            if not any(m["model"] == model_key for m in CustomTextEmbedding.list_supported_models()):
+                CustomTextEmbedding.add_model(
+                    DenseModelDescription(model=model_key, sources=ModelSource(),
+                                         model_file=onnx_file, description="Local ONNX",
+                                         license="unknown", size_in_GB=0.5),
+                    PoolingType.MEAN, True,
+                )
+            return CustomTextEmbedding(model_name=model_key, specific_model_path=model_dir, **kwargs)
+        from fastembed import TextEmbedding
+        return TextEmbedding(model_name=model_name, **kwargs)
+
+
 def _embed(query: str, model_name: str, cache_dir: str) -> list:
     try:
-        from fastembed import TextEmbedding
+        from fastembed import TextEmbedding  # noqa: F401 — ensure fastembed is installed
     except ImportError:
         _err("fastembed is not installed. Run: pip install fastembed")
         sys.exit(1)
 
-    kwargs = {"model_name": model_name}
-    if cache_dir:
-        kwargs["cache_dir"] = cache_dir
     import warnings
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            model = TextEmbedding(**kwargs)
+            model = _load_embedding_model(model_name, cache_dir)
         try:
             vec = [v.tolist() for v in model.embed([query])][0]
         finally:
@@ -130,21 +170,53 @@ _RERANK_MODEL_DEFAULT = "Xenova/ms-marco-MiniLM-L-6-v2"
 _RERANK_POOL          = 20   # fetch this many chunks before re-ranking
 
 
+def _load_rerank_model(model_name: str, cache_dir: str):
+    """Load rerank model — supports built-in, custom HF ('hf:org/repo:onnx/path')
+    and local ONNX ('local:/path/to/model.onnx') models."""
+    import warnings
+    kwargs = {"cache_dir": cache_dir} if cache_dir else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if model_name.startswith("hf:"):
+            from fastembed.rerank.cross_encoder.custom_text_cross_encoder import CustomTextCrossEncoder
+            from fastembed.common.model_description import BaseModelDescription, ModelSource
+            rest     = model_name[3:]
+            parts    = rest.split(":", 1)
+            hf_id    = parts[0]
+            onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            if not any(m["model"] == hf_id for m in CustomTextCrossEncoder.list_supported_models()):
+                CustomTextCrossEncoder.add_model(
+                    BaseModelDescription(model=hf_id, sources=ModelSource(hf=hf_id),
+                                         model_file=onnx_rel, description=f"Custom: {hf_id}",
+                                         license="unknown", size_in_GB=0.5)
+                )
+            return CustomTextCrossEncoder(model_name=hf_id, **kwargs)
+        if model_name.startswith("local:"):
+            from fastembed.rerank.cross_encoder.custom_text_cross_encoder import CustomTextCrossEncoder
+            from fastembed.common.model_description import BaseModelDescription, ModelSource
+            local_path = model_name[6:]
+            model_dir  = os.path.dirname(os.path.abspath(local_path))
+            onnx_file  = os.path.basename(local_path)
+            model_key  = f"local:{local_path}"
+            if not any(m["model"] == model_key for m in CustomTextCrossEncoder.list_supported_models()):
+                CustomTextCrossEncoder.add_model(
+                    BaseModelDescription(model=model_key, sources=ModelSource(),
+                                         model_file=onnx_file, description="Local ONNX reranker",
+                                         license="unknown", size_in_GB=0.5)
+                )
+            return CustomTextCrossEncoder(model_name=model_key, specific_model_path=model_dir, **kwargs)
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        return TextCrossEncoder(model_name=model_name, **kwargs)
+
+
 def _rerank(chunks: list, query: str, model_name: str, cache_dir: str) -> list:
     """Re-rank chunks using a cross-encoder model (fastembed, ONNX — no PyTorch needed)."""
-    try:
-        from fastembed.rerank.cross_encoder import TextCrossEncoder
-    except ImportError:
-        _info("fastembed TextCrossEncoder not available — skipping re-rank.")
-        return chunks
-
     import warnings
     texts = [c["text"] for c in chunks]
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            model = TextCrossEncoder(model_name=model_name,
-                                     cache_dir=cache_dir or None)
+            model = _load_rerank_model(model_name, cache_dir)
         scores = list(model.rerank(query, texts))
         del model
         gc.collect()
