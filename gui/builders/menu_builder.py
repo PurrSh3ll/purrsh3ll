@@ -1706,7 +1706,35 @@ def build_menu(main_window):
             if pdlg.exec() != QDialog.DialogCode.Accepted:
                 return
             profile = _profile_from_fields(fields)
-            if not profile["name"]:
+            name = profile["name"].strip()
+            if not name:
+                from PyQt6.QtWidgets import QMessageBox
+                mb = QMessageBox(dlg)
+                mb.setWindowTitle("Name required")
+                mb.setText("Profile name cannot be empty.\nPlease enter a name and try again.")
+                mb.setIcon(QMessageBox.Icon.Warning)
+                try:
+                    mb.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+                mb.exec()
+                return
+            existing = [
+                providers_table.item(r, 0).text()
+                for r in range(providers_table.rowCount())
+                if providers_table.item(r, 0)
+            ]
+            if name in existing:
+                from PyQt6.QtWidgets import QMessageBox
+                mb = QMessageBox(dlg)
+                mb.setWindowTitle("Duplicate name")
+                mb.setText(f"A profile named \"{name}\" already exists.\nPlease choose a different name.")
+                mb.setIcon(QMessageBox.Icon.Warning)
+                try:
+                    mb.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+                mb.exec()
                 return
             _insert_table_row(providers_table.rowCount(), profile)
             _save_api_key(profile["name"], fields["key"].text())
