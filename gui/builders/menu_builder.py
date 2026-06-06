@@ -635,17 +635,11 @@ def build_menu(main_window):
         _rag_custom_path = _rag_cfg.get("custom_path", "")
 
         _RAG_MODELS = [
-            ("bge-small-en-v1.5  (67 MB, EN)",
-             "BAAI/bge-small-en-v1.5"),
-            ("nomic-embed-text-v1.5-Q  (130 MB, EN, quantized, 8192 ctx)",
-             "nomic-ai/nomic-embed-text-v1.5-Q"),
-            ("paraphrase-multilingual-MiniLM-L12-v2  (220 MB, EN, PL, DE, FR, ES, ZH, RU, AR)",
-             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
-            ("bge-base-en-v1.5  (210 MB, EN)",
-             "BAAI/bge-base-en-v1.5"),
-
-            ("paraphrase-multilingual-mpnet-base-v2  (1.0 GB, EN, PL, DE, FR, ES, ZH, RU, AR)",
-             "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
+            ("bge-small-en-v1.5",                          "BAAI/bge-small-en-v1.5"),
+            ("nomic-embed-text-v1.5-Q",                    "nomic-ai/nomic-embed-text-v1.5-Q"),
+            ("paraphrase-multilingual-MiniLM-L12-v2",      "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
+            ("bge-base-en-v1.5",                           "BAAI/bge-base-en-v1.5"),
+            ("paraphrase-multilingual-mpnet-base-v2",      "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
         ]
         _DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
@@ -754,18 +748,12 @@ def build_menu(main_window):
         form_rag.addRow("Re-ranking:", rag_rerank_checkbox)
 
         _RERANK_MODELS = [
-            ("ms-marco-MiniLM-L-6-v2  (80 MB, EN, fastest)",
-             "Xenova/ms-marco-MiniLM-L-6-v2"),
-            ("ms-marco-MiniLM-L-12-v2  (120 MB, EN, accurate)",
-             "Xenova/ms-marco-MiniLM-L-12-v2"),
-            ("jina-reranker-v1-tiny-en  (130 MB, EN)",
-             "jinaai/jina-reranker-v1-tiny-en"),
-            ("jina-reranker-v1-turbo-en  (150 MB, EN)",
-             "jinaai/jina-reranker-v1-turbo-en"),
-            ("bge-reranker-base  (1.04 GB, EN + ZH)",
-             "BAAI/bge-reranker-base"),
-            ("jina-reranker-v2-base-multilingual  (1.11 GB, EN, PL, DE, FR, ES, ZH)",
-             "jinaai/jina-reranker-v2-base-multilingual"),
+            ("ms-marco-MiniLM-L-6-v2",            "Xenova/ms-marco-MiniLM-L-6-v2"),
+            ("ms-marco-MiniLM-L-12-v2",           "Xenova/ms-marco-MiniLM-L-12-v2"),
+            ("jina-reranker-v1-tiny-en",           "jinaai/jina-reranker-v1-tiny-en"),
+            ("jina-reranker-v1-turbo-en",          "jinaai/jina-reranker-v1-turbo-en"),
+            ("bge-reranker-base",                  "BAAI/bge-reranker-base"),
+            ("jina-reranker-v2-base-multilingual", "jinaai/jina-reranker-v2-base-multilingual"),
         ]
         _DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
         _saved_rerank_model   = _rag_cfg.get("rerank_model", _DEFAULT_RERANK_MODEL)
@@ -806,9 +794,7 @@ def build_menu(main_window):
                     if _d in _seen_dirs:
                         continue
                     _seen_dirs.add(_d)
-                    _mb = _dir_size_mb(_d) if _d else 0
-                    _short = _label.split("  (")[0].strip()
-                    item = QListWidgetItem(f"[Embed]   {_short}  —  {_mb:.0f} MB")
+                    item = QListWidgetItem(f"[Embed]   {_label}")
                     item.setData(Qt.ItemDataRole.UserRole, ("embed", _val))
                     rag_dl_list.addItem(item)
             for _label, _val in _RERANK_MODELS:
@@ -817,9 +803,7 @@ def build_menu(main_window):
                     if _d in _seen_dirs:
                         continue
                     _seen_dirs.add(_d)
-                    _mb = _dir_size_mb(_d) if _d else 0
-                    _short = _label.split("  (")[0].strip()
-                    item = QListWidgetItem(f"[Rerank]  {_short}  —  {_mb:.0f} MB")
+                    item = QListWidgetItem(f"[Rerank]  {_label}")
                     item.setData(Qt.ItemDataRole.UserRole, ("rerank", _val))
                     rag_dl_list.addItem(item)
             rag_dl_remove_btn.setEnabled(False)
@@ -838,19 +822,12 @@ def build_menu(main_window):
             cache_path = _cache_dir_for(model_id, cache_map)
             if not cache_path:
                 return
-            active_embed  = rag_model_combo.currentData() or ""
-            active_rerank = rag_rerank_combo.currentData() or ""
-            is_active = (
-                (kind == "embed"  and model_id == active_embed) or
-                (kind == "rerank" and model_id == active_rerank)
-            )
             from PyQt6.QtWidgets import QMessageBox
             import shutil
-            if is_active:
-                kind_label = "Embedding" if kind == "embed" else "Rerank"
+            if kind == "embed" and model_id == (rag_model_combo.currentData() or ""):
                 QMessageBox.warning(
                     dlg, "Cannot delete",
-                    f"This model is currently selected as the active {kind_label} model.\n\n"
+                    "This model is currently selected as the active Embedding model.\n\n"
                     "Select a different model first, then delete this one."
                 )
                 return
