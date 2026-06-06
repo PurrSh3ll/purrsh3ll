@@ -695,7 +695,7 @@ def build_menu(main_window):
             if _cm.get("type") == "hf":
                 _cv = f"hf:{_cm['model_id']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
             else:
-                _cv = f"local:{_cm['path']}"
+                _cv = f"local:{_cm['path']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
             rag_model_combo.addItem(f"[custom] {_cm.get('label', _cv)}", _cv)
         _saved_idx = next(
             (i for i in range(rag_model_combo.count())
@@ -780,7 +780,7 @@ def build_menu(main_window):
             if _cm.get("type") == "hf":
                 _cv = f"hf:{_cm['model_id']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
             else:
-                _cv = f"local:{_cm['path']}"
+                _cv = f"local:{_cm['path']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
             rag_rerank_combo.addItem(f"[custom] {_cm.get('label', _cv)}", _cv)
         _saved_rerank_idx = next(
             (i for i in range(rag_rerank_combo.count())
@@ -967,38 +967,37 @@ def build_menu(main_window):
         # ── Custom embedding model handlers ────────────────────────────────────
         def _emb_mode_toggled():
             is_local = _emb_radio_local.isChecked()
-            _emb_custom_onnx.setVisible(not is_local)
             _emb_custom_browse.setVisible(is_local)
             _emb_custom_input.setPlaceholderText(
-                "Select .onnx file via Browse" if is_local else "org/model-name"
+                "Select model directory via Browse" if is_local else "org/model-name"
             )
 
         def _emb_browse():
             from PyQt6.QtWidgets import QFileDialog
-            path, _ = QFileDialog.getOpenFileName(
-                dlg, "Select ONNX model file", "", "ONNX files (*.onnx)"
+            folder = QFileDialog.getExistingDirectory(
+                dlg, "Select model root directory", ""
             )
-            if path:
-                _emb_custom_input.setText(path)
+            if folder:
+                _emb_custom_input.setText(folder)
 
         def _emb_add():
             from PyQt6.QtWidgets import QMessageBox
             text = _emb_custom_input.text().strip()
             if not text:
-                QMessageBox.warning(dlg, "Custom model", "Please enter a model ID or select a file.")
+                QMessageBox.warning(dlg, "Custom model", "Please enter a model ID or select a directory.")
                 return
+            onnx_rel = _emb_custom_onnx.text().strip() or "onnx/model.onnx"
             if _emb_radio_local.isChecked():
-                if not os.path.isfile(text):
-                    QMessageBox.warning(dlg, "Custom model", f"File not found:\n{text}")
+                if not os.path.isdir(text):
+                    QMessageBox.warning(dlg, "Custom model", f"Directory not found:\n{text}")
                     return
-                val   = f"local:{text}"
+                val   = f"local:{text}:{onnx_rel}"
                 label = f"[custom] {os.path.basename(text)}"
-                entry = {"type": "local", "label": os.path.basename(text), "path": text}
+                entry = {"type": "local", "label": os.path.basename(text), "path": text, "onnx_path": onnx_rel}
             else:
-                onnx_path = _emb_custom_onnx.text().strip() or "onnx/model.onnx"
-                val   = f"hf:{text}:{onnx_path}"
+                val   = f"hf:{text}:{onnx_rel}"
                 label = f"[custom] {text}"
-                entry = {"type": "hf", "label": text, "model_id": text, "onnx_path": onnx_path}
+                entry = {"type": "hf", "label": text, "model_id": text, "onnx_path": onnx_rel}
             # Check duplicate
             for i in range(rag_model_combo.count()):
                 if rag_model_combo.itemData(i) == val:
@@ -1022,38 +1021,37 @@ def build_menu(main_window):
         # ── Custom rerank model handlers ───────────────────────────────────────
         def _rnk_mode_toggled():
             is_local = _rnk_radio_local.isChecked()
-            _rnk_custom_onnx.setVisible(not is_local)
             _rnk_custom_browse.setVisible(is_local)
             _rnk_custom_input.setPlaceholderText(
-                "Select .onnx file via Browse" if is_local else "org/model-name"
+                "Select model directory via Browse" if is_local else "org/model-name"
             )
 
         def _rnk_browse():
             from PyQt6.QtWidgets import QFileDialog
-            path, _ = QFileDialog.getOpenFileName(
-                dlg, "Select ONNX reranker file", "", "ONNX files (*.onnx)"
+            folder = QFileDialog.getExistingDirectory(
+                dlg, "Select model root directory", ""
             )
-            if path:
-                _rnk_custom_input.setText(path)
+            if folder:
+                _rnk_custom_input.setText(folder)
 
         def _rnk_add():
             from PyQt6.QtWidgets import QMessageBox
             text = _rnk_custom_input.text().strip()
             if not text:
-                QMessageBox.warning(dlg, "Custom model", "Please enter a model ID or select a file.")
+                QMessageBox.warning(dlg, "Custom model", "Please enter a model ID or select a directory.")
                 return
+            onnx_rel = _rnk_custom_onnx.text().strip() or "onnx/model.onnx"
             if _rnk_radio_local.isChecked():
-                if not os.path.isfile(text):
-                    QMessageBox.warning(dlg, "Custom model", f"File not found:\n{text}")
+                if not os.path.isdir(text):
+                    QMessageBox.warning(dlg, "Custom model", f"Directory not found:\n{text}")
                     return
-                val   = f"local:{text}"
+                val   = f"local:{text}:{onnx_rel}"
                 label = f"[custom] {os.path.basename(text)}"
-                entry = {"type": "local", "label": os.path.basename(text), "path": text}
+                entry = {"type": "local", "label": os.path.basename(text), "path": text, "onnx_path": onnx_rel}
             else:
-                onnx_path = _rnk_custom_onnx.text().strip() or "onnx/model.onnx"
-                val   = f"hf:{text}:{onnx_path}"
+                val   = f"hf:{text}:{onnx_rel}"
                 label = f"[custom] {text}"
-                entry = {"type": "hf", "label": text, "model_id": text, "onnx_path": onnx_path}
+                entry = {"type": "hf", "label": text, "model_id": text, "onnx_path": onnx_rel}
             for i in range(rag_rerank_combo.count()):
                 if rag_rerank_combo.itemData(i) == val:
                     QMessageBox.information(dlg, "Custom model", "This model is already in the list.")

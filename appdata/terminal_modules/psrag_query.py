@@ -60,7 +60,7 @@ def _active_profile(config: dict) -> dict:
 
 def _load_embedding_model(model_name: str, cache_dir: str):
     """Load embedding model — supports built-in, custom HF ('hf:org/repo:onnx/path')
-    and local ONNX ('local:/path/to/model.onnx') models."""
+    and local ONNX ('local:/model/dir:onnx/model.onnx') models."""
     import warnings
     kwargs = {}
     if cache_dir:
@@ -74,26 +74,34 @@ def _load_embedding_model(model_name: str, cache_dir: str):
             parts    = rest.split(":", 1)
             hf_id    = parts[0]
             onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
-            if not any(m["model"] == hf_id for m in CustomTextEmbedding.list_supported_models()):
+            if not any(m.model == hf_id for m in CustomTextEmbedding.SUPPORTED_MODELS):
                 CustomTextEmbedding.add_model(
                     DenseModelDescription(model=hf_id, sources=ModelSource(hf=hf_id),
                                          model_file=onnx_rel, description=f"Custom: {hf_id}",
-                                         license="unknown", size_in_GB=0.5),
+                                         license="unknown", size_in_GB=0.5, dim=384),
                     PoolingType.MEAN, True,
                 )
             return CustomTextEmbedding(model_name=hf_id, **kwargs)
         if model_name.startswith("local:"):
             from fastembed.text.custom_text_embedding import CustomTextEmbedding
             from fastembed.common.model_description import DenseModelDescription, ModelSource, PoolingType
-            local_path = model_name[6:]
-            model_dir  = os.path.dirname(os.path.abspath(local_path))
-            onnx_file  = os.path.basename(local_path)
-            model_key  = f"local:{local_path}"
-            if not any(m["model"] == model_key for m in CustomTextEmbedding.list_supported_models()):
+            import onnxruntime as _ort
+            rest      = model_name[6:]
+            parts     = rest.split(":", 1)
+            model_dir = os.path.abspath(parts[0])
+            onnx_rel  = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            model_key = f"local:{model_dir}:{onnx_rel}"
+            if not any(m.model == model_key for m in CustomTextEmbedding.SUPPORTED_MODELS):
+                try:
+                    _sess = _ort.InferenceSession(os.path.join(model_dir, onnx_rel),
+                                                  providers=["CPUExecutionProvider"])
+                    _dim = int(_sess.get_outputs()[0].shape[-1])
+                except Exception:
+                    _dim = 384
                 CustomTextEmbedding.add_model(
-                    DenseModelDescription(model=model_key, sources=ModelSource(),
-                                         model_file=onnx_file, description="Local ONNX",
-                                         license="unknown", size_in_GB=0.5),
+                    DenseModelDescription(model=model_key, sources=ModelSource(hf=model_key),
+                                         model_file=onnx_rel, description="Local ONNX",
+                                         license="unknown", size_in_GB=0.5, dim=_dim),
                     PoolingType.MEAN, True,
                 )
             return CustomTextEmbedding(model_name=model_key, specific_model_path=model_dir, **kwargs)
@@ -184,7 +192,7 @@ def _load_rerank_model(model_name: str, cache_dir: str):
             parts    = rest.split(":", 1)
             hf_id    = parts[0]
             onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
-            if not any(m["model"] == hf_id for m in CustomTextCrossEncoder.list_supported_models()):
+            if not any(m.model == hf_id for m in CustomTextCrossEncoder.SUPPORTED_MODELS):
                 CustomTextCrossEncoder.add_model(
                     BaseModelDescription(model=hf_id, sources=ModelSource(hf=hf_id),
                                          model_file=onnx_rel, description=f"Custom: {hf_id}",
@@ -194,14 +202,15 @@ def _load_rerank_model(model_name: str, cache_dir: str):
         if model_name.startswith("local:"):
             from fastembed.rerank.cross_encoder.custom_text_cross_encoder import CustomTextCrossEncoder
             from fastembed.common.model_description import BaseModelDescription, ModelSource
-            local_path = model_name[6:]
-            model_dir  = os.path.dirname(os.path.abspath(local_path))
-            onnx_file  = os.path.basename(local_path)
-            model_key  = f"local:{local_path}"
-            if not any(m["model"] == model_key for m in CustomTextCrossEncoder.list_supported_models()):
+            rest      = model_name[6:]
+            parts     = rest.split(":", 1)
+            model_dir = os.path.abspath(parts[0])
+            onnx_rel  = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            model_key = f"local:{model_dir}:{onnx_rel}"
+            if not any(m.model == model_key for m in CustomTextCrossEncoder.SUPPORTED_MODELS):
                 CustomTextCrossEncoder.add_model(
-                    BaseModelDescription(model=model_key, sources=ModelSource(),
-                                         model_file=onnx_file, description="Local ONNX reranker",
+                    BaseModelDescription(model=model_key, sources=ModelSource(hf=model_key),
+                                         model_file=onnx_rel, description="Local ONNX reranker",
                                          license="unknown", size_in_GB=0.5)
                 )
             return CustomTextCrossEncoder(model_name=model_key, specific_model_path=model_dir, **kwargs)

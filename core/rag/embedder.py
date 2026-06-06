@@ -4,8 +4,16 @@ import os
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
-def _is_custom(model_name: str) -> bool:
-    return model_name.startswith("hf:") or model_name.startswith("local:")
+def _probe_dim(model_dir: str, onnx_rel: str) -> int:
+    """Read embedding output dimension from an ONNX file without fully loading the model."""
+    try:
+        import onnxruntime as ort
+        path = os.path.join(model_dir, onnx_rel)
+        sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+        dim = sess.get_outputs()[0].shape[-1]
+        return int(dim) if isinstance(dim, int) else 384
+    except Exception:
+        return 384  # safe fallback
 
 
 def _load_custom_hf(model_name: str, kwargs: dict):
@@ -20,8 +28,7 @@ def _load_custom_hf(model_name: str, kwargs: dict):
     hf_id    = parts[0]
     onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
 
-    registered = {m["model"] for m in CustomTextEmbedding.list_supported_models()}
-    if hf_id not in registered:
+    if not any(m.model == hf_id for m in CustomTextEmbedding.SUPPORTED_MODELS):
         desc = DenseModelDescription(
             model=hf_id,
             sources=ModelSource(hf=hf_id),
@@ -29,6 +36,7 @@ def _load_custom_hf(model_name: str, kwargs: dict):
             description=f"Custom HF model: {hf_id}",
             license="unknown",
             size_in_GB=0.5,
+            dim=384,  # placeholder — fastembed uses actual ONNX output at runtime
         )
         CustomTextEmbedding.add_model(desc, PoolingType.MEAN, True)
 
@@ -37,25 +45,27 @@ def _load_custom_hf(model_name: str, kwargs: dict):
 
 def _load_custom_local(model_name: str, kwargs: dict):
     """Load a local ONNX embedding model.
-    model_name format: 'local:/path/to/model.onnx'
+    model_name format: 'local:/path/to/model/dir:onnx/model.onnx'
     """
     from fastembed.text.custom_text_embedding import CustomTextEmbedding
     from fastembed.common.model_description import DenseModelDescription, ModelSource, PoolingType
 
-    local_path = model_name[6:]
-    model_dir  = os.path.dirname(os.path.abspath(local_path))
-    onnx_file  = os.path.basename(local_path)
-    model_key  = f"local:{local_path}"
+    rest     = model_name[6:]                         # '/path/to/dir:onnx/model.onnx'
+    parts    = rest.split(":", 1)
+    model_dir = os.path.abspath(parts[0])
+    onnx_rel  = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+    model_key = f"local:{model_dir}:{onnx_rel}"
 
-    registered = {m["model"] for m in CustomTextEmbedding.list_supported_models()}
-    if model_key not in registered:
+    if not any(m.model == model_key for m in CustomTextEmbedding.SUPPORTED_MODELS):
+        dim = _probe_dim(model_dir, onnx_rel)
         desc = DenseModelDescription(
             model=model_key,
-            sources=ModelSource(),
-            model_file=onnx_file,
+            sources=ModelSource(hf=model_key),  # dummy — overridden by specific_model_path
+            model_file=onnx_rel,
             description="Local ONNX embedding model",
             license="unknown",
             size_in_GB=0.5,
+            dim=dim,
         )
         CustomTextEmbedding.add_model(desc, PoolingType.MEAN, True)
 
