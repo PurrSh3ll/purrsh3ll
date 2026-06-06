@@ -673,6 +673,24 @@ def build_menu(main_window):
             key = cache_map.get(model_id)
             return bool(key and os.path.isdir(os.path.join(_rag_models_cache_dir, key)))
 
+        def _cache_dir_for(model_id, cache_map):
+            key = cache_map.get(model_id)
+            if not key:
+                return None
+            full = os.path.join(_rag_models_cache_dir, key)
+            return full if os.path.isdir(full) else None
+
+        def _dir_size_mb(path):
+            try:
+                total = sum(
+                    os.path.getsize(os.path.join(root, f))
+                    for root, _, files in os.walk(path)
+                    for f in files
+                )
+                return total / (1024 * 1024)
+            except Exception:
+                return 0.0
+
         try:
             from fastembed import TextEmbedding as _TE
             from fastembed.rerank.cross_encoder import TextCrossEncoder as _TCE
@@ -764,6 +782,90 @@ def build_menu(main_window):
         rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
         rag_rerank_combo.setEnabled(bool(_rag_rerank))
         form_rag.addRow("Rerank model:", rag_rerank_combo)
+
+        # ── Downloaded models ──────────────────────────────────────────────────
+        rag_dl_list = QListWidget(grp_rag)
+        rag_dl_list.setMaximumHeight(120)
+        rag_dl_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        rag_dl_list.setAlternatingRowColors(False)
+
+        rag_dl_remove_btn = QPushButton("🗑  Remove selected", grp_rag)
+        rag_dl_remove_btn.setEnabled(False)
+
+        rag_dl_col = QVBoxLayout()
+        rag_dl_col.setSpacing(4)
+        rag_dl_col.addWidget(rag_dl_list)
+        rag_dl_col.addWidget(rag_dl_remove_btn)
+        form_rag.addRow("Downloaded\nmodels:", rag_dl_col)
+
+        def _dl_list_populate():
+            rag_dl_list.clear()
+            for _label, _val in _RAG_MODELS:
+                if _is_cached(_val, _emb_cache_map):
+                    _d = _cache_dir_for(_val, _emb_cache_map)
+                    _mb = _dir_size_mb(_d) if _d else 0
+                    _short = _label.split("  (")[0].strip()
+                    item = QListWidgetItem(f"[Embed]   {_short}  —  {_mb:.0f} MB")
+                    item.setData(Qt.ItemDataRole.UserRole, ("embed", _val))
+                    rag_dl_list.addItem(item)
+            for _label, _val in _RERANK_MODELS:
+                if _is_cached(_val, _rnk_cache_map):
+                    _d = _cache_dir_for(_val, _rnk_cache_map)
+                    _mb = _dir_size_mb(_d) if _d else 0
+                    _short = _label.split("  (")[0].strip()
+                    item = QListWidgetItem(f"[Rerank]  {_short}  —  {_mb:.0f} MB")
+                    item.setData(Qt.ItemDataRole.UserRole, ("rerank", _val))
+                    rag_dl_list.addItem(item)
+            rag_dl_remove_btn.setEnabled(False)
+
+        _dl_list_populate()
+
+        def _dl_selection_changed():
+            rag_dl_remove_btn.setEnabled(rag_dl_list.currentRow() >= 0)
+
+        def _dl_remove():
+            item = rag_dl_list.currentItem()
+            if not item:
+                return
+            kind, model_id = item.data(Qt.ItemDataRole.UserRole)
+            cache_map = _emb_cache_map if kind == "embed" else _rnk_cache_map
+            cache_path = _cache_dir_for(model_id, cache_map)
+            if not cache_path:
+                return
+            active_embed = rag_model_combo.currentData() or ""
+            is_active = (kind == "embed" and model_id == active_embed)
+            msg = (
+                f"Usuń pliki modelu:\n{item.text()}\n\n"
+                f"Folder:\n{cache_path}"
+            )
+            if is_active:
+                msg += (
+                    "\n\n⚠ Ten model jest aktualnie aktywny jako Embedding model.\n"
+                    "Zostanie ponownie pobrany przy następnym zapytaniu RAG."
+                )
+            from PyQt6.QtWidgets import QMessageBox
+            import shutil
+            reply = QMessageBox.question(
+                dlg, "Usuń model z cache", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(cache_path)
+            except Exception as e:
+                QMessageBox.warning(dlg, "Błąd", f"Nie udało się usunąć:\n{e}")
+                return
+            # Remove ✓ downloaded from combo label
+            combo = rag_model_combo if kind == "embed" else rag_rerank_combo
+            for i in range(combo.count()):
+                if combo.itemData(i) == model_id:
+                    combo.setItemText(i, combo.itemText(i).replace("  ✓ downloaded", ""))
+                    break
+            _dl_list_populate()
+
+        rag_dl_list.currentRowChanged.connect(_dl_selection_changed)
+        rag_dl_remove_btn.clicked.connect(_dl_remove)
 
         # ── Indexing ───────────────────────────────────────────────────────────
         _rag_auto_index = _rag_cfg.get("auto_index", False)
@@ -2006,16 +2108,21 @@ def build_menu(main_window):
         _DOWNLOADED_SUFFIX = "  ✓ downloaded"
 
         def _refresh_cache_labels():
+            _list_changed = False
             for i in range(rag_model_combo.count()):
                 val  = rag_model_combo.itemData(i) or ""
                 text = rag_model_combo.itemText(i)
                 if _DOWNLOADED_SUFFIX not in text and _is_cached(val, _emb_cache_map):
                     rag_model_combo.setItemText(i, text + _DOWNLOADED_SUFFIX)
+                    _list_changed = True
             for i in range(rag_rerank_combo.count()):
                 val  = rag_rerank_combo.itemData(i) or ""
                 text = rag_rerank_combo.itemText(i)
                 if _DOWNLOADED_SUFFIX not in text and _is_cached(val, _rnk_cache_map):
                     rag_rerank_combo.setItemText(i, text + _DOWNLOADED_SUFFIX)
+                    _list_changed = True
+            if _list_changed:
+                _dl_list_populate()
 
         cache_refresh_timer = QTimer(dlg)
         cache_refresh_timer.setInterval(4000)
