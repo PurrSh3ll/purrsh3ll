@@ -2376,18 +2376,10 @@ def build_menu(main_window):
             }}
         """)
 
-        btn_close = QPushButton("Close", dlg)
-        btn_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        btn_close.clicked.connect(dlg.accept)
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch(1)
-        btn_layout.addWidget(btn_close)
-
         main_layout = QVBoxLayout(dlg)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
         main_layout.addWidget(tabs)
-        main_layout.addLayout(btn_layout)
 
         # ── Cache refresh timer ────────────────────────────────────────────────
         _DOWNLOADED_SUFFIX = "  ✓ downloaded"
