@@ -635,14 +635,18 @@ def build_menu(main_window):
         _rag_custom_path = _rag_cfg.get("custom_path", "")
 
         _RAG_MODELS = [
-            ("paraphrase-multilingual-MiniLM-L12-v2 (120MB, PL+EN)",
-             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
-            ("bge-small-en-v1.5 (33MB, EN)",
+            ("bge-small-en-v1.5  (67 MB, EN)",
              "BAAI/bge-small-en-v1.5"),
-            ("bge-base-en-v1.5 (109MB, EN)",
+            ("nomic-embed-text-v1.5-Q  (130 MB, EN, quantized, 8192 ctx)",
+             "nomic-ai/nomic-embed-text-v1.5-Q"),
+            ("paraphrase-multilingual-MiniLM-L12-v2  (220 MB, EN, PL, DE, FR, ES, ZH, RU, AR)",
+             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
+            ("bge-base-en-v1.5  (210 MB, EN)",
              "BAAI/bge-base-en-v1.5"),
-            ("nomic-embed-text-v1.5 (274MB, EN)",
+            ("nomic-embed-text-v1.5  (520 MB, EN, 8192 ctx)",
              "nomic-ai/nomic-embed-text-v1.5"),
+            ("paraphrase-multilingual-mpnet-base-v2  (1.0 GB, EN, PL, DE, FR, ES, ZH, RU, AR)",
+             "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
         ]
         _DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
@@ -707,6 +711,40 @@ def build_menu(main_window):
         rag_index_row.addWidget(rag_reindex_btn)
         rag_index_row.addWidget(rag_delete_btn)
         form_rag.addRow("Indexing:", rag_index_row)
+
+        _rag_rerank = _rag_cfg.get("rerank", False)
+        rag_rerank_checkbox = QCheckBox(
+            "Enable re-ranking  (better results, ~1–2 s extra per query)", grp_rag
+        )
+        rag_rerank_checkbox.setChecked(bool(_rag_rerank))
+        form_rag.addRow("Re-ranking:", rag_rerank_checkbox)
+
+        _RERANK_MODELS = [
+            ("ms-marco-MiniLM-L-6-v2  (80 MB, EN, fastest)",
+             "Xenova/ms-marco-MiniLM-L-6-v2"),
+            ("ms-marco-MiniLM-L-12-v2  (120 MB, EN, accurate)",
+             "Xenova/ms-marco-MiniLM-L-12-v2"),
+            ("jina-reranker-v1-tiny-en  (130 MB, EN)",
+             "jinaai/jina-reranker-v1-tiny-en"),
+            ("jina-reranker-v1-turbo-en  (150 MB, EN)",
+             "jinaai/jina-reranker-v1-turbo-en"),
+            ("bge-reranker-base  (1.04 GB, EN + ZH)",
+             "BAAI/bge-reranker-base"),
+            ("jina-reranker-v2-base-multilingual  (1.11 GB, EN, PL, DE, FR, ES, ZH)",
+             "jinaai/jina-reranker-v2-base-multilingual"),
+        ]
+        _DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
+        _saved_rerank_model   = _rag_cfg.get("rerank_model", _DEFAULT_RERANK_MODEL)
+
+        rag_rerank_combo = QComboBox(grp_rag)
+        for _label, _val in _RERANK_MODELS:
+            rag_rerank_combo.addItem(_label, _val)
+        _saved_rerank_idx = next(
+            (i for i, (_, v) in enumerate(_RERANK_MODELS) if v == _saved_rerank_model), 0
+        )
+        rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
+        rag_rerank_combo.setEnabled(bool(_rag_rerank))
+        form_rag.addRow("Rerank model:", rag_rerank_combo)
 
         rag_status_label = QLabel("", grp_rag)
         rag_status_label.setStyleSheet("color: gray; font-size: 11px;")
@@ -847,6 +885,14 @@ def build_menu(main_window):
             else:
                 c.stop_rag_watcher()
 
+        def _on_rag_rerank_changed(state):
+            enabled = rag_rerank_checkbox.isChecked()
+            _save_rag_key("rerank", enabled)
+            rag_rerank_combo.setEnabled(enabled)
+
+        def _on_rag_rerank_model_changed(idx):
+            _save_rag_key("rerank_model", rag_rerank_combo.itemData(idx))
+
         _spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         _spinner_idx = [0]
 
@@ -961,6 +1007,8 @@ def build_menu(main_window):
         rag_radio_custom.toggled.connect(_on_rag_custom_toggled)
         rag_browse_btn.clicked.connect(_on_rag_browse)
         rag_auto_checkbox.stateChanged.connect(_on_rag_auto_index_changed)
+        rag_rerank_checkbox.stateChanged.connect(_on_rag_rerank_changed)
+        rag_rerank_combo.currentIndexChanged.connect(_on_rag_rerank_model_changed)
         rag_reindex_btn.clicked.connect(_on_rag_reindex)
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)

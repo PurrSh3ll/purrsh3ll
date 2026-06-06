@@ -126,6 +126,40 @@ def _search(base_dir: str, query_vec: list, top_n: int) -> list:
     return chunks
 
 
+_RERANK_MODEL_DEFAULT = "Xenova/ms-marco-MiniLM-L-6-v2"
+_RERANK_POOL          = 20   # fetch this many chunks before re-ranking
+
+
+def _rerank(chunks: list, query: str, model_name: str, cache_dir: str) -> list:
+    """Re-rank chunks using a cross-encoder model (fastembed, ONNX — no PyTorch needed)."""
+    try:
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+    except ImportError:
+        _info("fastembed TextCrossEncoder not available — skipping re-rank.")
+        return chunks
+
+    import warnings
+    texts = [c["text"] for c in chunks]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = TextCrossEncoder(model_name=model_name,
+                                     cache_dir=cache_dir or None)
+        scores = list(model.rerank(query, texts))
+        del model
+        gc.collect()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
+    except Exception as e:
+        _info(f"Re-ranking failed ({e}) — using original order.")
+        return chunks
+
+    ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
+    return [c for _, c in ranked]
+
+
 def _build_prompt(query: str, chunks: list) -> str:
     parts = []
     for i, c in enumerate(chunks, 1):
@@ -495,15 +529,25 @@ def main():
         "Use 1-3 sentences. No unnecessary explanations."
     )
 
+    _rag_cfg       = config.get("rag", {})
+    rerank_enabled = bool(_rag_cfg.get("rerank", False))
+    rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
+
     _info("Embedding query…")
     vec = _embed(query, embed_model, cache_dir)
 
     _info("Searching knowledge base…")
-    chunks = _search(base_dir, vec, args.top_n)
+    pool_n = max(_RERANK_POOL, args.top_n) if rerank_enabled else args.top_n
+    chunks = _search(base_dir, vec, pool_n)
 
     if not chunks:
         _err("No relevant chunks found.")
         sys.exit(1)
+
+    if rerank_enabled:
+        _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
+        chunks = _rerank(chunks, query, rerank_model, cache_dir)
+        chunks = chunks[:args.top_n]
 
     if args.show_sources:
         _info("Sources:")
