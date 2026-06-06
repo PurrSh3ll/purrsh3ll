@@ -643,8 +643,7 @@ def build_menu(main_window):
              "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
             ("bge-base-en-v1.5  (210 MB, EN)",
              "BAAI/bge-base-en-v1.5"),
-            ("nomic-embed-text-v1.5  (520 MB, EN, 8192 ctx)",
-             "nomic-ai/nomic-embed-text-v1.5"),
+
             ("paraphrase-multilingual-mpnet-base-v2  (1.0 GB, EN, PL, DE, FR, ES, ZH, RU, AR)",
              "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
         ]
