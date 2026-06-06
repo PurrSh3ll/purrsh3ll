@@ -838,21 +838,25 @@ def build_menu(main_window):
             cache_path = _cache_dir_for(model_id, cache_map)
             if not cache_path:
                 return
-            active_embed = rag_model_combo.currentData() or ""
-            is_active = (kind == "embed" and model_id == active_embed)
-            msg = (
-                f"Delete cached files for:\n{item.text()}\n\n"
-                f"Folder:\n{cache_path}"
+            active_embed  = rag_model_combo.currentData() or ""
+            active_rerank = rag_rerank_combo.currentData() or ""
+            is_active = (
+                (kind == "embed"  and model_id == active_embed) or
+                (kind == "rerank" and model_id == active_rerank)
             )
-            if is_active:
-                msg += (
-                    "\n\n⚠ This model is currently set as the active Embedding model.\n"
-                    "It will be re-downloaded on the next RAG query."
-                )
             from PyQt6.QtWidgets import QMessageBox
             import shutil
+            if is_active:
+                kind_label = "Embedding" if kind == "embed" else "Rerank"
+                QMessageBox.warning(
+                    dlg, "Cannot delete",
+                    f"This model is currently selected as the active {kind_label} model.\n\n"
+                    "Select a different model first, then delete this one."
+                )
+                return
             reply = QMessageBox.question(
-                dlg, "Delete model cache", msg,
+                dlg, "Delete model cache",
+                f"Delete cached files for:\n{item.text()}\n\nFolder:\n{cache_path}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
             )
             if reply != QMessageBox.StandardButton.Yes:
