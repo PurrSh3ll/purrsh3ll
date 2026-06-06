@@ -928,6 +928,22 @@ def build_menu(main_window):
                 _rag_cfg["index_extensions"] = chosen
                 ext_summary_lbl.setText(_ext_summary(set(chosen)))
 
+                # Remove indexed files whose extension is no longer active
+                chosen_set = set(chosen)
+                meta = _load_file_meta()
+                changed = False
+                for abs_path in list(meta.keys()):
+                    ext = os.path.splitext(abs_path)[1].lstrip(".").lower()
+                    if ext and ext not in chosen_set:
+                        chunk_ids = meta[abs_path].get("chunk_ids", [])
+                        _delete_chunks_from_db(chunk_ids)
+                        del meta[abs_path]
+                        changed = True
+                if changed:
+                    _save_file_meta(meta)
+
+                _populate_files_list()
+
             for _cb in _ext_checkboxes.values():
                 _cb.stateChanged.connect(_on_ext_changed)
 
