@@ -652,6 +652,44 @@ def build_menu(main_window):
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
 
         _base_dir_rag = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rag_models_cache_dir = os.path.join(
+            getattr(c, "base_path", _base_dir_rag), "appdata", "rag", "models"
+        )
+
+        # ── Cache detection helpers ────────────────────────────────────────────
+        def _build_cache_map(list_fn):
+            """model_id -> 'models--org--repo' dirname derived from HF source."""
+            result = {}
+            try:
+                for m in list_fn():
+                    mid    = m.get("model", "")
+                    hf_src = m.get("sources", {}).get("hf", "")
+                    if mid and hf_src and "/" in hf_src:
+                        org, repo = hf_src.split("/", 1)
+                        result[mid] = f"models--{org}--{repo}"
+            except Exception:
+                pass
+            return result
+
+        def _is_model_cached(model_id, cache_map):
+            key = cache_map.get(model_id)
+            return bool(key and os.path.isdir(os.path.join(_rag_models_cache_dir, key)))
+
+        def _cache_dir_for(model_id, cache_map):
+            key = cache_map.get(model_id)
+            if not key:
+                return None
+            full = os.path.join(_rag_models_cache_dir, key)
+            return full if os.path.isdir(full) else None
+
+        try:
+            from fastembed import TextEmbedding
+            from fastembed.rerank.cross_encoder import TextCrossEncoder as _TCE
+            _emb_cache_map = _build_cache_map(TextEmbedding.list_supported_models)
+            _rnk_cache_map = _build_cache_map(_TCE.list_supported_models)
+        except Exception:
+            _emb_cache_map = {}
+            _rnk_cache_map = {}
         _braindump_path = os.path.join(
             getattr(c, "app_modules_path", os.path.join(_base_dir_rag, "appmodules")),
             "BrainDump"
@@ -690,7 +728,8 @@ def build_menu(main_window):
 
         rag_model_combo = QComboBox(grp_rag)
         for _label, _val in _RAG_MODELS:
-            rag_model_combo.addItem(_label, _val)
+            _suffix = "  ✓" if _is_model_cached(_val, _emb_cache_map) else ""
+            rag_model_combo.addItem(_label + _suffix, _val)
         for _cm in _custom_emb_models:
             if _cm.get("type") == "hf":
                 _cv = f"hf:{_cm['model_id']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
@@ -702,7 +741,18 @@ def build_menu(main_window):
              if rag_model_combo.itemData(i) == _saved_model), 0
         )
         rag_model_combo.setCurrentIndex(_saved_idx)
-        form_rag.addRow("Embedding model:", rag_model_combo)
+
+        emb_del_cache_btn = QPushButton("🗑 Delete cache", grp_rag)
+        emb_del_cache_btn.setFixedWidth(105)
+        emb_del_cache_btn.setToolTip("Delete downloaded model files from disk")
+        _emb_custom_remove = QPushButton("Remove", grp_rag)
+        _emb_custom_remove.setFixedWidth(60)
+        _emb_custom_remove.setToolTip("Remove this custom entry from the list")
+
+        emb_combo_row = QHBoxLayout()
+        emb_combo_row.addWidget(rag_model_combo)
+        emb_combo_row.addWidget(emb_del_cache_btn)
+        form_rag.addRow("Embedding model:", emb_combo_row)
 
         # ── Custom embedding model ─────────────────────────────────────────────
         _emb_radio_hf    = QRadioButton("HuggingFace ID", grp_rag)
@@ -729,6 +779,7 @@ def build_menu(main_window):
         _emb_input_row.addWidget(_emb_custom_onnx)
         _emb_input_row.addWidget(_emb_custom_browse)
         _emb_input_row.addWidget(_emb_custom_add)
+        _emb_input_row.addWidget(_emb_custom_remove)
         form_rag.addRow("", _emb_input_row)
 
         _rag_auto_index = _rag_cfg.get("auto_index", False)
@@ -775,7 +826,8 @@ def build_menu(main_window):
 
         rag_rerank_combo = QComboBox(grp_rag)
         for _label, _val in _RERANK_MODELS:
-            rag_rerank_combo.addItem(_label, _val)
+            _suffix = "  ✓" if _is_model_cached(_val, _rnk_cache_map) else ""
+            rag_rerank_combo.addItem(_label + _suffix, _val)
         for _cm in _custom_rerank_models:
             if _cm.get("type") == "hf":
                 _cv = f"hf:{_cm['model_id']}:{_cm.get('onnx_path', 'onnx/model.onnx')}"
@@ -788,7 +840,19 @@ def build_menu(main_window):
         )
         rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
         rag_rerank_combo.setEnabled(bool(_rag_rerank))
-        form_rag.addRow("Rerank model:", rag_rerank_combo)
+
+        rnk_del_cache_btn = QPushButton("🗑 Delete cache", grp_rag)
+        rnk_del_cache_btn.setFixedWidth(105)
+        rnk_del_cache_btn.setToolTip("Delete downloaded model files from disk")
+        rnk_del_cache_btn.setEnabled(bool(_rag_rerank))
+        _rnk_custom_remove = QPushButton("Remove", grp_rag)
+        _rnk_custom_remove.setFixedWidth(60)
+        _rnk_custom_remove.setToolTip("Remove this custom entry from the list")
+
+        rnk_combo_row = QHBoxLayout()
+        rnk_combo_row.addWidget(rag_rerank_combo)
+        rnk_combo_row.addWidget(rnk_del_cache_btn)
+        form_rag.addRow("Rerank model:", rnk_combo_row)
 
         # ── Custom rerank model ────────────────────────────────────────────────
         _rnk_radio_hf    = QRadioButton("HuggingFace ID", grp_rag)
@@ -815,6 +879,7 @@ def build_menu(main_window):
         _rnk_input_row.addWidget(_rnk_custom_onnx)
         _rnk_input_row.addWidget(_rnk_custom_browse)
         _rnk_input_row.addWidget(_rnk_custom_add)
+        _rnk_input_row.addWidget(_rnk_custom_remove)
         form_rag.addRow("", _rnk_input_row)
 
         rag_status_label = QLabel("", grp_rag)
@@ -960,9 +1025,128 @@ def build_menu(main_window):
             enabled = rag_rerank_checkbox.isChecked()
             _save_rag_key("rerank", enabled)
             rag_rerank_combo.setEnabled(enabled)
+            rnk_del_cache_btn.setEnabled(enabled)
 
         def _on_rag_rerank_model_changed(idx):
             _save_rag_key("rerank_model", rag_rerank_combo.itemData(idx))
+
+        # ── Delete cache handlers ──────────────────────────────────────────────
+        def _emb_update_del_btn():
+            val = rag_model_combo.currentData() or ""
+            cached = _is_model_cached(val, _emb_cache_map)
+            is_default = not val.startswith("hf:") and not val.startswith("local:")
+            emb_del_cache_btn.setEnabled(cached and is_default)
+
+        def _rnk_update_del_btn():
+            val = rag_rerank_combo.currentData() or ""
+            cached = _is_model_cached(val, _rnk_cache_map)
+            is_default = not val.startswith("hf:") and not val.startswith("local:")
+            is_rerank_on = rag_rerank_checkbox.isChecked()
+            rnk_del_cache_btn.setEnabled(cached and is_default and is_rerank_on)
+
+        def _emb_del_cache():
+            val = rag_model_combo.currentData() or ""
+            cache_path = _cache_dir_for(val, _emb_cache_map)
+            if not cache_path:
+                return
+            from PyQt6.QtWidgets import QMessageBox
+            import shutil
+            reply = QMessageBox.question(
+                dlg, "Delete model cache",
+                f"Delete downloaded files for:\n{val}\n\nFolder:\n{cache_path}\n\n"
+                "The model will be re-downloaded on next use.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(cache_path)
+            except Exception as e:
+                QMessageBox.warning(dlg, "Delete cache", f"Error: {e}")
+                return
+            # Update combo label – remove ✓
+            idx = rag_model_combo.currentIndex()
+            cur_text = rag_model_combo.itemText(idx)
+            rag_model_combo.setItemText(idx, cur_text.removesuffix("  ✓"))
+            emb_del_cache_btn.setEnabled(False)
+
+        def _rnk_del_cache():
+            val = rag_rerank_combo.currentData() or ""
+            cache_path = _cache_dir_for(val, _rnk_cache_map)
+            if not cache_path:
+                return
+            from PyQt6.QtWidgets import QMessageBox
+            import shutil
+            reply = QMessageBox.question(
+                dlg, "Delete model cache",
+                f"Delete downloaded files for:\n{val}\n\nFolder:\n{cache_path}\n\n"
+                "The model will be re-downloaded on next use.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(cache_path)
+            except Exception as e:
+                QMessageBox.warning(dlg, "Delete cache", f"Error: {e}")
+                return
+            idx = rag_rerank_combo.currentIndex()
+            cur_text = rag_rerank_combo.itemText(idx)
+            rag_rerank_combo.setItemText(idx, cur_text.removesuffix("  ✓"))
+            rnk_del_cache_btn.setEnabled(False)
+
+        # ── Remove custom entry handlers ───────────────────────────────────────
+        def _emb_update_remove_btn():
+            val = rag_model_combo.currentData() or ""
+            _emb_custom_remove.setEnabled(val.startswith("hf:") or val.startswith("local:"))
+
+        def _rnk_update_remove_btn():
+            val = rag_rerank_combo.currentData() or ""
+            _rnk_custom_remove.setEnabled(val.startswith("hf:") or val.startswith("local:"))
+
+        def _emb_remove():
+            idx = rag_model_combo.currentIndex()
+            val = rag_model_combo.currentData() or ""
+            if not (val.startswith("hf:") or val.startswith("local:")):
+                return
+            rag_model_combo.removeItem(idx)
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                lst = _cfg.get("rag", {}).get("custom_embedding_models", [])
+                _cfg["rag"]["custom_embedding_models"] = [
+                    e for e in lst
+                    if not (
+                        (e.get("type") == "hf"    and f"hf:{e['model_id']}:{e.get('onnx_path','onnx/model.onnx')}" == val) or
+                        (e.get("type") == "local"  and f"local:{e['path']}:{e.get('onnx_path','onnx/model.onnx')}" == val)
+                    )
+                ]
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(_cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _rnk_remove():
+            idx = rag_rerank_combo.currentIndex()
+            val = rag_rerank_combo.currentData() or ""
+            if not (val.startswith("hf:") or val.startswith("local:")):
+                return
+            rag_rerank_combo.removeItem(idx)
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    _cfg = json.load(f)
+                lst = _cfg.get("rag", {}).get("custom_rerank_models", [])
+                _cfg["rag"]["custom_rerank_models"] = [
+                    e for e in lst
+                    if not (
+                        (e.get("type") == "hf"    and f"hf:{e['model_id']}:{e.get('onnx_path','onnx/model.onnx')}" == val) or
+                        (e.get("type") == "local"  and f"local:{e['path']}:{e.get('onnx_path','onnx/model.onnx')}" == val)
+                    )
+                ]
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(_cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
 
         # ── Custom embedding model handlers ────────────────────────────────────
         def _emb_mode_toggled():
@@ -1180,12 +1364,20 @@ def build_menu(main_window):
             c.apply_agent_files(settings_agent_role_combo.currentText(), val)
 
         rag_model_combo.currentIndexChanged.connect(_on_rag_model_changed)
+        rag_model_combo.currentIndexChanged.connect(lambda _: _emb_update_del_btn())
+        rag_model_combo.currentIndexChanged.connect(lambda _: _emb_update_remove_btn())
         rag_radio_braindump.toggled.connect(_on_rag_braindump_toggled)
         rag_radio_custom.toggled.connect(_on_rag_custom_toggled)
         rag_browse_btn.clicked.connect(_on_rag_browse)
         rag_auto_checkbox.stateChanged.connect(_on_rag_auto_index_changed)
         rag_rerank_checkbox.stateChanged.connect(_on_rag_rerank_changed)
         rag_rerank_combo.currentIndexChanged.connect(_on_rag_rerank_model_changed)
+        rag_rerank_combo.currentIndexChanged.connect(lambda _: _rnk_update_del_btn())
+        rag_rerank_combo.currentIndexChanged.connect(lambda _: _rnk_update_remove_btn())
+        emb_del_cache_btn.clicked.connect(_emb_del_cache)
+        rnk_del_cache_btn.clicked.connect(_rnk_del_cache)
+        _emb_custom_remove.clicked.connect(_emb_remove)
+        _rnk_custom_remove.clicked.connect(_rnk_remove)
         _emb_radio_hf.toggled.connect(_emb_mode_toggled)
         _emb_radio_local.toggled.connect(_emb_mode_toggled)
         _emb_custom_browse.clicked.connect(_emb_browse)
@@ -1194,6 +1386,11 @@ def build_menu(main_window):
         _rnk_radio_local.toggled.connect(_rnk_mode_toggled)
         _rnk_custom_browse.clicked.connect(_rnk_browse)
         _rnk_custom_add.clicked.connect(_rnk_add)
+        # Init button states
+        _emb_update_del_btn()
+        _emb_update_remove_btn()
+        _rnk_update_del_btn()
+        _rnk_update_remove_btn()
         rag_reindex_btn.clicked.connect(_on_rag_reindex)
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
