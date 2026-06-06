@@ -1384,6 +1384,7 @@ def build_menu(main_window):
                     QMessageBox.information(dlg, "Done", "Vector database deleted.\n(Embedding models cache kept.)")
                 else:
                     QMessageBox.information(dlg, "Done", "Nothing to delete — database was already empty.")
+                _populate_files_list()
             except Exception as e:
                 QMessageBox.critical(dlg, "Error", f"Failed to delete database:\n{e}")
 
