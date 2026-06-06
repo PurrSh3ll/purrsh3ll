@@ -1918,6 +1918,7 @@ def build_menu(main_window):
 
         try:
             c.register_widget("ai_settings_dialog", dlg)
+            c.register_widget("ai_settings_tabs",               tabs)
             c.register_widget("ai_settings_llm_cli_edit",       llm_cli_edit)
             c.register_widget("ai_settings_logs_terminal_edit", logs_terminal_edit)
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)

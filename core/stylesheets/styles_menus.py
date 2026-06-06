@@ -95,6 +95,30 @@ def build_menu_styles(bg, fg, bd, gl) -> dict:
                 border-left: 1px solid {bd.get("default", "#555")};
                 width: 16px;
             }}
+            QGroupBox {{
+                color: {fg.get("text", "#ffffff")};
+                border: 1px solid {bd.get("default", "#555")};
+                border-radius: 4px;
+                margin-top: 6px;
+                padding-top: 4px;
+            }}
+            QGroupBox::title {{
+                color: {fg.get("text", "#ffffff")};
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 4px;
+            }}
+            QRadioButton {{
+                color: {fg.get("text", "#ffffff")};
+                background: transparent;
+            }}
+            QRadioButton::indicator {{
+                border: 1px solid {bd.get("checkbox_indicator", "#555")};
+                border-radius: 6px;
+            }}
+            QRadioButton::indicator:checked {{
+                background: {bg.get("check_box_ind_chk", "#2C5F8F")};
+            }}
 
             """
 

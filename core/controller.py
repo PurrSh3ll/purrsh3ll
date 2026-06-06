@@ -528,7 +528,27 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def open_ai_settings(self):
         self._refresh_settings_agent_combos()
-        Controller.widgets["ai_settings_dialog"].exec()
+        dlg  = Controller.widgets["ai_settings_dialog"]
+        tabs = Controller.widgets.get("ai_settings_tabs")
+        try:
+            dlg.setStyleSheet(self.__class__.dialog_stylesheet)
+        except Exception:
+            pass
+        try:
+            if tabs is not None:
+                extra = (
+                    "QScrollArea { background: transparent; border: none; }"
+                    "QScrollArea > QWidget > QWidget { background: transparent; }"
+                    "QWidget#ai_settings_scroll_content { background: transparent; }"
+                )
+                tabs.setStyleSheet(
+                    self.__class__.tab_stylesheet +
+                    self.__class__.table_stylesheet +
+                    extra
+                )
+        except Exception:
+            pass
+        dlg.exec()
 
     def _refresh_settings_agent_combos(self):
         import json, os

@@ -16,7 +16,11 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
 
     qss_QTabWidget = f"""
         QTabWidget > QWidget {{
-        background: {bg.get("tab_bar_selected", "#1E1F22")};
+            background: {bg.get("tab_bar_selected", "#1E1F22")};
+        }}
+        QTabWidget::pane {{
+            background: {bg.get("tab_bar_selected", "#1E1F22")};
+            border: none;
         }}
         QTabBar::tab {{
             background: {bg.get("tab_bar", "#3B3E40")};

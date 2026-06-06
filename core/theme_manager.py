@@ -337,6 +337,7 @@ def change_theme(controller):
         c.__class__.combo_stylesheet = s["qss_QComboBox"]
         c.__class__.combo_view_stylesheet = s["qss_QComboBox_view"]
         c.__class__.table_stylesheet = s["qss_QTable"]
+        c.__class__.tab_stylesheet = s["qss_QTabWidget"]
         c.__class__.dialog_stylesheet = s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"]
         c.__class__.chat_panel_dialog_stylesheet = (
             s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
