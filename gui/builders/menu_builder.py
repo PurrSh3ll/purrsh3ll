@@ -2002,14 +2002,34 @@ def build_menu(main_window):
         main_layout.addWidget(tabs)
         main_layout.addLayout(btn_layout)
 
+        # ── Cache refresh timer ────────────────────────────────────────────────
+        _DOWNLOADED_SUFFIX = "  ✓ downloaded"
+
+        def _refresh_cache_labels():
+            for i in range(rag_model_combo.count()):
+                val  = rag_model_combo.itemData(i) or ""
+                text = rag_model_combo.itemText(i)
+                if _DOWNLOADED_SUFFIX not in text and _is_cached(val, _emb_cache_map):
+                    rag_model_combo.setItemText(i, text + _DOWNLOADED_SUFFIX)
+            for i in range(rag_rerank_combo.count()):
+                val  = rag_rerank_combo.itemData(i) or ""
+                text = rag_rerank_combo.itemText(i)
+                if _DOWNLOADED_SUFFIX not in text and _is_cached(val, _rnk_cache_map):
+                    rag_rerank_combo.setItemText(i, text + _DOWNLOADED_SUFFIX)
+
+        cache_refresh_timer = QTimer(dlg)
+        cache_refresh_timer.setInterval(4000)
+        cache_refresh_timer.timeout.connect(_refresh_cache_labels)
+
         try:
-            c.register_widget("ai_settings_dialog", dlg)
+            c.register_widget("ai_settings_dialog",             dlg)
             c.register_widget("ai_settings_tabs",               tabs)
             c.register_widget("ai_settings_llm_cli_edit",       llm_cli_edit)
             c.register_widget("ai_settings_logs_terminal_edit", logs_terminal_edit)
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
             c.register_widget("ai_settings_rag_model_combo",    rag_model_combo)
+            c.register_widget("ai_settings_cache_timer",        cache_refresh_timer)
         except Exception:
             pass
 

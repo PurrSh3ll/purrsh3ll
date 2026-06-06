@@ -548,7 +548,12 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 )
         except Exception:
             pass
+        _cache_timer = Controller.widgets.get("ai_settings_cache_timer")
+        if _cache_timer is not None:
+            _cache_timer.start()
         dlg.exec()
+        if _cache_timer is not None:
+            _cache_timer.stop()
 
     def _refresh_settings_agent_combos(self):
         import json, os
