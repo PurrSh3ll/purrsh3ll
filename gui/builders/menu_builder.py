@@ -254,6 +254,45 @@ def build_menu(main_window):
         def _on_history_max_reset():
             history_max_spin.setValue(_HISTORY_MAX_DEFAULT)
 
+        def _save_window_settings():
+            w = width_spin.value()
+            h = height_spin.value()
+            x = x_spin.value()
+            y = y_spin.value()
+            c.width = w
+            c.height = h
+            c.start_x = x
+            c.start_y = y
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                cfg.setdefault("window", {})["resolution"] = [w, h]
+                cfg["window"]["start_screen"] = [x, y]
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _on_lw_changed(state):
+            c.lightweight_web_browser = lw_checkbox.isChecked()
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                cfg.setdefault("performance", {})["lightweight_web_browser"] = c.lightweight_web_browser
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        width_spin.valueChanged.connect(lambda _: _save_window_settings())
+        height_spin.valueChanged.connect(lambda _: _save_window_settings())
+        x_spin.valueChanged.connect(lambda _: _save_window_settings())
+        y_spin.valueChanged.connect(lambda _: _save_window_settings())
+        lw_checkbox.stateChanged.connect(_on_lw_changed)
         save_sys_checkbox.stateChanged.connect(_on_save_sys_changed)
         delete_logs_checkbox.stateChanged.connect(_on_delete_logs_changed)
         delete_notes_checkbox.stateChanged.connect(_on_delete_notes_changed)
@@ -280,59 +319,6 @@ def build_menu(main_window):
         except Exception:
             pass
 
-        # ── OK / Cancel ───────────────────────────────────────────────────────
-        btn_ok = QPushButton("OK", dlg)
-        btn_cancel = QPushButton("Cancel", dlg)
-
-        def _apply_and_close():
-            w = width_spin.value()
-            h = height_spin.value()
-            x = x_spin.value()
-            y = y_spin.value()
-            lw = bool(lw_checkbox.isChecked())
-
-            new_data = {}
-            try:
-                if settings_path and os.path.exists(settings_path):
-                    try:
-                        with open(settings_path, "r", encoding="utf-8") as f:
-                            new_data = json.load(f) or {}
-                    except Exception:
-                        new_data = {}
-
-                new_data.setdefault("window", {})
-                new_data.setdefault("performance", {})
-                new_data.setdefault("user_profile", {})
-                new_data["window"]["resolution"] = [w, h]
-                new_data["window"]["start_screen"] = [x, y]
-                new_data["window"].setdefault("fullscreen", False)
-                new_data["performance"]["lightweight_web_browser"] = lw
-                if settings_path:
-                    try:
-                        with open(settings_path, "w", encoding="utf-8") as f:
-                            json.dump(new_data, f, indent=2, ensure_ascii=False)
-                    except Exception:
-                        pass
-
-            except Exception:
-                pass
-
-            c.width = w
-            c.height = h
-            c.start_x = x
-            c.start_y = y
-            c.lightweight_web_browser = lw
-
-            dlg.accept()
-
-        btn_ok.clicked.connect(_apply_and_close)
-        btn_cancel.clicked.connect(dlg.reject)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch(1)
-        btn_layout.addWidget(btn_ok)
-        btn_layout.addWidget(btn_cancel)
-
         # ── Assemble dialog ───────────────────────────────────────────────────
         scroll_content = QWidget()
         scroll_content.setObjectName("settings_scroll_content")
@@ -354,7 +340,6 @@ def build_menu(main_window):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
         main_layout.addWidget(scroll)
-        main_layout.addLayout(btn_layout)
 
     def create_about_qterm_dialog():
         qterminal_dialog = QDialog()
