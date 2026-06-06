@@ -1617,7 +1617,7 @@ def build_menu(main_window):
         providers_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         providers_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         providers_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        providers_table.horizontalHeader().resizeSection(3, 60)
+        providers_table.horizontalHeader().resizeSection(3, 80)
         providers_table.verticalHeader().setVisible(False)
         providers_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         providers_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1921,17 +1921,22 @@ def build_menu(main_window):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row_idx, col, item)
             _set_row_meta(row_idx, profile)
-            # Gear button in Behavior column
+            # Gear button in Behavior column — centered wrapper
             gear_btn = QPushButton("⚙")
             gear_btn.setFixedSize(24, 20)
             gear_btn.setToolTip("Behavior settings")
             def _on_gear(checked=False, b=gear_btn):
                 for _r in range(providers_table.rowCount()):
-                    if providers_table.cellWidget(_r, 3) is b:
+                    if providers_table.cellWidget(_r, 3).findChild(QPushButton) is b:
                         _on_behavior(_r)
                         return
             gear_btn.clicked.connect(_on_gear)
-            providers_table.setCellWidget(row_idx, 3, gear_btn)
+            _cell_w = QWidget()
+            _cell_layout = QHBoxLayout(_cell_w)
+            _cell_layout.setContentsMargins(0, 0, 0, 0)
+            _cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _cell_layout.addWidget(gear_btn)
+            providers_table.setCellWidget(row_idx, 3, _cell_w)
 
         def _refresh_active_combo(keep=None):
             keep = keep or active_profile_combo.currentText()
