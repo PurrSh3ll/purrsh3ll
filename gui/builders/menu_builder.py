@@ -2181,9 +2181,9 @@ def build_menu(main_window):
 
         # ── QTabWidget ────────────────────────────────────────────────────────
         tabs = QTabWidget(dlg)
-        tabs.addTab(settings_scroll, "Settings")
-        tabs.addTab(rag_scroll, "RAG")
-        tabs.addTab(profiles_tab, "Profiles")
+        tabs.addTab(settings_scroll, "  Settings  ")
+        tabs.addTab(rag_scroll, "  RAG  ")
+        tabs.addTab(profiles_tab, "  Profiles  ")
 
         _bg  = c.actual_theme.get("background", {})
         _fg  = c.actual_theme.get("foreground", {})
