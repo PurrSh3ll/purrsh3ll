@@ -979,19 +979,7 @@ def build_menu(main_window):
         files_list = QListWidget(grp_rag)
         files_list.setFixedHeight(8 * 22)
         files_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-
-        files_refresh_btn = QPushButton("🔄 Refresh", grp_rag)
-        files_refresh_btn.setFixedWidth(80)
-
-        files_top_row = QHBoxLayout()
-        files_top_row.addStretch(1)
-        files_top_row.addWidget(files_refresh_btn)
-
-        files_col = QVBoxLayout()
-        files_col.setSpacing(4)
-        files_col.addLayout(files_top_row)
-        files_col.addWidget(files_list)
-        form_rag.addRow("Indexed\nfiles:", files_col)
+        form_rag.addRow("Indexed\nfiles:", files_list)
 
         def _load_file_meta() -> dict:
             if os.path.exists(_meta_path_ui):
@@ -1102,30 +1090,36 @@ def build_menu(main_window):
             if data is None:
                 return
             abs_path, rel = data
-            excluded = load_exclusions(_excl_path)
-            checked  = item.checkState() == Qt.CheckState.Checked
+            checked = item.checkState() == Qt.CheckState.Checked
 
-            if not checked:
-                # Exclude: add to exclusions, remove from DB and meta
-                excluded.add(rel)
-                save_exclusions(_excl_path, excluded)
-                meta = _load_file_meta()
-                chunk_ids = meta.get(abs_path, {}).get("chunk_ids", [])
-                _delete_chunks_from_db(chunk_ids)
-                if abs_path in meta:
-                    del meta[abs_path]
-                    _save_file_meta(meta)
-                item.setText(f"  {rel}    {_STATUS_EXCLUDED}")
-                item.setForeground(files_list.palette().placeholderText())
-            else:
-                # Include: remove from exclusions, will be indexed on next run
-                excluded.discard(rel)
-                save_exclusions(_excl_path, excluded)
-                item.setText(f"  {rel}    {_STATUS_PENDING}")
-                item.setForeground(files_list.palette().mid())
+            files_list.blockSignals(True)
+            try:
+                excluded = load_exclusions(_excl_path)
+                if not checked:
+                    # Exclude: remove chunks from DB, remove from meta, save exclusion
+                    excluded.add(rel)
+                    save_exclusions(_excl_path, excluded)
+                    meta = _load_file_meta()
+                    chunk_ids = meta.get(abs_path, {}).get("chunk_ids", [])
+                    _delete_chunks_from_db(chunk_ids)
+                    if abs_path in meta:
+                        del meta[abs_path]
+                        _save_file_meta(meta)
+                    item.setText(f"  {rel}    {_STATUS_EXCLUDED}")
+                    item.setForeground(files_list.palette().placeholderText())
+                else:
+                    # Include: remove from exclusions, trigger immediate re-index
+                    excluded.discard(rel)
+                    save_exclusions(_excl_path, excluded)
+                    item.setText(f"  {rel}    ⟳ indexing…")
+                    item.setForeground(files_list.palette().mid())
+            finally:
+                files_list.blockSignals(False)
+
+            if checked:
+                _on_rag_reindex()
 
         files_list.itemChanged.connect(_on_file_item_changed)
-        files_refresh_btn.clicked.connect(_populate_files_list)
 
         def _save_rag_key(key, value):
             if not os.path.exists(c.config_path):
