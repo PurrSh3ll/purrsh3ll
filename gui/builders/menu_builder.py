@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
-    QListView, QListWidget, QListWidgetItem, QMessageBox,
+    QListView, QListWidget, QListWidgetItem, QMessageBox, QTabWidget, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -1193,8 +1193,7 @@ def build_menu(main_window):
         providers_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         providers_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         providers_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        providers_table.setMinimumHeight(120)
-        providers_table.setMaximumHeight(180)
+        providers_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         grp_providers_layout.addWidget(providers_table)
 
         # Table action buttons
@@ -1875,22 +1874,34 @@ def build_menu(main_window):
         btn_remove_provider.clicked.connect(_on_remove_provider)
 
         # ── Assemble dialog ───────────────────────────────────────────────────
-        scroll_content = QWidget()
-        scroll_content.setObjectName("ai_settings_scroll_content")
-        scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(4, 4, 4, 4)
-        scroll_layout.setSpacing(8)
-        scroll_layout.addWidget(grp_llm)
-        scroll_layout.addWidget(grp_rag)
-        scroll_layout.addWidget(grp_providers)
-        scroll_layout.addStretch(1)
+        # ── Tab: Settings (AI/LLM + RAG) ──────────────────────────────────────
+        settings_scroll_content = QWidget()
+        settings_scroll_content.setObjectName("ai_settings_scroll_content")
+        settings_scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        settings_scroll_layout = QVBoxLayout(settings_scroll_content)
+        settings_scroll_layout.setContentsMargins(4, 4, 4, 4)
+        settings_scroll_layout.setSpacing(8)
+        settings_scroll_layout.addWidget(grp_llm)
+        settings_scroll_layout.addWidget(grp_rag)
+        settings_scroll_layout.addStretch(1)
 
-        scroll = QScrollArea(dlg)
-        scroll.setObjectName("ai_settings_scroll")
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(scroll_content)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        settings_scroll = QScrollArea()
+        settings_scroll.setObjectName("ai_settings_scroll")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setWidget(settings_scroll_content)
+        settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        # ── Tab: Profiles (API Providers table) ───────────────────────────────
+        profiles_tab = QWidget()
+        profiles_tab_layout = QVBoxLayout(profiles_tab)
+        profiles_tab_layout.setContentsMargins(8, 8, 8, 8)
+        profiles_tab_layout.setSpacing(6)
+        profiles_tab_layout.addWidget(grp_providers)
+
+        # ── QTabWidget ────────────────────────────────────────────────────────
+        tabs = QTabWidget(dlg)
+        tabs.addTab(settings_scroll, "Settings")
+        tabs.addTab(profiles_tab, "Profiles")
 
         btn_close = QPushButton("Close", dlg)
         btn_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -1902,7 +1913,7 @@ def build_menu(main_window):
         main_layout = QVBoxLayout(dlg)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
-        main_layout.addWidget(scroll)
+        main_layout.addWidget(tabs)
         main_layout.addLayout(btn_layout)
 
         try:
