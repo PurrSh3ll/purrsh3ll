@@ -2185,6 +2185,28 @@ def build_menu(main_window):
         tabs.addTab(rag_scroll, "RAG")
         tabs.addTab(profiles_tab, "Profiles")
 
+        _bg  = c.actual_theme.get("background", {})
+        _fg  = c.actual_theme.get("foreground", {})
+        _bd  = c.actual_theme.get("border", {})
+        tabs.setStyleSheet(f"""
+            QTabBar::tab {{
+                padding: 6px 20px;
+                margin-right: 2px;
+                background: {_bg.get("tab_bar", "#3B3E40")};
+                color: {_fg.get("tab_bar", "#ffffff")};
+                border: 1px solid {_bd.get("default", "#555")};
+                border-bottom: none;
+                border-radius: 4px 4px 0 0;
+            }}
+            QTabBar::tab:selected {{
+                background: {_bg.get("tab_bar_selected", "#1E1F22")};
+                color: {_fg.get("tab_bar_selected", "#ffffff")};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {_bg.get("buttons_hover", "#6C6C73")};
+            }}
+        """)
+
         btn_close = QPushButton("Close", dlg)
         btn_close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_close.clicked.connect(dlg.accept)
