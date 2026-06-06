@@ -673,6 +673,11 @@ def build_menu(main_window):
             full = os.path.join(_rag_models_cache_dir, key)
             return full if os.path.isdir(full) else None
 
+        def _cache_dir_path(model_id, cache_map):
+            """Like _cache_dir_for but without existence check (for post-delete use)."""
+            key = cache_map.get(model_id)
+            return os.path.join(_rag_models_cache_dir, key) if key else None
+
         def _dir_size_mb(path):
             try:
                 total = sum(
@@ -846,11 +851,11 @@ def build_menu(main_window):
             # Remove ✓ downloaded from all combo items sharing the same cache dir
             for i in range(rag_model_combo.count()):
                 _mid = rag_model_combo.itemData(i) or ""
-                if _cache_dir_for(_mid, _emb_cache_map) == cache_path:
+                if _cache_dir_path(_mid, _emb_cache_map) == cache_path:
                     rag_model_combo.setItemText(i, rag_model_combo.itemText(i).replace("  ✓ downloaded", ""))
             for i in range(rag_rerank_combo.count()):
                 _mid = rag_rerank_combo.itemData(i) or ""
-                if _cache_dir_for(_mid, _rnk_cache_map) == cache_path:
+                if _cache_dir_path(_mid, _rnk_cache_map) == cache_path:
                     rag_rerank_combo.setItemText(i, rag_rerank_combo.itemText(i).replace("  ✓ downloaded", ""))
             _dl_list_populate()
 
@@ -1021,7 +1026,16 @@ def build_menu(main_window):
             rag_rerank_combo.setEnabled(enabled)
 
         def _on_rag_rerank_model_changed(idx):
-            _save_rag_key("rerank_model", rag_rerank_combo.itemData(idx))
+            val = rag_rerank_combo.itemData(idx) or ""
+            _save_rag_key("rerank_model", val)
+            if val and not _is_cached(val, _rnk_cache_map):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    dlg, "Rerank model",
+                    "This model is not downloaded yet.\n\n"
+                    "It will be downloaded automatically on the first RAG query\n"
+                    "with re-ranking enabled."
+                )
 
         _spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         _spinner_idx = [0]
