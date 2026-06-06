@@ -2190,13 +2190,21 @@ def build_menu(main_window):
         _bd  = c.actual_theme.get("border", {})
         tabs.setStyleSheet(f"""
             QTabBar::tab {{
-                padding: 6px 20px;
-                margin-right: 2px;
+                min-width: 90px;
+                padding-top: 7px;
+                padding-bottom: 7px;
+                padding-left: 0px;
+                padding-right: 0px;
+                margin-left: 4px;
+                margin-right: 4px;
                 background: {_bg.get("tab_bar", "#3B3E40")};
                 color: {_fg.get("tab_bar", "#ffffff")};
                 border: 1px solid {_bd.get("default", "#555")};
                 border-bottom: none;
                 border-radius: 4px 4px 0 0;
+            }}
+            QTabBar::tab:first {{
+                margin-left: 0px;
             }}
             QTabBar::tab:selected {{
                 background: {_bg.get("tab_bar_selected", "#1E1F22")};
