@@ -785,7 +785,7 @@ def build_menu(main_window):
 
         # ── Downloaded models ──────────────────────────────────────────────────
         rag_dl_list = QListWidget(grp_rag)
-        rag_dl_list.setMaximumHeight(120)
+        rag_dl_list.setFixedHeight(5 * 24)
         rag_dl_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         rag_dl_list.setAlternatingRowColors(False)
 
@@ -800,9 +800,13 @@ def build_menu(main_window):
 
         def _dl_list_populate():
             rag_dl_list.clear()
+            _seen_dirs = set()
             for _label, _val in _RAG_MODELS:
                 if _is_cached(_val, _emb_cache_map):
                     _d = _cache_dir_for(_val, _emb_cache_map)
+                    if _d in _seen_dirs:
+                        continue
+                    _seen_dirs.add(_d)
                     _mb = _dir_size_mb(_d) if _d else 0
                     _short = _label.split("  (")[0].strip()
                     item = QListWidgetItem(f"[Embed]   {_short}  —  {_mb:.0f} MB")
@@ -811,6 +815,9 @@ def build_menu(main_window):
             for _label, _val in _RERANK_MODELS:
                 if _is_cached(_val, _rnk_cache_map):
                     _d = _cache_dir_for(_val, _rnk_cache_map)
+                    if _d in _seen_dirs:
+                        continue
+                    _seen_dirs.add(_d)
                     _mb = _dir_size_mb(_d) if _d else 0
                     _short = _label.split("  (")[0].strip()
                     item = QListWidgetItem(f"[Rerank]  {_short}  —  {_mb:.0f} MB")
@@ -856,12 +863,15 @@ def build_menu(main_window):
             except Exception as e:
                 QMessageBox.warning(dlg, "Error", f"Failed to delete:\n{e}")
                 return
-            # Remove ✓ downloaded from combo label
-            combo = rag_model_combo if kind == "embed" else rag_rerank_combo
-            for i in range(combo.count()):
-                if combo.itemData(i) == model_id:
-                    combo.setItemText(i, combo.itemText(i).replace("  ✓ downloaded", ""))
-                    break
+            # Remove ✓ downloaded from all combo items sharing the same cache dir
+            for i in range(rag_model_combo.count()):
+                _mid = rag_model_combo.itemData(i) or ""
+                if _cache_dir_for(_mid, _emb_cache_map) == cache_path:
+                    rag_model_combo.setItemText(i, rag_model_combo.itemText(i).replace("  ✓ downloaded", ""))
+            for i in range(rag_rerank_combo.count()):
+                _mid = rag_rerank_combo.itemData(i) or ""
+                if _cache_dir_for(_mid, _rnk_cache_map) == cache_path:
+                    rag_rerank_combo.setItemText(i, rag_rerank_combo.itemText(i).replace("  ✓ downloaded", ""))
             _dl_list_populate()
 
         rag_dl_list.currentRowChanged.connect(_dl_selection_changed)
