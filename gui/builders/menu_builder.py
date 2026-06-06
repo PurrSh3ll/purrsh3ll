@@ -872,39 +872,76 @@ def build_menu(main_window):
             ("Code",      ["py", "js", "ts", "sh", "html"]),
         ]
 
-        _ext_checkboxes: dict[str, QCheckBox] = {}
-        ext_outer = QVBoxLayout()
-        ext_outer.setContentsMargins(0, 0, 0, 0)
-        ext_outer.setSpacing(2)
+        def _ext_summary(exts: set) -> str:
+            active = [e for grp in _EXT_GROUPS for e in grp[1] if e in exts and e in ALL_EXTENSIONS]
+            return ", ".join(f".{e}" for e in active) if active else "none"
 
-        for _group_label, _group_exts in _EXT_GROUPS:
-            row_widget = QWidget(grp_rag)
-            row = QHBoxLayout(row_widget)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            cat_lbl = QLabel(f"<span style='color:#888;font-size:11px'>{_group_label}:</span>", row_widget)
-            cat_lbl.setFixedWidth(68)
-            row.addWidget(cat_lbl)
-            for _ext in _group_exts:
-                if _ext not in ALL_EXTENSIONS:
-                    continue
-                cb = QCheckBox(f".{_ext}", row_widget)
-                cb.setChecked(_ext in _saved_exts)
-                _ext_checkboxes[_ext] = cb
-                row.addWidget(cb)
-            row.addStretch(1)
-            ext_outer.addWidget(row_widget)
+        ext_row_widget = QWidget(grp_rag)
+        ext_row = QHBoxLayout(ext_row_widget)
+        ext_row.setContentsMargins(0, 0, 0, 0)
+        ext_row.setSpacing(6)
+        ext_summary_lbl = QLabel(_ext_summary(_saved_exts), ext_row_widget)
+        ext_summary_lbl.setStyleSheet("color: #aaa; font-size: 11px;")
+        ext_configure_btn = QPushButton("Configure…", ext_row_widget)
+        ext_configure_btn.setFixedWidth(90)
+        ext_row.addWidget(ext_summary_lbl)
+        ext_row.addStretch(1)
+        ext_row.addWidget(ext_configure_btn)
+        form_rag.addRow("Index\nextensions:", ext_row_widget)
 
-        ext_outer_widget = QWidget(grp_rag)
-        ext_outer_widget.setLayout(ext_outer)
-        form_rag.addRow("Index\nextensions:", ext_outer_widget)
+        def _open_ext_dialog():
+            from core.stylesheets.styles_menus import build_menu_styles
+            _s = build_menu_styles(
+                c.theme.get("background", {}),
+                c.theme.get("foreground", {}),
+                c.theme.get("border", {}),
+                c.theme.get("glow", {}),
+            )
+            popup = QDialog(dlg)
+            popup.setWindowTitle("Index extensions")
+            popup.setModal(True)
+            popup_layout = QVBoxLayout(popup)
+            popup_layout.setSpacing(10)
+            popup_layout.setContentsMargins(16, 12, 16, 12)
 
-        def _on_ext_changed():
-            chosen = [e for e, cb in _ext_checkboxes.items() if cb.isChecked()]
-            _save_rag_key("index_extensions", chosen)
+            _ext_checkboxes: dict[str, QCheckBox] = {}
+            current_exts = set(_rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS)))
 
-        for _cb in _ext_checkboxes.values():
-            _cb.stateChanged.connect(_on_ext_changed)
+            for _group_label, _group_exts in _EXT_GROUPS:
+                grp = QGroupBox(_group_label, popup)
+                grp_layout = QHBoxLayout(grp)
+                grp_layout.setSpacing(8)
+                for _ext in _group_exts:
+                    if _ext not in ALL_EXTENSIONS:
+                        continue
+                    cb = QCheckBox(f".{_ext}", grp)
+                    cb.setChecked(_ext in current_exts)
+                    _ext_checkboxes[_ext] = cb
+                    grp_layout.addWidget(cb)
+                grp_layout.addStretch(1)
+                popup_layout.addWidget(grp)
+
+            close_btn = QPushButton("Close", popup)
+            close_btn.setFixedWidth(80)
+            close_btn.clicked.connect(popup.accept)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            btn_row.addWidget(close_btn)
+            popup_layout.addLayout(btn_row)
+
+            def _on_ext_changed():
+                chosen = [e for e, cb in _ext_checkboxes.items() if cb.isChecked()]
+                _save_rag_key("index_extensions", chosen)
+                _rag_cfg["index_extensions"] = chosen
+                ext_summary_lbl.setText(_ext_summary(set(chosen)))
+
+            for _cb in _ext_checkboxes.values():
+                _cb.stateChanged.connect(_on_ext_changed)
+
+            popup.setStyleSheet(_s.get("qss_QDialog_global", ""))
+            popup.exec()
+
+        ext_configure_btn.clicked.connect(_open_ext_dialog)
 
         # ── Indexing ───────────────────────────────────────────────────────────
         _rag_auto_index = _rag_cfg.get("auto_index", False)
@@ -1091,7 +1128,8 @@ def build_menu(main_window):
                 QMessageBox.warning(dlg, "RAG", "Knowledge base folder not found.\nCheck the path in AI Settings > RAG.")
                 return
             model_name = rag_model_combo.currentData()
-            allowed_extensions = {e for e, cb in _ext_checkboxes.items() if cb.isChecked()} or None
+            _exts_list = _rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS))
+            allowed_extensions = set(_exts_list) if _exts_list else None
             from core.rag.index_worker import IndexWorker
             worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name, allowed_extensions)
             c._rag_index_worker = worker
