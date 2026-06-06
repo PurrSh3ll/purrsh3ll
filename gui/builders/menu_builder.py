@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
-    QListView, QMessageBox,
+    QListView, QListWidget, QListWidgetItem, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -1313,9 +1313,92 @@ def build_menu(main_window):
                 except Exception as e:
                     return [], str(e)
 
+            def _open_model_picker(models):
+                picker = QDialog(pdlg)
+                picker.setWindowTitle("Select model")
+                picker.setModal(True)
+                picker.resize(560, 420)
+                try:
+                    picker.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+
+                layout = QVBoxLayout(picker)
+                layout.setContentsMargins(12, 12, 12, 12)
+                layout.setSpacing(8)
+
+                search = QLineEdit(picker)
+                search.setPlaceholderText("Filter models…")
+                search.setClearButtonEnabled(True)
+                layout.addWidget(search)
+
+                lw = QListWidget(picker)
+                lw.setAlternatingRowColors(True)
+                try:
+                    lw.setStyleSheet(
+                        "QListWidget { font-size: 12px; }"
+                        "QListWidget::item { padding: 4px 8px; }"
+                        "QListWidget::item:selected { color: palette(highlighted-text);"
+                        " background: palette(highlight); }"
+                    )
+                except Exception:
+                    pass
+                for name in models:
+                    lw.addItem(QListWidgetItem(name))
+                # Pre-select current model if present
+                current = f_model.currentText().strip()
+                if current:
+                    hits = lw.findItems(current, Qt.MatchFlag.MatchExactly)
+                    if hits:
+                        lw.setCurrentItem(hits[0])
+                        lw.scrollToItem(hits[0])
+                layout.addWidget(lw)
+
+                btn_row = QHBoxLayout()
+                btn_row.addStretch(1)
+                btn_select = QPushButton("Select")
+                btn_select.setFixedWidth(80)
+                btn_cancel2 = QPushButton("Cancel")
+                btn_cancel2.setFixedWidth(80)
+                btn_row.addWidget(btn_select)
+                btn_row.addWidget(btn_cancel2)
+                layout.addLayout(btn_row)
+
+                def _apply_filter(text):
+                    txt = text.strip().lower()
+                    for i in range(lw.count()):
+                        item = lw.item(i)
+                        item.setHidden(bool(txt) and txt not in item.text().lower())
+
+                def _do_select():
+                    sel = lw.currentItem()
+                    if sel and not sel.isHidden():
+                        f_model.blockSignals(True)
+                        # Keep current items, just update the editable text
+                        if f_model.findText(sel.text()) < 0:
+                            f_model.insertItem(0, sel.text())
+                        f_model.setCurrentText(sel.text())
+                        f_model.blockSignals(False)
+                        picker.accept()
+
+                search.textChanged.connect(_apply_filter)
+                lw.itemDoubleClicked.connect(lambda _: _do_select())
+                btn_select.clicked.connect(_do_select)
+                btn_cancel2.clicked.connect(picker.reject)
+
+                # Select first visible item if nothing selected
+                if not lw.currentItem():
+                    for i in range(lw.count()):
+                        if not lw.item(i).isHidden():
+                            lw.setCurrentRow(i)
+                            break
+
+                picker.exec()
+
             def _on_fetch():
                 btn_fetch.setEnabled(False)
                 fetch_status.setText("Fetching…")
+                fetch_status.setStyleSheet("font-size: 11px; color: gray;")
                 result = [None]
 
                 def _worker():
@@ -1328,20 +1411,9 @@ def build_menu(main_window):
                         fetch_status.setText(f"Error: {err[:60]}")
                         fetch_status.setStyleSheet("font-size: 11px; color: red;")
                     else:
-                        current = f_model.currentText()
-                        f_model.blockSignals(True)
-                        f_model.clear()
-                        for name in models:
-                            f_model.addItem(name)
-                            f_model.setItemData(
-                                f_model.count() - 1, name,
-                                Qt.ItemDataRole.ToolTipRole
-                            )
-                        idx = f_model.findText(current)
-                        f_model.setCurrentIndex(max(0, idx))
-                        f_model.blockSignals(False)
                         fetch_status.setText(f"{len(models)} models found")
                         fetch_status.setStyleSheet("font-size: 11px; color: green;")
+                        _open_model_picker(models)
 
                 t = threading.Thread(target=_worker, daemon=True)
                 t.start()
