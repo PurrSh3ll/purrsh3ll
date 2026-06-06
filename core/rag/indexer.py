@@ -36,28 +36,57 @@ def _save_meta(meta_path: str, meta: dict) -> None:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
-def _collect_files(kb_path: str, allowed_ext: set) -> list[str]:
+def _collect_files(kb_path: str, allowed_ext: set, excluded_rel: set | None = None) -> list[str]:
+    _excluded = excluded_rel or set()
     files = []
     for root, _, names in os.walk(kb_path):
         for name in names:
             ext = os.path.splitext(name)[1].lstrip(".").lower()
-            if not ext or ext in allowed_ext:
-                files.append(os.path.join(root, name))
+            if ext and ext not in allowed_ext:
+                continue
+            abs_path = os.path.join(root, name)
+            try:
+                rel = os.path.relpath(abs_path, kb_path)
+            except ValueError:
+                rel = abs_path
+            if rel in _excluded:
+                continue
+            files.append(abs_path)
     return sorted(files)
+
+
+def load_exclusions(exclusions_path: str) -> set:
+    if os.path.exists(exclusions_path):
+        try:
+            with open(exclusions_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return set(data)
+        except Exception:
+            pass
+    return set()
+
+
+def save_exclusions(exclusions_path: str, excluded_rel: set) -> None:
+    os.makedirs(os.path.dirname(exclusions_path), exist_ok=True)
+    with open(exclusions_path, "w", encoding="utf-8") as f:
+        json.dump(sorted(excluded_rel), f, indent=2, ensure_ascii=False)
 
 
 class Indexer:
     def __init__(self, kb_path: str, base_path: str, model_name: str = emb.DEFAULT_MODEL,
-                 allowed_extensions: set | None = None):
+                 allowed_extensions: set | None = None, excluded_rel: set | None = None):
         self.kb_path    = os.path.normpath(kb_path)
         self.base_path  = base_path
         self.model_name = model_name
         self.allowed_ext = allowed_extensions if allowed_extensions is not None else chunker.DEFAULT_EXTENSIONS
+        self.excluded_rel = excluded_rel if excluded_rel is not None else set()
 
         self._rag_dir   = os.path.join(base_path, "appdata", "rag")
         self._db_path   = os.path.join(self._rag_dir, "chroma_db")
         self._meta_path = os.path.join(self._rag_dir, "index_meta.json")
         self._cache_dir = os.path.join(self._rag_dir, "models")
+        self._exclusions_path = os.path.join(self._rag_dir, "excluded_files.json")
 
         os.makedirs(self._rag_dir, exist_ok=True)
 
@@ -84,7 +113,8 @@ class Indexer:
         progress_callback(current, total, filename) called for each file processed.
         """
         meta      = _load_meta(self._meta_path)
-        all_files = _collect_files(self.kb_path, self.allowed_ext)
+        excluded  = self.excluded_rel or load_exclusions(self._exclusions_path)
+        all_files = _collect_files(self.kb_path, self.allowed_ext, excluded)
         total     = len(all_files)
 
         # Track which absolute paths still exist (for cleanup)

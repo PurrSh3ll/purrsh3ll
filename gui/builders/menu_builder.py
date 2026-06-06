@@ -964,6 +964,169 @@ def build_menu(main_window):
         rag_status_label.setWordWrap(True)
         form_rag.addRow("Status:", rag_status_label)
 
+        # ── Indexed files manager ──────────────────────────────────────────────
+        _base_dir_files = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rag_dir_files  = os.path.join(getattr(c, "base_path", _base_dir_files), "appdata", "rag")
+        _excl_path      = os.path.join(_rag_dir_files, "excluded_files.json")
+        _meta_path_ui   = os.path.join(_rag_dir_files, "index_meta.json")
+
+        from core.rag.indexer import load_exclusions, save_exclusions
+
+        _STATUS_INDEXED  = "✓ indexed"
+        _STATUS_PENDING  = "⟳ pending"
+        _STATUS_EXCLUDED = "✗ excluded"
+
+        files_list = QListWidget(grp_rag)
+        files_list.setFixedHeight(8 * 22)
+        files_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+
+        files_refresh_btn = QPushButton("🔄 Refresh", grp_rag)
+        files_refresh_btn.setFixedWidth(80)
+
+        files_top_row = QHBoxLayout()
+        files_top_row.addStretch(1)
+        files_top_row.addWidget(files_refresh_btn)
+
+        files_col = QVBoxLayout()
+        files_col.setSpacing(4)
+        files_col.addLayout(files_top_row)
+        files_col.addWidget(files_list)
+        form_rag.addRow("Indexed\nfiles:", files_col)
+
+        def _load_file_meta() -> dict:
+            if os.path.exists(_meta_path_ui):
+                try:
+                    with open(_meta_path_ui, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+            return {}
+
+        def _delete_chunks_from_db(chunk_ids: list) -> None:
+            if not chunk_ids:
+                return
+            try:
+                import chromadb
+                from chromadb.api.client import SharedSystemClient
+                try:
+                    SharedSystemClient.clear_system_cache()
+                except Exception:
+                    pass
+                _db_path = os.path.join(_rag_dir_files, "chroma_db")
+                client = chromadb.PersistentClient(path=_db_path)
+                col = client.get_or_create_collection("rag_kb", metadata={"hnsw:space": "cosine"})
+                col.delete(ids=chunk_ids)
+            except Exception:
+                pass
+
+        def _save_file_meta(meta: dict) -> None:
+            try:
+                with open(_meta_path_ui, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _kb_path_now() -> str:
+            kb = rag_path_edit.text().strip()
+            return kb if kb and os.path.isdir(kb) else ""
+
+        def _active_exts() -> set:
+            exts = _rag_cfg.get("index_extensions", None)
+            return set(exts) if exts else set(DEFAULT_EXTENSIONS)
+
+        def _populate_files_list():
+            files_list.clear()
+            kb = _kb_path_now()
+            if not kb:
+                item = QListWidgetItem("  No knowledge base folder set.")
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                files_list.addItem(item)
+                return
+
+            exts      = _active_exts()
+            meta      = _load_file_meta()
+            excluded  = load_exclusions(_excl_path)
+
+            # Collect all files matching extension filter (ignoring exclusions — show them too)
+            all_files: list[str] = []
+            for root, _, names in os.walk(kb):
+                for name in names:
+                    ext = os.path.splitext(name)[1].lstrip(".").lower()
+                    if ext and ext not in exts:
+                        continue
+                    all_files.append(os.path.join(root, name))
+            all_files.sort()
+
+            if not all_files:
+                item = QListWidgetItem("  No files found for current extension filter.")
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                files_list.addItem(item)
+                return
+
+            for abs_path in all_files:
+                try:
+                    rel = os.path.relpath(abs_path, kb)
+                except ValueError:
+                    rel = abs_path
+
+                is_excluded = rel in excluded
+                file_meta   = meta.get(abs_path, {})
+                has_chunks  = bool(file_meta.get("chunk_ids"))
+
+                if is_excluded:
+                    status = _STATUS_EXCLUDED
+                elif has_chunks:
+                    status = _STATUS_INDEXED
+                else:
+                    status = _STATUS_PENDING
+
+                item = QListWidgetItem()
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked if is_excluded else Qt.CheckState.Checked)
+                item.setText(f"  {rel}    {status}")
+                item.setData(Qt.ItemDataRole.UserRole, (abs_path, rel))
+
+                if status == _STATUS_INDEXED:
+                    item.setForeground(files_list.palette().text())
+                elif status == _STATUS_PENDING:
+                    item.setForeground(files_list.palette().mid())
+                else:
+                    item.setForeground(files_list.palette().placeholderText())
+
+                files_list.addItem(item)
+
+        _populate_files_list()
+
+        def _on_file_item_changed(item: QListWidgetItem):
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data is None:
+                return
+            abs_path, rel = data
+            excluded = load_exclusions(_excl_path)
+            checked  = item.checkState() == Qt.CheckState.Checked
+
+            if not checked:
+                # Exclude: add to exclusions, remove from DB and meta
+                excluded.add(rel)
+                save_exclusions(_excl_path, excluded)
+                meta = _load_file_meta()
+                chunk_ids = meta.get(abs_path, {}).get("chunk_ids", [])
+                _delete_chunks_from_db(chunk_ids)
+                if abs_path in meta:
+                    del meta[abs_path]
+                    _save_file_meta(meta)
+                item.setText(f"  {rel}    {_STATUS_EXCLUDED}")
+                item.setForeground(files_list.palette().placeholderText())
+            else:
+                # Include: remove from exclusions, will be indexed on next run
+                excluded.discard(rel)
+                save_exclusions(_excl_path, excluded)
+                item.setText(f"  {rel}    {_STATUS_PENDING}")
+                item.setForeground(files_list.palette().mid())
+
+        files_list.itemChanged.connect(_on_file_item_changed)
+        files_refresh_btn.clicked.connect(_populate_files_list)
+
         def _save_rag_key(key, value):
             if not os.path.exists(c.config_path):
                 return
@@ -1123,8 +1286,9 @@ def build_menu(main_window):
             model_name = rag_model_combo.currentData()
             _exts_list = _rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS))
             allowed_extensions = set(_exts_list) if _exts_list else None
+            excluded_rel = load_exclusions(_excl_path)
             from core.rag.index_worker import IndexWorker
-            worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name, allowed_extensions)
+            worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name, allowed_extensions, excluded_rel)
             c._rag_index_worker = worker
             rag_reindex_btn.setEnabled(False)
             rag_delete_btn.setEnabled(False)
@@ -1157,6 +1321,7 @@ def build_menu(main_window):
                 rag_delete_btn.setEnabled(True)
                 if result == "OK":
                     rag_status_label.setText("✔ Indexing complete.")
+                    _populate_files_list()
                     rag_status_label.setStyleSheet("color: green; font-size: 11px;")
                 else:
                     rag_status_label.setText(f"✖ {result}")

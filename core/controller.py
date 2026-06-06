@@ -198,6 +198,11 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         except Exception:
             return "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+    def _get_rag_exclusions(self) -> set:
+        exclusions_path = os.path.join(self.base_path, "appdata", "rag", "excluded_files.json")
+        from core.rag.indexer import load_exclusions
+        return load_exclusions(exclusions_path)
+
     def _get_rag_extensions(self) -> set:
         from core.rag.chunker import DEFAULT_EXTENSIONS
         try:
@@ -238,8 +243,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             return
         model_name = self._get_rag_model()
         allowed_extensions = self._get_rag_extensions()
+        excluded_rel = self._get_rag_exclusions()
         from core.rag.index_worker import IndexWorker
-        worker = IndexWorker(kb_path, self.base_path, model_name, allowed_extensions)
+        worker = IndexWorker(kb_path, self.base_path, model_name, allowed_extensions, excluded_rel)
         self._rag_index_worker = worker
 
         def _show_rag_label(current, total, filename):
