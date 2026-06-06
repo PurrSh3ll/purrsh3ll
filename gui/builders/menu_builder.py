@@ -652,6 +652,36 @@ def build_menu(main_window):
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
 
         _base_dir_rag = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rag_models_cache_dir = os.path.join(
+            getattr(c, "base_path", _base_dir_rag), "appdata", "rag", "models"
+        )
+
+        def _build_cache_map(list_fn):
+            result = {}
+            try:
+                for m in list_fn():
+                    mid    = m.get("model", "")
+                    hf_src = m.get("sources", {}).get("hf", "")
+                    if mid and hf_src and "/" in hf_src:
+                        org, repo = hf_src.split("/", 1)
+                        result[mid] = f"models--{org}--{repo}"
+            except Exception:
+                pass
+            return result
+
+        def _is_cached(model_id, cache_map):
+            key = cache_map.get(model_id)
+            return bool(key and os.path.isdir(os.path.join(_rag_models_cache_dir, key)))
+
+        try:
+            from fastembed import TextEmbedding as _TE
+            from fastembed.rerank.cross_encoder import TextCrossEncoder as _TCE
+            _emb_cache_map = _build_cache_map(_TE.list_supported_models)
+            _rnk_cache_map = _build_cache_map(_TCE.list_supported_models)
+        except Exception:
+            _emb_cache_map = {}
+            _rnk_cache_map = {}
+
         _braindump_path = os.path.join(
             getattr(c, "app_modules_path", os.path.join(_base_dir_rag, "appmodules")),
             "BrainDump"
@@ -689,7 +719,8 @@ def build_menu(main_window):
         # ── Embedding model ────────────────────────────────────────────────────
         rag_model_combo = QComboBox(grp_rag)
         for _label, _val in _RAG_MODELS:
-            rag_model_combo.addItem(_label, _val)
+            _sfx = "  ✓ downloaded" if _is_cached(_val, _emb_cache_map) else ""
+            rag_model_combo.addItem(_label + _sfx, _val)
         _saved_idx = next(
             (i for i in range(rag_model_combo.count())
              if rag_model_combo.itemData(i) == _saved_model), 0
@@ -724,7 +755,8 @@ def build_menu(main_window):
 
         rag_rerank_combo = QComboBox(grp_rag)
         for _label, _val in _RERANK_MODELS:
-            rag_rerank_combo.addItem(_label, _val)
+            _sfx = "  ✓ downloaded" if _is_cached(_val, _rnk_cache_map) else ""
+            rag_rerank_combo.addItem(_label + _sfx, _val)
         _saved_rerank_idx = next(
             (i for i in range(rag_rerank_combo.count())
              if rag_rerank_combo.itemData(i) == _saved_rerank_model), 0
