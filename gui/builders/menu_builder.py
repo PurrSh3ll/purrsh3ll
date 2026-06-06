@@ -686,6 +686,7 @@ def build_menu(main_window):
         rag_path_row.addWidget(rag_browse_btn)
         form_rag.addRow("Path:", rag_path_row)
 
+        # ── Embedding model ────────────────────────────────────────────────────
         rag_model_combo = QComboBox(grp_rag)
         for _label, _val in _RAG_MODELS:
             rag_model_combo.addItem(_label, _val)
@@ -696,23 +697,7 @@ def build_menu(main_window):
         rag_model_combo.setCurrentIndex(_saved_idx)
         form_rag.addRow("Embedding model:", rag_model_combo)
 
-        _rag_auto_index = _rag_cfg.get("auto_index", False)
-        rag_auto_checkbox = QCheckBox("Enable automatic indexing", grp_rag)
-        rag_auto_checkbox.setChecked(bool(_rag_auto_index))
-
-        rag_reindex_btn = QPushButton("⟳ Refresh index", grp_rag)
-        rag_reindex_btn.setFixedWidth(110)
-
-        rag_delete_btn = QPushButton("🗑 Delete vector DB", grp_rag)
-        rag_delete_btn.setFixedWidth(130)
-
-        rag_index_row = QHBoxLayout()
-        rag_index_row.addWidget(rag_auto_checkbox)
-        rag_index_row.addStretch(1)
-        rag_index_row.addWidget(rag_reindex_btn)
-        rag_index_row.addWidget(rag_delete_btn)
-        form_rag.addRow("Indexing:", rag_index_row)
-
+        # ── Re-ranking ─────────────────────────────────────────────────────────
         _rag_rerank = _rag_cfg.get("rerank", False)
         rag_rerank_checkbox = QCheckBox(
             "Enable re-ranking  (better results, ~1–2 s extra per query)", grp_rag
@@ -748,6 +733,25 @@ def build_menu(main_window):
         rag_rerank_combo.setEnabled(bool(_rag_rerank))
         form_rag.addRow("Rerank model:", rag_rerank_combo)
 
+        # ── Indexing ───────────────────────────────────────────────────────────
+        _rag_auto_index = _rag_cfg.get("auto_index", False)
+        rag_auto_checkbox = QCheckBox("Enable automatic indexing", grp_rag)
+        rag_auto_checkbox.setChecked(bool(_rag_auto_index))
+
+        rag_reindex_btn = QPushButton("⟳ Refresh index", grp_rag)
+        rag_reindex_btn.setFixedWidth(110)
+
+        rag_delete_btn = QPushButton("🗑 Delete vector DB", grp_rag)
+        rag_delete_btn.setFixedWidth(130)
+
+        rag_index_row = QHBoxLayout()
+        rag_index_row.addWidget(rag_auto_checkbox)
+        rag_index_row.addStretch(1)
+        rag_index_row.addWidget(rag_reindex_btn)
+        rag_index_row.addWidget(rag_delete_btn)
+        form_rag.addRow("Indexing:", rag_index_row)
+
+        # ── Status ─────────────────────────────────────────────────────────────
         rag_status_label = QLabel("", grp_rag)
         rag_status_label.setStyleSheet("color: gray; font-size: 11px;")
         rag_status_label.setTextInteractionFlags(
