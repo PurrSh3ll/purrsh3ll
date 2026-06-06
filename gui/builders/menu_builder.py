@@ -866,23 +866,38 @@ def build_menu(main_window):
         from core.rag.chunker import ALL_EXTENSIONS, DEFAULT_EXTENSIONS
         _saved_exts = set(_rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS)))
 
-        _EXT_ORDER = ["pdf", "txt", "md", "rst", "csv", "py", "js", "ts",
-                      "json", "yaml", "yml", "toml", "xml", "html", "sh"]
+        _EXT_GROUPS = [
+            ("Documents", ["pdf", "txt", "md", "rst"]),
+            ("Data",      ["csv", "json", "xml", "yaml", "yml", "toml"]),
+            ("Code",      ["py", "js", "ts", "sh", "html"]),
+        ]
 
         _ext_checkboxes: dict[str, QCheckBox] = {}
-        ext_grid_widget = QWidget(grp_rag)
-        ext_grid = QHBoxLayout(ext_grid_widget)
-        ext_grid.setContentsMargins(0, 0, 0, 0)
-        ext_grid.setSpacing(6)
-        for _ext in _EXT_ORDER:
-            if _ext not in ALL_EXTENSIONS:
-                continue
-            cb = QCheckBox(f".{_ext}", ext_grid_widget)
-            cb.setChecked(_ext in _saved_exts)
-            _ext_checkboxes[_ext] = cb
-            ext_grid.addWidget(cb)
-        ext_grid.addStretch(1)
-        form_rag.addRow("Index\nextensions:", ext_grid_widget)
+        ext_outer = QVBoxLayout()
+        ext_outer.setContentsMargins(0, 0, 0, 0)
+        ext_outer.setSpacing(2)
+
+        for _group_label, _group_exts in _EXT_GROUPS:
+            row_widget = QWidget(grp_rag)
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            cat_lbl = QLabel(f"<span style='color:#888;font-size:11px'>{_group_label}:</span>", row_widget)
+            cat_lbl.setFixedWidth(68)
+            row.addWidget(cat_lbl)
+            for _ext in _group_exts:
+                if _ext not in ALL_EXTENSIONS:
+                    continue
+                cb = QCheckBox(f".{_ext}", row_widget)
+                cb.setChecked(_ext in _saved_exts)
+                _ext_checkboxes[_ext] = cb
+                row.addWidget(cb)
+            row.addStretch(1)
+            ext_outer.addWidget(row_widget)
+
+        ext_outer_widget = QWidget(grp_rag)
+        ext_outer_widget.setLayout(ext_outer)
+        form_rag.addRow("Index\nextensions:", ext_outer_widget)
 
         def _on_ext_changed():
             chosen = [e for e, cb in _ext_checkboxes.items() if cb.isChecked()]
