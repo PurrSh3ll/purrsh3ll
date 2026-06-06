@@ -1,10 +1,12 @@
 import os
 
-SUPPORTED_EXTENSIONS = {
+ALL_EXTENSIONS = {
     "md", "txt", "py", "sh", "js", "ts", "json",
     "purr", "game", "yaml", "yml", "toml", "rst",
     "csv", "xml", "html", "htm", "css", "pdf",
 }
+
+DEFAULT_EXTENSIONS = {"pdf", "txt", "md", "rst", "csv"}
 
 _SPLIT_SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 _CHUNK_SIZE       = 500
@@ -163,7 +165,7 @@ def _chunk_pdf(abs_path: str, kb_root: str) -> list[dict]:
     ]
 
 
-def chunk_file(abs_path: str, kb_root: str) -> list[dict]:
+def chunk_file(abs_path: str, kb_root: str, allowed_ext: set | None = None) -> list[dict]:
     """
     Chunk a single file and return a list of chunk dicts:
       {
@@ -181,8 +183,8 @@ def chunk_file(abs_path: str, kb_root: str) -> list[dict]:
     Returns empty list if file is unsupported, binary, or unreadable.
     """
     ext = os.path.splitext(abs_path)[1].lstrip(".").lower()
-    # Allow no-extension files
-    if ext and ext not in SUPPORTED_EXTENSIONS:
+    _allowed = allowed_ext if allowed_ext is not None else DEFAULT_EXTENSIONS
+    if ext and ext not in _allowed:
         return []
 
     # PDF: dedicated extractor (binary file — must bypass binary check)

@@ -862,6 +862,35 @@ def build_menu(main_window):
         rag_dl_list.currentRowChanged.connect(_dl_selection_changed)
         rag_dl_remove_btn.clicked.connect(_dl_remove)
 
+        # ── Index extensions ───────────────────────────────────────────────────
+        from core.rag.chunker import ALL_EXTENSIONS, DEFAULT_EXTENSIONS
+        _saved_exts = set(_rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS)))
+
+        _EXT_ORDER = ["pdf", "txt", "md", "rst", "csv", "py", "js", "ts",
+                      "json", "yaml", "yml", "toml", "xml", "html", "sh"]
+
+        _ext_checkboxes: dict[str, QCheckBox] = {}
+        ext_grid_widget = QWidget(grp_rag)
+        ext_grid = QHBoxLayout(ext_grid_widget)
+        ext_grid.setContentsMargins(0, 0, 0, 0)
+        ext_grid.setSpacing(6)
+        for _ext in _EXT_ORDER:
+            if _ext not in ALL_EXTENSIONS:
+                continue
+            cb = QCheckBox(f".{_ext}", ext_grid_widget)
+            cb.setChecked(_ext in _saved_exts)
+            _ext_checkboxes[_ext] = cb
+            ext_grid.addWidget(cb)
+        ext_grid.addStretch(1)
+        form_rag.addRow("Index\nextensions:", ext_grid_widget)
+
+        def _on_ext_changed():
+            chosen = [e for e, cb in _ext_checkboxes.items() if cb.isChecked()]
+            _save_rag_key("index_extensions", chosen)
+
+        for _cb in _ext_checkboxes.values():
+            _cb.stateChanged.connect(_on_ext_changed)
+
         # ── Indexing ───────────────────────────────────────────────────────────
         _rag_auto_index = _rag_cfg.get("auto_index", False)
         rag_auto_checkbox = QCheckBox("Enable automatic indexing", grp_rag)
@@ -1047,8 +1076,9 @@ def build_menu(main_window):
                 QMessageBox.warning(dlg, "RAG", "Knowledge base folder not found.\nCheck the path in AI Settings > RAG.")
                 return
             model_name = rag_model_combo.currentData()
+            allowed_extensions = {e for e, cb in _ext_checkboxes.items() if cb.isChecked()} or None
             from core.rag.index_worker import IndexWorker
-            worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name)
+            worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name, allowed_extensions)
             c._rag_index_worker = worker
             rag_reindex_btn.setEnabled(False)
             rag_delete_btn.setEnabled(False)

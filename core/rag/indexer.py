@@ -36,19 +36,23 @@ def _save_meta(meta_path: str, meta: dict) -> None:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
-def _collect_files(kb_path: str) -> list[str]:
+def _collect_files(kb_path: str, allowed_ext: set) -> list[str]:
     files = []
     for root, _, names in os.walk(kb_path):
         for name in names:
-            files.append(os.path.join(root, name))
+            ext = os.path.splitext(name)[1].lstrip(".").lower()
+            if not ext or ext in allowed_ext:
+                files.append(os.path.join(root, name))
     return sorted(files)
 
 
 class Indexer:
-    def __init__(self, kb_path: str, base_path: str, model_name: str = emb.DEFAULT_MODEL):
+    def __init__(self, kb_path: str, base_path: str, model_name: str = emb.DEFAULT_MODEL,
+                 allowed_extensions: set | None = None):
         self.kb_path    = os.path.normpath(kb_path)
         self.base_path  = base_path
         self.model_name = model_name
+        self.allowed_ext = allowed_extensions if allowed_extensions is not None else chunker.DEFAULT_EXTENSIONS
 
         self._rag_dir   = os.path.join(base_path, "appdata", "rag")
         self._db_path   = os.path.join(self._rag_dir, "chroma_db")
@@ -80,7 +84,7 @@ class Indexer:
         progress_callback(current, total, filename) called for each file processed.
         """
         meta      = _load_meta(self._meta_path)
-        all_files = _collect_files(self.kb_path)
+        all_files = _collect_files(self.kb_path, self.allowed_ext)
         total     = len(all_files)
 
         # Track which absolute paths still exist (for cleanup)
@@ -124,7 +128,7 @@ class Indexer:
                         pass
 
                 # Chunk
-                chunks = chunker.chunk_file(abs_path, self.kb_path)
+                chunks = chunker.chunk_file(abs_path, self.kb_path, self.allowed_ext)
                 if not chunks:
                     meta[abs_path] = {"sha256": file_hash, "chunk_ids": []}
                     continue

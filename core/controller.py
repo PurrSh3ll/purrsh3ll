@@ -198,6 +198,18 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         except Exception:
             return "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+    def _get_rag_extensions(self) -> set:
+        from core.rag.chunker import DEFAULT_EXTENSIONS
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            exts = cfg.get("rag", {}).get("index_extensions", None)
+            if exts and isinstance(exts, list):
+                return set(exts)
+        except Exception:
+            pass
+        return set(DEFAULT_EXTENSIONS)
+
     def start_rag_watcher(self):
         self.stop_rag_watcher()
         kb_path = self._get_rag_kb_path()
@@ -225,8 +237,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         if not kb_path or not os.path.isdir(kb_path):
             return
         model_name = self._get_rag_model()
+        allowed_extensions = self._get_rag_extensions()
         from core.rag.index_worker import IndexWorker
-        worker = IndexWorker(kb_path, self.base_path, model_name)
+        worker = IndexWorker(kb_path, self.base_path, model_name, allowed_extensions)
         self._rag_index_worker = worker
 
         def _show_rag_label(current, total, filename):
