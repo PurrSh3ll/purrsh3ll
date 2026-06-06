@@ -835,18 +835,18 @@ def build_menu(main_window):
             active_embed = rag_model_combo.currentData() or ""
             is_active = (kind == "embed" and model_id == active_embed)
             msg = (
-                f"Usuń pliki modelu:\n{item.text()}\n\n"
+                f"Delete cached files for:\n{item.text()}\n\n"
                 f"Folder:\n{cache_path}"
             )
             if is_active:
                 msg += (
-                    "\n\n⚠ Ten model jest aktualnie aktywny jako Embedding model.\n"
-                    "Zostanie ponownie pobrany przy następnym zapytaniu RAG."
+                    "\n\n⚠ This model is currently set as the active Embedding model.\n"
+                    "It will be re-downloaded on the next RAG query."
                 )
             from PyQt6.QtWidgets import QMessageBox
             import shutil
             reply = QMessageBox.question(
-                dlg, "Usuń model z cache", msg,
+                dlg, "Delete model cache", msg,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -854,7 +854,7 @@ def build_menu(main_window):
             try:
                 shutil.rmtree(cache_path)
             except Exception as e:
-                QMessageBox.warning(dlg, "Błąd", f"Nie udało się usunąć:\n{e}")
+                QMessageBox.warning(dlg, "Error", f"Failed to delete:\n{e}")
                 return
             # Remove ✓ downloaded from combo label
             combo = rag_model_combo if kind == "embed" else rag_rerank_combo
