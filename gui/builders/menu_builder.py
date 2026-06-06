@@ -2142,7 +2142,7 @@ def build_menu(main_window):
         btn_remove_provider.clicked.connect(_on_remove_provider)
 
         # ── Assemble dialog ───────────────────────────────────────────────────
-        # ── Tab: Settings (AI/LLM + RAG) ──────────────────────────────────────
+        # ── Tab: Settings (AI/LLM) ────────────────────────────────────────────
         settings_scroll_content = QWidget()
         settings_scroll_content.setObjectName("ai_settings_scroll_content")
         settings_scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -2150,7 +2150,6 @@ def build_menu(main_window):
         settings_scroll_layout.setContentsMargins(4, 4, 4, 4)
         settings_scroll_layout.setSpacing(8)
         settings_scroll_layout.addWidget(grp_llm)
-        settings_scroll_layout.addWidget(grp_rag)
         settings_scroll_layout.addStretch(1)
 
         settings_scroll = QScrollArea()
@@ -2158,6 +2157,20 @@ def build_menu(main_window):
         settings_scroll.setWidgetResizable(True)
         settings_scroll.setWidget(settings_scroll_content)
         settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        # ── Tab: RAG ──────────────────────────────────────────────────────────
+        rag_scroll_content = QWidget()
+        rag_scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        rag_scroll_layout = QVBoxLayout(rag_scroll_content)
+        rag_scroll_layout.setContentsMargins(4, 4, 4, 4)
+        rag_scroll_layout.setSpacing(8)
+        rag_scroll_layout.addWidget(grp_rag)
+        rag_scroll_layout.addStretch(1)
+
+        rag_scroll = QScrollArea()
+        rag_scroll.setWidgetResizable(True)
+        rag_scroll.setWidget(rag_scroll_content)
+        rag_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
         # ── Tab: Profiles (API Providers table) ───────────────────────────────
         profiles_tab = QWidget()
@@ -2169,6 +2182,7 @@ def build_menu(main_window):
         # ── QTabWidget ────────────────────────────────────────────────────────
         tabs = QTabWidget(dlg)
         tabs.addTab(settings_scroll, "Settings")
+        tabs.addTab(rag_scroll, "RAG")
         tabs.addTab(profiles_tab, "Profiles")
 
         btn_close = QPushButton("Close", dlg)
