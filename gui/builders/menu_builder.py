@@ -881,7 +881,7 @@ def build_menu(main_window):
         ext_row.setContentsMargins(0, 0, 0, 0)
         ext_row.setSpacing(6)
         ext_summary_lbl = QLabel(_ext_summary(_saved_exts), ext_row_widget)
-        ext_summary_lbl.setStyleSheet("color: #aaa; font-size: 11px;")
+        ext_summary_lbl.setStyleSheet("font-size: 11px;")
         ext_configure_btn = QPushButton("Configure…", ext_row_widget)
         ext_configure_btn.setFixedWidth(90)
         ext_row.addWidget(ext_summary_lbl)
@@ -890,13 +890,6 @@ def build_menu(main_window):
         form_rag.addRow("Index\nextensions:", ext_row_widget)
 
         def _open_ext_dialog():
-            from core.stylesheets.styles_menus import build_menu_styles
-            _s = build_menu_styles(
-                c.theme.get("background", {}),
-                c.theme.get("foreground", {}),
-                c.theme.get("border", {}),
-                c.theme.get("glow", {}),
-            )
             popup = QDialog(dlg)
             popup.setWindowTitle("Index extensions")
             popup.setModal(True)
@@ -938,7 +931,7 @@ def build_menu(main_window):
             for _cb in _ext_checkboxes.values():
                 _cb.stateChanged.connect(_on_ext_changed)
 
-            popup.setStyleSheet(_s.get("qss_QDialog_global", ""))
+            popup.setStyleSheet(c.messagebox_stylesheet)
             popup.exec()
 
         ext_configure_btn.clicked.connect(_open_ext_dialog)
