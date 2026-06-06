@@ -1383,6 +1383,7 @@ def build_menu(main_window):
                 "model":    f_model,
                 "url":      f_url,
                 "key":      f_key,
+                "btn_ok":   btn_ok,
             }
 
         # ── table helpers ─────────────────────────────────────────────────────
@@ -1703,39 +1704,40 @@ def build_menu(main_window):
 
         def _on_add_provider():
             pdlg, fields = _build_profile_dialog("Add Provider Profile")
+
+            def _warn(title, text):
+                from PyQt6.QtWidgets import QMessageBox
+                mb = QMessageBox(pdlg)
+                mb.setWindowTitle(title)
+                mb.setText(text)
+                mb.setIcon(QMessageBox.Icon.Warning)
+                try:
+                    mb.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+                mb.exec()
+
+            def _validate_and_accept():
+                name = fields["name"].text().strip()
+                if not name:
+                    _warn("Name required", "Profile name cannot be empty.\nPlease enter a name and try again.")
+                    return
+                existing = [
+                    providers_table.item(r, 0).text()
+                    for r in range(providers_table.rowCount())
+                    if providers_table.item(r, 0)
+                ]
+                if name in existing:
+                    _warn("Duplicate name", f"A profile named \"{name}\" already exists.\nPlease choose a different name.")
+                    return
+                pdlg.accept()
+
+            fields["btn_ok"].clicked.disconnect()
+            fields["btn_ok"].clicked.connect(_validate_and_accept)
+
             if pdlg.exec() != QDialog.DialogCode.Accepted:
                 return
             profile = _profile_from_fields(fields)
-            name = profile["name"].strip()
-            if not name:
-                from PyQt6.QtWidgets import QMessageBox
-                mb = QMessageBox(dlg)
-                mb.setWindowTitle("Name required")
-                mb.setText("Profile name cannot be empty.\nPlease enter a name and try again.")
-                mb.setIcon(QMessageBox.Icon.Warning)
-                try:
-                    mb.setStyleSheet(c.messagebox_stylesheet)
-                except Exception:
-                    pass
-                mb.exec()
-                return
-            existing = [
-                providers_table.item(r, 0).text()
-                for r in range(providers_table.rowCount())
-                if providers_table.item(r, 0)
-            ]
-            if name in existing:
-                from PyQt6.QtWidgets import QMessageBox
-                mb = QMessageBox(dlg)
-                mb.setWindowTitle("Duplicate name")
-                mb.setText(f"A profile named \"{name}\" already exists.\nPlease choose a different name.")
-                mb.setIcon(QMessageBox.Icon.Warning)
-                try:
-                    mb.setStyleSheet(c.messagebox_stylesheet)
-                except Exception:
-                    pass
-                mb.exec()
-                return
             _insert_table_row(providers_table.rowCount(), profile)
             _save_api_key(profile["name"], fields["key"].text())
             _refresh_active_combo()
