@@ -368,13 +368,30 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
-        # Run in foreground — stderr (curl progress) goes to log, stdout filtered to >>> lines only
+        # Run in background — timer loop prints elapsed time and any new >>> lines every 10s
         info "Installing Ollama (this may take a few minutes)..."
+        local _ollama_log="/tmp/_purrsh3ll_ollama.log"
+        > "$_ollama_log"
         bash -c 'curl -fsSL https://ollama.com/install.sh | sh' \
-            2>>/tmp/_purrsh3ll_install.log \
-            | grep --line-buffered -E "^>>>" \
-            | tee -a /tmp/_purrsh3ll_install.log \
-            || true
+            >"$_ollama_log" 2>&1 &
+        local _ollama_pid=$! _elapsed=0 _log_pos=0
+        while kill -0 "$_ollama_pid" 2>/dev/null; do
+            sleep 10
+            _elapsed=$((_elapsed + 10))
+            # Print any new >>> lines that appeared since last check
+            local _new
+            _new=$(tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>")
+            _log_pos=$(wc -l < "$_ollama_log" 2>/dev/null || echo 0)
+            if [[ -n "$_new" ]]; then
+                echo "$_new"
+            else
+                echo -e "  ${CYAN}...${NC} still installing (${_elapsed}s elapsed)"
+            fi
+        done
+        wait "$_ollama_pid" || true
+        cat "$_ollama_log" >> /tmp/_purrsh3ll_install.log
+        # Print any remaining >>> lines not yet shown
+        tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>" || true
         if command -v ollama &>/dev/null; then
             OLLAMA_OK=true
             success "Ollama installed → $(command -v ollama)"
