@@ -619,12 +619,47 @@ def build_menu(main_window):
         _rag_mode = _rag_cfg.get("knowledge_base", "braindump")
         _rag_custom_path = _rag_cfg.get("custom_path", "")
 
+        # (label, model_id) — model_id=None means a non-selectable group header
         _RAG_MODELS = [
+            # ── English ──────────────────────────────────────────────────────
+            ("English",                                    None),
+            ("bge-small-en",                               "BAAI/bge-small-en"),
             ("bge-small-en-v1.5",                          "BAAI/bge-small-en-v1.5"),
-            ("nomic-embed-text-v1.5-Q",                    "nomic-ai/nomic-embed-text-v1.5-Q"),
-            ("paraphrase-multilingual-MiniLM-L12-v2",      "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
+            ("bge-base-en",                                "BAAI/bge-base-en"),
             ("bge-base-en-v1.5",                           "BAAI/bge-base-en-v1.5"),
+            ("bge-large-en-v1.5",                          "BAAI/bge-large-en-v1.5"),
+            ("all-MiniLM-L6-v2",                           "sentence-transformers/all-MiniLM-L6-v2"),
+            ("gte-base",                                   "thenlper/gte-base"),
+            ("gte-large",                                  "thenlper/gte-large"),
+            ("mxbai-embed-large-v1",                       "mixedbread-ai/mxbai-embed-large-v1"),
+            ("arctic-embed-xs",                            "snowflake/snowflake-arctic-embed-xs"),
+            ("arctic-embed-s",                             "snowflake/snowflake-arctic-embed-s"),
+            ("arctic-embed-m",                             "snowflake/snowflake-arctic-embed-m"),
+            ("arctic-embed-m-long",                        "snowflake/snowflake-arctic-embed-m-long"),
+            ("arctic-embed-l",                             "snowflake/snowflake-arctic-embed-l"),
+            ("jina-embeddings-v2-base-en",                 "jinaai/jina-embeddings-v2-base-en"),
+            # ── Multilingual ─────────────────────────────────────────────────
+            ("Multilingual",                               None),
+            ("nomic-embed-text-v1.5-Q",                    "nomic-ai/nomic-embed-text-v1.5-Q"),
+            ("nomic-embed-text-v1.5",                      "nomic-ai/nomic-embed-text-v1.5"),
+            ("nomic-embed-text-v1",                        "nomic-ai/nomic-embed-text-v1"),
+            ("paraphrase-multilingual-MiniLM-L12-v2",      "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
             ("paraphrase-multilingual-mpnet-base-v2",      "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
+            ("multilingual-e5-large",                      "intfloat/multilingual-e5-large"),
+            ("jina-embeddings-v3",                         "jinaai/jina-embeddings-v3"),
+            # ── Language-specific ─────────────────────────────────────────────
+            ("Language-specific",                          None),
+            ("jina-embeddings-v2-base-de  [DE]",           "jinaai/jina-embeddings-v2-base-de"),
+            ("jina-embeddings-v2-base-es  [ES]",           "jinaai/jina-embeddings-v2-base-es"),
+            ("jina-embeddings-v2-base-zh  [ZH]",           "jinaai/jina-embeddings-v2-base-zh"),
+            ("bge-small-zh-v1.5  [ZH]",                   "BAAI/bge-small-zh-v1.5"),
+            # ── Code ──────────────────────────────────────────────────────────
+            ("Code",                                       None),
+            ("jina-embeddings-v2-base-code",               "jinaai/jina-embeddings-v2-base-code"),
+            # ── Vision / Multimodal ───────────────────────────────────────────
+            ("Vision / Multimodal",                        None),
+            ("jina-clip-v1",                               "jinaai/jina-clip-v1"),
+            ("clip-ViT-B-32-text",                         "Qdrant/clip-ViT-B-32-text"),
         ]
         _DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
@@ -718,10 +753,17 @@ def build_menu(main_window):
         form_rag.addRow("Path:", rag_path_row)
 
         # ── Embedding model ────────────────────────────────────────────────────
+        from PyQt6.QtGui import QStandardItem
         rag_model_combo = QComboBox(grp_rag)
         for _label, _val in _RAG_MODELS:
-            _sfx = "  ✓ downloaded" if _is_cached(_val, _emb_cache_map) else ""
-            rag_model_combo.addItem(_label + _sfx, _val)
+            if _val is None:
+                _hdr = QStandardItem(f"  ── {_label} ──")
+                _hdr.setEnabled(False)
+                _hdr.setData(None, Qt.ItemDataRole.UserRole)
+                rag_model_combo.model().appendRow(_hdr)
+            else:
+                _sfx = "  ✓ downloaded" if _is_cached(_val, _emb_cache_map) else ""
+                rag_model_combo.addItem("    " + _label + _sfx, _val)
         _saved_idx = next(
             (i for i in range(rag_model_combo.count())
              if rag_model_combo.itemData(i) == _saved_model), 0
