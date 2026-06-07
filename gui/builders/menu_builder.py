@@ -22,21 +22,23 @@ class _ScrollableComboBox(QComboBox):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setMaxVisibleItems(200)
+        self._sb_qss = ""
+
+    def setScrollBarStyleSheet(self, qss: str):
+        self._sb_qss = qss
 
     def showPopup(self):
         super().showPopup()
         container = self.view().parent()
         if container and container is not self:
             view = self.view()
-            # Permanently suppress Qt's private scroll-arrow buttons.
-            # setMaximumHeight(0) prevents them re-appearing on hover even if Qt calls show() internally.
             for child in container.children():
                 if isinstance(child, QWidget) and child is not view:
                     child.setMaximumHeight(0)
                     child.hide()
-            # Always-on scrollbar — AsNeeded is unreliable when container is resized
             view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-            # setFixedHeight prevents the internal layout from re-expanding the container
+            if self._sb_qss:
+                view.verticalScrollBar().setStyleSheet(self._sb_qss)
             if container.height() > self._MAX_H:
                 container.setFixedHeight(self._MAX_H)
 
@@ -782,7 +784,7 @@ def build_menu(main_window):
         from PyQt6.QtGui import QStandardItem
         rag_model_combo = _ScrollableComboBox(grp_rag)
         _emb_bg = c.actual_theme.get("background", {})
-        _sb_qss = f"""
+        rag_model_combo.setScrollBarStyleSheet(f"""
             QScrollBar:vertical {{
                 background: transparent;
                 width: 8px;
@@ -804,9 +806,7 @@ def build_menu(main_window):
             QScrollBar::sub-page:vertical {{
                 background: {_emb_bg.get("scroll_area", "#1E1F22")};
             }}
-        """
-        rag_model_combo.view().setStyleSheet(_sb_qss)
-        rag_model_combo.view().verticalScrollBar().setStyleSheet(_sb_qss)
+        """)
         for _label, _val in _RAG_MODELS:
             if _val is None:
                 _hdr = QStandardItem(f"  ── {_label} ──")
