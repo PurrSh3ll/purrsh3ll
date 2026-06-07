@@ -16,8 +16,14 @@ from core.controller import controller_instance
 
 
 class _ScrollableComboBox(QComboBox):
-    """QComboBox whose popup is capped at a fixed pixel height with a scrollbar."""
+    """QComboBox popup capped at a fixed height with a real scrollbar (no arrow buttons)."""
     _MAX_H = 300
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Large value prevents Qt from adding its own scroll-arrow buttons
+        self.setMaxVisibleItems(200)
+        self.view().setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def showPopup(self):
         super().showPopup()
