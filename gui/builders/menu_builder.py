@@ -928,21 +928,28 @@ def build_menu(main_window):
         _emb_info_btn = QToolButton(grp_emb)
         _emb_info_btn.setText("ℹ")
         _emb_info_btn.setAutoRaise(True)
+        _emb_info_btn.setToolTip("Select a model that supports the language of your documents.")
 
         def _show_emb_info():
             msg = QMessageBox(dlg)
             msg.setWindowTitle("Choosing an Embedding Model")
-            msg.setText("<b>Things to consider when selecting an embedding model</b>")
-            msg.setInformativeText(
-                "• <b>Language support</b> — ensure the model covers the language(s) of your "
-                "documents. Using a model that does not support your document language will result "
-                "in poor or no matches during search.\n\n"
-                "• <b>Use case</b> — models differ in what they are optimised for: semantic "
-                "search, retrieval, clustering, or cross-lingual tasks. Hover over a model name "
-                "in the list to see its intended use case.\n\n"
-                "• <b>Memory footprint</b> — larger models generally produce better results but "
-                "consume significantly more RAM during indexing. Consider your available system "
-                "resources when choosing between a lightweight and a high-accuracy model."
+            msg.setText(
+                "<b>Things to consider when selecting an embedding model</b>"
+                "<hr>"
+                "<b>Language support</b><br>"
+                "Ensure the model covers the language(s) of your documents. "
+                "A model that does not support your document language will produce "
+                "poor or no matches during search."
+                "<br><br>"
+                "<b>Use case</b><br>"
+                "Models differ in what they are optimised for: semantic search, retrieval, "
+                "clustering, or cross-lingual tasks. Hover over a model name in the list "
+                "to see its intended use case and supported languages."
+                "<br><br>"
+                "<b>Memory footprint</b><br>"
+                "Larger models generally produce better results but consume significantly "
+                "more RAM during indexing. Consider your available system resources when "
+                "choosing between a lightweight and a high-accuracy model."
             )
             msg.setStyleSheet(c.messagebox_stylesheet)
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
@@ -991,20 +998,27 @@ def build_menu(main_window):
         _rnk_info_btn = QToolButton(grp_rnk)
         _rnk_info_btn.setText("ℹ")
         _rnk_info_btn.setAutoRaise(True)
+        _rnk_info_btn.setToolTip("Select a reranker that supports the language of your documents.")
 
         def _show_rnk_info():
             msg = QMessageBox(dlg)
             msg.setWindowTitle("Choosing a Rerank Model")
-            msg.setText("<b>Things to consider when selecting a reranker</b>")
-            msg.setInformativeText(
-                "• <b>Language support</b> — ensure the reranker covers the language(s) of your "
-                "documents. Most rerankers are optimised for English only. Hover over a model "
-                "name in the list to see supported languages.\n\n"
-                "• <b>Use case</b> — rerankers re-score retrieval results for higher precision. "
-                "Lightweight models offer lower latency, while larger models may produce more "
-                "accurate rankings at the cost of additional processing time.\n\n"
-                "• <b>Memory footprint</b> — rerankers are loaded on every query when re-ranking "
-                "is enabled. Larger models will increase per-query RAM usage and response time."
+            msg.setText(
+                "<b>Things to consider when selecting a reranker</b>"
+                "<hr>"
+                "<b>Language support</b><br>"
+                "Ensure the reranker covers the language(s) of your documents. "
+                "Most rerankers are optimised for English only. Hover over a model "
+                "name in the list to see its supported languages."
+                "<br><br>"
+                "<b>Use case</b><br>"
+                "Rerankers re-score retrieval results for higher precision. "
+                "Lightweight models offer lower latency, while larger models may produce "
+                "more accurate rankings at the cost of additional processing time."
+                "<br><br>"
+                "<b>Memory footprint</b><br>"
+                "Rerankers are loaded on every query when re-ranking is enabled. "
+                "Larger models will increase per-query RAM usage and response time."
             )
             msg.setStyleSheet(c.messagebox_stylesheet)
             msg.setStandardButtons(QMessageBox.StandardButton.Ok)
