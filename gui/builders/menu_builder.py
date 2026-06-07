@@ -28,9 +28,11 @@ class _ScrollableComboBox(QComboBox):
         container = self.view().parent()
         if container and container is not self:
             view = self.view()
-            # Hide Qt's private scroll-arrow buttons
+            # Permanently suppress Qt's private scroll-arrow buttons.
+            # setMaximumHeight(0) prevents them re-appearing on hover even if Qt calls show() internally.
             for child in container.children():
                 if isinstance(child, QWidget) and child is not view:
+                    child.setMaximumHeight(0)
                     child.hide()
             # Always-on scrollbar — AsNeeded is unreliable when container is resized
             view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
