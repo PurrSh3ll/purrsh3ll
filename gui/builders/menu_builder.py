@@ -21,7 +21,6 @@ class _ScrollableComboBox(QComboBox):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Large value prevents Qt from adding its own scroll-arrow buttons
         self.setMaxVisibleItems(200)
         self.view().setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
@@ -29,6 +28,12 @@ class _ScrollableComboBox(QComboBox):
         super().showPopup()
         container = self.view().parent()
         if container and container is not self:
+            view = self.view()
+            # Hide Qt's private scroll-arrow buttons (QComboBoxPrivateScroller).
+            # They are the only QWidget direct children of the container that are not the view.
+            for child in container.children():
+                if isinstance(child, QWidget) and child is not view:
+                    child.hide()
             geo = container.geometry()
             if geo.height() > self._MAX_H:
                 container.resize(geo.width(), self._MAX_H)
