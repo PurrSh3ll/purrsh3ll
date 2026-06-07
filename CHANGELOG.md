@@ -24,7 +24,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **File viewer**: PDF files rendered with page navigation
 - **RAG**: PDF files now indexed and searchable in the knowledge base
 - **File viewer**: audio and video files playable directly in the app
-- **Installer**: interactive installer replacing `install.sh` and `install_full.sh`
+- **Installer**: interactive whiptail checklist installer replacing `install.sh` and `install_full.sh` — optional components selectable per run (Ollama, aichat, Docker, Open WebUI, WebMap, Voice, AI Skills, embedding model)
+- **Installer**: optional multilingual embedding model download (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) selectable during install; downloaded once and reused on every RAG use
+- **AI Settings → RAG tab**: reorganized into four named sections — Knowledge, Embedding, Re-ranking, Downloaded models
+- **AI Settings → RAG tab**: ℹ info button in Embedding and Re-ranking sections — click opens popup with guidance on model selection, language support, and RAM usage; hover shows a short warning tooltip
+- **AI Settings → RAG tab**: tooltips on individual embedding and reranker combo items — describe supported languages, model size, and use case
+- **AI Settings → RAG tab**: double-click on a model in Downloaded models list shows its info popup
+- **AI Settings → RAG tab**: Indexed files list capped at 6 visible rows with scrollbar
+- **AI profiles**: API provider profiles moved to a separate `appdata/api_profiles.json` file — gitignored; application creates an empty file on first launch if missing
+- **BrainDump**: `purrsh3ll_app_guide.md` added — comprehensive in-app guide optimized for RAG retrieval covering all features, CLI tools with flags and examples, FAQ and troubleshooting
 
 ### Fixed
 
@@ -41,9 +49,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Syntax highlighting**: files with unknown extensions (`.yaml`, `.toml`, `.css`, `.rs`, `.ts`, `.env`, `Dockerfile`, `Makefile` etc.) now auto-detect language via `guess_lexer_for_filename()` and receive syntax highlighting automatically
 - **File icons**: unknown extensions now show a neutral icon instead of "unsupported"; the unsupported icon is reserved for 62 known binary/non-openable formats (video, audio, archives, executables, fonts, 3D assets etc.)
 - **HTML viewer**: three view mode buttons (`</>` code, `◫` split, `≡` preview) added before the browser button — split view is the default
-
-### Fixed
-
 - **testfolder**: removed `usermodules/testfolder/` from git tracking — folder is now ignored via `.gitignore` and will no longer appear in the repository; files remain locally
 - **Security**: sudo password no longer stored in GNOME Keyring — now kept in a `bytearray` in RAM for the session duration and securely zeroed at shutdown via `ctypes.memset`; eliminates "Unlock Login Keyring" popup on application exit
 - **Markdown preview**: zoom (buttons + Ctrl+Scroll) now scales images alongside text; images fit the preview width automatically and never upscale beyond natural size
@@ -179,6 +184,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## Notes
 
 - Ollama LLM models are not bundled — each model is downloaded separately on demand (2–8 GB per model)
-- Full installation (`install_full.sh`) may take 10–20 minutes depending on internet speed
-- Voice support requires optional packages (`--voice` flag during installation)
+- Full installation with all components may take 10–20 minutes depending on internet speed
+- Voice support requires optional packages (selectable in the interactive installer)
 - Python venv is approximately 1.4–1.5 GB (dominated by PyQt6 + onnxruntime)
