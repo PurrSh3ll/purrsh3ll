@@ -51,7 +51,7 @@ run_with_spinner() {
     local spin=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
     local i=0
     printf "${CYAN}==>${NC} ${BOLD}%s${NC} " "$label"
-    "$@" >/tmp/_purrsh3ll_install.log 2>&1 &
+    "$@" >>/tmp/_purrsh3ll_install.log 2>&1 &
     local pid=$!
     while kill -0 "$pid" 2>/dev/null; do
         printf "\r${CYAN}==>${NC} ${BOLD}%s${NC} %s " "$label" "${spin[$i]}"
@@ -77,6 +77,10 @@ print_plan() {
     [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model          (~220 MB — multilingual MiniLM)" || echo -e "    ${YELLOW}–${NC}  Embed model                             (skipped)"
     echo ""
 }
+
+# ── Clear install log ─────────────────────────────────────────────────────────
+
+> /tmp/_purrsh3ll_install.log
 
 # ── Header ────────────────────────────────────────────────────────────────────
 
@@ -418,8 +422,11 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     else
         # Refresh sudo cache before background spinner; DEBIAN_FRONTEND suppresses prompts
         sudo -v
-        if run_with_spinner "Installing Docker (get.docker.com)..." \
-            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh'; then
+        # get.docker.com self-test (docker run hello-world) fails when daemon is not yet
+        # running — ignore the exit code and check for the binary instead
+        run_with_spinner "Installing Docker (get.docker.com)..." \
+            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' || true
+        if command -v docker &>/dev/null; then
             success "Docker packages installed"
 
             # Enable service (non-blocking — does not start it yet)
