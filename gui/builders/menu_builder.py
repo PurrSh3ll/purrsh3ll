@@ -756,6 +756,7 @@ def build_menu(main_window):
         from PyQt6.QtGui import QStandardItem
         rag_model_combo = QComboBox(grp_rag)
         rag_model_combo.setMaxVisibleItems(12)
+        rag_model_combo.view().setMaximumHeight(280)
         for _label, _val in _RAG_MODELS:
             if _val is None:
                 _hdr = QStandardItem(f"  ── {_label} ──")
