@@ -48,6 +48,209 @@ To use any of these commands, type them directly in the terminal. For example: `
 
 ---
 
+### psask — ask the AI a question
+
+Ask the active AI profile a single question and get a direct answer.
+
+```
+psask "what is a SSRF vulnerability?"
+psask "explain the difference between bind and reverse shell"
+psask -m llama3.2 "what is privilege escalation?"
+psask --rag "how to enumerate SMB shares"
+psask --rag -n 10 "lateral movement techniques"
+```
+
+Flags:
+- `-m <model>` — override the model from the active profile
+- `--rag` — enrich the prompt with relevant chunks from the knowledge base
+- `-n <N>` — number of RAG chunks to include (default: 5, used with `--rag`)
+
+---
+
+### pschat — persistent chat session
+
+Start a multi-turn conversation with the AI. History is preserved between runs.
+
+```
+pschat "let's analyze this target: 10.10.10.5"
+pschat --new
+pschat --history
+pschat --clear
+pschat --rag "what does my knowledge base say about SMB?"
+pschat -m gemma3 "continue our analysis"
+```
+
+Flags:
+- `--new` — clear history and start a new session
+- `--clear` — clear history and exit without starting a session
+- `--history` — show the current conversation history
+- `--rag` — enrich the message with RAG context
+- `-n <N>` — number of RAG chunks (default: 5)
+- `-m <model>` — override the model
+
+---
+
+### pscmd — generate a shell command from a description
+
+Describe what you want to do in plain language and get the exact shell command.
+
+```
+pscmd "find all SUID binaries on the system"
+pscmd "list open ports on 192.168.1.1 with service detection"
+pscmd "compress the /var/log directory to a tar.gz archive"
+pscmd -m qwen3 "encode the string hello in base64"
+```
+
+Flags:
+- `-m <model>` — override the model
+
+---
+
+### psfix — explain and fix the last terminal error
+
+Reads the last failed command from terminal history and sends it to AI for explanation or fix.
+
+```
+psfix
+psfix --explain
+psfix --analyze
+psfix -m llama3.2
+```
+
+Flags:
+- `--explain` — explain why the command failed without suggesting a fix
+- `--analyze` — deep mode with terminal history context and current directory
+- `-m <model>` — override the model
+
+---
+
+### psnext — suggest the next penetration testing step
+
+Reads terminal history and suggests the most promising next moves based on what has been done so far.
+
+```
+psnext
+psnext --target 192.168.1.0/24
+psnext -m llama3.2
+```
+
+Flags:
+- `--target <TARGET>` — specify the target IP, hostname, or range for better suggestions
+- `-m <model>` — override the model
+
+---
+
+### pstldr — summarize command output (TL;DR)
+
+Summarize the last command output, a file, or any piped text.
+
+```
+pstldr
+pstldr /var/log/syslog
+pstldr --tail /var/log/syslog
+pstldr "some long text here"
+cat nmap_output.txt | pstldr
+pstldr -m gemma3 report.txt
+```
+
+Flags:
+- `--tail` — read from the end of the file instead of the beginning (useful for logs)
+- `-m <model>` — override the model
+
+---
+
+### psreport — generate a penetration testing report
+
+Filters terminal history for security-relevant commands and generates a structured Markdown or HTML report. Reports are saved to `appmodules/Cyb3rCollector/reports/`.
+
+```
+psreport
+psreport --deep
+psreport --full
+psreport --verbose
+psreport --format html
+psreport --target 192.168.1.0/24
+psreport --title "Internal Network Pentest"
+psreport --target 10.10.10.5 --format html --verbose
+```
+
+Flags:
+- `--deep` — Map-Reduce mode: chunks full history and extracts findings per chunk (N+1 LLM calls, slower but thorough)
+- `--full` — include all history without smart-filtering for pentest keywords
+- `--verbose` — stream the report to the terminal as it is generated
+- `--format md|html` — output format (default: md)
+- `--target <TARGET>` — target IP or range shown in report header
+- `--title <TITLE>` — custom report title
+- `-m <model>` — override the model
+
+---
+
+### psrag — query the knowledge base
+
+Search the RAG knowledge base and get an AI answer enriched with relevant document chunks.
+
+```
+psrag "how to enumerate SMB shares"
+psrag "what is BloodHound used for"
+psrag "lateral movement techniques"
+```
+
+The query is embedded, matched against indexed documents, and the most relevant chunks are passed to the AI for a context-aware answer.
+
+---
+
+### psview — analyze a screenshot or image with AI vision
+
+Send an image to the active AI profile and get a security-focused analysis. Requires a vision-capable model (e.g., llava, gemini-pro-vision, gpt-4o).
+
+```
+psview screenshot.png
+psview /tmp/scan.png "what services are running?"
+psview screenshot.png --cmd
+psview screenshot.png --next
+psview -m gpt-4o screenshot.png
+```
+
+Flags:
+- `--cmd` — analyze the image and paste the best suggested command directly into the terminal
+- `--next` — analyze the image and run a psnext-style suggestion using full history
+- `-m <model>` — override the model (must support vision)
+
+Supported image formats: PNG, JPG, JPEG, WEBP, GIF.
+
+---
+
+### psopen — open a file in PurrSh3ll from the terminal
+
+Open any file in the PurrSh3ll file viewer directly from the terminal without using the module tree in the GUI.
+
+```
+psopen notes.md
+psopen /tmp/report.txt
+psopen /tmp/exploit.py
+psopen -f /tmp/data.json -m json
+psopen --help
+```
+
+Flags:
+- `-f, --file <file>` — path to the file to open
+- `-m, --mode <mode>` — override the viewer mode (e.g., py, sh, js, json, md, txt)
+- `-h, --help` — show help
+
+If the path is a directory, it is opened in the system file manager.
+
+---
+
+### pshelp — list all available tools
+
+```
+pshelp
+```
+
+Displays all available `ps*` commands with short descriptions.
+
+---
+
 ## AI Providers
 
 PurrSh3ll supports 7 AI providers. You can switch between them without restarting the application.
@@ -301,38 +504,122 @@ Requirements: Kali Linux or Debian/Ubuntu, Python 3.10+, PyQt6, QTermWidget.
 
 ## Frequently Asked Questions
 
+---
+
 **How do I ask AI a question?**
 Type `psask "your question"` in the terminal. For a conversation, use `pschat`.
 
+---
+
 **How do I add my notes to the knowledge base?**
-Copy or create Markdown, PDF, or text files in `appmodules/BrainDump/` (or your custom path), then click "Refresh index" in RAG settings or wait for auto-indexing.
+Copy or create Markdown, PDF, or text files in `appmodules/BrainDump/` (or your custom path set in RAG settings), then click "Refresh index" in RAG settings or wait for auto-indexing if it is enabled.
+
+---
 
 **How do I query the knowledge base?**
-Type `psrag "your question"` in the terminal.
+Type `psrag "your question"` in the terminal. You can also enrich any `psask` or `pschat` query with RAG context by adding the `--rag` flag: `psask --rag "your question"`.
+
+---
 
 **How do I switch the AI provider?**
 Go to **File → AI Settings → Profiles tab**, select or create a profile, and set it as active.
 
+---
+
 **How do I fix the last terminal error with AI?**
-Type `psfix` in the terminal after the error. Or click the error overlay that appears automatically.
+Type `psfix` in the terminal after the error. Or click the error overlay that appears automatically when a command fails.
+
+---
 
 **How do I generate a shell command from a description?**
-Type `pscmd "what you want to do"` — for example `pscmd "find files larger than 100MB"`.
+Type `pscmd "what you want to do"` — for example `pscmd "find files larger than 100MB"` or `pscmd "list all listening TCP ports"`.
+
+---
+
+**I opened the AI Chat panel but I see a blank page or loading screen. What should I do?**
+Open WebUI runs inside a Docker container and may take 30–60 seconds to start up, especially on first launch. Wait for the container to fully initialize before the web interface becomes available.
+
+To check if the Open WebUI container is running, use:
+```
+docker ps | grep open-webui
+```
+If the container is not listed, start it from the AI Chat panel controls inside PurrSh3ll, or start it manually:
+```
+docker start open-webui
+```
+To check container logs for errors:
+```
+docker logs open-webui --tail 50
+```
+
+---
 
 **The RAG search returns no results. What should I check?**
-1. Make sure the knowledge base folder contains indexed files (check Indexed Files in RAG settings).
-2. Check that the embedding model supports the language of your documents.
-3. Try clicking "Refresh index" to force re-indexing.
-4. Check the Status field in RAG settings for errors.
+1. Open **File → AI Settings → RAG tab** and check the Indexed Files list. If it is empty, no documents have been indexed yet.
+2. Click "Refresh index" to force a re-index of the knowledge base folder.
+3. Check that the embedding model supports the language of your documents. An English-only model will not find content in other languages.
+4. Check the Status field in RAG settings for error messages.
+5. Make sure the file extensions of your documents are enabled in Index Extensions settings.
+
+---
+
+**The AI response is very slow or I get no response at all. Could it be the model size?**
+Yes. When using Ollama with a local model, the model is loaded entirely into RAM (or VRAM). If the model is too large for your available memory, the system will swap it to disk which causes extreme slowness, or the request may time out with no response.
+
+General guidelines:
+- 8B parameter models require approximately 6–8 GB of free RAM
+- 13B parameter models require approximately 10–12 GB of free RAM
+- 70B parameter models require approximately 40–50 GB of free RAM or a capable GPU
+
+To check available RAM: `free -h`
+To check which Ollama model is loaded and its size: `ollama ps`
+To list downloaded models: `ollama list`
+
+If you have limited RAM, use a smaller model such as `llama3.2:3b`, `gemma3:4b`, or `qwen3:4b`. Cloud providers (Groq, Gemini, OpenRouter) do not have this limitation since inference runs on their servers.
+
+---
 
 **The voice interface does not work. What should I do?**
-Check that voice support was installed (`portaudio19-dev`, Faster-Whisper). Verify that a microphone is connected and accessible. Voice is not available without the optional voice component.
+Check that voice support was installed during setup (portaudio19-dev, Faster-Whisper, OpenWakeWord). Verify that a microphone is connected and accessible. Voice is not available without the optional voice component.
+
+Test microphone access: `arecord -l`
+
+---
+
+**How do I open a file in the PurrSh3ll viewer from the terminal?**
+Use `psopen <file>`. For example: `psopen /tmp/report.txt` or `psopen notes.md`. If you want to force a specific viewer mode: `psopen -f file.txt -m md`.
+
+---
 
 **How do I add a new AI provider profile?**
 Go to **File → AI Settings → Profiles tab**, click the `+` button, fill in provider, model, and API key, then save.
 
+---
+
+**How do I generate a pentest report?**
+Type `psreport` in the terminal. PurrSh3ll reads your terminal history, filters security-relevant commands, and generates a Markdown report saved to `appmodules/Cyb3rCollector/reports/`. For a more thorough report use `psreport --deep`. To set a custom title and target: `psreport --title "My Engagement" --target 10.10.10.5`.
+
+---
+
+**How do I summarize a long command output?**
+Run `pstldr` immediately after the command. Or pipe output directly: `cat file.txt | pstldr`. To summarize a log file from the end: `pstldr --tail /var/log/syslog`.
+
+---
+
+**How do I analyze a screenshot or image?**
+Type `psview screenshot.png` in the terminal. The active AI profile must support vision (e.g., llava, gpt-4o, gemini-pro-vision). To get a command suggestion from the image: `psview screenshot.png --cmd`.
+
+---
+
 **Where are application logs stored?**
 In `appdata/logs/` inside the application folder.
+
+---
+
+**Where are generated pentest reports saved?**
+In `appmodules/Cyb3rCollector/reports/`. They can also be opened directly from the Cyb3rCollector module in the module tree.
+
+---
 
 **How do I see all available terminal commands?**
 Type `pshelp` in the terminal.
