@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
     QListView, QListWidget, QListWidgetItem, QMessageBox, QTabWidget, QSizePolicy,
+    QToolButton,
 )
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -924,6 +925,19 @@ def build_menu(main_window):
         rag_model_combo.setCurrentIndex(_saved_idx)
         form_emb.addRow("Embedding model:", rag_model_combo)
 
+        _emb_info_btn = QToolButton(grp_emb)
+        _emb_info_btn.setText("ℹ")
+        _emb_info_btn.setAutoRaise(True)
+        _emb_info_btn.setToolTip(
+            "Make sure the selected model supports the language of your documents.\n"
+            "Using an English-only model with Polish (or other non-English) texts\n"
+            "will produce poor or zero search results."
+        )
+        _emb_info_row = QHBoxLayout()
+        _emb_info_row.addStretch(1)
+        _emb_info_row.addWidget(_emb_info_btn)
+        form_emb.addRow(_emb_info_row)
+
         # ── Re-ranking ─────────────────────────────────────────────────────────
         _rag_rerank = _rag_cfg.get("rerank", False)
         rag_rerank_checkbox = QCheckBox(
@@ -957,6 +971,19 @@ def build_menu(main_window):
         rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
         rag_rerank_combo.setEnabled(bool(_rag_rerank))
         form_rnk.addRow("Rerank model:", rag_rerank_combo)
+
+        _rnk_info_btn = QToolButton(grp_rnk)
+        _rnk_info_btn.setText("ℹ")
+        _rnk_info_btn.setAutoRaise(True)
+        _rnk_info_btn.setToolTip(
+            "Make sure the selected reranker supports the language of your documents.\n"
+            "Most rerankers are English-only. For non-English content use\n"
+            "jina-reranker-v2-base-multilingual (26+ languages)."
+        )
+        _rnk_info_row = QHBoxLayout()
+        _rnk_info_row.addStretch(1)
+        _rnk_info_row.addWidget(_rnk_info_btn)
+        form_rnk.addRow(_rnk_info_row)
 
         # ── Downloaded models ──────────────────────────────────────────────────
         rag_dl_list = QListWidget(grp_rag)
