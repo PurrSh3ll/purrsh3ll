@@ -779,6 +779,30 @@ def build_menu(main_window):
         # ── Embedding model ────────────────────────────────────────────────────
         from PyQt6.QtGui import QStandardItem
         rag_model_combo = _ScrollableComboBox(grp_rag)
+        _emb_bg = c.actual_theme.get("background", {})
+        rag_model_combo.view().setStyleSheet(f"""
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {_emb_bg.get("scroll", "#555555")};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {_emb_bg.get("scroll_handle", "#707070")};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0; background: none; border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: {_emb_bg.get("scroll_area", "#1E1F22")};
+            }}
+        """)
         for _label, _val in _RAG_MODELS:
             if _val is None:
                 _hdr = QStandardItem(f"  ── {_label} ──")
