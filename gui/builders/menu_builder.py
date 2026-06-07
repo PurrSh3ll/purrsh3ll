@@ -928,14 +928,30 @@ def build_menu(main_window):
         _emb_info_btn = QToolButton(grp_emb)
         _emb_info_btn.setText("ℹ")
         _emb_info_btn.setAutoRaise(True)
-        _emb_info_btn.setToolTip(
-            "Make sure the selected model supports the language of your documents.\n"
-            "Using an English-only model with Polish (or other non-English) texts\n"
-            "will produce poor or zero search results."
-        )
+
+        def _show_emb_info():
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle("Choosing an Embedding Model")
+            msg.setText("<b>Things to consider when selecting an embedding model</b>")
+            msg.setInformativeText(
+                "• <b>Language support</b> — ensure the model covers the language(s) of your "
+                "documents. Using a model that does not support your document language will result "
+                "in poor or no matches during search.\n\n"
+                "• <b>Use case</b> — models differ in what they are optimised for: semantic "
+                "search, retrieval, clustering, or cross-lingual tasks. Hover over a model name "
+                "in the list to see its intended use case.\n\n"
+                "• <b>Memory footprint</b> — larger models generally produce better results but "
+                "consume significantly more RAM during indexing. Consider your available system "
+                "resources when choosing between a lightweight and a high-accuracy model."
+            )
+            msg.setStyleSheet(c.messagebox_stylesheet)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+        _emb_info_btn.clicked.connect(_show_emb_info)
         _emb_info_row = QHBoxLayout()
-        _emb_info_row.addStretch(1)
         _emb_info_row.addWidget(_emb_info_btn)
+        _emb_info_row.addStretch(1)
         form_emb.addRow(_emb_info_row)
 
         # ── Re-ranking ─────────────────────────────────────────────────────────
@@ -975,14 +991,29 @@ def build_menu(main_window):
         _rnk_info_btn = QToolButton(grp_rnk)
         _rnk_info_btn.setText("ℹ")
         _rnk_info_btn.setAutoRaise(True)
-        _rnk_info_btn.setToolTip(
-            "Make sure the selected reranker supports the language of your documents.\n"
-            "Most rerankers are English-only. For non-English content use\n"
-            "jina-reranker-v2-base-multilingual (26+ languages)."
-        )
+
+        def _show_rnk_info():
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle("Choosing a Rerank Model")
+            msg.setText("<b>Things to consider when selecting a reranker</b>")
+            msg.setInformativeText(
+                "• <b>Language support</b> — ensure the reranker covers the language(s) of your "
+                "documents. Most rerankers are optimised for English only. Hover over a model "
+                "name in the list to see supported languages.\n\n"
+                "• <b>Use case</b> — rerankers re-score retrieval results for higher precision. "
+                "Lightweight models offer lower latency, while larger models may produce more "
+                "accurate rankings at the cost of additional processing time.\n\n"
+                "• <b>Memory footprint</b> — rerankers are loaded on every query when re-ranking "
+                "is enabled. Larger models will increase per-query RAM usage and response time."
+            )
+            msg.setStyleSheet(c.messagebox_stylesheet)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+        _rnk_info_btn.clicked.connect(_show_rnk_info)
         _rnk_info_row = QHBoxLayout()
-        _rnk_info_row.addStretch(1)
         _rnk_info_row.addWidget(_rnk_info_btn)
+        _rnk_info_row.addStretch(1)
         form_rnk.addRow(_rnk_info_row)
 
         # ── Downloaded models ──────────────────────────────────────────────────
