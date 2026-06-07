@@ -63,13 +63,14 @@ run_with_spinner() {
 print_plan() {
     echo -e "${BOLD}  Installation plan:${NC}"
     echo -e "    ${GREEN}✓${NC}  Core application (always)"
-    [[ "$INSTALL_VOICE"     == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support"     || echo -e "    ${YELLOW}–${NC}  Voice support     (skipped)"
-    [[ "$INSTALL_SKILLS"    == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills"         || echo -e "    ${YELLOW}–${NC}  AI Skills         (skipped)"
-    [[ "$INSTALL_OLLAMA"    == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama"            || echo -e "    ${YELLOW}–${NC}  Ollama            (skipped)"
-    [[ "$INSTALL_AICHAT"    == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat"            || echo -e "    ${YELLOW}–${NC}  aichat            (skipped)"
-    [[ "$INSTALL_DOCKER"    == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker"            || echo -e "    ${YELLOW}–${NC}  Docker            (skipped)"
-    [[ "$INSTALL_OPENWEBUI" == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image"  || echo -e "    ${YELLOW}–${NC}  Open WebUI image  (skipped)"
-    [[ "$INSTALL_WEBMAP"    == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image"      || echo -e "    ${YELLOW}–${NC}  WebMap image      (skipped)"
+    [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support"              || echo -e "    ${YELLOW}–${NC}  Voice support          (skipped)"
+    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills"                  || echo -e "    ${YELLOW}–${NC}  AI Skills              (skipped)"
+    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama"                     || echo -e "    ${YELLOW}–${NC}  Ollama                 (skipped)"
+    [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat"                     || echo -e "    ${YELLOW}–${NC}  aichat                 (skipped)"
+    [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker"                     || echo -e "    ${YELLOW}–${NC}  Docker                 (skipped)"
+    [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image"           || echo -e "    ${YELLOW}–${NC}  Open WebUI image       (skipped)"
+    [[ "$INSTALL_WEBMAP"      == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image"               || echo -e "    ${YELLOW}–${NC}  WebMap image           (skipped)"
+    [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model (~220 MB)"      || echo -e "    ${YELLOW}–${NC}  Embed model            (skipped)"
     echo ""
 }
 
@@ -119,6 +120,7 @@ INSTALL_AICHAT=false
 INSTALL_DOCKER=false
 INSTALL_OPENWEBUI=false
 INSTALL_WEBMAP=false
+INSTALL_EMBED_MODEL=false
 
 if [[ "$AUTO" == true ]]; then
 
@@ -129,6 +131,7 @@ if [[ "$AUTO" == true ]]; then
     INSTALL_DOCKER=true
     INSTALL_OPENWEBUI=true
     INSTALL_WEBMAP=true
+    INSTALL_EMBED_MODEL=true
     print_plan
 
 else
@@ -145,23 +148,25 @@ Core app, Python packages and QTermWidget
 are always installed regardless of selection.
 
 SPACE = toggle   |   ENTER = confirm" \
-        22 68 7 \
-        "voice"     "Voice support  (wake word + speech-to-text)"   ON \
-        "skills"    "AI Skills      (pentest + security submodules)" ON \
-        "ollama"    "Ollama         (local LLM inference server)"    ON \
-        "aichat"    "aichat         (multi-provider CLI frontend)"   ON \
-        "docker"    "Docker         (container runtime)"             ON \
-        "openwebui" "Open WebUI     (web UI for Ollama — Docker)"    ON \
-        "webmap"    "WebMap         (Nmap visualizer — Docker)"      ON \
+        22 68 8 \
+        "voice"      "Voice support   (wake word + speech-to-text)"   ON \
+        "skills"     "AI Skills       (pentest + security submodules)" ON \
+        "ollama"     "Ollama          (local LLM inference server)"    ON \
+        "aichat"     "aichat          (multi-provider CLI frontend)"   ON \
+        "docker"     "Docker          (container runtime)"             ON \
+        "openwebui"  "Open WebUI      (web UI for Ollama — Docker)"    ON \
+        "webmap"     "WebMap          (Nmap visualizer — Docker)"      ON \
+        "embedmodel" "Embed model     (multilingual MiniLM — ~220 MB)" ON \
         3>&1 1>&2 2>&3) || { echo ""; warn "Installation cancelled."; exit 0; }
 
-    [[ "$CHOICES" == *'"voice"'*     ]] && INSTALL_VOICE=true
-    [[ "$CHOICES" == *'"skills"'*    ]] && INSTALL_SKILLS=true
-    [[ "$CHOICES" == *'"ollama"'*    ]] && INSTALL_OLLAMA=true
-    [[ "$CHOICES" == *'"aichat"'*    ]] && INSTALL_AICHAT=true
-    [[ "$CHOICES" == *'"docker"'*    ]] && INSTALL_DOCKER=true
-    [[ "$CHOICES" == *'"openwebui"'* ]] && INSTALL_OPENWEBUI=true
-    [[ "$CHOICES" == *'"webmap"'*    ]] && INSTALL_WEBMAP=true
+    [[ "$CHOICES" == *'"voice"'*       ]] && INSTALL_VOICE=true
+    [[ "$CHOICES" == *'"skills"'*      ]] && INSTALL_SKILLS=true
+    [[ "$CHOICES" == *'"ollama"'*      ]] && INSTALL_OLLAMA=true
+    [[ "$CHOICES" == *'"aichat"'*      ]] && INSTALL_AICHAT=true
+    [[ "$CHOICES" == *'"docker"'*      ]] && INSTALL_DOCKER=true
+    [[ "$CHOICES" == *'"openwebui"'*   ]] && INSTALL_OPENWEBUI=true
+    [[ "$CHOICES" == *'"webmap"'*      ]] && INSTALL_WEBMAP=true
+    [[ "$CHOICES" == *'"embedmodel"'*  ]] && INSTALL_EMBED_MODEL=true
 
     # Open WebUI and WebMap require Docker — enable it automatically if needed
     if [[ "$INSTALL_OPENWEBUI" == true || "$INSTALL_WEBMAP" == true ]]; then
@@ -298,6 +303,26 @@ if [[ "$INSTALL_VOICE" == true ]]; then
     success "Voice packages installed"
 fi
 
+# ── Embedding model (multilingual MiniLM) ────────────────────────────────────
+
+if [[ "$INSTALL_EMBED_MODEL" == true ]]; then
+    info "Downloading multilingual embedding model (~220 MB)..."
+    EMBED_CACHE_DIR="$INSTALL_DIR/appdata/rag/models"
+    mkdir -p "$EMBED_CACHE_DIR"
+    if run_with_spinner "Downloading paraphrase-multilingual-MiniLM-L12-v2..." \
+        "$VENV_DIR/bin/python3" -c "
+from fastembed import TextEmbedding
+import os
+cache = '$EMBED_CACHE_DIR'
+os.makedirs(cache, exist_ok=True)
+list(TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', cache_dir=cache).embed(['warmup']))
+"; then
+        success "Embedding model ready (~220 MB, 50+ languages incl. Polish, German, French…)"
+    else
+        warn "Could not download embedding model — it will be downloaded automatically on first use."
+    fi
+fi
+
 # ── QTermWidget wheel ─────────────────────────────────────────────────────────
 
 info "Installing QTermWidget..."
@@ -421,20 +446,22 @@ echo -e "${GREEN}${BOLD}  Installation complete!${NC}"
 echo ""
 echo "  Installed components:"
 echo -e "    ${GREEN}✓${NC}  Core application"
-[[ "$INSTALL_VOICE"     == true ]] && echo -e "    ${GREEN}✓${NC}  Voice support"
-[[ "$INSTALL_SKILLS"    == true ]] && echo -e "    ${GREEN}✓${NC}  AI Skills"
-[[ "$INSTALL_OLLAMA"    == true ]] && echo -e "    ${GREEN}✓${NC}  Ollama"
-[[ "$INSTALL_AICHAT"    == true ]] && echo -e "    ${GREEN}✓${NC}  aichat"
-[[ "$INSTALL_DOCKER"    == true ]] && echo -e "    ${GREEN}✓${NC}  Docker"
-[[ "$INSTALL_OPENWEBUI" == true ]] && echo -e "    ${GREEN}✓${NC}  Open WebUI image"
-[[ "$INSTALL_WEBMAP"    == true ]] && echo -e "    ${GREEN}✓${NC}  WebMap image"
-[[ "$INSTALL_VOICE"     == false ]] && echo -e "    ${YELLOW}–${NC}  Voice support     (not installed)"
-[[ "$INSTALL_SKILLS"    == false ]] && echo -e "    ${YELLOW}–${NC}  AI Skills         (not installed)"
-[[ "$INSTALL_OLLAMA"    == false ]] && echo -e "    ${YELLOW}–${NC}  Ollama            (not installed)"
-[[ "$INSTALL_AICHAT"    == false ]] && echo -e "    ${YELLOW}–${NC}  aichat            (not installed)"
-[[ "$INSTALL_DOCKER"    == false ]] && echo -e "    ${YELLOW}–${NC}  Docker            (not installed)"
-[[ "$INSTALL_OPENWEBUI" == false ]] && echo -e "    ${YELLOW}–${NC}  Open WebUI image  (not installed)"
-[[ "$INSTALL_WEBMAP"    == false ]] && echo -e "    ${YELLOW}–${NC}  WebMap image      (not installed)"
+[[ "$INSTALL_VOICE"       == true ]] && echo -e "    ${GREEN}✓${NC}  Voice support"
+[[ "$INSTALL_SKILLS"      == true ]] && echo -e "    ${GREEN}✓${NC}  AI Skills"
+[[ "$INSTALL_OLLAMA"      == true ]] && echo -e "    ${GREEN}✓${NC}  Ollama"
+[[ "$INSTALL_AICHAT"      == true ]] && echo -e "    ${GREEN}✓${NC}  aichat"
+[[ "$INSTALL_DOCKER"      == true ]] && echo -e "    ${GREEN}✓${NC}  Docker"
+[[ "$INSTALL_OPENWEBUI"   == true ]] && echo -e "    ${GREEN}✓${NC}  Open WebUI image"
+[[ "$INSTALL_WEBMAP"      == true ]] && echo -e "    ${GREEN}✓${NC}  WebMap image"
+[[ "$INSTALL_EMBED_MODEL" == true ]] && echo -e "    ${GREEN}✓${NC}  Embedding model   (~220 MB, multilingual)"
+[[ "$INSTALL_VOICE"       == false ]] && echo -e "    ${YELLOW}–${NC}  Voice support          (not installed)"
+[[ "$INSTALL_SKILLS"      == false ]] && echo -e "    ${YELLOW}–${NC}  AI Skills              (not installed)"
+[[ "$INSTALL_OLLAMA"      == false ]] && echo -e "    ${YELLOW}–${NC}  Ollama                 (not installed)"
+[[ "$INSTALL_AICHAT"      == false ]] && echo -e "    ${YELLOW}–${NC}  aichat                 (not installed)"
+[[ "$INSTALL_DOCKER"      == false ]] && echo -e "    ${YELLOW}–${NC}  Docker                 (not installed)"
+[[ "$INSTALL_OPENWEBUI"   == false ]] && echo -e "    ${YELLOW}–${NC}  Open WebUI image       (not installed)"
+[[ "$INSTALL_WEBMAP"      == false ]] && echo -e "    ${YELLOW}–${NC}  WebMap image           (not installed)"
+[[ "$INSTALL_EMBED_MODEL" == false ]] && echo -e "    ${YELLOW}–${NC}  Embedding model        (not installed — downloaded on first use)"
 
 echo ""
 echo "  Run PurrSh3ll:"
