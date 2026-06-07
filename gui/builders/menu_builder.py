@@ -928,7 +928,7 @@ def build_menu(main_window):
         _emb_info_btn = QToolButton(grp_emb)
         _emb_info_btn.setText("ℹ")
         _emb_info_btn.setAutoRaise(True)
-        _emb_info_btn.setToolTip("Select a model that supports the language of your documents.")
+        _emb_info_btn.setToolTip("⚠ Warning: selecting a model that does not support your language will result in inaccurate or no search results.")
 
         def _show_emb_info():
             msg = QMessageBox(dlg)
@@ -998,7 +998,7 @@ def build_menu(main_window):
         _rnk_info_btn = QToolButton(grp_rnk)
         _rnk_info_btn.setText("ℹ")
         _rnk_info_btn.setAutoRaise(True)
-        _rnk_info_btn.setToolTip("Select a reranker that supports the language of your documents.")
+        _rnk_info_btn.setToolTip("⚠ Warning: selecting a reranker that does not support your language will result in inaccurate or no search results.")
 
         def _show_rnk_info():
             msg = QMessageBox(dlg)
