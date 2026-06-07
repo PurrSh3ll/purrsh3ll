@@ -375,19 +375,47 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
     else
-        info "Installing Docker..."
+        # Install Docker packages
         if grep -qi "kali" /etc/os-release 2>/dev/null; then
-            sudo apt-get install -y --no-install-recommends docker.io docker-cli containerd 2>&1 \
-                | grep -E "^(Setting up|already)" || true
+            if run_with_spinner "Installing Docker packages (docker.io, containerd)..." \
+                sudo apt-get install -y --no-install-recommends docker.io docker-cli containerd; then
+                success "Docker packages installed"
+            else
+                warn "Docker package installation failed — check /tmp/_purrsh3ll_install.log"
+            fi
         else
-            curl -fsSL https://get.docker.com | sh 2>&1 \
-                | grep -E "^(\+|Executing|WARNING)" || true
+            if run_with_spinner "Installing Docker (get.docker.com)..." \
+                bash -c 'curl -fsSL https://get.docker.com | sh'; then
+                success "Docker packages installed"
+            else
+                warn "Docker installation failed — check /tmp/_purrsh3ll_install.log"
+            fi
         fi
-        sudo systemctl enable docker --now 2>/dev/null || true
+
+        # Enable service (non-blocking — does not start it yet)
+        info "Enabling Docker service..."
+        sudo systemctl enable docker 2>/dev/null || true
+
+        # Start service with timeout; on Kali try iptables-legacy fallback if needed
+        info "Starting Docker service (may take a moment)..."
+        if timeout 30 sudo systemctl start docker 2>/dev/null; then
+            success "Docker service started"
+        else
+            warn "Docker service did not start — trying iptables-legacy fallback (common on Kali)..."
+            sudo update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || true
+            sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+            if timeout 30 sudo systemctl start docker 2>/dev/null; then
+                success "Docker service started (iptables-legacy)"
+            else
+                warn "Docker service could not start automatically."
+                warn "Start it manually:  sudo systemctl start docker"
+                warn "If iptables error:  sudo update-alternatives --set iptables /usr/sbin/iptables-legacy"
+            fi
+        fi
+
         sudo usermod -aG docker "$USER"
         success "Docker installed"
-        warn "You may need to log out and back in for Docker group membership to take effect."
-        warn "Or run: newgrp docker"
+        warn "Log out and back in (or run: newgrp docker) for group membership to take effect."
     fi
 fi
 
