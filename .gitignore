@@ -26,6 +26,7 @@ todo.txt
 appdata/logs/
 appdata/rag/
 appdata/api_keys.json
+appdata/api_profiles.json
 appdata/session.json
 appdata/psnotes.txt
 appdata/ob_panel_state.json

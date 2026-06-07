@@ -141,7 +141,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.icons_path = os.path.join(self.base_path, "icons")
             self.sys_vars_path = os.path.join(self.base_path, "appdata", "terminal_modules", "system_vars.zsh")
             self.observer_panel_state_path = os.path.join(self.base_path, "appdata", "ob_panel_state.json")
+            self.api_profiles_path = os.path.join(self.base_path, "appdata", "api_profiles.json")
             self.session_path = os.path.join(self.base_path, "appdata", "session.json")
+            self._ensure_api_profiles()
             self.build_in_libs = self.get_std_lib()
             self.themes_path = os.path.join(self.base_path, 'appdata', 'themes.json')
             self._debounce_ms = 500
@@ -214,6 +216,16 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         except Exception:
             pass
         return set(DEFAULT_EXTENSIONS)
+
+    def _ensure_api_profiles(self):
+        """Create api_profiles.json with empty defaults if it does not exist."""
+        if not os.path.exists(self.api_profiles_path):
+            try:
+                os.makedirs(os.path.dirname(self.api_profiles_path), exist_ok=True)
+                with open(self.api_profiles_path, "w", encoding="utf-8") as f:
+                    json.dump({"active": "", "profiles": []}, f, indent=2)
+            except Exception:
+                pass
 
     def start_rag_watcher(self):
         self.stop_rag_watcher()

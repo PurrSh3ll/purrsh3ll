@@ -1704,7 +1704,9 @@ def build_menu(main_window):
         _api_keys_path  = os.path.join(
             getattr(c, "base_path", _base_dir_prov), "appdata", "api_keys.json"
         )
-        _providers_cfg_key = "api_providers"
+        _api_profiles_path = getattr(c, "api_profiles_path",
+            os.path.join(getattr(c, "base_path", _base_dir_prov), "appdata", "api_profiles.json")
+        )
 
         # ── persistence helpers ───────────────────────────────────────────────
         _KR_SERVICE = "purrsh3ll"
@@ -1777,26 +1779,19 @@ def build_menu(main_window):
 
         def _load_providers_config():
             try:
-                if os.path.exists(c.config_path):
-                    with open(c.config_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                    return cfg.get(_providers_cfg_key, {})
+                if os.path.exists(_api_profiles_path):
+                    with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
             except Exception:
                 pass
             return {}
 
         def _save_providers_to_config(profiles_list, active_name):
             try:
-                cfg = {}
-                if os.path.exists(c.config_path):
-                    with open(c.config_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                cfg[_providers_cfg_key] = {
-                    "active":   active_name,
-                    "profiles": profiles_list,
-                }
-                with open(c.config_path, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+                os.makedirs(os.path.dirname(_api_profiles_path), exist_ok=True)
+                data = {"active": active_name, "profiles": profiles_list}
+                with open(_api_profiles_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
 

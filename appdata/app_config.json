@@ -27,7 +27,7 @@
   },
   "llama": {
     "llm_cli_path": "aichat",
-    "logs_terminal_cmd": "claude --dangerously-skip-permissions",
+    "logs_terminal_cmd": "",
     "agent_role": "none",
     "skills_set": "default",
     "clear_chat_history_on_exit": true
@@ -37,8 +37,8 @@
     "custom_path": "",
     "auto_index": true,
     "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-    "rerank": true,
-    "rerank_model": "Xenova/ms-marco-MiniLM-L-6-v2",
+    "rerank": false,
+    "rerank_model": "Xenova/ms-marco-MiniLM-L-12-v2",
     "custom_embedding_models": [],
     "index_extensions": [
       "pdf",
@@ -52,100 +52,5 @@
     "custom_text": "__default__",
     "image_path": "",
     "bg_path": ""
-  },
-  "api_providers": {
-    "active": "gemini-latest",
-    "profiles": [
-      {
-        "name": "gemma:local",
-        "provider": "ollama",
-        "model": "fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN",
-        "url": "",
-        "disable_thinking": true,
-        "fast_answers": false,
-        "custom_params": "",
-        "context_tokens": 7000
-      },
-      {
-        "name": "vvvvv",
-        "provider": "ollama",
-        "model": "llama3.2:1b",
-        "url": "",
-        "disable_thinking": false,
-        "fast_answers": false,
-        "custom_params": "{\"temperature\":0.7}",
-        "context_tokens": 4000
-      },
-      {
-        "name": "sample",
-        "provider": "ollama",
-        "model": "fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN",
-        "url": "",
-        "disable_thinking": true,
-        "fast_answers": false,
-        "custom_params": "",
-        "context_tokens": 0
-      },
-      {
-        "name": "oss-120b",
-        "provider": "groq",
-        "model": "openai/gpt-oss-120b",
-        "url": "",
-        "disable_thinking": false,
-        "fast_answers": false,
-        "custom_params": "",
-        "context_tokens": 0
-      },
-      {
-        "name": "llama3.3:70b",
-        "provider": "groq",
-        "model": "llama-3.3-70b-versatile",
-        "url": "",
-        "disable_thinking": false,
-        "fast_answers": false,
-        "custom_params": "",
-        "context_tokens": 0
-      },
-      {
-        "name": "gemma4:31b",
-        "provider": "gemini",
-        "model": "models/gemma-4-31b-it",
-        "url": "",
-        "disable_thinking": true,
-        "fast_answers": true,
-        "custom_params": "",
-        "context_tokens": 0
-      },
-      {
-        "name": "qwen3-think",
-        "provider": "groq",
-        "model": "qwen/qwen3-32b",
-        "url": "",
-        "disable_thinking": true,
-        "fast_answers": false,
-        "custom_params": "",
-        "context_tokens": 0
-      },
-      {
-        "name": "gemma3-1b",
-        "provider": "huggingface",
-        "model": "google/gemma-3-1b-it",
-        "url": "",
-        "disable_thinking": false,
-        "fast_answers": false,
-        "custom_params": "",
-        "context_tokens": 0
-      },
-      {
-        "name": "gemini-latest",
-        "provider": "gemini",
-        "model": "models/gemini-flash-lite-latest",
-        "url": "",
-        "disable_thinking": false,
-        "fast_answers": true,
-        "custom_params": "",
-        "context_tokens": 0
-      }
-    ]
   }
 }

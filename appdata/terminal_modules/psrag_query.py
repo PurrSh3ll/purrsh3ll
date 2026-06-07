@@ -25,9 +25,17 @@ _ANSI_RE = re.compile(rb'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 def _load_config(base_dir: str) -> dict:
     try:
         with open(os.path.join(base_dir, "appdata", "app_config.json"), encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
     except Exception:
-        return {}
+        cfg = {}
+    # Merge api_profiles.json (profiles stored separately, gitignored)
+    profiles_path = os.path.join(base_dir, "appdata", "api_profiles.json")
+    try:
+        with open(profiles_path, encoding="utf-8") as f:
+            cfg["api_providers"] = json.load(f)
+    except Exception:
+        pass
+    return cfg
 
 
 def _kb_path(config: dict, base_dir: str) -> str:

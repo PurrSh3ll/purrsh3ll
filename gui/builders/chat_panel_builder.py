@@ -635,11 +635,13 @@ def build_chat_panel(main_window):
     )
 
     def _load_ollama_profiles():
-        """Return list of ollama profiles (full dicts) from global config."""
+        """Return list of ollama profiles (full dicts) from api_profiles.json."""
         try:
-            with open(c.config_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            profiles = cfg.get("api_providers", {}).get("profiles", [])
+            _api_profiles_path = getattr(c, "api_profiles_path",
+                os.path.join(getattr(c, "base_path", ""), "appdata", "api_profiles.json"))
+            with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                prov = json.load(f)
+            profiles = prov.get("profiles", [])
             return [p for p in profiles if p.get("provider", "").lower() == "ollama" and p.get("model")]
         except Exception:
             return []

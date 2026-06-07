@@ -873,14 +873,16 @@ def build_main_layout(main_window):
         combo.setToolTip("Active AI profile — used by psai tools and AI chat")
         combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
+        _api_profiles_path = getattr(c, "api_profiles_path",
+            os.path.join(getattr(c, "base_path", ""), "appdata", "api_profiles.json"))
+
         def _reload(keep=None):
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("— none —", "")
             try:
-                with open(c.config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                prov = cfg.get("api_providers", {})
+                with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                    prov = json.load(f)
                 active = keep if keep is not None else prov.get("active", "")
                 for p in prov.get("profiles", []):
                     combo.addItem(p["name"], p["name"])
@@ -892,13 +894,13 @@ def build_main_layout(main_window):
 
         def _on_changed():
             name = combo.currentData() or ""
-            # save to config
+            # save to api_profiles.json
             try:
-                with open(c.config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                cfg.setdefault("api_providers", {})["active"] = name
-                with open(c.config_path, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+                with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                    prov = json.load(f)
+                prov["active"] = name
+                with open(_api_profiles_path, "w", encoding="utf-8") as f:
+                    json.dump(prov, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
             # sync AI Settings combo if open
