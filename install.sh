@@ -375,21 +375,12 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
     else
-        # Install Docker packages
-        if grep -qi "kali" /etc/os-release 2>/dev/null; then
-            if run_with_spinner "Installing Docker packages (docker.io, containerd)..." \
-                sudo apt-get install -y --no-install-recommends docker.io docker-cli containerd; then
-                success "Docker packages installed"
-            else
-                warn "Docker package installation failed — check /tmp/_purrsh3ll_install.log"
-            fi
+        # Install Docker via official script (works on Kali, Debian, Ubuntu)
+        if run_with_spinner "Installing Docker (get.docker.com)..." \
+            bash -c 'curl -fsSL https://get.docker.com | sh'; then
+            success "Docker packages installed"
         else
-            if run_with_spinner "Installing Docker (get.docker.com)..." \
-                bash -c 'curl -fsSL https://get.docker.com | sh'; then
-                success "Docker packages installed"
-            else
-                warn "Docker installation failed — check /tmp/_purrsh3ll_install.log"
-            fi
+            warn "Docker installation failed — check /tmp/_purrsh3ll_install.log"
         fi
 
         # Enable service (non-blocking — does not start it yet)
