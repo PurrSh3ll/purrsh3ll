@@ -368,9 +368,14 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
-        # Use the official install script — run in foreground so progress is visible
+        # Run in foreground — stderr (curl progress) goes to log, stdout filtered to >>> lines only
         info "Installing Ollama (this may take a few minutes)..."
-        if bash -c 'curl -fsSL https://ollama.com/install.sh | sh' 2>&1 | tee -a /tmp/_purrsh3ll_install.log; then
+        bash -c 'curl -fsSL https://ollama.com/install.sh | sh' \
+            2>>/tmp/_purrsh3ll_install.log \
+            | grep --line-buffered -E "^>>>" \
+            | tee -a /tmp/_purrsh3ll_install.log \
+            || true
+        if command -v ollama &>/dev/null; then
             OLLAMA_OK=true
             success "Ollama installed → $(command -v ollama)"
         else
@@ -402,13 +407,22 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
     else
-        # Run in foreground so progress is visible — both methods produce meaningful output
+        # DEBIAN_FRONTEND=noninteractive suppresses the interactive blue debconf screen
+        # stderr goes to log, stdout filtered to meaningful apt/installer lines only
         if grep -qi "kali" /etc/os-release 2>/dev/null; then
             info "Installing Docker (docker.io from apt)..."
-            sudo apt-get install -y --no-install-recommends docker.io 2>&1 | tee -a /tmp/_purrsh3ll_install.log || true
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io \
+                2>>/tmp/_purrsh3ll_install.log \
+                | grep --line-buffered -E "^(Get:|Unpacking|Setting up|Preparing)" \
+                | tee -a /tmp/_purrsh3ll_install.log \
+                || true
         else
             info "Installing Docker (get.docker.com, this may take a few minutes)..."
-            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' 2>&1 | tee -a /tmp/_purrsh3ll_install.log || true
+            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' \
+                2>>/tmp/_purrsh3ll_install.log \
+                | grep --line-buffered -E "^(\+|Setting up|Get:|Unpacking|Preparing)" \
+                | tee -a /tmp/_purrsh3ll_install.log \
+                || true
         fi
         if command -v docker &>/dev/null; then
             DOCKER_OK=true
