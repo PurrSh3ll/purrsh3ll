@@ -39,8 +39,16 @@ appdata/scripts_history/
 appdata/scripts_notes/
 appdata/scripts_favorities/
 
-# Wygenerowane raporty
+# Cyb3rCollector — dane runtime (listeners, stagers, webmap scans, reports)
 appmodules/Cyb3rCollector/reports/
+appmodules/Cyb3rCollector/listeners/
+appmodules/Cyb3rCollector/stagers/
+appmodules/Cyb3rCollector/webmap/*
+!appmodules/Cyb3rCollector/webmap/scan_sample.xml
+
+# BrainDump — prywatne notatki i pliki RAG (nie wersjonujemy)
+appmodules/BrainDump/*
+!appmodules/BrainDump/purrsh3ll_app_guide.md
 
 # Pliki audio
 *.wav
