@@ -127,6 +127,16 @@ INSTALL_OPENWEBUI=false
 INSTALL_WEBMAP=false
 INSTALL_EMBED_MODEL=false
 
+# Actual install results (set to true only on success)
+VOICE_OK=false
+SKILLS_OK=false
+OLLAMA_OK=false
+AICHAT_OK=false
+DOCKER_OK=false
+OPENWEBUI_OK=false
+WEBMAP_OK=false
+EMBED_OK=false
+
 if [[ "$AUTO" == true ]]; then
 
     INSTALL_VOICE=true
@@ -249,6 +259,7 @@ success "Repository at $INSTALL_DIR"
 if [[ "$INSTALL_SKILLS" == true ]]; then
     info "Initializing AI skill submodules..."
     git -C "$INSTALL_DIR" submodule update --init --recursive
+    SKILLS_OK=true
     success "AI Skills ready (awesome-claude-skills-security, claude-code-pentest)"
 fi
 
@@ -305,6 +316,7 @@ if [[ "$INSTALL_VOICE" == true ]]; then
         openwakeword \
         sounddevice \
         scipy; then
+        VOICE_OK=true
         success "Voice packages installed"
     else
         warn "Voice packages failed to install — voice support will not be available."
@@ -325,6 +337,7 @@ cache = '$EMBED_CACHE_DIR'
 os.makedirs(cache, exist_ok=True)
 list(TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', cache_dir=cache).embed(['warmup']))
 "; then
+        EMBED_OK=true
         success "Embedding model ready (~220 MB, 50+ languages incl. Polish, German, French…)"
     else
         warn "Could not download embedding model — it will be downloaded automatically on first use."
@@ -360,6 +373,7 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
         run_with_spinner "Installing Ollama..." \
             bash -c 'curl -fsSL https://ollama.com/install.sh | sh' || true
         if command -v ollama &>/dev/null; then
+            OLLAMA_OK=true
             success "Ollama installed → $(command -v ollama)"
         else
             warn "Ollama installation failed — check /tmp/_purrsh3ll_install.log"
@@ -379,6 +393,7 @@ if [[ "$INSTALL_AICHAT" == true ]]; then
         tar -xzf "$AICHAT_TMP/aichat.tar.gz" -C "$AICHAT_TMP"
         sudo install -m 755 "$AICHAT_TMP/aichat" /usr/local/bin/aichat
         rm -rf "$AICHAT_TMP"
+        AICHAT_OK=true
         success "aichat installed → /usr/local/bin/aichat"
     fi
 fi
@@ -400,6 +415,7 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
                 bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' || true
         fi
         if command -v docker &>/dev/null; then
+            DOCKER_OK=true
             success "Docker packages installed"
 
             # Enable service (non-blocking — does not start it yet)
@@ -437,6 +453,7 @@ fi
 if [[ "$INSTALL_OPENWEBUI" == true ]]; then
     if run_with_spinner "Pulling Open WebUI Docker image..." \
             sudo docker pull --quiet "$OPENWEBUI_IMAGE"; then
+        OPENWEBUI_OK=true
         success "Open WebUI image ready"
     else
         warn "Could not pull Open WebUI image — run: sudo docker pull $OPENWEBUI_IMAGE"
@@ -448,6 +465,7 @@ fi
 if [[ "$INSTALL_WEBMAP" == true ]]; then
     if run_with_spinner "Pulling WebMap Docker image..." \
             sudo docker pull --quiet "$WEBMAP_IMAGE"; then
+        WEBMAP_OK=true
         success "WebMap image ready"
     else
         warn "Could not pull WebMap image — run: sudo docker pull $WEBMAP_IMAGE"
@@ -485,31 +503,32 @@ success "Launch command installed: purrsh3ll"
 echo ""
 echo -e "${GREEN}${BOLD}  Installation complete!${NC}"
 echo ""
-echo "  Installed components:"
-echo -e "    ${GREEN}✓${NC}  Core application"
-[[ "$INSTALL_VOICE"       == true ]] && echo -e "    ${GREEN}✓${NC}  Voice support"
-[[ "$INSTALL_SKILLS"      == true ]] && echo -e "    ${GREEN}✓${NC}  AI Skills"
-[[ "$INSTALL_OLLAMA"      == true ]] && echo -e "    ${GREEN}✓${NC}  Ollama"
-[[ "$INSTALL_AICHAT"      == true ]] && echo -e "    ${GREEN}✓${NC}  aichat"
-[[ "$INSTALL_DOCKER"      == true ]] && echo -e "    ${GREEN}✓${NC}  Docker"
-[[ "$INSTALL_OPENWEBUI"   == true ]] && echo -e "    ${GREEN}✓${NC}  Open WebUI image"
-[[ "$INSTALL_WEBMAP"      == true ]] && echo -e "    ${GREEN}✓${NC}  WebMap image"
-[[ "$INSTALL_EMBED_MODEL" == true ]] && echo -e "    ${GREEN}✓${NC}  Embedding model   (~220 MB, multilingual)"
-[[ "$INSTALL_VOICE"       == false ]] && echo -e "    ${YELLOW}–${NC}  Voice support          (not installed)"
-[[ "$INSTALL_SKILLS"      == false ]] && echo -e "    ${YELLOW}–${NC}  AI Skills              (not installed)"
-[[ "$INSTALL_OLLAMA"      == false ]] && echo -e "    ${YELLOW}–${NC}  Ollama                 (not installed)"
-[[ "$INSTALL_AICHAT"      == false ]] && echo -e "    ${YELLOW}–${NC}  aichat                 (not installed)"
-[[ "$INSTALL_DOCKER"      == false ]] && echo -e "    ${YELLOW}–${NC}  Docker                 (not installed)"
-[[ "$INSTALL_OPENWEBUI"   == false ]] && echo -e "    ${YELLOW}–${NC}  Open WebUI image       (not installed)"
-[[ "$INSTALL_WEBMAP"      == false ]] && echo -e "    ${YELLOW}–${NC}  WebMap image           (not installed)"
-[[ "$INSTALL_EMBED_MODEL" == false ]] && echo -e "    ${YELLOW}–${NC}  Embedding model        (not installed — downloaded on first use)"
+echo "  Component status:"
+
+_summary_row() {
+    local label="$1" size="$2" selected="$3" ok="$4" skip_note="$5"
+    if   [[ "$ok"       == true  ]]; then echo -e "    ${GREEN}✓${NC}  ${label} ${size}"
+    elif [[ "$selected" == true  ]]; then echo -e "    ${RED}✗${NC}  ${label} (failed — check /tmp/_purrsh3ll_install.log)"
+    else                                  echo -e "    ${YELLOW}–${NC}  ${label} ${skip_note}"
+    fi
+}
+
+echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB)"
+_summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
+_summary_row "AI Skills           " "(~10 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
+_summary_row "Ollama              " "(~500 MB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
+_summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
+_summary_row "Docker              " "(~300 MB)" "$INSTALL_DOCKER"      "$DOCKER_OK"    "(skipped)"
+_summary_row "Open WebUI image    " "(~1.5 GB)" "$INSTALL_OPENWEBUI"   "$OPENWEBUI_OK" "(skipped)"
+_summary_row "WebMap image        " "(~200 MB)" "$INSTALL_WEBMAP"      "$WEBMAP_OK"    "(skipped)"
+_summary_row "Embedding model     " "(~220 MB)" "$INSTALL_EMBED_MODEL" "$EMBED_OK"     "(skipped — downloaded on first use)"
 
 echo ""
 echo "  Run PurrSh3ll:"
 echo -e "    ${BOLD}purrsh3ll${NC}"
 echo ""
 
-if [[ "$INSTALL_OLLAMA" == true ]]; then
+if [[ "$OLLAMA_OK" == true ]]; then
     echo "  First steps with Ollama:"
     echo "    ollama serve"
     echo "    ollama pull llama3.2"
