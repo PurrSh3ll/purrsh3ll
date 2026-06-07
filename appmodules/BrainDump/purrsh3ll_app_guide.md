@@ -577,6 +577,26 @@ To list downloaded models: `ollama list`
 
 If you have limited RAM, use a smaller model such as `llama3.2:3b`, `gemma3:4b`, or `qwen3:4b`. Cloud providers (Groq, Gemini, OpenRouter) do not have this limitation since inference runs on their servers.
 
+**Recommended models for CPU-only machines:**
+
+Fast models that work well on CPU with limited RAM (~3 GB free):
+
+| Model | Ollama pull command | Notes |
+|-------|--------------------|----|
+| Qwen3 3B | `ollama pull qwen3:3b` | Very fast, strong reasoning |
+| Gemma 3 4B | `ollama pull gemma3:4b` | Fast, good quality |
+| Phi-3.5 Mini | `ollama pull phi3.5` | Compact, efficient |
+| SmolLM3 3B | `ollama pull smollm3:3b` | Very lightweight |
+| Llama 3.2 3B Instruct | `ollama pull llama3.2:3b` | Reliable general use |
+
+Model with vision support (image analysis) — slightly slower on CPU but still usable:
+
+| Model | Ollama pull command | Notes |
+|-------|--------------------|----|
+| fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive | `ollama pull fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN` | Supports image analysis via `psview`, runs on CPU |
+
+Use `psview screenshot.png` to analyze images with the vision model.
+
 ---
 
 **The voice interface does not work. What should I do?**

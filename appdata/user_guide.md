@@ -456,6 +456,24 @@ Configure the LLM backend:
 > List downloaded models: `ollama list`
 >
 > If you have limited RAM, use a smaller model such as `llama3.2:3b`, `gemma3:4b`, or `qwen3:4b`. Cloud providers (Groq, Gemini, OpenRouter) do not have this limitation.
+>
+> **Recommended models for CPU-only machines** (~3 GB free RAM):
+>
+> | Model | Ollama pull command |
+> |-------|---------------------|
+> | Qwen3 3B | `ollama pull qwen3:3b` |
+> | Gemma 3 4B | `ollama pull gemma3:4b` |
+> | Phi-3.5 Mini | `ollama pull phi3.5` |
+> | SmolLM3 3B | `ollama pull smollm3:3b` |
+> | Llama 3.2 3B Instruct | `ollama pull llama3.2:3b` |
+>
+> **With image analysis support** (slightly slower on CPU):
+>
+> | Model | Ollama pull command |
+> |-------|---------------------|
+> | fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive | `ollama pull fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN` |
+>
+> Use `psview screenshot.png` to analyze images with the vision model.
 
 ### RAG Tab
 
