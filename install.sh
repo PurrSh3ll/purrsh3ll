@@ -351,16 +351,18 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
-        if run_with_spinner "Installing Ollama v${OLLAMA_VERSION}..." \
-            bash -c "curl -fsSL \"$OLLAMA_URL\" -o /tmp/ollama && sudo install -m 755 /tmp/ollama /usr/local/bin/ollama && rm -f /tmp/ollama"; then
+        # Download binary only (no sudo needed in background)
+        sudo -v  # refresh sudo cache before background spinner
+        if run_with_spinner "Downloading Ollama v${OLLAMA_VERSION}..." \
+            curl -fsSL "$OLLAMA_URL" -o /tmp/ollama_bin; then
+            # Install binary after spinner completes (sudo runs in foreground)
+            sudo install -m 755 /tmp/ollama_bin /usr/local/bin/ollama
+            rm -f /tmp/ollama_bin
             success "Ollama v${OLLAMA_VERSION} installed → /usr/local/bin/ollama"
-        else
-            warn "Ollama installation failed — check /tmp/_purrsh3ll_install.log"
-        fi
 
-        # Enable Ollama as a systemd service so it starts with the system
-        info "Enabling Ollama service..."
-        sudo tee /etc/systemd/system/ollama.service > /dev/null <<'UNIT'
+            # Enable Ollama as a systemd service (only if install succeeded)
+            info "Enabling Ollama service..."
+            sudo tee /etc/systemd/system/ollama.service > /dev/null <<'UNIT'
 [Unit]
 Description=Ollama LLM server
 After=network.target
@@ -373,13 +375,17 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
-        sudo systemctl daemon-reload 2>/dev/null || true
-        sudo systemctl enable ollama 2>/dev/null || true
-        if timeout 20 sudo systemctl start ollama 2>/dev/null; then
-            success "Ollama service enabled and started"
+            sudo systemctl daemon-reload 2>/dev/null || true
+            sudo systemctl enable ollama 2>/dev/null || true
+            if timeout 20 sudo systemctl start ollama 2>/dev/null; then
+                success "Ollama service enabled and started"
+            else
+                warn "Ollama service could not start automatically."
+                warn "Start it manually: sudo systemctl start ollama"
+            fi
         else
-            warn "Ollama service could not start automatically."
-            warn "Start it manually: sudo systemctl start ollama"
+            rm -f /tmp/ollama_bin 2>/dev/null || true
+            warn "Ollama download failed — check /tmp/_purrsh3ll_install.log"
         fi
     fi
 fi
@@ -406,38 +412,39 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
     else
-        # Install Docker via official script (works on Kali, Debian, Ubuntu)
+        # Refresh sudo cache before background spinner; DEBIAN_FRONTEND suppresses prompts
+        sudo -v
         if run_with_spinner "Installing Docker (get.docker.com)..." \
-            bash -c 'curl -fsSL https://get.docker.com | sh'; then
+            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh'; then
             success "Docker packages installed"
+
+            # Enable service (non-blocking — does not start it yet)
+            info "Enabling Docker service..."
+            sudo systemctl enable docker 2>/dev/null || true
+
+            # Start service with timeout; on Kali try iptables-legacy fallback if needed
+            info "Starting Docker service (may take a moment)..."
+            if timeout 30 sudo systemctl start docker 2>/dev/null; then
+                success "Docker service started"
+            else
+                warn "Docker service did not start — trying iptables-legacy fallback (common on Kali)..."
+                sudo update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || true
+                sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
+                if timeout 30 sudo systemctl start docker 2>/dev/null; then
+                    success "Docker service started (iptables-legacy)"
+                else
+                    warn "Docker service could not start automatically."
+                    warn "Start it manually:  sudo systemctl start docker"
+                    warn "If iptables error:  sudo update-alternatives --set iptables /usr/sbin/iptables-legacy"
+                fi
+            fi
+
+            sudo usermod -aG docker "$USER" || true
+            success "Docker installed"
+            warn "Log out and back in (or run: newgrp docker) for group membership to take effect."
         else
             warn "Docker installation failed — check /tmp/_purrsh3ll_install.log"
         fi
-
-        # Enable service (non-blocking — does not start it yet)
-        info "Enabling Docker service..."
-        sudo systemctl enable docker 2>/dev/null || true
-
-        # Start service with timeout; on Kali try iptables-legacy fallback if needed
-        info "Starting Docker service (may take a moment)..."
-        if timeout 30 sudo systemctl start docker 2>/dev/null; then
-            success "Docker service started"
-        else
-            warn "Docker service did not start — trying iptables-legacy fallback (common on Kali)..."
-            sudo update-alternatives --set iptables  /usr/sbin/iptables-legacy  2>/dev/null || true
-            sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy 2>/dev/null || true
-            if timeout 30 sudo systemctl start docker 2>/dev/null; then
-                success "Docker service started (iptables-legacy)"
-            else
-                warn "Docker service could not start automatically."
-                warn "Start it manually:  sudo systemctl start docker"
-                warn "If iptables error:  sudo update-alternatives --set iptables /usr/sbin/iptables-legacy"
-            fi
-        fi
-
-        sudo usermod -aG docker "$USER"
-        success "Docker installed"
-        warn "Log out and back in (or run: newgrp docker) for group membership to take effect."
     fi
 fi
 
