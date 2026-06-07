@@ -644,7 +644,7 @@ def build_menu(main_window):
         grp_rag_layout.setSpacing(8)
         grp_rag_layout.setContentsMargins(6, 6, 6, 6)
 
-        grp_kb  = QGroupBox("Knowledge base")
+        grp_kb  = QGroupBox("Knowledge")
         form_kb = QFormLayout(grp_kb)
         form_kb.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
@@ -930,7 +930,7 @@ def build_menu(main_window):
             "Enable re-ranking  (better results, ~1–2 s extra per query)", grp_rag
         )
         rag_rerank_checkbox.setChecked(bool(_rag_rerank))
-        form_rnk.addRow("Re-ranking:", rag_rerank_checkbox)
+        form_rnk.addRow("Enable:", rag_rerank_checkbox)
 
         _RERANK_MODELS = [
             ("ms-marco-MiniLM-L-6-v2",            "Xenova/ms-marco-MiniLM-L-6-v2"),
@@ -971,7 +971,7 @@ def build_menu(main_window):
         rag_dl_col.setSpacing(4)
         rag_dl_col.addWidget(rag_dl_list)
         rag_dl_col.addWidget(rag_dl_remove_btn)
-        form_dl.addRow("Downloaded\nmodels:", rag_dl_col)
+        form_dl.addRow("Models:", rag_dl_col)
 
         def _dl_list_populate():
             rag_dl_list.clear()
