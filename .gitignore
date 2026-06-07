@@ -47,3 +47,7 @@ appmodules/Cyb3rCollector/reports/
 # Pliki testowe (licencje — nie wrzucamy na GitHub)
 usermodules/testfolder/
 
+
+# Old installer scripts
+install_old.sh
+install_full_old.sh
