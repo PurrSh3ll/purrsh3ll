@@ -51,10 +51,15 @@ Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemin
 
 ### RAG Knowledge Base
 - Index your own notes, writeups, documentation, and PDF files
-- Powered by ChromaDB + sentence-transformers (runs fully offline)
+- Powered by ChromaDB + fastembed — runs fully offline
+- Choose from 30+ embedding models grouped by category: English, Multilingual, Language-specific, Code, and Vision/Multimodal
+- Optional reranking with 6 reranker models for improved result precision
+- Configurable file extension filter (PDF, TXT, MD, RST, CSV, JSON, XML, YAML, code files, and more)
+- Per-file include/exclude manager — selectively disable indexing of specific files
 - Queries are automatically enriched with relevant context from your knowledge base
 - File changes are tracked and re-indexed automatically via watchdog
 - Indexing progress visible in the main UI status bar
+- Dedicated RAG tab in AI Settings for full configuration
 
 ### Voice Interface
 - Wake word detection — say **"Hey Jarvis"** to activate
@@ -74,6 +79,8 @@ Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemin
 - CSV and TSV files rendered as interactive sortable tables
 - PDF files rendered with page navigation
 - Audio and video files playable directly in the app
+- Metadata and EXIF extraction via exiftool (GPS, codec info, camera data)
+- Game files (`.game`) with dedicated viewer
 - Chunked loading for large files
 - Built-in search with regex support
 
@@ -126,6 +133,7 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 | Configuration | RAM |
 |---------------|-----|
 | App only (idle to multiple tabs + browser) | 200 MB – 1 GB |
+| + RAG embedding model (during indexing) | +90 MB – 2.3 GB (depends on model) |
 | + Open WebUI (Docker) | +500 MB – 1 GB |
 | + WebMap (Docker) | +200 – 400 MB |
 | Full stack with a large LLM model (~8B) | ~12 GB+ |
@@ -137,8 +145,8 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 PurrSh3ll ships with an interactive installer that lets you choose exactly which components to install.
 
 ```bash
-bash install_purr.sh          # interactive — pick components via checklist
-bash install_purr.sh --auto   # non-interactive — install everything
+bash install.sh          # interactive — pick components via checklist
+bash install.sh --auto   # non-interactive — install everything
 ```
 
 The core app, Python packages, and QTermWidget are always installed. Optional components you can select:
@@ -229,7 +237,8 @@ purrsh3ll/
 │   └── themes.json            # Theme definitions
 └── appmodules/
     ├── BrainDump/             # Default RAG knowledge base
-    └── Cyb3rBreak/            # Embedded CTF games
+    ├── Cyb3rBreak/            # Embedded CTF games (8 games)
+    └── Cyb3rCollector/        # Organized data collection (listeners, stagers, reports)
 ```
 
 <img src="docs/images/ai_and_opensource.png" width="900"/>
@@ -242,7 +251,7 @@ purrsh3ll/
 |-------|-----------|
 | GUI | PyQt6, QTermWidget |
 | Vector DB | ChromaDB |
-| Embeddings | sentence-transformers (multilingual MiniLM) |
+| Embeddings | fastembed (30+ models: English, Multilingual, Code, Vision) |
 | STT | Faster-Whisper (tiny, CPU int8) |
 | Wake word | OpenWakeWord |
 | Audio | sounddevice, scipy, mutagen |
@@ -297,3 +306,4 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 - [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) — efficient Whisper implementation
 - [ChromaDB](https://github.com/chroma-core/chroma) — vector database
 - [WebMap](https://github.com/SabyasachiRana/WebMap) — Nmap result visualization
+- [fastembed](https://github.com/qdrant/fastembed) — lightweight, fast embedding library
