@@ -640,8 +640,30 @@ def build_menu(main_window):
 
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
-        form_rag = QFormLayout(grp_rag)
-        form_rag.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        grp_rag_layout = QVBoxLayout(grp_rag)
+        grp_rag_layout.setSpacing(8)
+        grp_rag_layout.setContentsMargins(6, 6, 6, 6)
+
+        grp_kb  = QGroupBox("Knowledge base")
+        form_kb = QFormLayout(grp_kb)
+        form_kb.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_emb  = QGroupBox("Embedding")
+        form_emb = QFormLayout(grp_emb)
+        form_emb.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_rnk  = QGroupBox("Re-ranking")
+        form_rnk = QFormLayout(grp_rnk)
+        form_rnk.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_dl  = QGroupBox("Downloaded models")
+        form_dl = QFormLayout(grp_dl)
+        form_dl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_rag_layout.addWidget(grp_kb)
+        grp_rag_layout.addWidget(grp_emb)
+        grp_rag_layout.addWidget(grp_rnk)
+        grp_rag_layout.addWidget(grp_dl)
 
         _rag_cfg = data.get("rag", {})
         _rag_mode = _rag_cfg.get("knowledge_base", "braindump")
@@ -837,7 +859,7 @@ def build_menu(main_window):
         rag_radio_row.addWidget(rag_radio_braindump)
         rag_radio_row.addWidget(rag_radio_custom)
         rag_radio_row.addStretch(1)
-        form_rag.addRow("Knowledge base:", rag_radio_row)
+        form_kb.addRow("Knowledge base:", rag_radio_row)
 
         rag_path_edit = QLineEdit(grp_rag)
         rag_path_edit.setPlaceholderText("Select folder…")
@@ -854,7 +876,7 @@ def build_menu(main_window):
         rag_path_row = QHBoxLayout()
         rag_path_row.addWidget(rag_path_edit)
         rag_path_row.addWidget(rag_browse_btn)
-        form_rag.addRow("Path:", rag_path_row)
+        form_kb.addRow("Path:", rag_path_row)
 
         # ── Embedding model ────────────────────────────────────────────────────
         from PyQt6.QtGui import QStandardItem
@@ -900,7 +922,7 @@ def build_menu(main_window):
              if rag_model_combo.itemData(i) == _saved_model), 0
         )
         rag_model_combo.setCurrentIndex(_saved_idx)
-        form_rag.addRow("Embedding model:", rag_model_combo)
+        form_emb.addRow("Embedding model:", rag_model_combo)
 
         # ── Re-ranking ─────────────────────────────────────────────────────────
         _rag_rerank = _rag_cfg.get("rerank", False)
@@ -908,7 +930,7 @@ def build_menu(main_window):
             "Enable re-ranking  (better results, ~1–2 s extra per query)", grp_rag
         )
         rag_rerank_checkbox.setChecked(bool(_rag_rerank))
-        form_rag.addRow("Re-ranking:", rag_rerank_checkbox)
+        form_rnk.addRow("Re-ranking:", rag_rerank_checkbox)
 
         _RERANK_MODELS = [
             ("ms-marco-MiniLM-L-6-v2",            "Xenova/ms-marco-MiniLM-L-6-v2"),
@@ -934,7 +956,7 @@ def build_menu(main_window):
         )
         rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
         rag_rerank_combo.setEnabled(bool(_rag_rerank))
-        form_rag.addRow("Rerank model:", rag_rerank_combo)
+        form_rnk.addRow("Rerank model:", rag_rerank_combo)
 
         # ── Downloaded models ──────────────────────────────────────────────────
         rag_dl_list = QListWidget(grp_rag)
@@ -949,7 +971,7 @@ def build_menu(main_window):
         rag_dl_col.setSpacing(4)
         rag_dl_col.addWidget(rag_dl_list)
         rag_dl_col.addWidget(rag_dl_remove_btn)
-        form_rag.addRow("Downloaded\nmodels:", rag_dl_col)
+        form_dl.addRow("Downloaded\nmodels:", rag_dl_col)
 
         def _dl_list_populate():
             rag_dl_list.clear()
@@ -1020,7 +1042,23 @@ def build_menu(main_window):
                     rag_rerank_combo.setItemText(i, rag_rerank_combo.itemText(i).replace("  ✓ downloaded", ""))
             _dl_list_populate()
 
+        def _dl_show_info(item):
+            if not item:
+                return
+            kind, model_id = item.data(Qt.ItemDataRole.UserRole)
+            tips = _EMB_TOOLTIPS if kind == "embed" else _RNK_TOOLTIPS
+            tip = tips.get(model_id, "")
+            label = item.text().split(None, 1)[1].strip() if item.text() else model_id
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle(label)
+            msg.setText(f"<b>{label}</b>")
+            msg.setInformativeText(tip if tip else model_id)
+            msg.setStyleSheet(c.messagebox_stylesheet)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
         rag_dl_list.currentRowChanged.connect(_dl_selection_changed)
+        rag_dl_list.itemDoubleClicked.connect(_dl_show_info)
         rag_dl_remove_btn.clicked.connect(_dl_remove)
 
         # ── Index extensions ───────────────────────────────────────────────────
@@ -1048,7 +1086,7 @@ def build_menu(main_window):
         ext_row.addWidget(ext_summary_lbl)
         ext_row.addStretch(1)
         ext_row.addWidget(ext_configure_btn)
-        form_rag.addRow("Index\nextensions:", ext_row_widget)
+        form_kb.addRow("Index\nextensions:", ext_row_widget)
 
         def _open_ext_dialog():
             popup = QDialog(dlg)
@@ -1129,7 +1167,7 @@ def build_menu(main_window):
         rag_index_row.addStretch(1)
         rag_index_row.addWidget(rag_reindex_btn)
         rag_index_row.addWidget(rag_delete_btn)
-        form_rag.addRow("Indexing:", rag_index_row)
+        form_kb.addRow("Indexing:", rag_index_row)
 
         # ── Status ─────────────────────────────────────────────────────────────
         rag_status_label = QLabel("", grp_rag)
@@ -1139,7 +1177,7 @@ def build_menu(main_window):
             Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         rag_status_label.setWordWrap(True)
-        form_rag.addRow("Status:", rag_status_label)
+        form_kb.addRow("Status:", rag_status_label)
 
         # ── Indexed files manager ──────────────────────────────────────────────
         _base_dir_files = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1154,9 +1192,10 @@ def build_menu(main_window):
         _STATUS_EXCLUDED = "✗ excluded"
 
         files_list = QListWidget(grp_rag)
-        files_list.setFixedHeight(8 * 22)
+        files_list.setFixedHeight(6 * 24)
         files_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        form_rag.addRow("Indexed\nfiles:", files_list)
+        files_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        form_kb.addRow("Indexed\nfiles:", files_list)
 
         def _load_file_meta() -> dict:
             if os.path.exists(_meta_path_ui):
