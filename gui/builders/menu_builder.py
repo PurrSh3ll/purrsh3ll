@@ -782,7 +782,7 @@ def build_menu(main_window):
         from PyQt6.QtGui import QStandardItem
         rag_model_combo = _ScrollableComboBox(grp_rag)
         _emb_bg = c.actual_theme.get("background", {})
-        rag_model_combo.view().setStyleSheet(f"""
+        _sb_qss = f"""
             QScrollBar:vertical {{
                 background: transparent;
                 width: 8px;
@@ -804,7 +804,9 @@ def build_menu(main_window):
             QScrollBar::sub-page:vertical {{
                 background: {_emb_bg.get("scroll_area", "#1E1F22")};
             }}
-        """)
+        """
+        rag_model_combo.view().setStyleSheet(_sb_qss)
+        rag_model_combo.view().verticalScrollBar().setStyleSheet(_sb_qss)
         for _label, _val in _RAG_MODELS:
             if _val is None:
                 _hdr = QStandardItem(f"  ── {_label} ──")
