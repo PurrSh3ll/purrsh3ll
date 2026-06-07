@@ -26,6 +26,10 @@ WHEEL_NAME="qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 AICHAT_VERSION="0.27.0"
 AICHAT_URL="https://github.com/sigoden/aichat/releases/download/v${AICHAT_VERSION}/aichat-v${AICHAT_VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
+# Ollama — update version number when a new release is available
+OLLAMA_VERSION="0.30.6"
+OLLAMA_URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64"
+
 OPENWEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
 WEBMAP_IMAGE="reborntc/webmap"
 
@@ -347,9 +351,36 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
-        run_with_spinner "Installing Ollama..." \
-            bash -c 'curl -fsSL https://ollama.com/install.sh | sh'
-        success "Ollama installed"
+        if run_with_spinner "Installing Ollama v${OLLAMA_VERSION}..." \
+            bash -c "curl -fsSL \"$OLLAMA_URL\" -o /tmp/ollama && sudo install -m 755 /tmp/ollama /usr/local/bin/ollama && rm -f /tmp/ollama"; then
+            success "Ollama v${OLLAMA_VERSION} installed → /usr/local/bin/ollama"
+        else
+            warn "Ollama installation failed — check /tmp/_purrsh3ll_install.log"
+        fi
+
+        # Enable Ollama as a systemd service so it starts with the system
+        info "Enabling Ollama service..."
+        sudo tee /etc/systemd/system/ollama.service > /dev/null <<'UNIT'
+[Unit]
+Description=Ollama LLM server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/ollama serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        sudo systemctl daemon-reload 2>/dev/null || true
+        sudo systemctl enable ollama 2>/dev/null || true
+        if timeout 20 sudo systemctl start ollama 2>/dev/null; then
+            success "Ollama service enabled and started"
+        else
+            warn "Ollama service could not start automatically."
+            warn "Start it manually: sudo systemctl start ollama"
+        fi
     fi
 fi
 
