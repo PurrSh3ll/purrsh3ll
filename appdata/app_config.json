@@ -36,11 +36,17 @@
     "knowledge_base": "braindump",
     "custom_path": "",
     "auto_index": true,
-    "embedding_model": "nomic-ai/nomic-embed-text-v1.5-Q",
+    "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     "rerank": true,
     "rerank_model": "Xenova/ms-marco-MiniLM-L-6-v2",
     "custom_embedding_models": [],
-    "index_extensions": ["pdf", "txt", "md", "rst", "csv"]
+    "index_extensions": [
+      "pdf",
+      "txt",
+      "md",
+      "rst",
+      "csv"
+    ]
   },
   "welcome": {
     "custom_text": "__default__",

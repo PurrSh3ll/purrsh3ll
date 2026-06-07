@@ -27,9 +27,7 @@ Then in AI Settings: provider → **Ollama**, model → `llama3.2`, set as activ
 
 Supported: **OpenAI, Anthropic, Groq, Gemini, OpenRouter, HuggingFace**
 
-Groq is recommended for getting started — free tier, fast, no setup beyond an API key.
-
-In AI Settings: provider → **Groq**, paste API key, pick a model, set as active.
+In AI Settings: provider → paste API key, pick a model, set as active.
 
 ---
 

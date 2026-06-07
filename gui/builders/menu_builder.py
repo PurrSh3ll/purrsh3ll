@@ -692,6 +692,82 @@ def build_menu(main_window):
         _DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
 
+        _EMB_TOOLTIPS = {
+            "BAAI/bge-small-en":
+                "Size: 130MB | Dim: 384 | English\nRetrieval, semantic search. Older version — v1.5 recommended.",
+            "BAAI/bge-small-en-v1.5":
+                "Size: 67MB | Dim: 384 | English\nRetrieval, semantic search. Lightest BGE model.",
+            "BAAI/bge-base-en":
+                "Size: 420MB | Dim: 768 | English\nRetrieval, semantic similarity.",
+            "BAAI/bge-base-en-v1.5":
+                "Size: 210MB | Dim: 768 | English\nRetrieval, MTEB 63.55. Good size/quality balance.",
+            "BAAI/bge-large-en-v1.5":
+                "Size: 1.2GB | Dim: 1024 | English\nBest English BGE. MTEB 64.23. Recommended for RAG.",
+            "sentence-transformers/all-MiniLM-L6-v2":
+                "Size: 90MB | Dim: 384 | English\nSemantic search, clustering. Most popular (254M+ downloads/month).",
+            "thenlper/gte-base":
+                "Size: 440MB | Dim: 768 | English\nRetrieval, similarity, reranking. Max 512 tokens.",
+            "thenlper/gte-large":
+                "Size: 1.2GB | Dim: 1024 | English\nRetrieval, similarity, reranking. Max 512 tokens.",
+            "mixedbread-ai/mxbai-embed-large-v1":
+                "Size: 640MB | Dim: 1024 | English\nSemantic search. MTEB 64.68 (SOTA BERT-large).\nSupports Matryoshka and binary quantization.",
+            "snowflake/snowflake-arctic-embed-xs":
+                "Size: 90MB | Dim: 384 | English\nRetrieval with strict latency constraints. 22M params.",
+            "snowflake/snowflake-arctic-embed-s":
+                "Size: 130MB | Dim: 384 | English\nRetrieval, small and fast.",
+            "snowflake/snowflake-arctic-embed-m":
+                "Size: 430MB | Dim: 768 | English\nRetrieval, good quality/speed tradeoff.",
+            "snowflake/snowflake-arctic-embed-m-long":
+                "Size: 540MB | Dim: 768 | English\nLong document retrieval. Up to 2048 tokens (8192 with RPE).",
+            "snowflake/snowflake-arctic-embed-l":
+                "Size: 1.0GB | Dim: 1024 | English\nHigh quality retrieval.",
+            "jinaai/jina-embeddings-v2-base-en":
+                "Size: 520MB | Dim: 768 | English\nLong context (8k tokens), RAG, semantic search. 137M params.",
+            "nomic-ai/nomic-embed-text-v1.5-Q":
+                "Size: 130MB | Dim: 768 | English (primary)\nMulti-task, 8192 tokens. Matryoshka resizable embeddings. Quantized.",
+            "nomic-ai/nomic-embed-text-v1.5":
+                "Size: 520MB | Dim: 768 | English (primary)\nMulti-task, 8192 tokens. Matryoshka resizable embeddings. Full precision.",
+            "nomic-ai/nomic-embed-text-v1":
+                "Size: 520MB | Dim: 768 | English (primary)\nOlder version — v1.5 recommended.",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2":
+                "Size: 220MB | Dim: 384 | 50+ languages\nSemantic similarity, clustering. Lightweight multilingual.",
+            "sentence-transformers/paraphrase-multilingual-mpnet-base-v2":
+                "Size: 1.0GB | Dim: 768 | 50+ languages\nSemantic similarity, clustering. Higher quality than MiniLM.",
+            "intfloat/multilingual-e5-large":
+                "Size: 2.24GB | Dim: 1024 | 94+ languages\nRetrieval, bitext mining. Requires 'query:'/'passage:' prefixes.",
+            "jinaai/jina-embeddings-v3":
+                "Size: 2.29GB | Dim: 1024 | Multilingual\nLargest Jina model. Long context, high quality.",
+            "jinaai/jina-embeddings-v2-base-de":
+                "Size: 320MB | Dim: 768 | German + English\nLong context (8k tokens), semantic search.",
+            "jinaai/jina-embeddings-v2-base-es":
+                "Size: 640MB | Dim: 768 | Spanish + English\nLong context (8k tokens), semantic search.",
+            "jinaai/jina-embeddings-v2-base-zh":
+                "Size: 640MB | Dim: 768 | Chinese + English\nLong context (8k tokens), semantic search.",
+            "BAAI/bge-small-zh-v1.5":
+                "Size: 90MB | Dim: 512 | Chinese\nRetrieval, lightweight Chinese model.",
+            "jinaai/jina-embeddings-v2-base-code":
+                "Size: 640MB | Dim: 768 | English + 30 programming languages\nCode search, technical Q&A. 8k tokens. Trained on 150M+ coding QA pairs.",
+            "jinaai/jina-clip-v1":
+                "Size: 550MB | Dim: 768 | English\nText + Image retrieval. Combines CLIP with text embeddings. SOTA cross-modal.",
+            "Qdrant/clip-ViT-B-32-text":
+                "Size: 250MB | Dim: 512 | Multilingual (CLIP-based)\nText-only ONNX port of clip-ViT-B-32. Similarity, classification.",
+        }
+
+        _RNK_TOOLTIPS = {
+            "Xenova/ms-marco-MiniLM-L-6-v2":
+                "Size: 80MB | English\nFast reranking, lightweight. Good for everyday use.",
+            "Xenova/ms-marco-MiniLM-L-12-v2":
+                "Size: 120MB | English\nBetter quality than L-6 at moderate speed cost.",
+            "BAAI/bge-reranker-base":
+                "Size: 1.04GB | Chinese + English\nCross-encoder, accurate but slower. 300M params.",
+            "jinaai/jina-reranker-v1-tiny-en":
+                "Size: 130MB | English\nFastest Jina reranker. 8k context.",
+            "jinaai/jina-reranker-v1-turbo-en":
+                "Size: 150MB | English\nFast, 8k context, knowledge-distilled. NDCG@10: 49.60.",
+            "jinaai/jina-reranker-v2-base-multilingual":
+                "Size: 1.11GB | 26+ languages\nMultilingual reranking. Sliding window for long inputs. Flash Attention.",
+        }
+
         _base_dir_rag = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _rag_models_cache_dir = os.path.join(
             getattr(c, "base_path", _base_dir_rag), "appdata", "rag", "models"
@@ -816,6 +892,9 @@ def build_menu(main_window):
             else:
                 _sfx = "  ✓ downloaded" if _is_cached(_val, _emb_cache_map) else ""
                 rag_model_combo.addItem("    " + _label + _sfx, _val)
+                _tip = _EMB_TOOLTIPS.get(_val)
+                if _tip:
+                    rag_model_combo.setItemData(rag_model_combo.count() - 1, _tip, Qt.ItemDataRole.ToolTipRole)
         _saved_idx = next(
             (i for i in range(rag_model_combo.count())
              if rag_model_combo.itemData(i) == _saved_model), 0
@@ -846,6 +925,9 @@ def build_menu(main_window):
         for _label, _val in _RERANK_MODELS:
             _sfx = "  ✓ downloaded" if _is_cached(_val, _rnk_cache_map) else ""
             rag_rerank_combo.addItem(_label + _sfx, _val)
+            _tip = _RNK_TOOLTIPS.get(_val)
+            if _tip:
+                rag_rerank_combo.setItemData(rag_rerank_combo.count() - 1, _tip, Qt.ItemDataRole.ToolTipRole)
         _saved_rerank_idx = next(
             (i for i in range(rag_rerank_combo.count())
              if rag_rerank_combo.itemData(i) == _saved_rerank_model), 0
