@@ -368,11 +368,9 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
-        # Use the official install script — direct binary URL format changes between releases
-        sudo -v  # refresh sudo cache before background spinner
-        run_with_spinner "Installing Ollama..." \
-            bash -c 'curl -fsSL https://ollama.com/install.sh | sh' || true
-        if command -v ollama &>/dev/null; then
+        # Use the official install script — run in foreground so progress is visible
+        info "Installing Ollama (this may take a few minutes)..."
+        if bash -c 'curl -fsSL https://ollama.com/install.sh | sh' 2>&1 | tee -a /tmp/_purrsh3ll_install.log; then
             OLLAMA_OK=true
             success "Ollama installed → $(command -v ollama)"
         else
@@ -404,15 +402,13 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
     else
-        sudo -v  # refresh sudo cache before background spinner
-        # Kali uses kali-rolling codename — not in Docker's Debian repo, use docker.io from apt
-        # Other distros (Debian, Ubuntu): use the official get.docker.com script
+        # Run in foreground so progress is visible — both methods produce meaningful output
         if grep -qi "kali" /etc/os-release 2>/dev/null; then
-            run_with_spinner "Installing Docker (docker.io from apt)..." \
-                sudo apt-get install -y --no-install-recommends docker.io || true
+            info "Installing Docker (docker.io from apt)..."
+            sudo apt-get install -y --no-install-recommends docker.io 2>&1 | tee -a /tmp/_purrsh3ll_install.log || true
         else
-            run_with_spinner "Installing Docker (get.docker.com)..." \
-                bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' || true
+            info "Installing Docker (get.docker.com, this may take a few minutes)..."
+            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' 2>&1 | tee -a /tmp/_purrsh3ll_install.log || true
         fi
         if command -v docker &>/dev/null; then
             DOCKER_OK=true
