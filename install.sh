@@ -428,9 +428,11 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
         # stderr goes to log, stdout filtered to meaningful apt/installer lines only
         if grep -qi "kali" /etc/os-release 2>/dev/null; then
             info "Installing Docker (docker.io from apt)..."
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io \
+            sudo DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true \
+                apt-get install -y --no-install-recommends docker.io \
                 2>>/tmp/_purrsh3ll_install.log \
                 | grep --line-buffered -E "^(Get:|Unpacking|Setting up|Preparing)" \
+                | grep --line-buffered -v "sudo:" \
                 | tee -a /tmp/_purrsh3ll_install.log \
                 || true
         else
@@ -441,7 +443,8 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
                 | tee -a /tmp/_purrsh3ll_install.log \
                 || true
         fi
-        if command -v docker &>/dev/null; then
+        # check binary directly — command -v can miss freshly installed packages
+        if [ -x /usr/bin/docker ] || command -v docker &>/dev/null; then
             DOCKER_OK=true
             success "Docker packages installed"
 
@@ -477,7 +480,7 @@ fi
 
 # ── Open WebUI Docker image ───────────────────────────────────────────────────
 
-if [[ "$INSTALL_OPENWEBUI" == true ]]; then
+if [[ "$INSTALL_OPENWEBUI" == true && "$DOCKER_OK" == true ]]; then
     if run_with_spinner "Pulling Open WebUI Docker image..." \
             sudo docker pull --quiet "$OPENWEBUI_IMAGE"; then
         OPENWEBUI_OK=true
@@ -489,7 +492,7 @@ fi
 
 # ── WebMap Docker image ───────────────────────────────────────────────────────
 
-if [[ "$INSTALL_WEBMAP" == true ]]; then
+if [[ "$INSTALL_WEBMAP" == true && "$DOCKER_OK" == true ]]; then
     if run_with_spinner "Pulling WebMap Docker image..." \
             sudo docker pull --quiet "$WEBMAP_IMAGE"; then
         WEBMAP_OK=true
