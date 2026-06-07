@@ -26,9 +26,6 @@ WHEEL_NAME="qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 AICHAT_VERSION="0.27.0"
 AICHAT_URL="https://github.com/sigoden/aichat/releases/download/v${AICHAT_VERSION}/aichat-v${AICHAT_VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
-# Ollama — update version number when a new release is available
-OLLAMA_VERSION="0.30.6"
-OLLAMA_URL="https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64"
 
 OPENWEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
 WEBMAP_IMAGE="reborntc/webmap"
@@ -69,7 +66,7 @@ print_plan() {
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
     [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~10 MB  — git submodules)"       || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
-    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~500 MB — LLM inference binary)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
+    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~500 MB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
     [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image     (~1.5 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  Open WebUI image                        (skipped)"
@@ -358,42 +355,14 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
+        # Use the official install script — direct binary URL format changes between releases
         sudo -v  # refresh sudo cache before background spinner
-        if run_with_spinner "Downloading Ollama v${OLLAMA_VERSION}..." \
-            curl -fsSL "$OLLAMA_URL" -o /tmp/ollama_bin; then
-            if sudo install -m 755 /tmp/ollama_bin /usr/local/bin/ollama; then
-                rm -f /tmp/ollama_bin
-                success "Ollama v${OLLAMA_VERSION} installed → /usr/local/bin/ollama"
-                # Enable Ollama as a systemd service (only if binary installed)
-                info "Enabling Ollama service..."
-                sudo tee /etc/systemd/system/ollama.service > /dev/null <<'UNIT'
-[Unit]
-Description=Ollama LLM server
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/ollama serve
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-                sudo systemctl daemon-reload 2>/dev/null || true
-                sudo systemctl enable ollama 2>/dev/null || true
-                if timeout 20 sudo systemctl start ollama 2>/dev/null; then
-                    success "Ollama service enabled and started"
-                else
-                    warn "Ollama service could not start automatically."
-                    warn "Start it manually: sudo systemctl start ollama"
-                fi
-            else
-                rm -f /tmp/ollama_bin 2>/dev/null || true
-                warn "Ollama binary install failed — skipping service setup."
-            fi
+        run_with_spinner "Installing Ollama..." \
+            bash -c 'curl -fsSL https://ollama.com/install.sh | sh' || true
+        if command -v ollama &>/dev/null; then
+            success "Ollama installed → $(command -v ollama)"
         else
-            rm -f /tmp/ollama_bin 2>/dev/null || true
-            warn "Ollama download failed — check /tmp/_purrsh3ll_install.log"
+            warn "Ollama installation failed — check /tmp/_purrsh3ll_install.log"
         fi
     fi
 fi
@@ -420,12 +389,16 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
     else
-        # Refresh sudo cache before background spinner; DEBIAN_FRONTEND suppresses prompts
-        sudo -v
-        # get.docker.com self-test (docker run hello-world) fails when daemon is not yet
-        # running — ignore the exit code and check for the binary instead
-        run_with_spinner "Installing Docker (get.docker.com)..." \
-            bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' || true
+        sudo -v  # refresh sudo cache before background spinner
+        # Kali uses kali-rolling codename — not in Docker's Debian repo, use docker.io from apt
+        # Other distros (Debian, Ubuntu): use the official get.docker.com script
+        if grep -qi "kali" /etc/os-release 2>/dev/null; then
+            run_with_spinner "Installing Docker (docker.io from apt)..." \
+                sudo apt-get install -y --no-install-recommends docker.io || true
+        else
+            run_with_spinner "Installing Docker (get.docker.com)..." \
+                bash -c 'DEBIAN_FRONTEND=noninteractive curl -fsSL https://get.docker.com | sh' || true
+        fi
         if command -v docker &>/dev/null; then
             success "Docker packages installed"
 
