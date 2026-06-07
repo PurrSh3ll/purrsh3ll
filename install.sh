@@ -66,15 +66,15 @@ run_with_spinner() {
 
 print_plan() {
     echo -e "${BOLD}  Installation plan:${NC}"
-    echo -e "    ${GREEN}✓${NC}  Core application (always)"
-    [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support"              || echo -e "    ${YELLOW}–${NC}  Voice support          (skipped)"
-    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills"                  || echo -e "    ${YELLOW}–${NC}  AI Skills              (skipped)"
-    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama"                     || echo -e "    ${YELLOW}–${NC}  Ollama                 (skipped)"
-    [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat"                     || echo -e "    ${YELLOW}–${NC}  aichat                 (skipped)"
-    [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker"                     || echo -e "    ${YELLOW}–${NC}  Docker                 (skipped)"
-    [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image"           || echo -e "    ${YELLOW}–${NC}  Open WebUI image       (skipped)"
-    [[ "$INSTALL_WEBMAP"      == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image"               || echo -e "    ${YELLOW}–${NC}  WebMap image           (skipped)"
-    [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model (~220 MB)"      || echo -e "    ${YELLOW}–${NC}  Embed model            (skipped)"
+    echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
+    [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
+    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~10 MB  — git submodules)"       || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
+    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~500 MB — LLM inference binary)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
+    [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
+    [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
+    [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image     (~1.5 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  Open WebUI image                        (skipped)"
+    [[ "$INSTALL_WEBMAP"      == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image         (~200 MB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  WebMap image                            (skipped)"
+    [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model          (~220 MB — multilingual MiniLM)" || echo -e "    ${YELLOW}–${NC}  Embed model                             (skipped)"
     echo ""
 }
 
@@ -153,14 +153,14 @@ are always installed regardless of selection.
 
 SPACE = toggle   |   ENTER = confirm" \
         22 68 8 \
-        "voice"      "Voice support   (wake word + speech-to-text)"   ON \
-        "skills"     "AI Skills       (pentest + security submodules)" ON \
-        "ollama"     "Ollama          (local LLM inference server)"    ON \
-        "aichat"     "aichat          (multi-provider CLI frontend)"   ON \
-        "docker"     "Docker          (container runtime)"             ON \
-        "openwebui"  "Open WebUI      (web UI for Ollama — Docker)"    ON \
-        "webmap"     "WebMap          (Nmap visualizer — Docker)"      ON \
-        "embedmodel" "Embed model     (multilingual MiniLM — ~220 MB)" ON \
+        "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
+        "skills"     "AI Skills       ~10 MB   (git submodules)"        ON \
+        "ollama"     "Ollama          ~500 MB  (LLM inference binary)"  ON \
+        "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
+        "docker"     "Docker          ~300 MB  (container runtime)"     ON \
+        "openwebui"  "Open WebUI      ~1.5 GB  (Docker image)"          ON \
+        "webmap"     "WebMap          ~200 MB  (Docker image)"          ON \
+        "embedmodel" "Embed model     ~220 MB  (multilingual MiniLM)"   ON \
         3>&1 1>&2 2>&3) || { echo ""; warn "Installation cancelled."; exit 0; }
 
     [[ "$CHOICES" == *'"voice"'*       ]] && INSTALL_VOICE=true
