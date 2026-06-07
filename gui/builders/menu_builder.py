@@ -15,6 +15,19 @@ import threading
 from core.controller import controller_instance
 
 
+class _ScrollableComboBox(QComboBox):
+    """QComboBox whose popup is capped at a fixed pixel height with a scrollbar."""
+    _MAX_H = 300
+
+    def showPopup(self):
+        super().showPopup()
+        container = self.view().parent()
+        if container and container is not self:
+            geo = container.geometry()
+            if geo.height() > self._MAX_H:
+                container.resize(geo.width(), self._MAX_H)
+
+
 c = controller_instance
 
 def build_menu(main_window):
@@ -754,9 +767,7 @@ def build_menu(main_window):
 
         # ── Embedding model ────────────────────────────────────────────────────
         from PyQt6.QtGui import QStandardItem
-        rag_model_combo = QComboBox(grp_rag)
-        rag_model_combo.setMaxVisibleItems(12)
-        rag_model_combo.view().setMaximumHeight(280)
+        rag_model_combo = _ScrollableComboBox(grp_rag)
         for _label, _val in _RAG_MODELS:
             if _val is None:
                 _hdr = QStandardItem(f"  ── {_label} ──")
