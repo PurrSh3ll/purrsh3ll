@@ -368,32 +368,49 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
         # Run in background — timer loop prints elapsed time and any new >>> lines every 10s
-        info "Installing Ollama (this may take a few minutes)..."
+        # Up to 3 attempts in case of transient HTTP errors (e.g. 504)
         _ollama_log="/tmp/_purrsh3ll_ollama.log"
-        > "$_ollama_log"
-        bash -c 'curl -fsSL https://ollama.com/install.sh | sh' \
-            >"$_ollama_log" 2>&1 &
-        _ollama_pid=$! _elapsed=0 _log_pos=0
-        while kill -0 "$_ollama_pid" 2>/dev/null; do
-            sleep 10
-            _elapsed=$((_elapsed + 10))
-            # Print any new >>> lines that appeared since last check
-            _new=$(tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>") || true
-            _log_pos=$(wc -l < "$_ollama_log" 2>/dev/null || echo 0)
-            _pct=$(tr '\r' '\n' < "$_ollama_log" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+%' | tail -1) || true
-            if [[ -n "$_new" ]]; then
-                echo "$_new"
-            elif [[ -n "$_pct" ]]; then
-                echo -e "  ${CYAN}...${NC} downloading: ${_pct} (${_elapsed}s elapsed)"
+        _ollama_attempt=0 _ollama_ok=false
+        while [[ $_ollama_attempt -lt 3 ]] && [[ "$_ollama_ok" == false ]]; do
+            _ollama_attempt=$((_ollama_attempt + 1))
+            if [[ $_ollama_attempt -gt 1 ]]; then
+                warn "Retrying Ollama installation (attempt ${_ollama_attempt}/3)..."
+                sleep 5
+            fi
+            info "Installing Ollama (this may take a few minutes)..."
+            > "$_ollama_log"
+            bash -c 'curl -fsSL https://ollama.com/install.sh | sh' \
+                >"$_ollama_log" 2>&1 &
+            _ollama_pid=$! _elapsed=0 _log_pos=0
+            while kill -0 "$_ollama_pid" 2>/dev/null; do
+                sleep 10
+                _elapsed=$((_elapsed + 10))
+                # Print any new >>> lines that appeared since last check
+                _new=$(tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>") || true
+                _log_pos=$(wc -l < "$_ollama_log" 2>/dev/null || echo 0)
+                _pct=$(tr '\r' '\n' < "$_ollama_log" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+%' | tail -1) || true
+                if [[ -n "$_new" ]]; then
+                    echo "$_new"
+                elif [[ -n "$_pct" ]]; then
+                    echo -e "  ${CYAN}...${NC} downloading: ${_pct} (${_elapsed}s elapsed)"
+                else
+                    echo -e "  ${CYAN}...${NC} still installing (${_elapsed}s elapsed)"
+                fi
+            done
+            wait "$_ollama_pid" || true
+            cat "$_ollama_log" >> /tmp/_purrsh3ll_install.log
+            # Print any remaining >>> lines not yet shown
+            tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>" || true
+            # Check if a network error occurred (retry-able) or if install succeeded
+            if command -v ollama &>/dev/null; then
+                _ollama_ok=true
+            elif grep -qE "curl: \(22\)|HTTP error|504|503|502|500" "$_ollama_log" 2>/dev/null; then
+                warn "Network error during Ollama download — will retry..."
             else
-                echo -e "  ${CYAN}...${NC} still installing (${_elapsed}s elapsed)"
+                break  # non-network failure, no point retrying
             fi
         done
-        wait "$_ollama_pid" || true
-        cat "$_ollama_log" >> /tmp/_purrsh3ll_install.log
-        # Print any remaining >>> lines not yet shown
-        tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>" || true
-        if command -v ollama &>/dev/null; then
+        if [[ "$_ollama_ok" == true ]]; then
             OLLAMA_OK=true
             success "Ollama installed → $(command -v ollama)"
         else
@@ -424,6 +441,7 @@ fi
 if [[ "$INSTALL_DOCKER" == true ]]; then
     if command -v docker &>/dev/null; then
         success "Docker already installed ($(docker --version))"
+        DOCKER_OK=true
     else
         # DEBIAN_FRONTEND=noninteractive suppresses the interactive blue debconf screen
         # stderr goes to log, stdout filtered to meaningful apt/installer lines only
@@ -444,8 +462,9 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
                 | tee -a /tmp/_purrsh3ll_install.log \
                 || true
         fi
-        # check binary directly — command -v can miss freshly installed packages
-        if [ -x /usr/bin/docker ] || command -v docker &>/dev/null; then
+        # check binary or dpkg — command -v can miss freshly installed packages
+        if [ -x /usr/bin/docker ] || command -v docker &>/dev/null \
+                || dpkg -s docker.io 2>/dev/null | grep -q "Status: install ok installed"; then
             DOCKER_OK=true
             success "Docker packages installed"
 
