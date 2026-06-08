@@ -501,8 +501,27 @@ fi
 # ── Open WebUI Docker image ───────────────────────────────────────────────────
 
 if [[ "$INSTALL_OPENWEBUI" == true && "$DOCKER_OK" == true ]]; then
-    if run_with_spinner "Pulling Open WebUI Docker image..." \
-            sudo docker pull --quiet "$OPENWEBUI_IMAGE"; then
+    info "Pulling Open WebUI Docker image (this may take a few minutes)..."
+    _docker_log="/tmp/_purrsh3ll_docker_webui.log"
+    > "$_docker_log"
+    sudo docker pull "$OPENWEBUI_IMAGE" >"$_docker_log" 2>&1 &
+    _docker_pid=$! _elapsed=0
+    while kill -0 "$_docker_pid" 2>/dev/null; do
+        sleep 10
+        _elapsed=$((_elapsed + 10))
+        _layers=$(tr '\r' '\n' < "$_docker_log" 2>/dev/null \
+            | grep -cE "Pull complete|Already exists" 2>/dev/null) || _layers=0
+        if [[ "$_layers" -gt 0 ]]; then
+            echo -e "  ${CYAN}...${NC} ${_layers} layers done (${_elapsed}s elapsed)"
+        else
+            echo -e "  ${CYAN}...${NC} still pulling (${_elapsed}s elapsed)"
+        fi
+    done
+    _docker_exit=0
+    wait "$_docker_pid" || _docker_exit=$?
+    cat "$_docker_log" >> /tmp/_purrsh3ll_install.log
+    tr '\r' '\n' < "$_docker_log" 2>/dev/null | grep "^Status:" || true
+    if [[ $_docker_exit -eq 0 ]]; then
         OPENWEBUI_OK=true
         success "Open WebUI image ready"
     else
@@ -513,8 +532,27 @@ fi
 # ── WebMap Docker image ───────────────────────────────────────────────────────
 
 if [[ "$INSTALL_WEBMAP" == true && "$DOCKER_OK" == true ]]; then
-    if run_with_spinner "Pulling WebMap Docker image..." \
-            sudo docker pull --quiet "$WEBMAP_IMAGE"; then
+    info "Pulling WebMap Docker image (this may take a few minutes)..."
+    _docker_log="/tmp/_purrsh3ll_docker_webmap.log"
+    > "$_docker_log"
+    sudo docker pull "$WEBMAP_IMAGE" >"$_docker_log" 2>&1 &
+    _docker_pid=$! _elapsed=0
+    while kill -0 "$_docker_pid" 2>/dev/null; do
+        sleep 10
+        _elapsed=$((_elapsed + 10))
+        _layers=$(tr '\r' '\n' < "$_docker_log" 2>/dev/null \
+            | grep -cE "Pull complete|Already exists" 2>/dev/null) || _layers=0
+        if [[ "$_layers" -gt 0 ]]; then
+            echo -e "  ${CYAN}...${NC} ${_layers} layers done (${_elapsed}s elapsed)"
+        else
+            echo -e "  ${CYAN}...${NC} still pulling (${_elapsed}s elapsed)"
+        fi
+    done
+    _docker_exit=0
+    wait "$_docker_pid" || _docker_exit=$?
+    cat "$_docker_log" >> /tmp/_purrsh3ll_install.log
+    tr '\r' '\n' < "$_docker_log" 2>/dev/null | grep "^Status:" || true
+    if [[ $_docker_exit -eq 0 ]]; then
         WEBMAP_OK=true
         success "WebMap image ready"
     else
