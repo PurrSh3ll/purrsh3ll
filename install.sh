@@ -66,11 +66,11 @@ print_plan() {
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
     [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~10 MB  — git submodules)"       || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
-    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.3 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
+    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
     [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image     (~4.8 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  Open WebUI image                        (skipped)"
-    [[ "$INSTALL_WEBMAP"      == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image         (~200 MB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  WebMap image                            (skipped)"
+    [[ "$INSTALL_WEBMAP"      == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image         (~1.5 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  WebMap image                            (skipped)"
     [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model          (~220 MB — multilingual MiniLM)" || echo -e "    ${YELLOW}–${NC}  Embed model                             (skipped)"
     echo ""
 }
@@ -166,11 +166,11 @@ SPACE = toggle   |   ENTER = confirm" \
         22 68 8 \
         "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
         "skills"     "AI Skills       ~10 MB   (git submodules)"        ON \
-        "ollama"     "Ollama          ~1.3 GB  (LLM inference binary)"  ON \
+        "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "docker"     "Docker          ~300 MB  (container runtime)"     ON \
         "openwebui"  "Open WebUI      ~4.8 GB  (Docker image)"          ON \
-        "webmap"     "WebMap          ~200 MB  (Docker image)"          ON \
+        "webmap"     "WebMap          ~1.5 GB  (Docker image)"          ON \
         "embedmodel" "Embed model     ~220 MB  (multilingual MiniLM)"   ON \
         3>&1 1>&2 2>&3) || { echo ""; warn "Installation cancelled."; exit 0; }
 
@@ -604,11 +604,11 @@ _summary_row() {
 echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB)"
 _summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
 _summary_row "AI Skills           " "(~10 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
-_summary_row "Ollama              " "(~1.3 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
+_summary_row "Ollama              " "(~1.5 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
 _summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
 _summary_row "Docker              " "(~300 MB)" "$INSTALL_DOCKER"      "$DOCKER_OK"    "(skipped)"
 _summary_row "Open WebUI image    " "(~4.8 GB)" "$INSTALL_OPENWEBUI"   "$OPENWEBUI_OK" "(skipped)"
-_summary_row "WebMap image        " "(~200 MB)" "$INSTALL_WEBMAP"      "$WEBMAP_OK"    "(skipped)"
+_summary_row "WebMap image        " "(~1.5 GB)" "$INSTALL_WEBMAP"      "$WEBMAP_OK"    "(skipped)"
 _summary_row "Embedding model     " "(~220 MB)" "$INSTALL_EMBED_MODEL" "$EMBED_OK"     "(skipped — downloaded on first use)"
 
 echo ""
