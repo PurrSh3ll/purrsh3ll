@@ -379,7 +379,7 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
             sleep 10
             _elapsed=$((_elapsed + 10))
             # Print any new >>> lines that appeared since last check
-            _new=$(tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>")
+            _new=$(tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>") || true
             _log_pos=$(wc -l < "$_ollama_log" 2>/dev/null || echo 0)
             if [[ -n "$_new" ]]; then
                 echo "$_new"
