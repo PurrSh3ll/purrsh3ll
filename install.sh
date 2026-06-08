@@ -66,7 +66,7 @@ print_plan() {
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
     [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~10 MB  — git submodules)"       || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
-    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~500 MB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
+    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
     [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image     (~1.5 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  Open WebUI image                        (skipped)"
@@ -166,7 +166,7 @@ SPACE = toggle   |   ENTER = confirm" \
         22 68 8 \
         "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
         "skills"     "AI Skills       ~10 MB   (git submodules)"        ON \
-        "ollama"     "Ollama          ~500 MB  (LLM inference binary)"  ON \
+        "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "docker"     "Docker          ~300 MB  (container runtime)"     ON \
         "openwebui"  "Open WebUI      ~1.5 GB  (Docker image)"          ON \
@@ -545,7 +545,7 @@ _summary_row() {
 echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB)"
 _summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
 _summary_row "AI Skills           " "(~10 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
-_summary_row "Ollama              " "(~500 MB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
+_summary_row "Ollama              " "(~1.5 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
 _summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
 _summary_row "Docker              " "(~300 MB)" "$INSTALL_DOCKER"      "$DOCKER_OK"    "(skipped)"
 _summary_row "Open WebUI image    " "(~1.5 GB)" "$INSTALL_OPENWEBUI"   "$OPENWEBUI_OK" "(skipped)"
