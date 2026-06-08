@@ -448,7 +448,7 @@ if [[ "$INSTALL_DOCKER" == true ]]; then
         if grep -qi "kali" /etc/os-release 2>/dev/null; then
             info "Installing Docker (docker.io from apt)..."
             sudo DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true \
-                apt-get install -y --no-install-recommends docker.io \
+                apt-get install -y --no-install-recommends docker.io docker-cli \
                 2>>/tmp/_purrsh3ll_install.log \
                 | grep --line-buffered -E "^(Get:|Unpacking|Setting up|Preparing)" \
                 | grep --line-buffered -v "sudo:" \
