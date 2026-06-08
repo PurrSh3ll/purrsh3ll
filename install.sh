@@ -380,8 +380,11 @@ if [[ "$INSTALL_OLLAMA" == true ]]; then
             # Print any new >>> lines that appeared since last check
             _new=$(tail -n +$((_log_pos + 1)) "$_ollama_log" 2>/dev/null | grep -E "^>>>") || true
             _log_pos=$(wc -l < "$_ollama_log" 2>/dev/null || echo 0)
+            _pct=$(tr '\r' '\n' < "$_ollama_log" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+%' | tail -1) || true
             if [[ -n "$_new" ]]; then
                 echo "$_new"
+            elif [[ -n "$_pct" ]]; then
+                echo -e "  ${CYAN}...${NC} downloading: ${_pct} (${_elapsed}s elapsed)"
             else
                 echo -e "  ${CYAN}...${NC} still installing (${_elapsed}s elapsed)"
             fi
