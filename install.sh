@@ -326,7 +326,6 @@ fi
 # ── Embedding model (multilingual MiniLM) ────────────────────────────────────
 
 if [[ "$INSTALL_EMBED_MODEL" == true ]]; then
-    info "Downloading multilingual embedding model (~220 MB)..."
     EMBED_CACHE_DIR="$INSTALL_DIR/appdata/rag/models"
     mkdir -p "$EMBED_CACHE_DIR"
     if run_with_spinner "Downloading paraphrase-multilingual-MiniLM-L12-v2..." \
