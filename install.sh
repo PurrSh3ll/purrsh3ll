@@ -502,6 +502,7 @@ fi
 
 if [[ "$INSTALL_OPENWEBUI" == true && "$DOCKER_OK" == true ]]; then
     info "Pulling Open WebUI Docker image (this may take a few minutes)..."
+    sudo -v 2>/dev/null || true  # refresh sudo timestamp before long pull
     _docker_log="/tmp/_purrsh3ll_docker_webui.log"
     > "$_docker_log"
     sudo docker pull "$OPENWEBUI_IMAGE" >"$_docker_log" 2>&1 &
@@ -511,7 +512,14 @@ if [[ "$INSTALL_OPENWEBUI" == true && "$DOCKER_OK" == true ]]; then
         _elapsed=$((_elapsed + 10))
         _layers=$(tr '\r' '\n' < "$_docker_log" 2>/dev/null \
             | grep -cE "Pull complete|Already exists" 2>/dev/null) || _layers=0
-        if [[ "$_layers" -gt 0 ]]; then
+        _download=$(tr '\r' '\n' < "$_docker_log" 2>/dev/null \
+            | grep "Downloading" | tail -1 \
+            | grep -oE '[0-9]+(\.[0-9]+)?(kB|MB|GB)/[0-9]+(\.[0-9]+)?(kB|MB|GB)') || _download=""
+        if [[ -n "$_download" && "$_layers" -gt 0 ]]; then
+            echo -e "  ${CYAN}...${NC} downloading: ${_download} — ${_layers} layers done (${_elapsed}s elapsed)"
+        elif [[ -n "$_download" ]]; then
+            echo -e "  ${CYAN}...${NC} downloading: ${_download} (${_elapsed}s elapsed)"
+        elif [[ "$_layers" -gt 0 ]]; then
             echo -e "  ${CYAN}...${NC} ${_layers} layers done (${_elapsed}s elapsed)"
         else
             echo -e "  ${CYAN}...${NC} still pulling (${_elapsed}s elapsed)"
@@ -533,6 +541,7 @@ fi
 
 if [[ "$INSTALL_WEBMAP" == true && "$DOCKER_OK" == true ]]; then
     info "Pulling WebMap Docker image (this may take a few minutes)..."
+    sudo -v 2>/dev/null || true  # refresh sudo timestamp before long pull
     _docker_log="/tmp/_purrsh3ll_docker_webmap.log"
     > "$_docker_log"
     sudo docker pull "$WEBMAP_IMAGE" >"$_docker_log" 2>&1 &
@@ -542,7 +551,14 @@ if [[ "$INSTALL_WEBMAP" == true && "$DOCKER_OK" == true ]]; then
         _elapsed=$((_elapsed + 10))
         _layers=$(tr '\r' '\n' < "$_docker_log" 2>/dev/null \
             | grep -cE "Pull complete|Already exists" 2>/dev/null) || _layers=0
-        if [[ "$_layers" -gt 0 ]]; then
+        _download=$(tr '\r' '\n' < "$_docker_log" 2>/dev/null \
+            | grep "Downloading" | tail -1 \
+            | grep -oE '[0-9]+(\.[0-9]+)?(kB|MB|GB)/[0-9]+(\.[0-9]+)?(kB|MB|GB)') || _download=""
+        if [[ -n "$_download" && "$_layers" -gt 0 ]]; then
+            echo -e "  ${CYAN}...${NC} downloading: ${_download} — ${_layers} layers done (${_elapsed}s elapsed)"
+        elif [[ -n "$_download" ]]; then
+            echo -e "  ${CYAN}...${NC} downloading: ${_download} (${_elapsed}s elapsed)"
+        elif [[ "$_layers" -gt 0 ]]; then
             echo -e "  ${CYAN}...${NC} ${_layers} layers done (${_elapsed}s elapsed)"
         else
             echo -e "  ${CYAN}...${NC} still pulling (${_elapsed}s elapsed)"
