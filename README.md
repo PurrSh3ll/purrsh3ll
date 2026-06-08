@@ -124,9 +124,9 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 
 - **OS:** Kali Linux (recommended), Debian/Ubuntu
 - **Python:** 3.10+
-- **Qt:** PyQt6 + QTermWidget
-- **Optional:** Ollama (for local LLM), Docker (for Open WebUI / WebMap)
-- **Optional (voice):** microphone, `portaudio`
+- **Voice (optional hardware):** microphone
+
+All other dependencies (PyQt6, QTermWidget, Ollama, Docker, etc.) are installed by `install.sh`.
 
 **RAM usage:**
 
@@ -134,6 +134,8 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 |---------------|-----|
 | App only (idle to multiple tabs + browser) | 200 MB – 1 GB |
 | + RAG embedding model (during indexing) | +90 MB – 2.3 GB (depends on model) |
+| + RAG reranking model (during reranking) | +100 – 400 MB (depends on model) |
+| + Voice (during recognition) | +300 – 600 MB |
 | + Open WebUI (Docker) | +500 MB – 1 GB |
 | + WebMap (Docker) | +200 – 400 MB |
 | Full stack with a large LLM model (~8B) | ~12 GB+ |
