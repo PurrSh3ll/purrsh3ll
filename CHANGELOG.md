@@ -25,7 +25,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Active AI profile combo**: tooltip on hover shows provider and model of the selected profile
 - **Active AI profile combo**: per-item tooltip in dropdown shows provider and model for each profile
 - **ps* tools**: all CLI tools (`pscmd`, `psfix`, `psnext`, `psreport`, `pstldr`, `psview`) now show `Querying {model} via {provider}…` before each request, consistent with `psask`/`pschat`
-- **ps* tools**: `-m` flag now accepts a saved **profile name** instead of a raw model name — switches the full profile (provider, URL, API key, model); unknown name prints available profiles and exits
+- **ps* tools**: `-m` flag now accepts a saved **profile name** instead of a raw model name — switches the full profile (provider, URL, API key, model); unknown name shows a concise error pointing to AI Settings
 
 ### Fixed
 
