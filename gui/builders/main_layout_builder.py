@@ -907,6 +907,12 @@ def build_main_layout(main_window):
                 _profiles_cache.extend(prov.get("profiles", []))
                 for p in _profiles_cache:
                     combo.addItem(p["name"], p["name"])
+                    idx = combo.count() - 1
+                    provider = p.get("provider", "—")
+                    model = p.get("model", "—")
+                    combo.setItemData(idx,
+                        f"Provider:  {provider}\nModel:     {model}",
+                        Qt.ItemDataRole.ToolTipRole)
                 idx = combo.findData(active)
                 combo.setCurrentIndex(max(0, idx))
             except Exception:
