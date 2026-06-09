@@ -25,7 +25,7 @@ Usage:
   psask [options] <query>
 
 Options:
-  -m MODEL      Model override (default: from active profile)
+  -m PROFILE    Use a specific saved profile by name
   --host URL    Base URL override
   --rag         Enrich prompt with RAG knowledge base context
   -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)
@@ -33,7 +33,7 @@ Options:
 
 Examples:
   psask "what is XSS?"
-  psask -m gpt-4o "explain SQL injection"
+  psask -m openai-gpt4o "explain SQL injection"
   psask --rag "how to enumerate subdomains"
 EOF
         return 0
@@ -54,7 +54,7 @@ Usage:
   pschat --new [message]     Clear history, optionally send first message
 
 Options:
-  -m MODEL      Model override (default: from active profile)
+  -m PROFILE    Use a specific saved profile by name
   --host URL    Base URL override
   --rag         Enrich current message with RAG knowledge base context
   -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)

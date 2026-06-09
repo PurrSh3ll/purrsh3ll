@@ -9,7 +9,7 @@ Usage:
   psview <image> "<question>"         Ask a specific question about the image
   psview <image> --cmd                Analyze and paste best command (image only, y/n)
   psview <image> --next               Analyze and suggest next steps (full history, y/n)
-  psview -m <model> <image>           Use a specific model
+  psview -m <profile> <image>         Use a specific saved profile
 
 Supported formats: PNG, JPG, JPEG, WebP, GIF
 

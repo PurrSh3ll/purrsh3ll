@@ -9,7 +9,7 @@ Usage:
   pstldr --tail <file>     Summarize a file (last part if truncated, useful for logs)
   pstldr "<text>"          Summarize text passed directly
   cat file | pstldr        Summarize piped input
-  pstldr -m <model> <file> Use a specific model
+  pstldr -m <profile> <file> Use a specific saved profile
 EOF
         return 0
     fi

@@ -9,7 +9,7 @@ Usage:
 
 Options:
   -n N             Number of context chunks to retrieve  (default: 5)
-  -m MODEL         Model to use  (default: from active API profile)
+  -m PROFILE       Use a specific saved profile by name
   --host URL       Provider host/base URL override
   --show-sources   Print source filenames and scores before the answer
   -h, --help       Show this help
@@ -17,7 +17,7 @@ Options:
 Examples:
   psrag "what is XSS?"
   psrag -n 3 --show-sources "how to enumerate subdomains"
-  psrag -m llama3.2 "explain SQL injection"
+  psrag -m my-ollama "explain SQL injection"
   psrag --host http://192.168.1.10:11434 "query"
 EOF
         return 0

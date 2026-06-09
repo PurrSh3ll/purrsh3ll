@@ -7,7 +7,9 @@ psnext — AI pentest next-step advisor
 Usage:
   psnext                          Suggest next steps based on terminal history
   psnext --target <host/network>  Include target context in analysis
-  psnext -m <model>               Use a specific model
+  psnext --rag                    Enrich with knowledge base context
+  psnext --rag -n 8               Use 8 RAG chunks
+  psnext -m <profile>             Use a specific saved profile
 
 psnext reads the terminal session history and uses AI to summarize what
 has been done, identify gaps, and suggest the most promising next moves.

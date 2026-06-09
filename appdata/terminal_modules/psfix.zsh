@@ -8,7 +8,7 @@ Usage:
   psfix                  Paste the corrected command at the prompt (ready to run)
   psfix --explain        Explain why the last command failed
   psfix --analyze        Deep analysis using terminal history and working directory
-  psfix -m <model>       Use a specific model
+  psfix -m <profile>     Use a specific saved profile
 
 psfix reads the last command from terminal history automatically.
 Triggered via the ⚠ Explain / 🔧 Fix / 🔍 Analyze overlay buttons
