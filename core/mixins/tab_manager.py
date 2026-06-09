@@ -165,18 +165,17 @@ class TabManagerMixin:
             else:
                 token = self.files_category.get(extension, "__unsupported_file")
                 icon_token = None
+                file_class_name = None
                 if extension == "py":
                     icon_token = "__python_file.png"
+                    file_class_name = "Python_file"
                 elif extension == "purr":
-                    stem = os.path.splitext(os.path.basename(file))[0].lower()
-                    if stem == "psc2":
-                        token = "__psc2_file"
-                        icon_token = "__purr_file.png"
-                    elif stem != "psnmap":
-                        token = "__unsupported_file"
+                    icon_token = "__purr_file.png"
+                    file_class_name = "Text_file"
                 if icon_token is None:
                     icon_token = token if token.endswith(".png") else f"{token}.png"
-                file_class_name = token[2:].capitalize() if token.startswith("__") else token.capitalize()
+                if file_class_name is None:
+                    file_class_name = token[2:].capitalize() if token.startswith("__") else token.capitalize()
         else:
             token = self.files_category.get(extension, "__unsupported_file")
             icon_token = token if token.endswith(".png") else f"{token}.png"

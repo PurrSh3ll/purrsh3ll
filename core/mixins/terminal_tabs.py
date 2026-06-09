@@ -42,7 +42,7 @@ class TerminalTabsMixin:
             try:
                 payload = json.loads(m.group(1))
                 filepath = payload.get("file")
-                mode = payload.get("mode") or None
+                mode = payload.get("mode") or "Default"
                 if filepath:
                     self.open_new_tab_for_terminal(file=filepath, mode=mode)
             except Exception:
