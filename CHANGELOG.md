@@ -19,6 +19,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Installer**: `docker-cli` added to apt install — provides `/usr/bin/docker` binary on Kali (previously only daemon was installed)
 - **Installer**: `DOCKER_OK` now set when Docker is already installed on re-run
 - **Installer**: `dpkg -s docker.io` used as fallback check when `command -v docker` misses freshly installed binary
+- **Installer**: interactive whiptail checklist installer replacing `install.sh` and `install_full.sh` — optional components selectable per run (Ollama, aichat, Docker, Open WebUI, WebMap, Voice, AI Skills, embedding model)
+- **Installer**: optional multilingual embedding model download (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) selectable during install; downloaded once and reused on every RAG use
 - **Settings → Agent run command**: pre-filled with `claude --dangerously-skip-permissions` after fresh install
 - **README**: Requirements section simplified — only OS, Python and microphone listed; all other dependencies noted as installed by `install.sh`
 - **README**: RAM usage table extended with RAG reranking model (`+100–400 MB during reranking`) and Voice (`+300–600 MB during recognition`) rows
@@ -26,18 +28,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Active AI profile combo**: per-item tooltip in dropdown shows provider and model for each profile
 - **ps* tools**: all CLI tools (`pscmd`, `psfix`, `psnext`, `psreport`, `pstldr`, `psview`) now show `Querying {model} via {provider}…` before each request, consistent with `psask`/`pschat`
 - **ps* tools**: `-m` flag now accepts a saved **profile name** instead of a raw model name — switches the full profile (provider, URL, API key, model); unknown name shows a concise error pointing to AI Settings
+- **ps* tools**: help text in all zsh wrappers updated — `-m <model>` → `-m <profile>` across all tools; `psnext.zsh` extended with `--rag` and `-n` options
 - **psnext**: `--rag` flag enriches next-step suggestions with knowledge base context; `-n N` controls chunk count (default 5); RAG query derived from `--target` or last history command
 - **psask / pschat**: `--rag` now respects the re-ranking setting from AI Settings — fetches a candidate pool (`max(20, n)`), applies cross-encoder re-ranker, then trims to `-n` best chunks
-
-### Fixed
-
-- **Terminal**: `Ctrl+Shift+V` (paste) no longer crashes the application when focus is in a file editor window — `TypeError` from `QScrollArea.parent()` traversal now caught and handled gracefully
-- **Installer**: duplicate info line before embedding model spinner removed
-- **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
-- **Themes**: default theme reset to `default` — was incorrectly committed as `Red Team`
-- **Ollama**: `"think"` field no longer sent when `disable_thinking` is off — omitting it lets thinking-capable models use their default behavior, and prevents HTTP 400 errors on models that don't support thinking
-- **psopen**: files now open in the correct viewer based on extension (`.md` → Markdown, `.html` → HTML, `.pdf` → PDF viewer, audio/video → media player) — previously all files landed in the unsupported-file fallback due to `mode=null` overriding the `"Default"` parameter; `.py` opens as code viewer (`Python_file`), `.purr` opens as plain text
-
 - **AI Settings → AI/LLM**: new checkbox "Clear pschat history on exit" — when enabled, all `appdata/chat_sessions/*.json` files are deleted on application close; default on
 - **Behavior dialog — Context limit**: added "Default" reset button next to the spinbox — resets value to 0 (provider default) in one click
 - **Behavior dialog — Context limit**: added ⓘ info button with tooltip and clickable dialog explaining the context limit field
@@ -52,8 +45,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **File viewer**: PDF files rendered with page navigation
 - **RAG**: PDF files now indexed and searchable in the knowledge base
 - **File viewer**: audio and video files playable directly in the app
-- **Installer**: interactive whiptail checklist installer replacing `install.sh` and `install_full.sh` — optional components selectable per run (Ollama, aichat, Docker, Open WebUI, WebMap, Voice, AI Skills, embedding model)
-- **Installer**: optional multilingual embedding model download (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) selectable during install; downloaded once and reused on every RAG use
 - **AI Settings → RAG tab**: reorganized into four named sections — Knowledge, Embedding, Re-ranking, Downloaded models
 - **AI Settings → RAG tab**: ℹ info button in Embedding and Re-ranking sections — click opens popup with guidance on model selection, language support, and RAM usage; hover shows a short warning tooltip
 - **AI Settings → RAG tab**: tooltips on individual embedding and reranker combo items — describe supported languages, model size, and use case
@@ -64,6 +55,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Terminal**: `Ctrl+Shift+V` (paste) no longer crashes the application when focus is in a file editor window — `TypeError` from `QScrollArea.parent()` traversal now caught and handled gracefully
+- **Installer**: duplicate info line before embedding model spinner removed
+- **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
+- **Themes**: default theme reset to `default` — was incorrectly committed as `Red Team`
+- **Ollama**: `"think"` field no longer sent when `disable_thinking` is off — omitting it lets thinking-capable models use their default behavior, and prevents HTTP 400 errors on models that don't support thinking
+- **psopen**: files now open in the correct viewer based on extension (`.md` → Markdown, `.html` → HTML, `.pdf` → PDF viewer, audio/video → media player) — previously all files landed in the unsupported-file fallback due to `mode=null` overriding the `"Default"` parameter; `.py` opens as code viewer (`Python_file`), `.purr` opens as plain text
+- **psfix**: system info (`System: Linux …`) added to `--explain` and default fix mode prompts — was only present in `--analyze` mode
 - **psai ask / chat**: `KeyboardInterrupt` (Ctrl+C) now exits cleanly with code 130 and resets ANSI dim style if interrupted during thinking output — no traceback printed; all three streaming paths covered (`_stream_ollama_native`, `_stream_openai_compat`, `_stream_anthropic`) plus top-level `main()` handler
 - **psai ask / chat**: thinking process was always disabled — `think` flag must be at the **top level** of the request body, not inside `options`; fixed for Ollama native endpoint
 - **psai ask / chat**: `disable_thinking` in Behavior now correctly suppresses thinking output — switched Ollama calls to native `/api/chat` endpoint (`_stream_ollama_native`) which correctly honors `think: false`; `/v1/chat/completions` ignored the flag for this model family
