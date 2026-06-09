@@ -169,8 +169,8 @@ def main():
                         help="After analysis, ask y/n to paste the best command (image only, no history)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
+                        help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -182,7 +182,7 @@ def main():
             "  psview <image> \"<question>\"         Ask a specific question about the image\n"
             "  psview <image> --cmd                Analyze and paste best command (image only)\n"
             "  psview <image> --next               Analyze and suggest next steps (full history)\n"
-            "  psview -m <model> <image>           Use a specific model\n\n"
+            "  psview -m <profile> <image>         Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
             "The analysis is saved to terminal history so psnext/psreport can use it.\n"
@@ -198,15 +198,16 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.model)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.model:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key          = _ai._load_api_key(profile.get("name", ""), base_dir)
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     ctx_tokens       = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)

@@ -269,8 +269,8 @@ def main():
                         help="Map-Reduce mode: chunk entire history for thorough analysis")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
+                        help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -285,7 +285,7 @@ def main():
             "  psreport --format html                Generate HTML report instead of Markdown\n"
             "  psreport --target 192.168.1.0/24      Set target in report header\n"
             "  psreport --title \"Internal Pentest\"    Set custom report title\n"
-            "  psreport -m <model>                   Use a specific model\n\n"
+            "  psreport -m <profile>                 Use a specific saved profile\n\n"
             "Report is saved to appmodules/Cyb3rCollector/reports/\n"
         )
         sys.exit(0)
@@ -298,15 +298,16 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.model)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.model:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key          = _ai._load_api_key(profile.get("name", ""), base_dir)
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 

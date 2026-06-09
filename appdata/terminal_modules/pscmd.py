@@ -63,8 +63,8 @@ def main():
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR",
                         help="Current working directory (for context)")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
+                        help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -72,13 +72,13 @@ def main():
         print(
             "pscmd — AI-powered shell command generator\n\n"
             "Usage:\n"
-            "  pscmd <description>            Generate a shell command from description\n"
-            "  pscmd -m <model> <description> Use a specific model\n\n"
+            "  pscmd <description>              Generate a shell command from description\n"
+            "  pscmd -m <profile> <description> Use a specific saved profile\n\n"
             "Examples:\n"
             "  pscmd list all open ports\n"
             "  pscmd find files modified in the last 24 hours\n"
             "  pscmd kill process using port 8080\n"
-            "  pscmd -m gpt-4o list all open ports\n"
+            "  pscmd -m openai-gpt4o list all open ports\n"
         )
         sys.exit(0)
 
@@ -91,15 +91,16 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.model)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.model:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key          = _ai._load_api_key(profile.get("name", ""), base_dir)
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 

@@ -64,6 +64,22 @@ def _active_profile(config: dict) -> dict:
     return {}
 
 
+def _resolve_profile(config: dict, profile_arg: str | None) -> dict:
+    """Return the profile matching profile_arg by name, or the active profile if None."""
+    if not profile_arg:
+        return _active_profile(config)
+    all_profiles = config.get("api_providers", {}).get("profiles", [])
+    for p in all_profiles:
+        if p.get("name") == profile_arg:
+            return p
+    names = [p.get("name", "") for p in all_profiles if p.get("name")]
+    if names:
+        _err(f"Profile \"{profile_arg}\" not found.\nAvailable profiles: {', '.join(names)}")
+    else:
+        _err(f"Profile \"{profile_arg}\" not found. No profiles configured.")
+    return {}
+
+
 # ── RAG pipeline ──────────────────────────────────────────────────────────────
 
 def _load_embedding_model(model_name: str, cache_dir: str):
@@ -520,7 +536,7 @@ def main():
     parser = argparse.ArgumentParser(prog="psrag", add_help=False)
     parser.add_argument("query",           nargs="+")
     parser.add_argument("-n",              type=int, default=5, metavar="N", dest="top_n")
-    parser.add_argument("-m", "--model",   default=None, metavar="MODEL")
+    parser.add_argument("-m", "--model",   default=None, metavar="PROFILE")
     parser.add_argument("--host",          default="", metavar="URL",
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
     parser.add_argument("--show-sources",  action="store_true")
@@ -534,14 +550,14 @@ def main():
             "Usage: psrag [options] <query>\n\n"
             "Options:\n"
             "  -n N             Context chunks to retrieve (default: 5)\n"
-            "  -m MODEL         Model override (default: from active API profile)\n"
+            "  -m PROFILE       Use a specific saved profile by name\n"
             "  --host URL       Provider host/base URL override\n"
             "  --show-sources   Print source files and scores before answer\n"
             "  -h, --help       Show this help\n\n"
             "Examples:\n"
             '  psrag "what is XSS?"\n'
             '  psrag -n 3 --show-sources "how to enumerate subdomains"\n'
-            '  psrag -m llama3.2 "explain SQL injection"\n'
+            '  psrag -m my-ollama "explain SQL injection"\n'
             '  psrag --host http://192.168.1.10:11434 "query"'
         )
         sys.exit(0)
@@ -553,18 +569,19 @@ def main():
 
     config            = _load_config(base_dir)
     llama_cfg         = config.get("llama", {})
-    profile           = _active_profile(config)
+    profile           = _resolve_profile(config, args.model)
 
-    if not profile and not args.model:
-        _err(
-            "No active API profile configured.\n"
-            "Go to AI Settings > API Providers and set an active profile,\n"
-            "or pass a model directly with:  psrag -m <model> <query>"
-        )
+    if not profile:
+        if not args.model:
+            _err(
+                "No active API profile configured.\n"
+                "Go to AI Settings > API Providers and set an active profile,\n"
+                "or pass a profile name with:  psrag -m <profile> <query>"
+            )
         sys.exit(1)
 
     provider          = profile.get("provider", "ollama")
-    model             = args.model or profile.get("model", "")
+    model             = profile.get("model", "")
     if not model:
         _err(
             f"Active profile \"{profile.get('name', '?')}\" has no model configured.\n"

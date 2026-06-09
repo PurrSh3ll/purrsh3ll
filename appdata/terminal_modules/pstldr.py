@@ -39,8 +39,8 @@ def main():
     parser.add_argument("--tail",     action="store_true",
                         help="Take the last part of the file instead of the first (useful for logs)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
+                        help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -52,7 +52,7 @@ def main():
             "  pstldr --tail <file>     Summarize a file (last part if truncated)\n"
             "  pstldr \"<text>\"          Summarize text passed directly\n"
             "  cat file | pstldr        Summarize piped input\n"
-            "  pstldr -m <model> <file> Use a specific model\n"
+            "  pstldr -m <profile> <file> Use a specific saved profile\n"
         )
         sys.exit(0)
 
@@ -64,15 +64,16 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.model)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.model:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key          = _ai._load_api_key(profile.get("name", ""), base_dir)
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 

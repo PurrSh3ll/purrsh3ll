@@ -133,6 +133,22 @@ def _active_profile(config: dict) -> dict:
     return {}
 
 
+def _resolve_profile(config: dict, profile_arg: str | None) -> dict:
+    """Return the profile matching profile_arg by name, or the active profile if None."""
+    if not profile_arg:
+        return _active_profile(config)
+    all_profiles = config.get("api_providers", {}).get("profiles", [])
+    for p in all_profiles:
+        if p.get("name") == profile_arg:
+            return p
+    names = [p.get("name", "") for p in all_profiles if p.get("name")]
+    if names:
+        _err(f"Profile \"{profile_arg}\" not found.\nAvailable profiles: {', '.join(names)}")
+    else:
+        _err(f"Profile \"{profile_arg}\" not found. No profiles configured.")
+    return {}
+
+
 def _load_api_key(profile_name: str, base_dir: str) -> str:
     try:
         import keyring
@@ -441,7 +457,7 @@ def _clear_session(base_dir: str, profile_name: str):
 # ── Mode: ask ─────────────────────────────────────────────────────────────────
 
 def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
-    model    = args.model or profile.get("model", "")
+    model    = profile.get("model", "")
     provider = profile.get("provider", "ollama")
     url      = args.host or profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
 
@@ -473,7 +489,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
 # ── Mode: chat ────────────────────────────────────────────────────────────────
 
 def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
-    model    = args.model or profile.get("model", "")
+    model    = profile.get("model", "")
     provider = profile.get("provider", "ollama")
     url      = args.host or profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
     name     = profile.get("name", "default")
@@ -549,7 +565,7 @@ def main():
     parser = argparse.ArgumentParser(prog="psai", add_help=False)
     parser.add_argument("mode",    nargs="?", default="ask", choices=["ask", "chat"])
     parser.add_argument("query",   nargs="*")
-    parser.add_argument("-m", "--model",  default=None, metavar="MODEL")
+    parser.add_argument("-m", "--model",  default=None, metavar="PROFILE")
     parser.add_argument("--host",         default="", metavar="URL")
     parser.add_argument("--new",          action="store_true", help="Clear chat history (chat mode)")
     parser.add_argument("--clear",        action="store_true", help="Clear chat history and exit (chat mode)")
@@ -577,14 +593,15 @@ def main():
     )
 
     config  = _load_config(base_dir)
-    profile = _active_profile(config)
+    profile = _resolve_profile(config, args.model)
 
-    if not profile and not args.model:
-        _err(
-            "No active API profile configured.\n"
-            "Go to AI Settings > API Providers and set an active profile,\n"
-            "or pass a model with:  psai ask -m <model> <query>"
-        )
+    if not profile:
+        if not args.model:
+            _err(
+                "No active API profile configured.\n"
+                "Go to AI Settings > API Providers and set an active profile,\n"
+                "or pass a profile name with:  psai ask -m <profile> <query>"
+            )
         sys.exit(1)
 
     api_key = _load_api_key(profile.get("name", ""), base_dir) if profile.get("name") else ""

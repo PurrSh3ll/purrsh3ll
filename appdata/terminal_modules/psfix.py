@@ -125,8 +125,8 @@ def main():
     parser.add_argument("--cmd",        default=None, metavar="CMD")
     parser.add_argument("--exit-code",  default=None, type=int, metavar="N")
     parser.add_argument("--output",     default=None, metavar="OUTPUT")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
+                        help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -137,7 +137,7 @@ def main():
             "  psfix                  Paste the corrected command at the prompt\n"
             "  psfix --explain        Explain why the last command failed\n"
             "  psfix --analyze        Deep analysis with terminal history and cwd context\n"
-            "  psfix -m <model>       Use a specific model\n\n"
+            "  psfix -m <profile>     Use a specific saved profile\n\n"
             "psfix reads the last entry from terminal history automatically.\n"
         )
         sys.exit(0)
@@ -151,9 +151,10 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.model)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.model:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key = _ai._load_api_key(profile.get("name", ""), base_dir)
@@ -178,7 +179,7 @@ def main():
 
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     ctx_tokens       = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
