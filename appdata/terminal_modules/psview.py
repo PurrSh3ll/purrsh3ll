@@ -244,7 +244,8 @@ def main():
     messages = _build_messages(b64, media_type, cmd_question, provider)
 
     # ── Stream analysis ────────────────────────────────────────────────────────
-    _ai._info(f"Analyzing {filename} with {model}...\n")
+    _ai._info(f"Querying {model} via {provider}…\n")
+    _ai._info(f"Analyzing {filename}...\n")
 
     stream_to_stderr = args.next or args.cmd
     if stream_to_stderr:

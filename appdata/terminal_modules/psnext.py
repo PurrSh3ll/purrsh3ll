@@ -166,6 +166,7 @@ def main():
         "— no prefix, no explanation, no backticks, just the raw command."
     )
 
+    _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info("Analyzing terminal history for next pentest steps...\n")
     messages = [{"role": "user", "content": prompt}]
 

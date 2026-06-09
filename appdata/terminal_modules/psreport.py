@@ -464,6 +464,7 @@ def main():
             f"Do not invent findings.\n\n{template}"
         )
 
+        _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info("Generating report...\n")
         messages = [{"role": "user", "content": prompt}]
         response = _llm(messages, verbose=args.verbose)

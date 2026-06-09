@@ -206,6 +206,7 @@ def main():
             "At the very end, on a new line, write ONLY the corrected command "
             "with no prefix, no explanation, no backticks — just the raw command."
         )
+        _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Analyzing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
@@ -235,6 +236,7 @@ def main():
             "At the very end, on a new line, write ONLY the corrected command "
             "with no prefix, no explanation, no backticks — just the raw command."
         )
+        _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Explaining: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
@@ -261,6 +263,7 @@ def main():
             "\nReturn ONLY the corrected shell command. "
             "No explanation, no markdown, no backticks — just the raw command on a single line."
         )
+        _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Fixing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 

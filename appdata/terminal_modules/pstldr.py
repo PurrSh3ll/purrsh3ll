@@ -136,6 +136,7 @@ def main():
         f"{content}"
     )
 
+    _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info(f"Summarizing {source_label}...\n")
     messages = [{"role": "user", "content": prompt}]
     _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
