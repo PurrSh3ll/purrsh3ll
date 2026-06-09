@@ -10,6 +10,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Installer**: Ollama install retries up to 3 times on transient HTTP errors (504, 503, 502)
+- **Installer**: timer loop shows download percentage during Ollama install (`downloading: 42.3% (30s elapsed)`)
+- **Installer**: Docker image pulls show layer progress with total count (`8/47 layers done`) and download bytes per active layer
+- **Installer**: `sudo -v` refresh before each Docker image pull to prevent sudo password prompt mid-output
+- **Installer**: apt progress now visible during system dependencies install (`Get:`, `Unpacking`, `Setting up`)
+- **Installer**: pip package names visible during Python packages install (`Collecting`, `Downloading`, `Successfully installed`)
+- **Installer**: `docker-cli` added to apt install — provides `/usr/bin/docker` binary on Kali (previously only daemon was installed)
+- **Installer**: `DOCKER_OK` now set when Docker is already installed on re-run
+- **Installer**: `dpkg -s docker.io` used as fallback check when `command -v docker` misses freshly installed binary
+- **Settings → Agent run command**: pre-filled with `claude --dangerously-skip-permissions` after fresh install
+- **README**: Requirements section simplified — only OS, Python and microphone listed; all other dependencies noted as installed by `install.sh`
+- **README**: RAM usage table extended with RAG reranking model (`+100–400 MB during reranking`) and Voice (`+300–600 MB during recognition`) rows
+
+### Fixed
+
+- **Terminal**: `Ctrl+Shift+V` (paste) no longer crashes the application when focus is in a file editor window — `TypeError` from `QScrollArea.parent()` traversal now caught and handled gracefully
+- **Installer**: duplicate info line before embedding model spinner removed
+- **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
+- **Themes**: default theme reset to `default` — was incorrectly committed as `Red Team`
+
 - **AI Settings → AI/LLM**: new checkbox "Clear pschat history on exit" — when enabled, all `appdata/chat_sessions/*.json` files are deleted on application close; default on
 - **Behavior dialog — Context limit**: added "Default" reset button next to the spinbox — resets value to 0 (provider default) in one click
 - **Behavior dialog — Context limit**: added ⓘ info button with tooltip and clickable dialog explaining the context limit field
