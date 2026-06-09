@@ -27,7 +27,7 @@
   },
   "llama": {
     "llm_cli_path": "aichat",
-    "logs_terminal_cmd": "",
+    "logs_terminal_cmd": "claude --dangerously-skip-permissions",
     "agent_role": "none",
     "skills_set": "default",
     "clear_chat_history_on_exit": true
