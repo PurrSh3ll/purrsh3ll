@@ -141,11 +141,7 @@ def _resolve_profile(config: dict, profile_arg: str | None) -> dict:
     for p in all_profiles:
         if p.get("name") == profile_arg:
             return p
-    names = [p.get("name", "") for p in all_profiles if p.get("name")]
-    if names:
-        _err(f"Profile \"{profile_arg}\" not found.\nAvailable profiles: {', '.join(names)}")
-    else:
-        _err(f"Profile \"{profile_arg}\" not found. No profiles configured.")
+    _err(f"Profile \"{profile_arg}\" not found. Check your profiles in AI Settings → API Providers.")
     return {}
 
 
