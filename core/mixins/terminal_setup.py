@@ -39,7 +39,10 @@ class TerminalSetupMixin:
             while w is not None:
                 if isinstance(w, QTermWidget):
                     return w
-                w = w.parent()
+                try:
+                    w = w.parent()
+                except TypeError:
+                    break
 
         # Fallback: primary terminal for this tab
         term = self.wrapper_to_console.get(widget)
