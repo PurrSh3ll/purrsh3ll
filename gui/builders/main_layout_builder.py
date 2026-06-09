@@ -876,6 +876,25 @@ def build_main_layout(main_window):
         _api_profiles_path = getattr(c, "api_profiles_path",
             os.path.join(getattr(c, "base_path", ""), "appdata", "api_profiles.json"))
 
+        _profiles_cache = []
+
+        def _update_tooltip():
+            name = combo.currentData() or ""
+            if not name:
+                combo.setToolTip("Active AI profile — used by psai tools and AI chat")
+                return
+            for p in _profiles_cache:
+                if p.get("name") == name:
+                    provider = p.get("provider", "—")
+                    model = p.get("model", "—")
+                    combo.setToolTip(
+                        f"Active AI profile — used by psai tools and AI chat\n"
+                        f"Provider:  {provider}\n"
+                        f"Model:     {model}"
+                    )
+                    return
+            combo.setToolTip("Active AI profile — used by psai tools and AI chat")
+
         def _reload(keep=None):
             combo.blockSignals(True)
             combo.clear()
@@ -884,16 +903,20 @@ def build_main_layout(main_window):
                 with open(_api_profiles_path, "r", encoding="utf-8") as f:
                     prov = json.load(f)
                 active = keep if keep is not None else prov.get("active", "")
-                for p in prov.get("profiles", []):
+                _profiles_cache.clear()
+                _profiles_cache.extend(prov.get("profiles", []))
+                for p in _profiles_cache:
                     combo.addItem(p["name"], p["name"])
                 idx = combo.findData(active)
                 combo.setCurrentIndex(max(0, idx))
             except Exception:
                 pass
             combo.blockSignals(False)
+            _update_tooltip()
 
         def _on_changed():
             name = combo.currentData() or ""
+            _update_tooltip()
             # save to api_profiles.json
             try:
                 with open(_api_profiles_path, "r", encoding="utf-8") as f:
