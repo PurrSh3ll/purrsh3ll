@@ -198,7 +198,7 @@ fi
 
 # ── System dependencies ───────────────────────────────────────────────────────
 
-info "Installing system dependencies..."
+info "Updating package lists..."
 
 APT_PACKAGES=(
     # Qt6 runtime
@@ -231,13 +231,15 @@ VOICE_APT_PACKAGES=(
     ffmpeg
 )
 
-sudo apt-get update -qq
+sudo apt-get update -q 2>&1 | grep -E "^(Get:|Hit:|Ign:)" || true
+info "Installing system dependencies..."
 sudo apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}" 2>&1 \
-    | grep -E "^(Setting up|already)" || true
+    | grep --line-buffered -E "^(Get:|Unpacking|Setting up|Preparing)" || true
 
 if [[ "$INSTALL_VOICE" == true ]]; then
+    info "Installing voice system packages..."
     sudo apt-get install -y --no-install-recommends "${VOICE_APT_PACKAGES[@]}" 2>&1 \
-        | grep -E "^(Setting up|already)" || true
+        | grep --line-buffered -E "^(Get:|Unpacking|Setting up|Preparing)" || true
     success "Voice system packages installed"
 fi
 
