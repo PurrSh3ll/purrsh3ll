@@ -171,8 +171,9 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
         url = url[:-3]
     url += "/api/chat"
 
-    body = {"model": model, "messages": messages, "stream": True,
-            "think": not disable_thinking}
+    body = {"model": model, "messages": messages, "stream": True}
+    if disable_thinking:
+        body["think"] = False
     if num_ctx > 0:
         body["options"] = {"num_ctx": num_ctx}
 
