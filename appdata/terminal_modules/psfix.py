@@ -228,7 +228,8 @@ def main():
 
     # ── Explain mode ──────────────────────────────────────────────────────────
     elif args.explain:
-        prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
+        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+        prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
         prompt += (
@@ -257,7 +258,8 @@ def main():
 
     # ── Fix mode ──────────────────────────────────────────────────────────────
     else:
-        prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
+        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+        prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
         prompt += (
