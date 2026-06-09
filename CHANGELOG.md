@@ -26,6 +26,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Active AI profile combo**: per-item tooltip in dropdown shows provider and model for each profile
 - **ps* tools**: all CLI tools (`pscmd`, `psfix`, `psnext`, `psreport`, `pstldr`, `psview`) now show `Querying {model} via {provider}…` before each request, consistent with `psask`/`pschat`
 - **ps* tools**: `-m` flag now accepts a saved **profile name** instead of a raw model name — switches the full profile (provider, URL, API key, model); unknown name shows a concise error pointing to AI Settings
+- **psnext**: `--rag` flag enriches next-step suggestions with knowledge base context; `-n N` controls chunk count (default 5); RAG query derived from `--target` or last history command
+- **psask / pschat**: `--rag` now respects the re-ranking setting from AI Settings — fetches a candidate pool (`max(20, n)`), applies cross-encoder re-ranker, then trims to `-n` best chunks
 
 ### Fixed
 
