@@ -34,6 +34,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
 - **Themes**: default theme reset to `default` — was incorrectly committed as `Red Team`
 - **Ollama**: `"think"` field no longer sent when `disable_thinking` is off — omitting it lets thinking-capable models use their default behavior, and prevents HTTP 400 errors on models that don't support thinking
+- **psopen**: files now open in the correct viewer based on extension (`.md` → Markdown, `.html` → HTML, `.pdf` → PDF viewer, audio/video → media player) — previously all files landed in the unsupported-file fallback due to `mode=null` overriding the `"Default"` parameter; `.py` opens as code viewer (`Python_file`), `.purr` opens as plain text
 
 - **AI Settings → AI/LLM**: new checkbox "Clear pschat history on exit" — when enabled, all `appdata/chat_sessions/*.json` files are deleted on application close; default on
 - **Behavior dialog — Context limit**: added "Default" reset button next to the spinbox — resets value to 0 (provider default) in one click
