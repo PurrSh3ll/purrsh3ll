@@ -279,7 +279,7 @@ success "Virtual environment ready"
 
 info "Installing Python packages..."
 
-"$PIP" install --quiet \
+"$PIP" install --progress-bar off \
     PyQt6 \
     PyQt6-WebEngine \
     pyqt6-sip \
@@ -307,17 +307,20 @@ info "Installing Python packages..."
     Pygments \
     jeepney \
     pymupdf \
-    mutagen
+    mutagen \
+    2>&1 | grep -E "^(Collecting|Downloading|Installing collected|Successfully installed|ERROR|error:)" || true
 
 success "Core packages installed"
 
 if [[ "$INSTALL_VOICE" == true ]]; then
     info "Installing voice packages..."
-    if "$PIP" install --quiet \
+    _voice_pip_out=$("$PIP" install --progress-bar off \
         faster-whisper \
         openwakeword \
         sounddevice \
-        scipy; then
+        scipy 2>&1) && _voice_pip_ok=true || _voice_pip_ok=false
+    echo "$_voice_pip_out" | grep -E "^(Collecting|Downloading|Installing collected|Successfully installed|ERROR|error:)" || true
+    if [[ "$_voice_pip_ok" == true ]]; then
         VOICE_OK=true
         success "Voice packages installed"
     else
