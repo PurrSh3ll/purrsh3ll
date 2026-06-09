@@ -1061,8 +1061,18 @@ class TerminalTabsMixin:
                 menu.setStyleSheet(self.__class__.menu_stylesheet)
             except Exception:
                 pass
-            menu.addAction("Copy selection", lambda: (hasattr(t, "copySelection") and t.copySelection()) or (hasattr(t, "copyClipboard") and t.copyClipboard()))
-            menu.addAction("Paste selection", lambda: (hasattr(t, "pasteSelection") and t.pasteSelection()) or (hasattr(t, "pasteClipboard") and t.pasteClipboard()))
+            def _do_copy(tt=t):
+                if hasattr(tt, "copySelection"):
+                    tt.copySelection()
+                elif hasattr(tt, "copyClipboard"):
+                    tt.copyClipboard()
+            def _do_paste(tt=t):
+                if hasattr(tt, "pasteSelection"):
+                    tt.pasteSelection()
+                elif hasattr(tt, "pasteClipboard"):
+                    tt.pasteClipboard()
+            menu.addAction("Copy selection", _do_copy)
+            menu.addAction("Paste selection", _do_paste)
             menu.addSeparator()
             menu.addAction("Paste clipboard", lambda: hasattr(t, "pasteClipboard") and t.pasteClipboard())
             menu.addSeparator()
