@@ -103,6 +103,10 @@ def main():
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("--target",   default=None, metavar="TARGET",
                         help="Target host/network for additional context")
+    parser.add_argument("--rag",      action="store_true",
+                        help="Enrich prompt with knowledge base context")
+    parser.add_argument("-n",         type=int, default=5, metavar="N", dest="top_n",
+                        help="Number of RAG chunks (default: 5, used with --rag)")
     parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
                         help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
@@ -114,6 +118,8 @@ def main():
             "Usage:\n"
             "  psnext                          Suggest next steps based on terminal history\n"
             "  psnext --target 192.168.1.0/24  Include target context\n"
+            "  psnext --rag                    Enrich with knowledge base context\n"
+            "  psnext --rag -n 8               Use 8 RAG chunks\n"
             "  psnext -m <profile>             Use a specific saved profile\n"
         )
         sys.exit(0)
@@ -151,14 +157,32 @@ def main():
     cwd      = (args.cwd or "").strip()
     target   = (args.target or "").strip()
 
+    # Optional RAG enrichment
+    rag_context = ""
+    if args.rag:
+        rag_query = target or history.splitlines()[0].lstrip("$ ").split("[")[0].strip() or "penetration testing next steps"
+        chunks = _ai._rag_fetch_chunks(rag_query, base_dir, config, args.top_n)
+        if chunks:
+            parts = []
+            for i, c in enumerate(chunks, 1):
+                src     = c["meta"].get("source", "")
+                heading = c["meta"].get("heading", "")
+                label   = f"[{i}] {src}" + (f"  ({heading})" if heading else "")
+                parts.append(f"{label}\n{c['text']}")
+            rag_context = "\nKnowledge base context:\n" + "\n\n---\n\n".join(parts) + "\n"
+
     prompt  = f"System: {sys_info}\n"
     if cwd:
         prompt += f"Working directory: {cwd}\n"
     if target:
         prompt += f"Target: {target}\n"
+    if rag_context:
+        prompt += rag_context
     prompt += f"\nRecent terminal session ({count} commands):\n{history}\n"
     prompt += (
-        "\nYou are an expert penetration tester. Based on the terminal history above:\n"
+        "\nYou are an expert penetration tester. Based on the terminal history"
+        + (" and knowledge base context" if rag_context else "")
+        + " above:\n"
         "1. Briefly summarize what has been discovered or accomplished so far.\n"
         "2. Identify gaps — what has NOT been checked yet that could be relevant.\n"
         "3. Suggest 3-5 concrete next steps with the exact commands to run, ordered by priority.\n"

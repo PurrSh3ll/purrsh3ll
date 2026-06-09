@@ -12,19 +12,22 @@ import urllib.request
 import urllib.error
 
 
-def _rag_build_context(query: str, base_dir: str, config: dict, top_n: int = 5) -> str | None:
-    """Run RAG pipeline and return a context-enriched prompt, or None on failure."""
-    # Import RAG helpers from psrag_query (same directory)
+def _rag_fetch_chunks(query: str, base_dir: str, config: dict, top_n: int = 5) -> list | None:
+    """Embed query, search KB, optionally re-rank, return top_n chunks or None on failure."""
     sys.path.insert(0, os.path.dirname(__file__))
     try:
-        from psrag_query import _embed, _search, _build_prompt, _embedding_model, _kb_path
+        from psrag_query import (_embed, _search, _embedding_model,
+                                  _rerank, _RERANK_POOL, _RERANK_MODEL_DEFAULT)
     except ImportError as e:
         _err(f"RAG unavailable: {e}")
         return None
 
     import gc
-    embed_model = _embedding_model(config)
-    cache_dir   = os.path.join(base_dir, "appdata", "rag", "models")
+    embed_model    = _embedding_model(config)
+    cache_dir      = os.path.join(base_dir, "appdata", "rag", "models")
+    _rag_cfg       = config.get("rag", {})
+    rerank_enabled = bool(_rag_cfg.get("rerank", False))
+    rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
 
     _info("Embedding query…")
     try:
@@ -35,7 +38,8 @@ def _rag_build_context(query: str, base_dir: str, config: dict, top_n: int = 5) 
 
     _info("Searching knowledge base…")
     try:
-        chunks = _search(base_dir, vec, top_n)
+        pool_n = max(_RERANK_POOL, top_n) if rerank_enabled else top_n
+        chunks = _search(base_dir, vec, pool_n)
     except Exception as e:
         _err(f"RAG search failed: {e}")
         return None
@@ -44,6 +48,26 @@ def _rag_build_context(query: str, base_dir: str, config: dict, top_n: int = 5) 
         _info("No relevant chunks found — querying without RAG context.")
         return None
 
+    if rerank_enabled:
+        _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
+        chunks = _rerank(chunks, query, rerank_model, cache_dir)
+
+    gc.collect()
+    return chunks[:top_n]
+
+
+def _rag_build_context(query: str, base_dir: str, config: dict, top_n: int = 5) -> str | None:
+    """Run RAG pipeline and return a context-enriched prompt, or None on failure."""
+    sys.path.insert(0, os.path.dirname(__file__))
+    try:
+        from psrag_query import _build_prompt
+    except ImportError as e:
+        _err(f"RAG unavailable: {e}")
+        return None
+
+    chunks = _rag_fetch_chunks(query, base_dir, config, top_n)
+    if not chunks:
+        return None
     return _build_prompt(query, chunks)
 
 _DEFAULT_URLS = {
