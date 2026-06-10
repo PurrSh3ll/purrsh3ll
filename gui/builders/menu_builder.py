@@ -2182,7 +2182,6 @@ def build_menu(main_window):
                 "disable_thinking": meta.get("disable_thinking", False),
                 "fast_answers":     meta.get("fast_answers", False),
                 "custom_params":    meta.get("custom_params", ""),
-                "context_tokens":   int(meta.get("context_tokens", 0)),
             }
 
         def _set_row_meta(row, profile):
@@ -2193,7 +2192,6 @@ def build_menu(main_window):
                     "disable_thinking": bool(profile.get("disable_thinking", False)),
                     "fast_answers":     bool(profile.get("fast_answers", False)),
                     "custom_params":    profile.get("custom_params", ""),
-                    "context_tokens":   int(profile.get("context_tokens", 0)),
                 })
 
         def _insert_table_row(row_idx, profile):
@@ -2333,139 +2331,10 @@ def build_menu(main_window):
 
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
-            _ctx_default = [16_000]
-
-            class _CtxSpinBox(QSpinBox):
-                def stepBy(self, steps):
-                    if self.value() == 0 and steps > 0:
-                        self.setValue(_ctx_default[0] + steps * self.singleStep())
-                    else:
-                        super().stepBy(steps)
-
-            ctx_row = QHBoxLayout()
-            ctx_label = QLabel("Context limit (tokens):")
-            sb_ctx = _CtxSpinBox()
-            sb_ctx.setRange(0, 500_000)
-            sb_ctx.setSingleStep(1_000)
-            sb_ctx.setSpecialValueText("default (?)")
-            sb_ctx.setValue(int(profile.get("context_tokens", 0)))
-
-            if profile.get("provider") == "ollama":
-                import urllib.request as _urllib_req
-
-                _ollama_base = (
-                    profile.get("url", "").rstrip("/")
-                    or _PROVIDER_BASE_URL.get("ollama", "http://localhost:11434")
-                )
-                _ollama_model = profile.get("model", "")
-
-                class _NumCtxRelay(QObject):
-                    got_ctx = pyqtSignal(int)
-                    failed  = pyqtSignal()
-
-                _relay = _NumCtxRelay()
-
-                def _on_got_ctx(n):
-                    try:
-                        from PyQt6.sip import isdeleted
-                        if isdeleted(sb_ctx):
-                            return
-                        _ctx_default[0] = n
-                        sb_ctx.setSpecialValueText(f"default ({n:_})".replace("_", " "))
-                    except Exception:
-                        pass
-
-                def _on_failed():
-                    try:
-                        from PyQt6.sip import isdeleted
-                        if isdeleted(sb_ctx):
-                            return
-                        sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:_})".replace("_", " "))
-                    except Exception:
-                        pass
-
-                _relay.got_ctx.connect(_on_got_ctx)
-                _relay.failed.connect(_on_failed)
-
-                def _fetch_num_ctx():
-                    try:
-                        body = json.dumps({"name": _ollama_model}).encode()
-                        req = _urllib_req.Request(
-                            f"{_ollama_base}/api/show",
-                            data=body,
-                            headers={"Content-Type": "application/json"},
-                            method="POST",
-                        )
-                        with _urllib_req.urlopen(req, timeout=5) as resp:
-                            data = json.loads(resp.read())
-                        num_ctx = None
-                        for k, v in data.get("model_info", {}).items():
-                            if k.endswith("context_length") and isinstance(v, int):
-                                num_ctx = v
-                                break
-                        if num_ctx is None:
-                            for line in data.get("parameters", "").splitlines():
-                                parts = line.split()
-                                if len(parts) == 2 and parts[0] == "num_ctx":
-                                    try:
-                                        num_ctx = int(parts[1])
-                                    except ValueError:
-                                        pass
-                                    break
-                        if num_ctx and num_ctx > 0:
-                            _relay.got_ctx.emit(num_ctx)
-                        else:
-                            _relay.failed.emit()
-                    except Exception:
-                        _relay.failed.emit()
-
-                threading.Thread(target=_fetch_num_ctx, daemon=True).start()
-            else:
-                sb_ctx.setSpecialValueText(f"default ({_ctx_default[0]:_})".replace("_", " "))
-            _CTX_INFO_TEXT = (
-                "Used in app calculations to determine how to split data\n"
-                "(e.g. report generation, psai functions).\n\n"
-                "For Ollama: changing this value sets the actual context window\n"
-                "of the locally running model — it has a real effect.\n"
-                "For external API providers: this value is used only for\n"
-                "calculations; it does not affect the remote model."
-            )
-            ctx_info_btn = QPushButton("ⓘ")
-            ctx_info_btn.setFixedSize(22, 22)
-            ctx_info_btn.setFlat(True)
-            ctx_info_btn.setToolTip(_CTX_INFO_TEXT)
-
-            def _show_ctx_info():
-                msg = QMessageBox(bdlg)
-                msg.setWindowTitle("Context limit")
-                msg.setText(_CTX_INFO_TEXT)
-                msg.setIcon(QMessageBox.Icon.Information)
-                try:
-                    msg.setStyleSheet(c.messagebox_stylesheet)
-                except Exception:
-                    pass
-                msg.exec()
-
-            ctx_info_btn.clicked.connect(_show_ctx_info)
-
-            ctx_reset_btn = QPushButton("Default")
-            ctx_reset_btn.setFixedWidth(60)
-            ctx_reset_btn.setToolTip("Reset to default (0 = use provider default)")
-
-            def _on_ctx_reset():
-                sb_ctx.setValue(0)
-
-            ctx_reset_btn.clicked.connect(_on_ctx_reset)
-            ctx_row.addWidget(ctx_label)
-            ctx_row.addWidget(sb_ctx)
-            ctx_row.addWidget(ctx_reset_btn)
-            ctx_row.addWidget(ctx_info_btn)
-
             bform.addWidget(cb_think)
             bform.addWidget(cb_fast)
             bform.addWidget(cb_custom)
             bform.addWidget(custom_edit)
-            bform.addLayout(ctx_row)
             bform.addStretch(1)
 
             bbtn_row = QHBoxLayout()
@@ -2485,7 +2354,6 @@ def build_menu(main_window):
             profile["fast_answers"]     = cb_fast.isChecked()
             _raw = custom_edit.toPlainText().strip()
             profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
-            profile["context_tokens"]   = sb_ctx.value()
             _set_row_meta(row, profile)
             _persist()
 
@@ -2552,7 +2420,6 @@ def build_menu(main_window):
             profile["disable_thinking"] = existing.get("disable_thinking", False)
             profile["fast_answers"]     = existing.get("fast_answers", False)
             profile["custom_params"]    = existing.get("custom_params", "")
-            profile["context_tokens"]   = existing.get("context_tokens", 0)
             _set_row_meta(row, profile)
             if profile["name"] != old_name:
                 _rename_api_key(old_name, profile["name"])

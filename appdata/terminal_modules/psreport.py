@@ -17,10 +17,8 @@ import platform
 import sys
 from datetime import datetime
 
-_OUTPUT_PER_ENTRY  = 800    # max output chars per history entry
-_MAP_OVERHEAD      = 600    # tokens reserved for map prompt + response header
-_MAP_RESPONSE_RSV  = 1_200  # tokens reserved for map response
-_REDUCE_BUDGET     = 10_000 # max tokens of combined extracts sent to reduce
+_OUTPUT_PER_ENTRY = 800   # max output chars per history entry
+_HISTORY_LIMIT    = 40    # max entries for standard mode
 
 # ── Pentest tool keywords ──────────────────────────────────────────────────────
 _TOOL_PATTERNS = {
@@ -131,41 +129,6 @@ def _load_entries(base_dir: str, full: bool) -> tuple[list[dict], int]:
     return entries, total
 
 
-def _load_filtered_history(base_dir: str, token_budget: int, full: bool, _ai) -> tuple[str, int, int]:
-    """Load history within token budget for single-call mode."""
-    entries, total = _load_entries(base_dir, full)
-    collected = []
-    used = 0
-    for entry in reversed(entries):
-        part   = _format_entry(entry)
-        tokens = _ai._count_tokens(part)
-        if used + tokens > token_budget:
-            break
-        collected.append(part)
-        used += tokens
-    if not collected:
-        return "", 0, total
-    return "\n".join(reversed(collected)), len(collected), total
-
-
-def _chunk_entries(entries: list[dict], chunk_budget: int, _ai) -> list[tuple[str, int]]:
-    """Split entries into token-bounded chunks. Returns list of (text, token_count)."""
-    chunks   = []
-    current  = []
-    used     = 0
-    for entry in entries:
-        part   = _format_entry(entry)
-        tokens = _ai._count_tokens(part)
-        if current and used + tokens > chunk_budget:
-            chunks.append(("\n".join(current), used))
-            current = [part]
-            used    = tokens
-        else:
-            current.append(part)
-            used += tokens
-    if current:
-        chunks.append(("\n".join(current), used))
-    return chunks
 
 
 def _run_silent(fn):
@@ -324,31 +287,23 @@ def main():
             lambda: _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
         )
 
+    sys_info   = f"{platform.system()} {platform.release()} ({platform.machine()})"
+    template   = _report_template_html(title, target, now) if fmt == "html" else _report_template_md(title, target, now)
+    fmt_name   = "HTML" if fmt == "html" else "Markdown"
+
     # ══════════════════════════════════════════════════════════════════════════
-    # DEEP MODE — Map-Reduce
+    # DEEP MODE — full history, single call
     # ══════════════════════════════════════════════════════════════════════════
     if args.deep:
-        # Chunk budget: half of model context minus overhead
-        ctx_tokens   = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
-        chunk_budget = max(ctx_tokens // 2 - _MAP_OVERHEAD - _MAP_RESPONSE_RSV, 1024)
-
         entries, total_raw = _load_entries(base_dir, args.full)
         if not entries:
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)
 
-        chunks = _chunk_entries(entries, chunk_budget, _ai)
-        n      = len(chunks)
-        total_tokens = sum(t for _, t in chunks)
-        mode_label   = "full" if args.full else "filtered"
-
-        # ── Confirmation prompt ────────────────────────────────────────────────
+        mode_label = "full" if args.full else "filtered"
         sys.stderr.write(
-            f"\nDeep mode (Map-Reduce):\n"
-            f"  Entries:     {len(entries)}/{total_raw} ({mode_label})\n"
-            f"  Chunks:      {n} × ~{chunk_budget} tokens each\n"
-            f"  Total calls: {n + 1} ({n} map + 1 reduce)\n"
-            f"  Est. tokens: ~{total_tokens + chunk_budget:,} sent to model\n\n"
+            f"\nDeep mode:\n"
+            f"  Entries: {len(entries)}/{total_raw} ({mode_label})\n\n"
             f"Continue? [y/n] "
         )
         sys.stderr.flush()
@@ -360,103 +315,43 @@ def main():
             sys.stderr.write("Aborted.\n")
             sys.exit(0)
 
-        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-
-        # ── Map phase ──────────────────────────────────────────────────────────
-        map_prompt_header = (
-            "You are a penetration tester. Extract all security-relevant findings "
-            "from the terminal commands below. Return a concise structured list covering:\n"
-            "- Hosts/IPs/domains discovered\n"
-            "- Open ports and services (with versions)\n"
-            "- Vulnerabilities or misconfigurations\n"
-            "- Credentials, hashes, tokens, keys\n"
-            "- Errors revealing information\n"
-            "- Successful exploits or access gained\n"
-            "Only include what is directly visible. Be brief and factual. "
-            "If nothing relevant, write: [no findings]\n\n"
-            "Terminal history:\n"
+        history = "\n".join(_format_entry(e) for e in entries)
+        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\nTarget: {target}\n"
+        if cwd:
+            prompt += f"Working directory: {cwd}\n"
+        prompt += f"\nFull terminal session history ({len(entries)} entries):\n{history}\n"
+        prompt += (
+            f"\nYou are an expert penetration tester writing a professional report. "
+            f"Based solely on the terminal history above, generate a complete {fmt_name} report "
+            f"using exactly this template. Fill each section with concrete data extracted "
+            f"from the history. Mark sections as '[No data found]' if no evidence. "
+            f"Do not invent findings.\n\n{template}"
         )
 
-        extracts = []
-        for i, (chunk_text, chunk_tokens) in enumerate(chunks, 1):
-            sys.stderr.write(f"[{i}/{n}] Extracting findings (~{chunk_tokens} tokens)...\n")
-            sys.stderr.flush()
-
-            messages = [{"role": "user", "content": map_prompt_header + chunk_text}]
-            extract  = _llm(messages, verbose=args.verbose)
-
-            if extract and extract.strip() != "[no findings]":
-                extracts.append(f"--- Chunk {i}/{n} ---\n{extract.strip()}")
-
-        if not extracts:
-            _ai._err("No findings extracted from history.")
-            sys.exit(1)
-
-        combined = "\n\n".join(extracts)
-
-        # Trim combined extracts if they exceed reduce budget
-        combined_tokens = _ai._count_tokens(combined)
-        if combined_tokens > _REDUCE_BUDGET:
-            sys.stderr.write(
-                f"[!] Combined extracts ({combined_tokens} tokens) exceed reduce budget "
-                f"({_REDUCE_BUDGET}). Trimming oldest chunks.\n"
-            )
-            trimmed = []
-            used    = 0
-            for ex in reversed(extracts):
-                t = _ai._count_tokens(ex)
-                if used + t > _REDUCE_BUDGET:
-                    break
-                trimmed.append(ex)
-                used += t
-            combined = "\n\n".join(reversed(trimmed))
-
-        # ── Reduce phase ───────────────────────────────────────────────────────
-        sys.stderr.write(f"[{n+1}/{n+1}] Generating final report...\n")
-        sys.stderr.flush()
-
-        template = _report_template_html(title, target, now) if fmt == "html" else _report_template_md(title, target, now)
-        fmt_name = "HTML" if fmt == "html" else "Markdown"
-
-        reduce_prompt = (
-            f"System: {sys_info}\n"
-            f"Date: {now.strftime('%Y-%m-%d %H:%M')}\n"
-            f"Target: {target}\n\n"
-            f"You are an expert penetration tester. Below are extracted findings from "
-            f"{n} chunks of a terminal session history.\n\n"
-            f"{combined}\n\n"
-            f"Using these findings, generate a complete professional {fmt_name} pentest report. "
-            f"Use exactly this template structure — fill in each section with concrete data "
-            f"from the findings above. Mark sections as '[No data found]' if no evidence. "
-            f"Do not invent findings.\n\n"
-            f"{template}"
-        )
-
-        messages = [{"role": "user", "content": reduce_prompt}]
+        _ai._info(f"Querying {model} via {provider}…\n")
+        _ai._info("Generating report...\n")
+        messages = [{"role": "user", "content": prompt}]
         response = _llm(messages, verbose=args.verbose)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # STANDARD MODE — single call
+    # STANDARD MODE — last 40 entries, single call
     # ══════════════════════════════════════════════════════════════════════════
     else:
-        ctx_tokens = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
-        history, loaded, total = _load_filtered_history(base_dir, ctx_tokens // 2, args.full, _ai)
-        if not history:
+        entries, total = _load_entries(base_dir, args.full)
+        if not entries:
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)
 
+        recent     = entries[-_HISTORY_LIMIT:]
+        history    = "\n".join(_format_entry(e) for e in recent)
+        loaded     = len(recent)
         mode_label = "full" if args.full else "filtered"
         _ai._info(f"Loaded {loaded}/{total} history entries ({mode_label}).\n")
 
-        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        prompt   = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\nTarget: {target}\n"
+        prompt = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\nTarget: {target}\n"
         if cwd:
             prompt += f"Working directory: {cwd}\n"
-        prompt += f"\nTerminal session history ({loaded} security-relevant commands):\n{history}\n"
-
-        template = _report_template_html(title, target, now) if fmt == "html" else _report_template_md(title, target, now)
-        fmt_name = "HTML" if fmt == "html" else "Markdown"
-
+        prompt += f"\nTerminal session history ({loaded} entries):\n{history}\n"
         prompt += (
             f"\nYou are an expert penetration tester writing a professional report. "
             f"Based solely on the terminal history above, generate a complete {fmt_name} report "

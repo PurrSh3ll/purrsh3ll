@@ -651,10 +651,6 @@ def build_chat_panel(main_window):
         model = profile.get("model", "")
         env_prefix = ""
         flags = []
-        # context_tokens → OLLAMA_NUM_CTX env var (--num-ctx is not a valid ollama run flag)
-        ctx = int(profile.get("context_tokens") or 0)
-        if ctx > 0:
-            env_prefix = f"OLLAMA_NUM_CTX={ctx} "
         # fast_answers → --system with brevity instruction
         if profile.get("fast_answers"):
             flags.append('--system "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."')

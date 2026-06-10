@@ -36,8 +36,6 @@ def main():
     parser = argparse.ArgumentParser(prog="pstldr", add_help=False)
     parser.add_argument("input", nargs="*",
                         help="Text to summarize, or path to a file")
-    parser.add_argument("--tail",     action="store_true",
-                        help="Take the last part of the file instead of the first (useful for logs)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
                         help="Use a specific saved profile by name")
@@ -48,10 +46,9 @@ def main():
         print(
             "pstldr — AI-powered TL;DR summarizer\n\n"
             "Usage:\n"
-            "  pstldr <file>            Summarize a file (first part if truncated)\n"
-            "  pstldr --tail <file>     Summarize a file (last part if truncated)\n"
-            "  pstldr \"<text>\"          Summarize text passed directly\n"
-            "  cat file | pstldr        Summarize piped input\n"
+            "  pstldr <file>              Summarize a file\n"
+            "  pstldr \"<text>\"            Summarize text passed directly\n"
+            "  cat file | pstldr          Summarize piped input\n"
             "  pstldr -m <profile> <file> Use a specific saved profile\n"
         )
         sys.exit(0)
@@ -76,11 +73,6 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-
-    # Derive max input size from profile context window (half for input, half for response)
-    ctx_tokens     = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
-    max_input_toks = ctx_tokens // 2
-    max_chars      = max_input_toks * 4  # 1 token ≈ 4 chars
 
     # ── Resolve input ──────────────────────────────────────────────────────────
     source_label = "text"
@@ -114,21 +106,6 @@ def main():
     if not content:
         _ai._err("Input is empty — nothing to summarize.")
         sys.exit(1)
-
-    # ── Truncate if needed ─────────────────────────────────────────────────────
-    if len(content) > max_chars:
-        if args.tail:
-            content = content[-max_chars:]
-            nl = content.find("\n")
-            if 0 < nl < 200:
-                content = content[nl + 1:]
-            _ai._info(f"File truncated — summarizing last ~{max_input_toks // 1000}k tokens ({max_chars // 1000}k chars).\n")
-        else:
-            content = content[:max_chars]
-            nl = content.rfind("\n")
-            if nl > max_chars - 200:
-                content = content[:nl]
-            _ai._info(f"File truncated — summarizing first ~{max_input_toks // 1000}k tokens ({max_chars // 1000}k chars). Use --tail for the end.\n")
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     prompt = (

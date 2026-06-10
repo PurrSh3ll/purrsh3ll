@@ -80,21 +80,7 @@ _DEFAULT_URLS = {
     "huggingface": "https://router.huggingface.co/featherless-ai/v1",
 }
 
-_MAX_HISTORY    = 40      # max messages kept in chat session (20 turns)
-_DEFAULT_CTX    = 16_000  # generic fallback
-
-# Provider-specific context defaults (used when profile has no context_tokens set)
-_CTX_BY_PROVIDER = {
-    "ollama":      4_096,    # local models — conservative
-    "anthropic":   200_000,  # Claude 3.x/4.x — 200k window
-    "openai":      128_000,  # GPT-4o — 128k window
-}
-# groq, gemini, openrouter, huggingface → _DEFAULT_CTX (16k)
-
-
-def _default_ctx(provider: str) -> int:
-    """Return the default context token limit for a given provider."""
-    return _CTX_BY_PROVIDER.get(provider, _DEFAULT_CTX)
+_MAX_HISTORY = 40  # max messages kept in chat session (20 turns)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -104,28 +90,6 @@ def _info(msg: str):
 
 def _err(msg: str):
     print(f"\033[31m[psai] Error: {msg}\033[0m", file=sys.stderr)
-
-
-def _count_tokens(text: str) -> int:
-    """Estimate token count. Uses tiktoken if available, falls back to len/4."""
-    try:
-        import tiktoken
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:
-        return max(1, len(text) // 4)
-
-
-def _trim_history(history: list, limit: int) -> list:
-    """Return a copy of history with oldest messages removed until total tokens <= limit.
-    Always keeps at least the last message to ensure something is sent."""
-    result = list(history)
-    while len(result) > 1:
-        total = sum(_count_tokens(m.get("content", "")) for m in result)
-        if total <= limit:
-            break
-        result.pop(0)
-    return result
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -199,7 +163,7 @@ def _parse_custom_params(profile: dict) -> dict | None:
 # ── LLM runners ───────────────────────────────────────────────────────────────
 
 def _stream_ollama_native(model: str, messages: list, base_url: str,
-                          disable_thinking: bool = False, num_ctx: int = 0) -> str:
+                          disable_thinking: bool = False) -> str:
     """POST to Ollama native /api/chat — correctly honors think:false."""
     url = base_url.rstrip("/")
     # strip /v1 suffix if present — native API is at root
@@ -210,8 +174,6 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
     body = {"model": model, "messages": messages, "stream": True}
     if disable_thinking:
         body["think"] = False
-    if num_ctx > 0:
-        body["options"] = {"num_ctx": num_ctx}
 
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
@@ -267,7 +229,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
 
 def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: str,
                            disable_thinking: bool = False, provider: str = "openai",
-                           custom_params: dict = None, num_ctx: int = 0) -> str:
+                           custom_params: dict = None) -> str:
     """POST to /chat/completions, stream tokens to stdout, return full response text."""
     url = base_url.rstrip("/") + "/chat/completions"
 
@@ -408,7 +370,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
 
 
 def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
-             disable_thinking: bool = False, custom_params: dict = None, num_ctx: int = 0) -> str:
+             disable_thinking: bool = False, custom_params: dict = None) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
     if provider == "anthropic":
         return _stream_anthropic(model, messages, url, api_key, disable_thinking)
@@ -416,7 +378,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
     # Ollama: use native /api/chat (correctly honors think:false)
     # Fall back to OpenAI-compat only when custom_params are set
     if provider == "ollama" and not custom_params:
-        return _stream_ollama_native(model, messages, url, disable_thinking, num_ctx)
+        return _stream_ollama_native(model, messages, url, disable_thinking)
 
     # Ollama with custom_params: ensure /v1 suffix for OpenAI-compat endpoint
     if provider == "ollama":
@@ -434,7 +396,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
                     messages[i] = {**messages[i], "content": "/no_think\n" + messages[i]["content"]}
                     break
 
-    return _stream_openai_compat(model, messages, url, api_key, disable_thinking, provider, custom_params, num_ctx)
+    return _stream_openai_compat(model, messages, url, api_key, disable_thinking, provider, custom_params)
 
 
 # ── Chat session ──────────────────────────────────────────────────────────────
@@ -495,12 +457,6 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if fast_answers:
         query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
 
-    ctx_tokens = int(profile.get("context_tokens") or 0) or _default_ctx(provider)
-    q_tokens   = _count_tokens(query)
-    if q_tokens > ctx_tokens:
-        _err(f"Query is too large ({q_tokens} tokens) for model context ({ctx_tokens} tokens). Shorten the input.")
-        return
-
     _info(f"Querying {model} via {provider}…\n")
     _run_llm(provider, model, [{"role": "user", "content": query}],
              url, api_key, disable_thinking, custom_params)
@@ -517,7 +473,6 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
-    context_limit    = int(profile.get("context_tokens") or 0) or _default_ctx(provider)
 
     if args.clear:
         _clear_session(base_dir, name)
@@ -557,20 +512,18 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     history.append({"role": "user", "content": query})
 
-    # Build messages for API: history (with plain query) replaced by RAG version for last entry
-    msgs_to_send = _trim_history(history, context_limit)
+    # Build messages for API: keep last _MAX_HISTORY messages, replace last with RAG version if needed
+    msgs_to_send = history[-_MAX_HISTORY:]
     if fast_answers and not any(m["role"] == "system" for m in msgs_to_send):
         msgs_to_send = [{"role": "system", "content": "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."}] + list(msgs_to_send)
     if query_for_api != query and msgs_to_send:
         msgs_to_send = list(msgs_to_send)
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}
 
-    trimmed = len(history) - len(msgs_to_send)
     turns = len(msgs_to_send) // 2
-    ctx_info = f", limit {context_limit // 1000}k tok" + (f", dropped {trimmed} old msg{'s' if trimmed != 1 else ''}" if trimmed else "")
-    _info(f"Chatting with {model} via {provider} ({turns} turn{'s' if turns != 1 else ''} in context{ctx_info})…\n")
+    _info(f"Chatting with {model} via {provider} ({turns} turn{'s' if turns != 1 else ''} in context)…\n")
 
-    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params, context_limit)
+    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
 
     if response:
         history.append({"role": "assistant", "content": response})

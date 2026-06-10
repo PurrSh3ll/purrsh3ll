@@ -52,15 +52,12 @@ def _clean_command(text: str) -> str:
 
 
 
-def _load_history(base_dir: str, token_budget: int, _ai) -> tuple[str, int]:
-    """Load terminal history within token budget (newest → oldest, then reversed).
-    Returns (formatted_history, total_entries_loaded)."""
+def _load_history(base_dir: str) -> tuple[str, int]:
+    """Load last 40 terminal history entries. Returns (formatted_history, count)."""
     path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
     try:
         with open(path, encoding="utf-8") as f:
             lines = [l.strip() for l in f if l.strip()]
-    except FileNotFoundError:
-        return "", 0
     except Exception:
         return "", 0
 
@@ -71,9 +68,8 @@ def _load_history(base_dir: str, token_budget: int, _ai) -> tuple[str, int]:
         except Exception:
             pass
 
-    collected = []
-    used = 0
-    for entry in reversed(entries):
+    parts = []
+    for entry in entries[-40:]:
         ec     = entry.get("exit_code", 0)
         cmd    = entry.get("cmd", "")
         out    = entry.get("output", "")[:600]
@@ -84,15 +80,8 @@ def _load_history(base_dir: str, token_budget: int, _ai) -> tuple[str, int]:
             part += f"  # cwd: {cwd}"
         if out:
             part += f"\n{out}"
-        tokens = _ai._count_tokens(part)
-        if used + tokens > token_budget:
-            break
-        collected.append(part)
-        used += tokens
-
-    if not collected:
-        return "", 0
-    return "\n".join(reversed(collected)), len(collected)
+        parts.append(part)
+    return "\n".join(parts), len(parts)
 
 
 def main():
@@ -145,10 +134,7 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
-    ctx_tokens      = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
-    history_budget  = ctx_tokens // 2  # leave half for prompt overhead + response
-
-    history, count = _load_history(base_dir, history_budget, _ai)
+    history, count = _load_history(base_dir)
     if not history:
         _ai._err("No terminal history found — run some commands first.")
         sys.exit(1)

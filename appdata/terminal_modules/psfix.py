@@ -23,9 +23,8 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     return None
 
 
-def _load_recent_history(base_dir: str, token_budget: int, _ai) -> str:
-    """Load recent terminal history as formatted string, limited by token budget.
-    Returns entries in chronological order (oldest → newest)."""
+def _load_recent_history(base_dir: str) -> str:
+    """Load last 40 terminal history entries as formatted string (oldest → newest)."""
     path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
     try:
         with open(path, encoding="utf-8") as f:
@@ -40,26 +39,17 @@ def _load_recent_history(base_dir: str, token_budget: int, _ai) -> str:
         except Exception:
             pass
 
-    # Walk newest → oldest, accumulate within budget, then reverse for display
-    collected = []
-    used = 0
-    for entry in reversed(entries):
+    parts = []
+    for entry in entries[-40:]:
         ec  = entry.get("exit_code", 0)
         cmd = entry.get("cmd", "")
-        out = entry.get("output", "")[:400]  # cap per-entry output to keep things concise
+        out = entry.get("output", "")[:400]
         status = f"exit {ec}" if ec != 0 else "ok"
         part = f"$ {cmd} [{status}]"
         if out:
             part += f"\n{out}"
-        tokens = _ai._count_tokens(part)
-        if used + tokens > token_budget:
-            break
-        collected.append(part)
-        used += tokens
-
-    if not collected:
-        return ""
-    return "\n".join(reversed(collected))
+        parts.append(part)
+    return "\n".join(parts)
 
 
 def _clean_command(text: str) -> str:
@@ -182,14 +172,12 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-    ctx_tokens       = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
 
     # ── Analyze mode ──────────────────────────────────────────────────────────
     if args.analyze:
         cwd = (args.cwd or "").strip()
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        # Reserve half context for history; the rest covers prompt overhead + response
-        history_text = _load_recent_history(base_dir, ctx_tokens // 2, _ai)
+        history_text = _load_recent_history(base_dir)
 
         prompt = f"System: {sys_info}\n"
         if cwd:

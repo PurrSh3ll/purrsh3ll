@@ -662,26 +662,6 @@ def main():
                 print(f"  \033[90m• {src}  (score={score:.3f})\033[0m", file=sys.stderr)
         print(file=sys.stderr)
 
-    # Trim chunks to fit within half of model's context window
-    _CTX_BY_PROVIDER  = {"ollama": 4_096, "anthropic": 200_000, "openai": 128_000}
-    ctx_tokens        = int(profile.get("context_tokens") or 0) or _CTX_BY_PROVIDER.get(provider, 16_000)
-    max_prompt_tokens = ctx_tokens // 2
-    while chunks:
-        prompt = _build_prompt(query, chunks)
-        try:
-            import tiktoken
-            enc       = tiktoken.get_encoding("cl100k_base")
-            tok_count = len(enc.encode(prompt))
-        except Exception:
-            tok_count = len(prompt) // 4
-        if tok_count <= max_prompt_tokens:
-            break
-        chunks = chunks[:-1]  # drop lowest-relevance chunk and retry
-
-    if not chunks:
-        _err("Query + context exceeds model context window even with a single chunk.")
-        sys.exit(1)
-
     if fast_answers:
         prompt += _FAST_SUFFIX
     _info(f"Querying {model} via {provider}…\n")
