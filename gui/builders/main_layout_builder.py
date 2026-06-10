@@ -869,7 +869,7 @@ def build_main_layout(main_window):
         lbl = QLabel("PurrSh3ll", c.widgets["central_widget"])
         lbl.setFixedHeight(22)
         lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        lbl.setStyleSheet("font-size: 11px; background: transparent;")
+        lbl.setStyleSheet("font-size: 11px; color: palette(windowText); background: transparent;")
         lbl.adjustSize()
         c.register_widget("prompt_token_label", lbl)
 
