@@ -369,12 +369,84 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     return "".join(collected)
 
 
+def _estimate_prompt_tokens(messages: list) -> int:
+    """
+    Estimate prompt token count for both text-only and multimodal messages.
+
+    Text tokens:  len(text) // 4  (rough 4-chars-per-token approximation)
+    Image tokens: OpenAI tile formula — ceil(w/512)*ceil(h/512)*170 + 85
+                  Requires Pillow; falls back to 512-token flat estimate if unavailable.
+
+    Handles both OpenAI-compat content format (list with "image_url") and
+    Anthropic format (list with "image" + "source.data").
+    """
+    import base64 as _b64
+    import io as _io
+    import math as _math
+
+    try:
+        from PIL import Image as _Image
+        _pil_ok = True
+    except ImportError:
+        _pil_ok = False
+
+    def _image_tokens_from_bytes(raw: bytes) -> int:
+        if not _pil_ok:
+            return 512
+        try:
+            img = _Image.open(_io.BytesIO(raw))
+            w, h = img.size
+            # Scale down so longest side ≤ 2048 (mirrors OpenAI high-detail pre-processing)
+            max_side = max(w, h)
+            if max_side > 2048:
+                scale = 2048 / max_side
+                w, h = int(w * scale), int(h * scale)
+            tiles = _math.ceil(w / 512) * _math.ceil(h / 512)
+            return tiles * 170 + 85
+        except Exception:
+            return 512
+
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += len(content) // 4
+        elif isinstance(content, list):
+            for part in content:
+                ptype = part.get("type", "")
+                if ptype == "text":
+                    total += len(part.get("text", "")) // 4
+                elif ptype == "image_url":
+                    # OpenAI-compat: "data:<mime>;base64,<data>"
+                    url_val = part.get("image_url", {}).get("url", "")
+                    if ";base64," in url_val:
+                        try:
+                            raw = _b64.b64decode(url_val.split(";base64,", 1)[1])
+                            total += _image_tokens_from_bytes(raw)
+                        except Exception:
+                            total += 512
+                    else:
+                        total += 512
+                elif ptype == "image":
+                    # Anthropic: source.type == "base64", source.data = b64 string
+                    src = part.get("source", {})
+                    if src.get("type") == "base64":
+                        try:
+                            raw = _b64.b64decode(src.get("data", ""))
+                            total += _image_tokens_from_bytes(raw)
+                        except Exception:
+                            total += 512
+                    else:
+                        total += 512
+    return max(1, total)
+
+
 def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
     try:
         import time as _time
-        _tok  = max(1, sum(len(m.get("content", "")) for m in messages) // 4)
+        _tok  = _estimate_prompt_tokens(messages)
         _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "psai_tok")
         with open(_path, "w") as _f:
             _f.write(f"{int(_time.time() * 1000)}:{_tok}")
