@@ -865,6 +865,14 @@ def build_main_layout(main_window):
         lbl.hide()
         c.register_widget("rag_index_status_label", lbl)
 
+    def create_prompt_token_label():
+        lbl = QLabel("PurrSh3ll", c.widgets["central_widget"])
+        lbl.setFixedHeight(22)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setStyleSheet("font-size: 11px; background: transparent;")
+        lbl.adjustSize()
+        c.register_widget("prompt_token_label", lbl)
+
     def create_active_profile_combo():
         central_widget = c.widgets["central_widget"]
         combo = QComboBox(central_widget)
@@ -986,5 +994,6 @@ def build_main_layout(main_window):
     create_active_profile_combo()
     create_voice_button()
     create_rag_status_label()
+    create_prompt_token_label()
     dropdown_menu_button()
     add_widgets_to_layout_and_setup()
