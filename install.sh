@@ -370,6 +370,7 @@ success "QTermWidget installed"
 
 if [[ "$INSTALL_OLLAMA" == true ]]; then
     if command -v ollama &>/dev/null; then
+        OLLAMA_OK=true
         success "Ollama already installed ($(ollama --version 2>/dev/null || echo 'unknown version'))"
     else
         # Run in background — timer loop prints elapsed time and any new >>> lines every 10s
@@ -428,6 +429,7 @@ fi
 
 if [[ "$INSTALL_AICHAT" == true ]]; then
     if command -v aichat &>/dev/null; then
+        AICHAT_OK=true
         success "aichat already installed ($(aichat --version 2>/dev/null || echo 'unknown version'))"
     else
         info "Installing aichat v${AICHAT_VERSION}..."
@@ -506,6 +508,10 @@ fi
 # ── Open WebUI Docker image ───────────────────────────────────────────────────
 
 if [[ "$INSTALL_OPENWEBUI" == true && "$DOCKER_OK" == true ]]; then
+    if sudo docker image inspect "$OPENWEBUI_IMAGE" &>/dev/null; then
+        OPENWEBUI_OK=true
+        success "Open WebUI image already present locally"
+    else
     info "Pulling Open WebUI Docker image (this may take a few minutes)..."
     sudo -v 2>/dev/null || true  # refresh sudo timestamp before long pull
     _docker_log="/tmp/_purrsh3ll_docker_webui.log"
@@ -541,11 +547,16 @@ if [[ "$INSTALL_OPENWEBUI" == true && "$DOCKER_OK" == true ]]; then
     else
         warn "Could not pull Open WebUI image — run: sudo docker pull $OPENWEBUI_IMAGE"
     fi
+    fi  # end: image not present locally
 fi
 
 # ── WebMap Docker image ───────────────────────────────────────────────────────
 
 if [[ "$INSTALL_WEBMAP" == true && "$DOCKER_OK" == true ]]; then
+    if sudo docker image inspect "$WEBMAP_IMAGE" &>/dev/null; then
+        WEBMAP_OK=true
+        success "WebMap image already present locally"
+    else
     info "Pulling WebMap Docker image (this may take a few minutes)..."
     sudo -v 2>/dev/null || true  # refresh sudo timestamp before long pull
     _docker_log="/tmp/_purrsh3ll_docker_webmap.log"
@@ -581,6 +592,7 @@ if [[ "$INSTALL_WEBMAP" == true && "$DOCKER_OK" == true ]]; then
     else
         warn "Could not pull WebMap image — run: sudo docker pull $WEBMAP_IMAGE"
     fi
+    fi  # end: image not present locally
 fi
 
 # ── Desktop shortcut ──────────────────────────────────────────────────────────
