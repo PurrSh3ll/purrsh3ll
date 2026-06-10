@@ -171,7 +171,31 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
         url = url[:-3]
     url += "/api/chat"
 
-    body = {"model": model, "messages": messages, "stream": True}
+    # Normalize multimodal messages to Ollama native format.
+    # Ollama expects content as a plain string and images as a separate list,
+    # but psview sends OpenAI-compat format (content as a list with image_url parts).
+    normalized = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            text_parts = []
+            images = []
+            for part in content:
+                ptype = part.get("type", "")
+                if ptype == "text":
+                    text_parts.append(part.get("text", ""))
+                elif ptype == "image_url":
+                    url_val = part.get("image_url", {}).get("url", "")
+                    if ";base64," in url_val:
+                        images.append(url_val.split(";base64,", 1)[1])
+            entry = {"role": msg.get("role", "user"), "content": "\n".join(text_parts)}
+            if images:
+                entry["images"] = images
+            normalized.append(entry)
+        else:
+            normalized.append(msg)
+
+    body = {"model": model, "messages": normalized, "stream": True}
     if disable_thinking:
         body["think"] = False
 
