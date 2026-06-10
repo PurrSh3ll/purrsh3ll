@@ -152,6 +152,14 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._update_timer.setSingleShot(True)
             self._update_timer.timeout.connect(self._do_update_modules)
 
+            self._psai_tok_mtime = 0.0
+            self._psai_tok_hide = QTimer()
+            self._psai_tok_hide.setSingleShot(True)
+            self._psai_tok_hide.timeout.connect(self._hide_tok_label)
+            self._psai_tok_poll = QTimer()
+            self._psai_tok_poll.timeout.connect(self._poll_psai_tok)
+            self._psai_tok_poll.start(1000)
+
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
                 f"{self.base_path}/appdata/scripts_help",
@@ -299,6 +307,31 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def get_widget(self, name: str):
         return Controller.widgets.get(name)
+
+    def _poll_psai_tok(self):
+        try:
+            mtime = os.path.getmtime("/tmp/psai_tok")
+        except OSError:
+            return
+        if mtime <= self._psai_tok_mtime:
+            return
+        self._psai_tok_mtime = mtime
+        try:
+            with open("/tmp/psai_tok") as f:
+                n = int(f.read().strip())
+            lbl = self.widgets.get("prompt_token_label")
+            if lbl is None:
+                return
+            lbl.setText(f"~{n:,} tok".replace(",", " "))
+            self._psai_tok_hide.stop()
+            self._psai_tok_hide.start(10_000)
+        except Exception:
+            pass
+
+    def _hide_tok_label(self):
+        lbl = self.widgets.get("prompt_token_label")
+        if lbl is not None:
+            lbl.setText("PurrSh3ll")
 
     def load_themes(self):
         try:

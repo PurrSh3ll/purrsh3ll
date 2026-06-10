@@ -504,6 +504,11 @@ def _run_llm(provider: str, model: str, prompt: str,
              url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None):
     """Dispatch to the correct runner based on provider."""
+    try:
+        with open("/tmp/psai_tok", "w") as _f:
+            _f.write(str(max(1, len(prompt) // 4)))
+    except Exception:
+        pass
     if provider == "ollama":
         _run_ollama(model, prompt, disable_thinking, url)
     elif provider == "anthropic":

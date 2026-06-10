@@ -372,6 +372,12 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
 def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
+    try:
+        _tok = max(1, sum(len(m.get("content", "")) for m in messages) // 4)
+        with open("/tmp/psai_tok", "w") as _f:
+            _f.write(str(_tok))
+    except Exception:
+        pass
     if provider == "anthropic":
         return _stream_anthropic(model, messages, url, api_key, disable_thinking)
 
