@@ -2305,11 +2305,13 @@ def build_menu(main_window):
             bform.setContentsMargins(16, 16, 16, 12)
             bform.setSpacing(8)
 
+            _CTX_SAFE_DEFAULT = 32_768
             ctx_val = _lookup_ctx_window(profile)
             if ctx_val:
                 ctx_text = f"{ctx_val:,}".replace(",", " ") + " tokens"
             else:
-                ctx_text = "unknown"
+                safe_str = f"{_CTX_SAFE_DEFAULT:,}".replace(",", " ")
+                ctx_text = f"unknown model — safe default: {safe_str} tokens"
             ctx_info_label = QLabel(f"Context window:  {ctx_text}")
             ctx_info_label.setStyleSheet("color: gray; font-size: 11px;")
             bform.addWidget(ctx_info_label)

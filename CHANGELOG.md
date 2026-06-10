@@ -52,6 +52,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **AI Settings → RAG tab**: Indexed files list capped at 6 visible rows with scrollbar
 - **AI profiles**: API provider profiles moved to a separate `appdata/api_profiles.json` file — gitignored; application creates an empty file on first launch if missing
 - **BrainDump**: `purrsh3ll_app_guide.md` added — comprehensive in-app guide optimized for RAG retrieval covering all features, CLI tools with flags and examples, FAQ and troubleshooting
+- **Model context window registry**: `appdata/model_ctx_registry.json` — 379+ models across 9 providers (OpenAI, Anthropic, Groq, OpenRouter, Gemini, Mistral, Together AI, HuggingFace, Ollama); used to display read-only context window info in each profile's Behavior dialog
+- **Behavior dialog**: read-only "Context window" label — shows the model's max input tokens from the registry; lookup handles `models/` prefix (Gemini) and `:variant` suffixes (OpenRouter); unknown models show `unknown model — safe default: 32 768 tokens`
+
+### Removed
+
+- **Behavior dialog — Context limit**: spinbox, reset button, info button and Ollama auto-detect thread removed — context limit is now read-only info derived from the model registry
+- **ps* tools**: tiktoken dependency and token-based history trimming removed from `psai`, `psfix`, `psnext`, `psview`, `psrag_query` — history loading replaced with last-40-entries count-based approach
+- **psreport**: map-reduce chunking in deep mode removed — all entries sent in a single request
+- **pstldr**: `--tail` flag removed — file content sent to the model in full without truncation
 
 ### Fixed
 
