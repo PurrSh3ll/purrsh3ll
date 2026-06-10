@@ -320,16 +320,15 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         if content == self._psai_tok_last:
             return
         self._psai_tok_last = content
-        try:
-            n = int(content.split(":")[1])
-            lbl = self.widgets.get("prompt_token_label")
-            if lbl is None:
-                return
-            lbl.setText(f"~{n:,} tok".replace(",", " "))
-            self._psai_tok_hide.stop()
-            self._psai_tok_hide.start(10_000)
-        except Exception:
-            pass
+        n = int(content.split(":")[1])
+        lbl = self.widgets.get("prompt_token_label")
+        if lbl is None:
+            logger.warning("_poll_psai_tok: prompt_token_label not found in widgets")
+            return
+        lbl.setText(f"~{n:,} tok".replace(",", " "))
+        lbl.repaint()
+        self._psai_tok_hide.stop()
+        self._psai_tok_hide.start(10_000)
 
     def _hide_tok_label(self):
         lbl = self.widgets.get("prompt_token_label")
