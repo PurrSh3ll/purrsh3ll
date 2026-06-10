@@ -520,8 +520,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
         msgs_to_send = list(msgs_to_send)
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}
 
-    turns = len(msgs_to_send) // 2
-    _info(f"Chatting with {model} via {provider} ({turns} turn{'s' if turns != 1 else ''} in context)…\n")
+    _info(f"Chatting with {model} via {provider}…\n")
 
     response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
 
