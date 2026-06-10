@@ -2355,12 +2355,28 @@ def build_menu(main_window):
                         delta = 16_384
                     self.setValue(max(self.minimum(), min(self.maximum(), v + steps * delta)))
 
+            if ctx_registry_val:
+                ctx_info_text = f"Context window: {ctx_registry_val:,}".replace(",", " ") + " tokens"
+            else:
+                safe_str = f"{_CTX_SAFE_DEFAULT:,}".replace(",", " ")
+                ctx_info_text = f"Context window: unknown model — safe default: {safe_str} tokens"
+            ctx_info_lbl = QLabel(ctx_info_text)
+            ctx_info_lbl.setStyleSheet("color: gray; font-size: 11px;")
+            bform.addWidget(ctx_info_lbl)
+
+            cb_ctx_override = QCheckBox("Override context window for prompt compensation")
+            cb_ctx_override.setChecked(saved_ctx >= _CTX_MIN)
+            bform.addWidget(cb_ctx_override)
+
+            ctx_override_widget = QWidget()
+            ctx_override_layout = QVBoxLayout(ctx_override_widget)
+            ctx_override_layout.setContentsMargins(0, 0, 0, 0)
+            ctx_override_layout.setSpacing(4)
+
             sb_ctx = _CtxSpinBox()
             sb_ctx.setRange(_CTX_MIN, _CTX_MAX)
             sb_ctx.setValue(ctx_initial)
             sb_ctx.setFixedWidth(100)
-
-            ctx_tokens_lbl = QLabel("tokens")
 
             ctx_reset_btn = QPushButton("Default")
             ctx_reset_btn.setFixedWidth(62)
@@ -2369,12 +2385,10 @@ def build_menu(main_window):
             ctx_reset_btn.clicked.connect(lambda: sb_ctx.setValue(ctx_default))
 
             ctx_row = QHBoxLayout()
-            ctx_row.addWidget(QLabel("Context window:"))
             ctx_row.addWidget(sb_ctx)
-            ctx_row.addWidget(ctx_tokens_lbl)
+            ctx_row.addWidget(QLabel("tokens"))
             ctx_row.addStretch(1)
             ctx_row.addWidget(ctx_reset_btn)
-            bform.addLayout(ctx_row)
 
             ctx_slider = QSlider(Qt.Orientation.Horizontal)
             ctx_slider.setRange(0, _SLIDER_STEPS)
@@ -2398,16 +2412,14 @@ def build_menu(main_window):
 
             ctx_slider.valueChanged.connect(_on_slider)
             sb_ctx.valueChanged.connect(_on_spinbox)
-            bform.addWidget(ctx_slider)
 
-            if ctx_registry_val:
-                ctx_info_text = f"Registry default: {ctx_registry_val:,}".replace(",", " ") + " tokens"
-            else:
-                safe_str = f"{_CTX_SAFE_DEFAULT:,}".replace(",", " ")
-                ctx_info_text = f"Unknown model — safe default: {safe_str} tokens"
-            ctx_info_lbl = QLabel(ctx_info_text)
-            ctx_info_lbl.setStyleSheet("color: gray; font-size: 11px;")
-            bform.addWidget(ctx_info_lbl)
+            ctx_override_layout.addLayout(ctx_row)
+            ctx_override_layout.addWidget(ctx_slider)
+
+            ctx_override_widget.setVisible(saved_ctx >= _CTX_MIN)
+            cb_ctx_override.toggled.connect(ctx_override_widget.setVisible)
+            cb_ctx_override.toggled.connect(lambda _: bdlg.adjustSize())
+            bform.addWidget(ctx_override_widget)
 
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
@@ -2492,7 +2504,7 @@ def build_menu(main_window):
             bbtn_cancel.clicked.connect(bdlg.reject)
             if bdlg.exec() != QDialog.DialogCode.Accepted:
                 return
-            profile["context_tokens"]   = sb_ctx.value()
+            profile["context_tokens"]   = sb_ctx.value() if cb_ctx_override.isChecked() else 0
             profile["disable_thinking"] = cb_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
             _raw = custom_edit.toPlainText().strip()
