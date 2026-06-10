@@ -192,22 +192,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - What's New and Check for Updates entries (coming soon popup)
 - Licenses dialog listing all open-source dependencies
 
-### Fixed
-
-- Hardcoded `/home/kali` path in `.zshrc` replaced with dynamic resolution (`${${(%):-%x}:A:h:h}`)
-- Window title shows "Early Access" instead of "CTF mode"
-- Docker `command not found` after install on Kali — added `docker-cli` and `systemctl enable docker --now`
-- Ollama installation flooding terminal output — wrapped in background spinner
-- Docker pull output suppressed with `--quiet`
-- Active profile combobox no longer covers side panels
-- HuggingFace provider switched to featherless-ai router
-- `psask` exits with a clear error message when no active API profile is set
-- Thinking/reasoning parameters sent only to models that support them
-- `psfix` Fix mode pastes silently without echoing `psfix` to the terminal
-- Voice mode green state bug after cancel/accept
-- Welcome image scales correctly with window and splitter resizes
-- Right viewport margin added to notes editor for easier panel resize
-
 ### Changed
 
 - Removed unused llama config fields from `app_config.json` (`llama_cli_path`, `llama_server_path`, `mmproj_file`, `model_path`, `cli_custom_cmd`, `webui_custom_cmd`, `ollama_model`, `ollama_disable_thinking`, `ollama_fast_answers`)
