@@ -325,6 +325,59 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._psai_tok_watcher.addPath(self._psai_tok_path)
             self._on_psai_tok_changed(self._psai_tok_path)
 
+    def _get_active_ctx_window(self):
+        """Return context window size for the active profile, or None if unknown."""
+        try:
+            with open(self.api_profiles_path, encoding="utf-8") as f:
+                data = json.load(f)
+            active_name = data.get("active", "")
+            profile = next(
+                (p for p in data.get("profiles", []) if p.get("name") == active_name),
+                None
+            )
+            if profile is None:
+                return None
+            # Use explicit override if set
+            override = int(profile.get("context_tokens") or 0)
+            if override > 0:
+                return override
+            # Look up in registry
+            reg_path = os.path.join(self.base_path, "appdata", "model_ctx_registry.json")
+            with open(reg_path, encoding="utf-8") as f:
+                reg = json.load(f)
+            provider = profile.get("provider", "").lower()
+            model = profile.get("model", "")
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            if ":" in model:
+                model = model.split(":")[0]
+            model_lc = model.lower()
+            section = reg.get(provider, {})
+            if not section:
+                return None
+            models = section.get("models", {})
+            for key, val in models.items():
+                if model_lc == key.lower():
+                    return val
+            for key, val in models.items():
+                if model == key:
+                    return val
+            for key, val in models.items():
+                if model_lc.startswith(key.lower()):
+                    return val
+            return section.get("default")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fmt_ctx(n):
+        if n >= 1_000_000:
+            v = n / 1_000_000
+            return f"{v:.0f}M" if v == int(v) else f"{v:.1f}M"
+        if n >= 1_000:
+            return f"{n // 1000}k"
+        return str(n)
+
     def _on_psai_tok_changed(self, path):
         if not self._psai_tok_watcher.files():
             self._psai_tok_watcher.addPath(self._psai_tok_path)
@@ -337,7 +390,12 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         lbl = self.widgets.get("prompt_token_label")
         if lbl is None:
             return
-        lbl.setText(f"~{n:,} tok".replace(",", " "))
+        prompt_str = f"~{n:,}".replace(",", "\u202f")
+        ctx = self._get_active_ctx_window()
+        if ctx:
+            lbl.setText(f"{prompt_str} / {self._fmt_ctx(ctx)} tok")
+        else:
+            lbl.setText(f"{prompt_str} tok")
         self._psai_tok_hide.stop()
         self._psai_tok_hide.start(10_000)
 
