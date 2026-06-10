@@ -2305,15 +2305,70 @@ def build_menu(main_window):
             bform.setSpacing(8)
 
             _CTX_SAFE_DEFAULT = 32_768
-            ctx_val = _lookup_ctx_window(profile)
-            if ctx_val:
-                ctx_text = f"{ctx_val:,}".replace(",", " ") + " tokens"
+            _CTX_MIN, _CTX_MAX = 512, 2_000_000
+            ctx_registry_val = _lookup_ctx_window(profile)
+            ctx_default = ctx_registry_val if ctx_registry_val else _CTX_SAFE_DEFAULT
+            saved_ctx = int(profile.get("context_tokens") or 0)
+            ctx_initial = saved_ctx if saved_ctx >= _CTX_MIN else ctx_default
+
+            class _CtxSpinBox(QSpinBox):
+                def textFromValue(self, v):
+                    return f"{v:,}".replace(",", " ")
+                def valueFromText(self, t):
+                    try:
+                        return int(t.replace(" ", "").replace(",", ""))
+                    except ValueError:
+                        return self.minimum()
+                def validate(self, inp, pos):
+                    from PyQt6.QtGui import QValidator
+                    clean = inp.replace(" ", "").replace(",", "")
+                    if not clean:
+                        return QValidator.State.Intermediate, inp, pos
+                    if clean.isdigit():
+                        v = int(clean)
+                        if self.minimum() <= v <= self.maximum():
+                            return QValidator.State.Acceptable, inp, pos
+                        return QValidator.State.Intermediate, inp, pos
+                    return QValidator.State.Invalid, inp, pos
+                def stepBy(self, steps):
+                    v = self.value()
+                    if v < 4_096:
+                        delta = 512
+                    elif v < 16_384:
+                        delta = 1_024
+                    elif v < 65_536:
+                        delta = 4_096
+                    elif v < 262_144:
+                        delta = 8_192
+                    else:
+                        delta = 16_384
+                    self.setValue(max(self.minimum(), min(self.maximum(), v + steps * delta)))
+
+            sb_ctx = _CtxSpinBox()
+            sb_ctx.setRange(_CTX_MIN, _CTX_MAX)
+            sb_ctx.setValue(ctx_initial)
+            sb_ctx.setSuffix(" tokens")
+
+            ctx_reset_btn = QPushButton("Default")
+            ctx_reset_btn.setFixedWidth(62)
+            default_str = f"{ctx_default:,}".replace(",", " ")
+            ctx_reset_btn.setToolTip(f"Reset to registry default: {default_str} tokens")
+            ctx_reset_btn.clicked.connect(lambda: sb_ctx.setValue(ctx_default))
+
+            ctx_row = QHBoxLayout()
+            ctx_row.addWidget(QLabel("Context window:"))
+            ctx_row.addWidget(sb_ctx)
+            ctx_row.addWidget(ctx_reset_btn)
+            bform.addLayout(ctx_row)
+
+            if ctx_registry_val:
+                ctx_info_text = f"Registry default: {ctx_registry_val:,}".replace(",", " ") + " tokens"
             else:
                 safe_str = f"{_CTX_SAFE_DEFAULT:,}".replace(",", " ")
-                ctx_text = f"unknown model — safe default: {safe_str} tokens"
-            ctx_info_label = QLabel(f"Context window:  {ctx_text}")
-            ctx_info_label.setStyleSheet("color: gray; font-size: 11px;")
-            bform.addWidget(ctx_info_label)
+                ctx_info_text = f"Unknown model — safe default: {safe_str} tokens"
+            ctx_info_lbl = QLabel(ctx_info_text)
+            ctx_info_lbl.setStyleSheet("color: gray; font-size: 11px;")
+            bform.addWidget(ctx_info_lbl)
 
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
@@ -2398,6 +2453,7 @@ def build_menu(main_window):
             bbtn_cancel.clicked.connect(bdlg.reject)
             if bdlg.exec() != QDialog.DialogCode.Accepted:
                 return
+            profile["context_tokens"]   = sb_ctx.value()
             profile["disable_thinking"] = cb_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
             _raw = custom_edit.toPlainText().strip()
