@@ -868,9 +868,8 @@ def build_main_layout(main_window):
     def create_prompt_token_label():
         lbl = QLabel("PurrSh3ll", c.widgets["central_widget"])
         lbl.setFixedHeight(22)
+        lbl.setFixedWidth(120)
         lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        lbl.setStyleSheet("font-size: 11px;")
-        lbl.adjustSize()
         c.register_widget("prompt_token_label", lbl)
 
     def create_active_profile_combo():
