@@ -505,8 +505,11 @@ def _run_llm(provider: str, model: str, prompt: str,
              disable_thinking: bool = False, custom_params: dict = None):
     """Dispatch to the correct runner based on provider."""
     try:
-        with open("/tmp/psai_tok", "w") as _f:
-            _f.write(str(max(1, len(prompt) // 4)))
+        import os as _os, time as _time
+        _tok  = max(1, len(prompt) // 4)
+        _path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "logs", "psai_tok")
+        with open(_path, "w") as _f:
+            _f.write(f"{int(_time.time() * 1000)}:{_tok}")
     except Exception:
         pass
     if provider == "ollama":

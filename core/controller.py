@@ -152,7 +152,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._update_timer.setSingleShot(True)
             self._update_timer.timeout.connect(self._do_update_modules)
 
-            self._psai_tok_mtime = 0.0
+            self._psai_tok_path = os.path.join(
+                self.base_path, "appdata", "logs", "psai_tok"
+            )
+            self._psai_tok_last = ""
             self._psai_tok_hide = QTimer()
             self._psai_tok_hide.setSingleShot(True)
             self._psai_tok_hide.timeout.connect(self._hide_tok_label)
@@ -310,15 +313,15 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def _poll_psai_tok(self):
         try:
-            mtime = os.path.getmtime("/tmp/psai_tok")
+            with open(self._psai_tok_path) as f:
+                content = f.read().strip()
         except OSError:
             return
-        if mtime <= self._psai_tok_mtime:
+        if content == self._psai_tok_last:
             return
-        self._psai_tok_mtime = mtime
+        self._psai_tok_last = content
         try:
-            with open("/tmp/psai_tok") as f:
-                n = int(f.read().strip())
+            n = int(content.split(":")[1])
             lbl = self.widgets.get("prompt_token_label")
             if lbl is None:
                 return

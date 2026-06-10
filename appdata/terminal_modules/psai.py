@@ -373,9 +373,11 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
     try:
-        _tok = max(1, sum(len(m.get("content", "")) for m in messages) // 4)
-        with open("/tmp/psai_tok", "w") as _f:
-            _f.write(str(_tok))
+        import time as _time
+        _tok  = max(1, sum(len(m.get("content", "")) for m in messages) // 4)
+        _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "psai_tok")
+        with open(_path, "w") as _f:
+            _f.write(f"{int(_time.time() * 1000)}:{_tok}")
     except Exception:
         pass
     if provider == "anthropic":
