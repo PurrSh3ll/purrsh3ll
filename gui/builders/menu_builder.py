@@ -2361,7 +2361,7 @@ def build_menu(main_window):
                 safe_str = f"{_CTX_SAFE_DEFAULT:,}".replace(",", " ")
                 ctx_info_text = f"Context window: unknown model — safe default: {safe_str} tokens"
             ctx_info_lbl = QLabel(ctx_info_text)
-            ctx_info_lbl.setStyleSheet("color: gray; font-size: 11px;")
+            ctx_info_lbl.setStyleSheet("font-size: 11px;")
             bform.addWidget(ctx_info_lbl)
 
             cb_ctx_override = QCheckBox("Override context window for prompt compensation")
@@ -2417,8 +2417,14 @@ def build_menu(main_window):
             ctx_override_layout.addWidget(ctx_slider)
 
             ctx_override_widget.setVisible(saved_ctx >= _CTX_MIN)
-            cb_ctx_override.toggled.connect(ctx_override_widget.setVisible)
-            cb_ctx_override.toggled.connect(lambda _: bdlg.adjustSize())
+
+            def _on_ctx_override_toggled(checked):
+                ctx_override_widget.setVisible(checked)
+                w = bdlg.width()
+                bdlg.adjustSize()
+                bdlg.resize(w, bdlg.height())
+
+            cb_ctx_override.toggled.connect(_on_ctx_override_toggled)
             bform.addWidget(ctx_override_widget)
 
             saved_custom = profile.get("custom_params", "")
