@@ -192,17 +192,4 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - What's New and Check for Updates entries (coming soon popup)
 - Licenses dialog listing all open-source dependencies
 
-### Changed
 
-- Removed unused llama config fields from `app_config.json` (`llama_cli_path`, `llama_server_path`, `mmproj_file`, `model_path`, `cli_custom_cmd`, `webui_custom_cmd`, `ollama_model`, `ollama_disable_thinking`, `ollama_fast_answers`)
-- Runtime files `session.json` and `ob_panel_state.json` removed from git tracking
-- `psask` renamed to `psrag` for RAG queries; unified AI assistant added as `psai.py`
-
----
-
-## Notes
-
-- Ollama LLM models are not bundled — each model is downloaded separately on demand (2–8 GB per model)
-- Full installation with all components may take 10–20 minutes depending on internet speed
-- Voice support requires optional packages (selectable in the interactive installer)
-- Python venv is approximately 1.4–1.5 GB (dominated by PyQt6 + onnxruntime)
