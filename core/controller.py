@@ -394,8 +394,11 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         ctx = self._get_active_ctx_window()
         if ctx:
             pct = round(n / ctx * 100, 1)
-            pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
-            lbl.setText(f"{prompt_str} / {self._fmt_ctx(ctx)} tok · {pct_str}")
+            if n > ctx:
+                lbl.setText(f"⛔ CTX_OVER {prompt_str} / {self._fmt_ctx(ctx)} tok")
+            else:
+                pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
+                lbl.setText(f"{prompt_str} / {self._fmt_ctx(ctx)} tok · {pct_str}")
         else:
             lbl.setText(f"{prompt_str} tok")
         self._psai_tok_hide.stop()
