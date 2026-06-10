@@ -438,7 +438,6 @@ def build_menu(main_window):
             • <a href="https://pypi.org/project/jeepney/">jeepney 0.9.0</a> – MIT<br>
             • <a href="https://pypi.org/project/pymupdf/">PyMuPDF (fitz)</a> – AGPL v3<br>
             • <a href="https://pypi.org/project/mutagen/">mutagen</a> – GPL v2<br>
-            • <a href="https://pypi.org/project/tiktoken/">tiktoken</a> – MIT<br>
             • <a href="https://github.com/UKPLab/sentence-transformers">sentence-transformers</a> – Apache 2.0<br><br>
 
             <b>Voice &amp; Audio</b><br>
