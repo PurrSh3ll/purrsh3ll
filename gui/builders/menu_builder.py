@@ -2253,6 +2253,31 @@ def build_menu(main_window):
                 "url":      fields["url"].text().strip(),
             }
 
+        def _lookup_ctx_window(profile):
+            """Return context window (int) for the given profile, or None if unknown."""
+            try:
+                _reg_path = os.path.join(
+                    getattr(c, "base_path", _base_dir_prov), "appdata", "model_ctx_registry.json"
+                )
+                with open(_reg_path, encoding="utf-8") as _f:
+                    _reg = json.load(_f)
+            except Exception:
+                return None
+            provider = profile.get("provider", "").lower()
+            model    = profile.get("model", "").lower()
+            section  = _reg.get(provider, {})
+            if not section:
+                return None
+            models = section.get("models", {})
+            # exact match first, then prefix match
+            for key, val in models.items():
+                if model == key.lower():
+                    return val
+            for key, val in models.items():
+                if model.startswith(key.lower()):
+                    return val
+            return section.get("default")
+
         def _on_behavior(row):
             profile = _table_row_to_dict(row)
             bdlg = QDialog(dlg)
@@ -2266,6 +2291,15 @@ def build_menu(main_window):
             bform = QVBoxLayout(bdlg)
             bform.setContentsMargins(16, 16, 16, 12)
             bform.setSpacing(8)
+
+            ctx_val = _lookup_ctx_window(profile)
+            if ctx_val:
+                ctx_text = f"{ctx_val:,}".replace(",", " ") + " tokens"
+            else:
+                ctx_text = "unknown"
+            ctx_info_label = QLabel(f"Context window:  {ctx_text}")
+            ctx_info_label.setStyleSheet("color: gray; font-size: 11px;")
+            bform.addWidget(ctx_info_label)
 
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
