@@ -670,6 +670,7 @@ def main():
                 print(f"  \033[90m• {src}  (score={score:.3f})\033[0m", file=sys.stderr)
         print(file=sys.stderr)
 
+    prompt = _build_prompt(query, chunks)
     if fast_answers:
         prompt += _FAST_SUFFIX
     _info(f"Querying {model} via {provider}…\n")
