@@ -249,7 +249,10 @@ success "System dependencies ready"
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
     info "Repository already exists — pulling latest changes..."
-    git -C "$INSTALL_DIR" pull --ff-only
+    if ! git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null; then
+        warn "git pull --ff-only failed (local changes or diverged branch) — skipping update."
+        warn "To update manually: cd $INSTALL_DIR && git pull"
+    fi
 else
     info "Cloning PurrSh3ll..."
     git clone "$REPO_URL" "$INSTALL_DIR"
@@ -333,7 +336,11 @@ fi
 if [[ "$INSTALL_EMBED_MODEL" == true ]]; then
     EMBED_CACHE_DIR="$INSTALL_DIR/appdata/rag/models"
     mkdir -p "$EMBED_CACHE_DIR"
-    if run_with_spinner "Downloading paraphrase-multilingual-MiniLM-L12-v2..." \
+    # Check if model ONNX files already exist to skip re-download
+    if find "$EMBED_CACHE_DIR" -name "*.onnx" 2>/dev/null | grep -q .; then
+        EMBED_OK=true
+        success "Embedding model already present — skipping download"
+    elif run_with_spinner "Downloading paraphrase-multilingual-MiniLM-L12-v2..." \
         "$VENV_DIR/bin/python3" -c "
 from fastembed import TextEmbedding
 import os
@@ -352,6 +359,12 @@ fi
 
 info "Installing QTermWidget..."
 WHEEL_CACHE="/tmp/$WHEEL_NAME"
+
+# Remove cached file if it looks incomplete (< 100 KB — real wheel is ~3 MB)
+if [[ -f "$WHEEL_CACHE" ]] && [[ $(stat -c%s "$WHEEL_CACHE" 2>/dev/null || echo 0) -lt 102400 ]]; then
+    warn "Cached QTermWidget wheel appears incomplete — re-downloading."
+    rm -f "$WHEEL_CACHE"
+fi
 
 if [[ ! -f "$WHEEL_CACHE" ]]; then
     if command -v curl &>/dev/null; then
@@ -434,21 +447,28 @@ if [[ "$INSTALL_AICHAT" == true ]]; then
     else
         info "Installing aichat v${AICHAT_VERSION}..."
         AICHAT_TMP=$(mktemp -d)
-        curl -fsSL "$AICHAT_URL" -o "$AICHAT_TMP/aichat.tar.gz"
-        tar -xzf "$AICHAT_TMP/aichat.tar.gz" -C "$AICHAT_TMP"
-        sudo install -m 755 "$AICHAT_TMP/aichat" /usr/local/bin/aichat
+        if curl -fsSL "$AICHAT_URL" -o "$AICHAT_TMP/aichat.tar.gz" 2>>/tmp/_purrsh3ll_install.log \
+                && tar -xzf "$AICHAT_TMP/aichat.tar.gz" -C "$AICHAT_TMP" 2>>/tmp/_purrsh3ll_install.log \
+                && sudo install -m 755 "$AICHAT_TMP/aichat" /usr/local/bin/aichat 2>>/tmp/_purrsh3ll_install.log; then
+            AICHAT_OK=true
+            success "aichat installed → /usr/local/bin/aichat"
+        else
+            warn "aichat installation failed — check /tmp/_purrsh3ll_install.log"
+        fi
         rm -rf "$AICHAT_TMP"
-        AICHAT_OK=true
-        success "aichat installed → /usr/local/bin/aichat"
     fi
 fi
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
+# Detect Docker regardless of whether user selected it — needed for image pulls
+if command -v docker &>/dev/null; then
+    DOCKER_OK=true
+fi
+
 if [[ "$INSTALL_DOCKER" == true ]]; then
-    if command -v docker &>/dev/null; then
+    if [[ "$DOCKER_OK" == true ]]; then
         success "Docker already installed ($(docker --version))"
-        DOCKER_OK=true
     else
         # DEBIAN_FRONTEND=noninteractive suppresses the interactive blue debconf screen
         # stderr goes to log, stdout filtered to meaningful apt/installer lines only
