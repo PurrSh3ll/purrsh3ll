@@ -54,9 +54,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **BrainDump**: `purrsh3ll_app_guide.md` added — comprehensive in-app guide optimized for RAG retrieval covering all features, CLI tools with flags and examples, FAQ and troubleshooting
 - **Model context window registry**: `appdata/model_ctx_registry.json` — 379+ models across 9 providers (OpenAI, Anthropic, Groq, OpenRouter, Gemini, Mistral, Together AI, HuggingFace, Ollama); used to display read-only context window info in each profile's Behavior dialog
 - **Behavior dialog**: read-only "Context window" label — shows the model's max input tokens from the registry; lookup handles `models/` prefix (Gemini) and `:variant` suffixes (OpenRouter); unknown models show `unknown model — safe default: 32 768 tokens`
+- **Behavior dialog**: editable context window override — spinbox + logarithmic slider (512–2 000 000 tokens), hidden under "Override context window for prompt compensation" checkbox; value saved per-profile as `context_tokens`; "Default" button resets to registry value
+- **Token label**: prompt token count displayed in bottom-left corner after each `psai`/`psrag` call — shows `~N / Xk tok · X%` (estimated prompt tokens, model context window, fill percentage); reverts to `PurrSh3ll` after 10 seconds; displays `⛔ CTX_OVER` when prompt exceeds context window
+- **Token label**: PIL-based image token estimation for multimodal messages — uses OpenAI tile formula `ceil(w/512)*ceil(h/512)*170+85`; falls back to 512-token flat estimate if Pillow unavailable
+- **psrag**: `_build_prompt(query, chunks)` now called before `_run_llm` — fixes `UnboundLocalError` on every query
+- **psview**: multimodal messages normalized to Ollama native format before sending — extracts base64 images into `images` array and joins text parts into plain string; fixes HTTP 400 on Ollama vision models
+- **Installer**: `OLLAMA_OK` and `AICHAT_OK` flags set when tools already installed — fixes summary showing `✗ failed` for pre-installed components
+- **Installer**: Open WebUI and WebMap Docker images skipped if already present locally (`docker image inspect`) — avoids re-pull on every re-run
+- **Installer**: Docker presence detected independently of checklist selection — Open WebUI/WebMap pulls now work when Docker is pre-installed but not selected
+- **Installer**: embedding model download skipped if `.onnx` files already present in cache directory
+- **Installer**: `git pull --ff-only` failure is non-fatal — shows warning and continues instead of aborting
+- **Installer**: incomplete QTermWidget wheel cache removed automatically (< 100 KB) and re-downloaded
+- **Installer**: aichat install wrapped in error handling — shows `warn` on failure instead of crashing with `set -e`
 
 ### Removed
 
+- **tiktoken**: removed from About/licenses dialog and uninstalled from venv — no longer used anywhere in the project
 - **Behavior dialog — Context limit**: spinbox, reset button, info button and Ollama auto-detect thread removed — context limit is now read-only info derived from the model registry
 - **ps* tools**: tiktoken dependency and token-based history trimming removed from `psai`, `psfix`, `psnext`, `psview`, `psrag_query` — history loading replaced with last-40-entries count-based approach
 - **psreport**: map-reduce chunking in deep mode removed — all entries sent in a single request
@@ -100,6 +113,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **psopen**: directories now open silently in the default file manager (`xdg-open`)
 - **psopen**: removed `PurrSh3ll opened >>` confirmation text from terminal output
 - **Snippets**: placeholder dialog is now non-modal — other windows (terminal, tabs) remain accessible while filling in values; all placeholders shown at once in a single form
+- **psview**: always showed 1 token regardless of image size — `len()` on multimodal content list returned list length instead of character count; fixed by `_estimate_prompt_tokens()` with PIL-based image size detection
+- **psrag**: `UnboundLocalError: cannot access local variable 'prompt'` on every query — `_build_prompt()` was defined but never called in `main()`
+- **psview + Ollama**: HTTP 400 `cannot unmarshal array into Go struct field ChatRequest.messages.content of type string` — Ollama native `/api/chat` requires `content` as string + `images` as separate list; fixed by normalizing messages in `_stream_ollama_native`
+- **QFileSystemWatcher / token label**: `QFileSystemWatcher` and `QTimer` were created in `Controller.__init__` before `QApplication` existed (module-level import ordering) — inotify registration failed silently; moved to `setup_psai_tok_watcher()` called via `QTimer.singleShot(0, ...)` in `_install_filters()`
 
 ---
 
