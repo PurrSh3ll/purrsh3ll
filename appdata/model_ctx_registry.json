@@ -277,7 +277,14 @@
       "minimax/minimax-m2.5": 196608,
       "openrouter/auto": 2000000,
       "openrouter/free": 200000,
-      "openrouter/bodybuilder": 128000
+      "openrouter/bodybuilder": 128000,
+      "deepseek/deepseek-v4-flash": 163840,
+      "google/gemma-4-31b-it": 131072,
+      "google/gemma-4-12b-it": 131072,
+      "qwen/qwen3.6-35b-a3b": 262144,
+      "qwen/qwen3.6-27b": 262144,
+      "qwen/qwen3.6-4b": 131072,
+      "qwen/qwen3.6-14b": 262144
     }
   },
   "gemini": {
@@ -331,7 +338,12 @@
       "gemini-2.5-flash-native-audio-preview-09-2025": 1048576,
       "gemini-2.5-flash-native-audio-preview-12-2025": 1048576,
       "gemini-3.1-flash-live-preview": 131072,
-      "gemini-pro-latest": 1048576
+      "gemini-pro-latest": 1048576,
+      "gemma-4-27b-it": 131072,
+      "gemma-4-12b-it": 131072,
+      "gemma-4-4b-it": 131072,
+      "gemma-4-1b-it": 32768,
+      "gemma-4-26b-a4b-it": 131072
     }
   },
   "mistral": {
@@ -419,5 +431,42 @@
     "default": 4096,
     "user_override": null,
     "note": "Context window estimated from system RAM at runtime"
+  },
+  "huggingface": {
+    "default": null,
+    "models": {
+      "Qwen/Qwen3-0.6B": 32768,
+      "Qwen/Qwen3-1.7B": 32768,
+      "Qwen/Qwen3-4B": 32768,
+      "Qwen/Qwen3-7B": 32768,
+      "Qwen/Qwen3-8B": 131072,
+      "Qwen/Qwen3-14B": 131072,
+      "Qwen/Qwen3-32B": 131072,
+      "Qwen/Qwen3-30B-A3B": 131072,
+      "Qwen/Qwen3-235B-A22B": 131072,
+      "Qwen/Qwen2.5-7B-Instruct": 131072,
+      "Qwen/Qwen2.5-14B-Instruct": 131072,
+      "Qwen/Qwen2.5-32B-Instruct": 131072,
+      "Qwen/Qwen2.5-72B-Instruct": 131072,
+      "Qwen/Qwen2.5-Coder-32B-Instruct": 131072,
+      "deepseek-ai/DeepSeek-R1": 65536,
+      "deepseek-ai/DeepSeek-R1-0528": 65536,
+      "deepseek-ai/DeepSeek-V3": 65536,
+      "deepseek-ai/DeepSeek-V3-0324": 65536,
+      "deepseek-ai/DeepSeek-V4-Flash": 163840,
+      "deepseek-ai/DeepSeek-Prover-V2": 32768,
+      "meta-llama/Llama-3.1-8B-Instruct": 131072,
+      "meta-llama/Llama-3.1-70B-Instruct": 131072,
+      "meta-llama/Llama-3.2-3B-Instruct": 131072,
+      "meta-llama/Llama-3.3-70B-Instruct": 131072,
+      "meta-llama/Llama-3.1-405B-Instruct": 131072,
+      "mistralai/Mistral-7B-Instruct-v0.3": 32768,
+      "mistralai/Mixtral-8x7B-Instruct-v0.1": 32768,
+      "mistralai/Mistral-Nemo-Instruct-2407": 131072,
+      "google/gemma-3-27b-it": 131072,
+      "google/gemma-3-12b-it": 131072,
+      "openai/gpt-oss-120b": 131072,
+      "openai/gpt-oss-20b": 131072
+    }
   }
 }

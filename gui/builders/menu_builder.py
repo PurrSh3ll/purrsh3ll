@@ -2264,17 +2264,30 @@ def build_menu(main_window):
             except Exception:
                 return None
             provider = profile.get("provider", "").lower()
-            model    = profile.get("model", "").lower()
+            model    = profile.get("model", "")
+            # Normalize model name:
+            # 1. Strip "models/" prefix (Gemini API format: "models/gemini-2.5-flash")
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            # 2. Strip OpenRouter variant suffixes (":free", ":extended", ":nitro", etc.)
+            if ":" in model:
+                model = model.split(":")[0]
+            model_lc = model.lower()
             section  = _reg.get(provider, {})
             if not section:
                 return None
             models = section.get("models", {})
-            # exact match first, then prefix match
+            # exact match (case-insensitive)
             for key, val in models.items():
-                if model == key.lower():
+                if model_lc == key.lower():
                     return val
+            # exact match preserving original case (for HuggingFace Qwen/Qwen3-4B style)
             for key, val in models.items():
-                if model.startswith(key.lower()):
+                if model == key:
+                    return val
+            # prefix match (case-insensitive)
+            for key, val in models.items():
+                if model_lc.startswith(key.lower()):
                     return val
             return section.get("default")
 
