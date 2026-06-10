@@ -154,6 +154,9 @@ def change_theme(controller):
         # Profile combobox in the toolbar
         _style_combo(c.widgets.get("global_active_profile_combo"))
         welcome_label.setStyleSheet(s["qss_QLabel_welcome"])
+        _token_lbl = c.widgets.get("prompt_token_label")
+        if _token_lbl is not None:
+            _token_lbl.setStyleSheet(s["qss_QLabel"] + " font-size: 11px;")
 
         chat_panel.setStyleSheet(s["qss_QFrame"])
         if chat_future_label:
