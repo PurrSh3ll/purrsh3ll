@@ -1,6 +1,6 @@
 import logging
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
@@ -155,13 +155,17 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._psai_tok_path = os.path.join(
                 self.base_path, "appdata", "logs", "psai_tok"
             )
-            self._psai_tok_last = ""
             self._psai_tok_hide = QTimer()
             self._psai_tok_hide.setSingleShot(True)
             self._psai_tok_hide.timeout.connect(self._hide_tok_label)
-            self._psai_tok_poll = QTimer()
-            self._psai_tok_poll.timeout.connect(self._poll_psai_tok)
-            self._psai_tok_poll.start(1000)
+            self._psai_tok_watcher = QFileSystemWatcher()
+            self._psai_tok_watcher.addPath(
+                os.path.join(self.base_path, "appdata", "logs")
+            )
+            if os.path.exists(self._psai_tok_path):
+                self._psai_tok_watcher.addPath(self._psai_tok_path)
+            self._psai_tok_watcher.fileChanged.connect(self._on_psai_tok_changed)
+            self._psai_tok_watcher.directoryChanged.connect(self._on_psai_logs_dir_changed)
 
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
@@ -311,22 +315,25 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     def get_widget(self, name: str):
         return Controller.widgets.get(name)
 
-    def _poll_psai_tok(self):
+    def _on_psai_logs_dir_changed(self, _path):
+        if (os.path.exists(self._psai_tok_path) and
+                self._psai_tok_path not in self._psai_tok_watcher.files()):
+            self._psai_tok_watcher.addPath(self._psai_tok_path)
+            self._on_psai_tok_changed(self._psai_tok_path)
+
+    def _on_psai_tok_changed(self, path):
+        if not self._psai_tok_watcher.files():
+            self._psai_tok_watcher.addPath(self._psai_tok_path)
         try:
             with open(self._psai_tok_path) as f:
                 content = f.read().strip()
-        except OSError:
+            n = int(content.split(":")[1])
+        except Exception:
             return
-        if content == self._psai_tok_last:
-            return
-        self._psai_tok_last = content
-        n = int(content.split(":")[1])
         lbl = self.widgets.get("prompt_token_label")
         if lbl is None:
-            logger.warning("_poll_psai_tok: prompt_token_label not found in widgets")
             return
         lbl.setText(f"~{n:,} tok".replace(",", " "))
-        lbl.repaint()
         self._psai_tok_hide.stop()
         self._psai_tok_hide.start(10_000)
 
