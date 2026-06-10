@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
     QListView, QListWidget, QListWidgetItem, QMessageBox, QTabWidget, QSizePolicy,
-    QToolButton,
+    QToolButton, QSlider,
 )
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -2304,8 +2304,19 @@ def build_menu(main_window):
             bform.setContentsMargins(16, 16, 16, 12)
             bform.setSpacing(8)
 
+            from math import log, exp
             _CTX_SAFE_DEFAULT = 32_768
             _CTX_MIN, _CTX_MAX = 512, 2_000_000
+            _SLIDER_STEPS = 1000
+            _LOG_MIN = log(_CTX_MIN)
+            _LOG_MAX = log(_CTX_MAX)
+
+            def _val_to_pos(v):
+                return int(_SLIDER_STEPS * (log(max(v, _CTX_MIN)) - _LOG_MIN) / (_LOG_MAX - _LOG_MIN))
+
+            def _pos_to_val(p):
+                return int(exp(_LOG_MIN + (p / _SLIDER_STEPS) * (_LOG_MAX - _LOG_MIN)))
+
             ctx_registry_val = _lookup_ctx_window(profile)
             ctx_default = ctx_registry_val if ctx_registry_val else _CTX_SAFE_DEFAULT
             saved_ctx = int(profile.get("context_tokens") or 0)
@@ -2347,7 +2358,9 @@ def build_menu(main_window):
             sb_ctx = _CtxSpinBox()
             sb_ctx.setRange(_CTX_MIN, _CTX_MAX)
             sb_ctx.setValue(ctx_initial)
-            sb_ctx.setSuffix(" tokens")
+            sb_ctx.setFixedWidth(100)
+
+            ctx_tokens_lbl = QLabel("tokens")
 
             ctx_reset_btn = QPushButton("Default")
             ctx_reset_btn.setFixedWidth(62)
@@ -2358,8 +2371,34 @@ def build_menu(main_window):
             ctx_row = QHBoxLayout()
             ctx_row.addWidget(QLabel("Context window:"))
             ctx_row.addWidget(sb_ctx)
+            ctx_row.addWidget(ctx_tokens_lbl)
+            ctx_row.addStretch(1)
             ctx_row.addWidget(ctx_reset_btn)
             bform.addLayout(ctx_row)
+
+            ctx_slider = QSlider(Qt.Orientation.Horizontal)
+            ctx_slider.setRange(0, _SLIDER_STEPS)
+            ctx_slider.setValue(_val_to_pos(ctx_initial))
+
+            _ctx_updating = [False]
+
+            def _on_slider(pos):
+                if _ctx_updating[0]:
+                    return
+                _ctx_updating[0] = True
+                sb_ctx.setValue(_pos_to_val(pos))
+                _ctx_updating[0] = False
+
+            def _on_spinbox(val):
+                if _ctx_updating[0]:
+                    return
+                _ctx_updating[0] = True
+                ctx_slider.setValue(_val_to_pos(val))
+                _ctx_updating[0] = False
+
+            ctx_slider.valueChanged.connect(_on_slider)
+            sb_ctx.valueChanged.connect(_on_spinbox)
+            bform.addWidget(ctx_slider)
 
             if ctx_registry_val:
                 ctx_info_text = f"Registry default: {ctx_registry_val:,}".replace(",", " ") + " tokens"
