@@ -82,23 +82,8 @@ _DEFAULT_URLS = {
 
 _MAX_HISTORY = 40  # max messages kept in chat session (20 turns)
 
-_STATS_FILE = "psai_prompt_stats.json"
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _write_prompt_stats(messages: list, base_dir: str) -> None:
-    """Estimate prompt token count and write to appdata/logs/psai_prompt_stats.json."""
-    try:
-        import time as _time
-        total_chars = sum(len(m.get("content", "")) for m in messages)
-        est_tokens  = max(1, total_chars // 4)
-        stats_path  = os.path.join(base_dir, "appdata", "logs", _STATS_FILE)
-        with open(stats_path, "w", encoding="utf-8") as _f:
-            json.dump({"prompt_tokens_est": est_tokens, "ts": _time.time()}, _f)
-    except Exception:
-        pass
-
 
 def _info(msg: str):
     print(f"\033[90m[psai] {msg}\033[0m", file=sys.stderr)
@@ -473,9 +458,8 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
         query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
 
     _info(f"Querying {model} via {provider}…\n")
-    _msgs = [{"role": "user", "content": query}]
-    _write_prompt_stats(_msgs, base_dir)
-    _run_llm(provider, model, _msgs, url, api_key, disable_thinking, custom_params)
+    _run_llm(provider, model, [{"role": "user", "content": query}],
+             url, api_key, disable_thinking, custom_params)
 
 
 # ── Mode: chat ────────────────────────────────────────────────────────────────
@@ -537,7 +521,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}
 
     _info(f"Chatting with {model} via {provider}…\n")
-    _write_prompt_stats(msgs_to_send, base_dir)
+
     response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
 
     if response:

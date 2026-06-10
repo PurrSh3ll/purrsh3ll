@@ -152,17 +152,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._update_timer.setSingleShot(True)
             self._update_timer.timeout.connect(self._do_update_modules)
 
-            self._psai_stats_path = os.path.join(
-                self.base_path, "appdata", "logs", "psai_prompt_stats.json"
-            )
-            self._psai_last_mtime = 0.0
-            self._psai_token_hide_timer = QTimer()
-            self._psai_token_hide_timer.setSingleShot(True)
-            self._psai_token_hide_timer.timeout.connect(self._hide_prompt_token_label)
-            self._psai_poll_timer = QTimer()
-            self._psai_poll_timer.timeout.connect(self._poll_psai_stats)
-            self._psai_poll_timer.start(1000)
-
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
                 f"{self.base_path}/appdata/scripts_help",
@@ -310,36 +299,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def get_widget(self, name: str):
         return Controller.widgets.get(name)
-
-    def _poll_psai_stats(self):
-        """Check if psai_prompt_stats.json was updated; show token label if so."""
-        try:
-            mtime = os.path.getmtime(self._psai_stats_path)
-        except OSError:
-            return
-        if mtime <= self._psai_last_mtime:
-            return
-        self._psai_last_mtime = mtime
-        try:
-            with open(self._psai_stats_path, encoding="utf-8") as f:
-                data = json.load(f)
-            n = data.get("prompt_tokens_est", 0)
-            lbl = self.widgets.get("prompt_token_label")
-            if lbl is None:
-                return
-            lbl.setText(f"~{n:,} tok".replace(",", " "))
-            lbl.adjustSize()
-            self.set_position_active_profile_combo()
-            lbl.show()
-            self._psai_token_hide_timer.stop()
-            self._psai_token_hide_timer.start(10_000)
-        except Exception:
-            pass
-
-    def _hide_prompt_token_label(self):
-        lbl = self.widgets.get("prompt_token_label")
-        if lbl is not None:
-            lbl.hide()
 
     def load_themes(self):
         try:
