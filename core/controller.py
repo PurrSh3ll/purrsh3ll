@@ -155,17 +155,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._psai_tok_path = os.path.join(
                 self.base_path, "appdata", "logs", "psai_tok"
             )
-            self._psai_tok_hide = QTimer()
-            self._psai_tok_hide.setSingleShot(True)
-            self._psai_tok_hide.timeout.connect(self._hide_tok_label)
-            self._psai_tok_watcher = QFileSystemWatcher()
-            self._psai_tok_watcher.addPath(
-                os.path.join(self.base_path, "appdata", "logs")
-            )
-            if os.path.exists(self._psai_tok_path):
-                self._psai_tok_watcher.addPath(self._psai_tok_path)
-            self._psai_tok_watcher.fileChanged.connect(self._on_psai_tok_changed)
-            self._psai_tok_watcher.directoryChanged.connect(self._on_psai_logs_dir_changed)
+            self._psai_tok_hide = None
+            self._psai_tok_watcher = None
 
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
@@ -314,6 +305,19 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def get_widget(self, name: str):
         return Controller.widgets.get(name)
+
+    def setup_psai_tok_watcher(self):
+        self._psai_tok_hide = QTimer()
+        self._psai_tok_hide.setSingleShot(True)
+        self._psai_tok_hide.timeout.connect(self._hide_tok_label)
+        self._psai_tok_watcher = QFileSystemWatcher()
+        self._psai_tok_watcher.addPath(
+            os.path.join(self.base_path, "appdata", "logs")
+        )
+        if os.path.exists(self._psai_tok_path):
+            self._psai_tok_watcher.addPath(self._psai_tok_path)
+        self._psai_tok_watcher.fileChanged.connect(self._on_psai_tok_changed)
+        self._psai_tok_watcher.directoryChanged.connect(self._on_psai_logs_dir_changed)
 
     def _on_psai_logs_dir_changed(self, _path):
         if (os.path.exists(self._psai_tok_path) and

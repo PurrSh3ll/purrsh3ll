@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.c.center_welcome_text)
         QTimer.singleShot(0, self.c.set_position_active_profile_combo)
         QTimer.singleShot(0, self.c.restore_session)
+        QTimer.singleShot(0, self.c.setup_psai_tok_watcher)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
