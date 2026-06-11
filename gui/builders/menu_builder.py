@@ -1013,7 +1013,30 @@ def build_menu(main_window):
         _DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
         _saved_rerank_model   = _rag_cfg.get("rerank_model", _DEFAULT_RERANK_MODEL)
 
-        rag_rerank_combo = QComboBox(grp_rag)
+        rag_rerank_combo = _ScrollableComboBox(grp_rag)
+        rag_rerank_combo.setScrollBarStyleSheet(f"""
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {_emb_bg.get("scroll", "#555555")};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {_emb_bg.get("scroll_handle", "#707070")};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0; background: none; border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: {_emb_bg.get("scroll_area", "#1E1F22")};
+            }}
+        """)
         for _label, _val in _RERANK_MODELS:
             _sfx = "  ✓ downloaded" if _is_cached(_val, _rnk_cache_map) else ""
             rag_rerank_combo.addItem(_label + _sfx, _val)
