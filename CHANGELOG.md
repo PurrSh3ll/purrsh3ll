@@ -60,6 +60,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Token label**: PIL-based image token estimation for multimodal messages — uses OpenAI tile formula `ceil(w/512)*ceil(h/512)*170+85`; falls back to 512-token flat estimate if Pillow unavailable
 - **psai**: inference stats line printed after each response — `↑1587 ↓408 tok  ·  12.4 tok/s  ·  34.1s`; input tokens shown when available (Ollama, Anthropic, OpenAI-compat with `stream_options`)
 - **psai**: OpenRouter input token count now captured from usage field in last streaming chunk — fixes missing `↑` arrow in stats line
+- **AI Settings → ps* tools**: three new checkboxes — "Show inference stats after response" (`psai_show_stats`), "Show 'Querying model…' info line" (`psai_show_querying`), "Auto-open psfix on command error" (`psfix_auto_open`); all enabled by default
+- **pstldr**: PDF files now supported — text extracted via PyMuPDF (`fitz`) with automatic fallback to `pypdf`; all pages sent to the model without truncation
 - **psrag**: `_build_prompt(query, chunks)` now called before `_run_llm` — fixes `UnboundLocalError` on every query
 - **psview**: multimodal messages normalized to Ollama native format before sending — extracts base64 images into `images` array and joins text parts into plain string; fixes HTTP 400 on Ollama vision models
 - **Installer**: `OLLAMA_OK` and `AICHAT_OK` flags set when tools already installed — fixes summary showing `✗ failed` for pre-installed components
