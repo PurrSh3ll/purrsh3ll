@@ -397,8 +397,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             if n > ctx:
                 lbl.setText(f"⛔ CTX_OVER {prompt_str} / {self._fmt_ctx(ctx)} tok")
             else:
-                pct_str = f"{pct:.0f}% ctx" if pct >= 1 else "<1% ctx"
-                lbl.setText(pct_str)
+                filled = round(pct / 10)
+                bar = "▓" * filled + "░" * (10 - filled)
+                pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
+                lbl.setText(f"{bar} {pct_str}")
         else:
             lbl.setText(f"{prompt_str} tok")
         self._psai_tok_hide.stop()
