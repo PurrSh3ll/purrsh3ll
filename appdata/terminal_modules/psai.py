@@ -91,9 +91,10 @@ def _info(msg: str):
 def _err(msg: str):
     print(f"\033[31m[psai] Error: {msg}\033[0m", file=sys.stderr)
 
-def _print_stats(out_tok: int, elapsed: float, tps: float):
+def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
     """Print dim gray inference stats line to stderr after model response."""
-    parts = [f"↓{out_tok} tok"]
+    tok_str = f"↓{out_tok} tok" if not in_tok else f"↑{in_tok} ↓{out_tok} tok"
+    parts = [tok_str]
     if tps > 0:
         parts.append(f"{tps:.1f} tok/s")
     parts.append(f"{elapsed:.1f}s")
@@ -217,6 +218,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
     _t_first        = [None]
     _eval_count     = [0]
     _eval_dur_ns    = [0]
+    _prompt_count   = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -246,8 +248,9 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                         sys.stdout.flush()
                         collected.append(content)
                     if d.get("done"):
-                        _eval_count[0]  = d.get("eval_count", 0)
-                        _eval_dur_ns[0] = d.get("eval_duration", 0)
+                        _eval_count[0]   = d.get("eval_count", 0)
+                        _eval_dur_ns[0]  = d.get("eval_duration", 0)
+                        _prompt_count[0] = d.get("prompt_eval_count", 0)
                         break
                 except Exception:
                     pass
@@ -263,7 +266,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
             _tps = _out_tok / _gen if _gen > 0 else 0
         else:
             _tps = 0
-        _print_stats(_out_tok, _elapsed, _tps)
+        _print_stats(_out_tok, _elapsed, _tps, in_tok=_prompt_count[0])
     except KeyboardInterrupt:
         if _in_thinking[0]:
             sys.stdout.write("\033[0m")
@@ -322,6 +325,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     _t_start     = _time.time()
     _t_first     = [None]
     _compl_tok   = [0]
+    _prompt_tok  = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -335,7 +339,8 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     d = json.loads(data_str)
                     # usage chunk (stream_options): choices is empty
                     if not d.get("choices") and d.get("usage"):
-                        _compl_tok[0] = d["usage"].get("completion_tokens", 0)
+                        _compl_tok[0]  = d["usage"].get("completion_tokens", 0)
+                        _prompt_tok[0] = d["usage"].get("prompt_tokens", 0)
                         continue
                     delta    = d["choices"][0]["delta"]
                     thinking = delta.get("reasoning", "")
@@ -366,7 +371,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         _out_tok = _compl_tok[0] or max(1, len("".join(collected)) // 4)
         _gen = (_elapsed - (_t_first[0] - _t_start)) if _t_first[0] else _elapsed
         _tps = _out_tok / _gen if _gen > 0 else 0
-        _print_stats(_out_tok, _elapsed, _tps)
+        _print_stats(_out_tok, _elapsed, _tps, in_tok=_prompt_tok[0])
     except KeyboardInterrupt:
         if _in_thinking[0]:
             sys.stdout.write("\033[0m")
@@ -411,6 +416,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     _t_start   = _time.time()
     _t_first   = [None]
     _out_tok   = [0]
+    _in_tok    = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -428,6 +434,8 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                             sys.stdout.write(delta)
                             sys.stdout.flush()
                             collected.append(delta)
+                    elif etype == "message_start":
+                        _in_tok[0] = event.get("message", {}).get("usage", {}).get("input_tokens", 0)
                     elif etype == "message_delta":
                         _out_tok[0] = event.get("usage", {}).get("output_tokens", 0)
                 except Exception:
@@ -437,7 +445,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
         _tok     = _out_tok[0] or max(1, len("".join(collected)) // 4)
         _gen     = (_elapsed - (_t_first[0] - _t_start)) if _t_first[0] else _elapsed
         _tps     = _tok / _gen if _gen > 0 else 0
-        _print_stats(_tok, _elapsed, _tps)
+        _print_stats(_tok, _elapsed, _tps, in_tok=_in_tok[0])
     except KeyboardInterrupt:
         sys.stdout.write("\n")
         sys.stdout.flush()
