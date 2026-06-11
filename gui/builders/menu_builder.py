@@ -2475,8 +2475,6 @@ def build_menu(main_window):
             cb_hide_think.setChecked(bool(profile.get("hide_thinking", False)))
             cb_fast.setChecked(bool(profile.get("fast_answers",     False)) and not is_custom)
             cb_custom.setChecked(is_custom)
-            cb_think.setEnabled(not is_custom)
-            cb_fast.setEnabled(not is_custom)
             # "Disable thinking" is Ollama-only; hide it for all other providers
             cb_think.setVisible(is_ollama)
 
@@ -2525,11 +2523,16 @@ def build_menu(main_window):
                 if _is:
                     cb_think.setChecked(False)
                     cb_fast.setChecked(False)
-                cb_think.setEnabled(not _is)
-                cb_fast.setEnabled(not _is)
                 custom_edit.setVisible(_is)
                 bdlg.adjustSize()
 
+            def _on_other_checkbox_checked(state):
+                if state and cb_custom.isChecked():
+                    cb_custom.setChecked(False)
+
+            cb_think.stateChanged.connect(_on_other_checkbox_checked)
+            cb_hide_think.stateChanged.connect(_on_other_checkbox_checked)
+            cb_fast.stateChanged.connect(_on_other_checkbox_checked)
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
             bform.addWidget(cb_think)
