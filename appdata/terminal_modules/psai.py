@@ -337,10 +337,13 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     break
                 try:
                     d = json.loads(data_str)
-                    # usage chunk (stream_options): choices is empty
-                    if not d.get("choices") and d.get("usage"):
-                        _compl_tok[0]  = d["usage"].get("completion_tokens", 0)
-                        _prompt_tok[0] = d["usage"].get("prompt_tokens", 0)
+                    # Capture usage wherever it appears — some providers (OpenAI, Groq)
+                    # send a separate choices-empty chunk; others (OpenRouter) include
+                    # usage in the last choices chunk alongside finish_reason.
+                    if d.get("usage"):
+                        _compl_tok[0]  = d["usage"].get("completion_tokens", 0) or _compl_tok[0]
+                        _prompt_tok[0] = d["usage"].get("prompt_tokens", 0) or _prompt_tok[0]
+                    if not d.get("choices"):
                         continue
                     delta    = d["choices"][0]["delta"]
                     thinking = delta.get("reasoning", "")
