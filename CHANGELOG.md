@@ -55,8 +55,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Model context window registry**: `appdata/model_ctx_registry.json` — 379+ models across 9 providers (OpenAI, Anthropic, Groq, OpenRouter, Gemini, Mistral, Together AI, HuggingFace, Ollama); used to display read-only context window info in each profile's Behavior dialog
 - **Behavior dialog**: read-only "Context window" label — shows the model's max input tokens from the registry; lookup handles `models/` prefix (Gemini) and `:variant` suffixes (OpenRouter); unknown models show `unknown model — safe default: 32 768 tokens`
 - **Behavior dialog**: editable context window override — spinbox + logarithmic slider (512–2 000 000 tokens), hidden under "Override context window for prompt compensation" checkbox; value saved per-profile as `context_tokens`; "Default" button resets to registry value
-- **Token label**: prompt token count displayed in bottom-left corner after each `psai`/`psrag` call — shows `~N / Xk tok · X%` (estimated prompt tokens, model context window, fill percentage); reverts to `PurrSh3ll` after 10 seconds; displays `⛔ CTX_OVER` when prompt exceeds context window
+- **Token label**: prompt token count displayed in bottom-left corner after each `psai`/`psrag` call — shows a 10-step progress bar and fill percentage (e.g. `▓▒░░░░░░░░ 12%`); reverts to `PurrSh3ll` after 10 seconds
+- **Token label**: `⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ 134%` shown when prompt exceeds context window — label turns red using `button_info_hover` theme color; restores normal color on hide
 - **Token label**: PIL-based image token estimation for multimodal messages — uses OpenAI tile formula `ceil(w/512)*ceil(h/512)*170+85`; falls back to 512-token flat estimate if Pillow unavailable
+- **psai**: inference stats line printed after each response — `↑1587 ↓408 tok  ·  12.4 tok/s  ·  34.1s`; input tokens shown when available (Ollama, Anthropic, OpenAI-compat with `stream_options`)
+- **psai**: OpenRouter input token count now captured from usage field in last streaming chunk — fixes missing `↑` arrow in stats line
 - **psrag**: `_build_prompt(query, chunks)` now called before `_run_llm` — fixes `UnboundLocalError` on every query
 - **psview**: multimodal messages normalized to Ollama native format before sending — extracts base64 images into `images` array and joins text parts into plain string; fixes HTTP 400 on Ollama vision models
 - **Installer**: `OLLAMA_OK` and `AICHAT_OK` flags set when tools already installed — fixes summary showing `✗ failed` for pre-installed components

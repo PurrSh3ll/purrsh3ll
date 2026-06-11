@@ -392,11 +392,14 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             return
         prompt_str = f"~{n:,}".replace(",", "\u202f")
         ctx = self._get_active_ctx_window()
+        _normal_stylesheet = f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')}; font-size: 11px; background: transparent;"
         if ctx:
             pct = round(n / ctx * 100, 1)
             if n > ctx:
                 pct_str = f"{pct:.0f}%"
                 lbl.setText(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
+                _err_color = self.actual_theme.get("background", {}).get("button_info_hover", "#ff5555")
+                lbl.setStyleSheet(f"color: {_err_color}; font-size: 11px; background: transparent;")
             else:
                 steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
                 full   = steps // 2
@@ -404,8 +407,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 bar    = "▓" * full + "▒" * half + "░" * (10 - full - half)
                 pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
                 lbl.setText(f"{bar} {pct_str}")
+                lbl.setStyleSheet(_normal_stylesheet)
         else:
             lbl.setText(f"{prompt_str} tok")
+            lbl.setStyleSheet(_normal_stylesheet)
         self._psai_tok_hide.stop()
         self._psai_tok_hide.start(10_000)
 
@@ -413,6 +418,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         lbl = self.widgets.get("prompt_token_label")
         if lbl is not None:
             lbl.setText("PurrSh3ll")
+            _normal_stylesheet = f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')}; font-size: 11px; background: transparent;"
+            lbl.setStyleSheet(_normal_stylesheet)
 
     def load_themes(self):
         try:
