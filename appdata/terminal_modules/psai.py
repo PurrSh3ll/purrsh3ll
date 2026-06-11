@@ -249,14 +249,14 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                     content  = msg.get("content", "")
                     if thinking and not hide_thinking:
                         if not _in_thinking[0]:
-                            sys.stdout.write("\033[2m💭 ")
+                            sys.stdout.write("\033[2m")
                             sys.stdout.flush()
                             _in_thinking[0] = True
                         sys.stdout.write(thinking)
                         sys.stdout.flush()
                     elif thinking:
                         _in_thinking[0] = True
-                        sys.stderr.write(f"\r\033[90m[psai] 💭 thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                        sys.stderr.write(f"\r\033[90m[psai] thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
                         sys.stderr.flush()
                         _spin_idx[0] += 1
                     if content:
@@ -372,14 +372,14 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     content  = delta.get("content", "")
                     if thinking and not hide_thinking:
                         if not _in_thinking[0]:
-                            sys.stdout.write("\033[2m💭 ")
+                            sys.stdout.write("\033[2m")
                             sys.stdout.flush()
                             _in_thinking[0] = True
                         sys.stdout.write(thinking)
                         sys.stdout.flush()
                     elif thinking:
                         _in_thinking[0] = True
-                        sys.stderr.write(f"\r\033[90m[psai] 💭 thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                        sys.stderr.write(f"\r\033[90m[psai] thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
                         sys.stderr.flush()
                         _spin_idx[0] += 1
                     if content:
@@ -469,7 +469,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                         block_type = event.get("content_block", {}).get("type", "")
                         _in_thinking[0] = (block_type == "thinking")
                         if _in_thinking[0] and not hide_thinking:
-                            sys.stdout.write("\033[2m💭 ")
+                            sys.stdout.write("\033[2m")
                             sys.stdout.flush()
                     elif etype == "content_block_stop":
                         if _in_thinking[0]:
@@ -489,7 +489,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                                 sys.stdout.write(thinking)
                                 sys.stdout.flush()
                             elif thinking:
-                                sys.stderr.write(f"\r\033[90m[psai] 💭 thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                                sys.stderr.write(f"\r\033[90m[psai] thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
                                 sys.stderr.flush()
                                 _spin_idx[0] += 1
                         elif dtype == "text_delta":
