@@ -2467,7 +2467,7 @@ def build_menu(main_window):
             is_custom    = bool(saved_custom)
             is_ollama    = profile.get("provider", "") == "ollama"
 
-            cb_think      = QCheckBox("Disable thinking  (sends think:false to API)")
+            cb_think      = QCheckBox("Disable thinking")
             cb_hide_think = QCheckBox("Hide thinking output")
             cb_fast       = QCheckBox("Fast answers  (short responses)")
             cb_custom     = QCheckBox("Custom parameters")
