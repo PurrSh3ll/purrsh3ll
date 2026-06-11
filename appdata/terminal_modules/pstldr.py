@@ -19,6 +19,42 @@ def _is_binary(path: str) -> bool:
         return True
 
 
+def _read_pdf(path: str) -> str | None:
+    """Extract text from a PDF using PyMuPDF (fitz) or pypdf as fallback."""
+    # Try PyMuPDF first (faster, better extraction)
+    try:
+        import fitz
+        doc = fitz.open(path)
+        pages = []
+        try:
+            for i in range(len(doc)):
+                text = doc[i].get_text()
+                if text.strip():
+                    pages.append(text)
+        finally:
+            doc.close()
+        return "\n\n".join(pages) if pages else None
+    except ImportError:
+        pass
+    except Exception:
+        return None
+
+    # Fallback: pypdf
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path)
+        pages = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text.strip():
+                pages.append(text)
+        return "\n\n".join(pages) if pages else None
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
 def _read_file(path: str) -> str | None:
     """Try to read a text file with common encodings."""
     for enc in ("utf-8", "utf-8-sig", "latin-1"):
@@ -46,10 +82,11 @@ def main():
         print(
             "pstldr — AI-powered TL;DR summarizer\n\n"
             "Usage:\n"
-            "  pstldr <file>              Summarize a file\n"
+            "  pstldr <file>              Summarize a text or PDF file\n"
             "  pstldr \"<text>\"            Summarize text passed directly\n"
             "  cat file | pstldr          Summarize piped input\n"
-            "  pstldr -m <profile> <file> Use a specific saved profile\n"
+            "  pstldr -m <profile> <file> Use a specific saved profile\n\n"
+            "Supported file types: plain text, PDF (requires pymupdf or pypdf)\n"
         )
         sys.exit(0)
 
@@ -86,13 +123,22 @@ def main():
     elif args.input:
         joined = " ".join(args.input)
         if os.path.isfile(joined):
-            if _is_binary(joined):
+            if joined.lower().endswith(".pdf"):
+                content = _read_pdf(joined)
+                if content is None:
+                    _ai._err(
+                        f"Cannot extract text from PDF: {joined}\n"
+                        "Make sure PyMuPDF (pip install pymupdf) or pypdf (pip install pypdf) is installed."
+                    )
+                    sys.exit(1)
+            elif _is_binary(joined):
                 _ai._err(f"File appears to be binary: {joined}\nOnly text files are supported.")
                 sys.exit(1)
-            content = _read_file(joined)
-            if content is None:
-                _ai._err(f"Cannot decode file (tried utf-8, utf-8-sig, latin-1): {joined}")
-                sys.exit(1)
+            else:
+                content = _read_file(joined)
+                if content is None:
+                    _ai._err(f"Cannot decode file (tried utf-8, utf-8-sig, latin-1): {joined}")
+                    sys.exit(1)
             source_label = f"file: {os.path.basename(joined)}"
             is_file = True
         else:
