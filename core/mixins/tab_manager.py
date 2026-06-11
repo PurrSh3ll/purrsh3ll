@@ -130,6 +130,7 @@ class TabManagerMixin:
         execution_tabs.setCurrentWidget(content_widget)
 
         tab_entry["editor"] = content_widget
+        tab_entry["file_class_name"] = file_class_name
         self.opened_tabs_tree[full_path] = tab_entry
 
         if len(self.opened_tabs_tree) > 0:
@@ -214,15 +215,19 @@ class TabManagerMixin:
         if execution_tabs is None:
             return
 
-        paths = []
+        tabs = []
         for i in range(execution_tabs.count()):
             tip = execution_tabs.tabToolTip(i)
             if tip and os.path.isfile(tip):
-                paths.append(tip)
+                class_name = self.opened_tabs_tree.get(tip, {}).get("file_class_name")
+                entry = {"path": tip}
+                if class_name:
+                    entry["class_name"] = class_name
+                tabs.append(entry)
 
         data = {
             "active_index": execution_tabs.currentIndex(),
-            "tabs": paths,
+            "tabs": tabs,
         }
 
         try:
@@ -248,12 +253,22 @@ class TabManagerMixin:
         tabs = data.get("tabs", [])
         active_index = data.get("active_index", 0)
 
-        for path in tabs:
-            if os.path.isfile(path):
-                try:
+        for entry in tabs:
+            # Support both old format (plain string) and new format (dict with path + class_name)
+            if isinstance(entry, str):
+                path, class_name = entry, None
+            else:
+                path, class_name = entry.get("path", ""), entry.get("class_name")
+
+            if not os.path.isfile(path):
+                continue
+            try:
+                if class_name and class_name in FILE_LOADERS:
+                    self._load_file_into_tab(path, None, class_name, {"item": None, "source": "session"})
+                else:
                     self.open_new_tab_for_terminal(file=path)
-                except Exception:
-                    logger.warning("Failed to restore tab: %s", path, exc_info=True)
+            except Exception:
+                logger.warning("Failed to restore tab: %s", path, exc_info=True)
 
         execution_tabs = self.widgets.get('execution_tabs')
         if execution_tabs and 0 <= active_index < execution_tabs.count():
