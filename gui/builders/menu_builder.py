@@ -2799,6 +2799,7 @@ def build_menu(main_window):
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
             c.register_widget("ai_settings_rag_model_combo",    rag_model_combo)
+            c.register_widget("ai_settings_rag_rerank_combo",   rag_rerank_combo)
             c.register_widget("ai_settings_cache_timer",        cache_refresh_timer)
         except Exception:
             pass

@@ -306,8 +306,35 @@ def change_theme(controller):
                 """
             )
             for _wk in ("ai_settings_agent_role_combo", "ai_settings_skills_combo",
-                        "ai_settings_rag_model_combo"):
+                        "ai_settings_rag_model_combo", "ai_settings_rag_rerank_combo"):
                 _style_combo(c.widgets.get(_wk))
+            _rag_sb_qss = f"""
+                QScrollBar:vertical {{
+                    background: transparent;
+                    width: 8px;
+                    margin: 0;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {bg.get("scroll", "#555555")};
+                    border-radius: 4px;
+                    min-height: 20px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {bg.get("scroll_handle", "#707070")};
+                }}
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {{
+                    height: 0; background: none; border: none;
+                }}
+                QScrollBar::add-page:vertical,
+                QScrollBar::sub-page:vertical {{
+                    background: {bg.get("scroll_area", "#1E1F22")};
+                }}
+            """
+            for _wk in ("ai_settings_rag_model_combo", "ai_settings_rag_rerank_combo"):
+                _c = c.widgets.get(_wk)
+                if _c is not None and hasattr(_c, "setScrollBarStyleSheet"):
+                    _c.setScrollBarStyleSheet(_rag_sb_qss)
         _style_combo(c.widgets.get("ai_active_profile_combo"))
         if chat_webui_dialog:
             chat_webui_dialog.setStyleSheet(s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QLabel"])
