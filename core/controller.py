@@ -397,8 +397,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             if n > ctx:
                 lbl.setText(f"⛔ CTX_OVER {prompt_str} / {self._fmt_ctx(ctx)} tok")
             else:
-                filled = max(1, round(pct / 10))
-                bar = "▓" * filled + "░" * (10 - filled)
+                steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
+                full   = steps // 2
+                half   = steps % 2
+                bar    = "▓" * full + "▒" * half + "░" * (10 - full - half)
                 pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
                 lbl.setText(f"{bar} {pct_str}")
         else:
