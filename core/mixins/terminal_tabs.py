@@ -123,7 +123,8 @@ class TerminalTabsMixin:
                                 "output":    entry["output"],
                                 "cwd":       _state.get("cwd", ""),
                             }
-                            _w.show_error_overlay(exit_code)
+                            if getattr(self, "psfix_auto_open", True):
+                                _w.show_error_overlay(exit_code)
                         else:
                             _w.hide_error_overlay()
             if _state["cmd"] is not None:

@@ -666,7 +666,9 @@ def build_menu(main_window):
         form_pstools.addRow(psfix_popup_checkbox)
 
         def _on_psfix_popup_changed(state):
-            _save_llama_key("psfix_auto_open", psfix_popup_checkbox.isChecked())
+            val = psfix_popup_checkbox.isChecked()
+            _save_llama_key("psfix_auto_open", val)
+            c.psfix_auto_open = val
 
         psfix_popup_checkbox.stateChanged.connect(_on_psfix_popup_changed)
 

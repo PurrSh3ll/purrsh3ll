@@ -83,6 +83,11 @@ _DEFAULT_URLS = {
 _MAX_HISTORY = 40  # max messages kept in chat session (20 turns)
 
 
+# ── Display flags (set by _load_config, read by external scripts via _ai._SHOW_*) ──
+_SHOW_STATS    = True   # psai_show_stats in app_config.json
+_SHOW_QUERYING = True   # psai_show_querying in app_config.json
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _info(msg: str):
@@ -93,6 +98,8 @@ def _err(msg: str):
 
 def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
     """Print dim gray inference stats line to stderr after model response."""
+    if not _SHOW_STATS:
+        return
     tok_str = f"↓{out_tok} tok" if not in_tok else f"↑{in_tok} ↓{out_tok} tok"
     parts = [tok_str]
     if tps > 0:
@@ -105,6 +112,7 @@ def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def _load_config(base_dir: str) -> dict:
+    global _SHOW_STATS, _SHOW_QUERYING
     try:
         with open(os.path.join(base_dir, "appdata", "app_config.json"), encoding="utf-8") as f:
             cfg = json.load(f)
@@ -117,6 +125,9 @@ def _load_config(base_dir: str) -> dict:
             cfg["api_providers"] = json.load(f)
     except Exception:
         pass
+    _llama = cfg.get("llama", {})
+    _SHOW_STATS    = bool(_llama.get("psai_show_stats",    True))
+    _SHOW_QUERYING = bool(_llama.get("psai_show_querying", True))
     return cfg
 
 
@@ -631,7 +642,8 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if fast_answers:
         query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
 
-    _info(f"Querying {model} via {provider}…\n")
+    if _SHOW_QUERYING:
+        _info(f"Querying {model} via {provider}…\n")
     _run_llm(provider, model, [{"role": "user", "content": query}],
              url, api_key, disable_thinking, custom_params)
 
@@ -694,7 +706,8 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
         msgs_to_send = list(msgs_to_send)
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}
 
-    _info(f"Chatting with {model} via {provider}…\n")
+    if _SHOW_QUERYING:
+        _info(f"Chatting with {model} via {provider}…\n")
 
     response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
 

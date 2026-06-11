@@ -117,7 +117,8 @@ def main():
         "just the raw command on a single line."
     )
 
-    _ai._info(f"Querying {model} via {provider}…\n")
+    if _ai._SHOW_QUERYING:
+        _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info(f"Generating: {description}\n")
     messages = [{"role": "user", "content": prompt}]
 

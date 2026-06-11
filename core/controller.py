@@ -83,6 +83,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.delete_logs_at_close = True
             self.delete_notes_at_close = False
             self.clear_chat_history_on_exit = False
+            self.psfix_auto_open = True
             self.terminal_history_max_entries = 5000
             self.terminal_history_disabled = False
 
@@ -108,6 +109,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                     self.terminal_history_max_entries = behavior.get("terminal_history_max_entries", 5000)
                     self.terminal_history_disabled = behavior.get("terminal_history_disabled", False)
                     self.clear_chat_history_on_exit = config.get("llama", {}).get("clear_chat_history_on_exit", False)
+                    self.psfix_auto_open = config.get("llama", {}).get("psfix_auto_open", True)
 
                 except Exception as e:
                     logger.warning("Failed to load config from %s", self.config_path, exc_info=True)
