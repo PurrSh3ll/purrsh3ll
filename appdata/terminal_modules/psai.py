@@ -87,6 +87,10 @@ _MAX_HISTORY = 40  # max messages kept in chat session (20 turns)
 _SHOW_STATS    = True   # psai_show_stats in app_config.json
 _SHOW_QUERYING = True   # psai_show_querying in app_config.json
 
+# ── Thinking spinner (used when hide_thinking=True) ───────────────────────────
+_SPINNER     = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_SPINNER_CLR = "\r" + " " * 44 + "\r"   # clear the spinner line
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -225,6 +229,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                                  headers={"Content-Type": "application/json"}, method="POST")
     collected = []
     _in_thinking = [False]
+    _spin_idx    = [0]
     import time as _time
     _t_start        = _time.time()
     _t_first        = [None]
@@ -251,6 +256,9 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                         sys.stdout.flush()
                     elif thinking:
                         _in_thinking[0] = True
+                        sys.stderr.write(f"\r\033[90m[psai] 💭 thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                        sys.stderr.flush()
+                        _spin_idx[0] += 1
                     if content:
                         if _t_first[0] is None:
                             _t_first[0] = _time.time()
@@ -258,6 +266,9 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                             if not hide_thinking:
                                 sys.stdout.write("\033[0m\n")
                                 sys.stdout.flush()
+                            else:
+                                sys.stderr.write(_SPINNER_CLR)
+                                sys.stderr.flush()
                             _in_thinking[0] = False
                         sys.stdout.write(content)
                         sys.stdout.flush()
@@ -271,6 +282,9 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                     pass
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         print()
         _elapsed = _time.time() - _t_start
         _out_tok = _eval_count[0] or max(1, len("".join(collected)) // 4)
@@ -285,6 +299,9 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
     except KeyboardInterrupt:
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(130)
@@ -325,6 +342,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
 
     collected = []
     _in_thinking = [False]
+    _spin_idx    = [0]
     import time as _time
     _t_start     = _time.time()
     _t_first     = [None]
@@ -361,6 +379,9 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                         sys.stdout.flush()
                     elif thinking:
                         _in_thinking[0] = True
+                        sys.stderr.write(f"\r\033[90m[psai] 💭 thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                        sys.stderr.flush()
+                        _spin_idx[0] += 1
                     if content:
                         if _t_first[0] is None:
                             _t_first[0] = _time.time()
@@ -368,6 +389,9 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                             if not hide_thinking:
                                 sys.stdout.write("\033[0m\n")
                                 sys.stdout.flush()
+                            else:
+                                sys.stderr.write(_SPINNER_CLR)
+                                sys.stderr.flush()
                             _in_thinking[0] = False
                         sys.stdout.write(content)
                         sys.stdout.flush()
@@ -376,6 +400,9 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     pass
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         print()
         _elapsed = _time.time() - _t_start
         _out_tok = _compl_tok[0] or max(1, len("".join(collected)) // 4)
@@ -385,6 +412,9 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     except KeyboardInterrupt:
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(130)
@@ -420,6 +450,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
 
     collected = []
     _in_thinking = [False]
+    _spin_idx    = [0]
     import time as _time
     _t_start   = _time.time()
     _t_first   = [None]
@@ -445,6 +476,9 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                             if not hide_thinking:
                                 sys.stdout.write("\033[0m\n")
                                 sys.stdout.flush()
+                            else:
+                                sys.stderr.write(_SPINNER_CLR)
+                                sys.stderr.flush()
                             _in_thinking[0] = False
                     elif etype == "content_block_delta":
                         delta = event.get("delta", {})
@@ -454,6 +488,10 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                             if thinking and not hide_thinking:
                                 sys.stdout.write(thinking)
                                 sys.stdout.flush()
+                            elif thinking:
+                                sys.stderr.write(f"\r\033[90m[psai] 💭 thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                                sys.stderr.flush()
+                                _spin_idx[0] += 1
                         elif dtype == "text_delta":
                             text = delta.get("text", "")
                             if text:
@@ -470,6 +508,9 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                     pass
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         print()
         _elapsed = _time.time() - _t_start
         _tok     = _out_tok[0] or max(1, len("".join(collected)) // 4)
@@ -479,6 +520,9 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     except KeyboardInterrupt:
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(130)
