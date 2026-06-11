@@ -973,6 +973,7 @@ class ScriptLauncher(QWidget):
 
         self.settings_button = QPushButton("⚙", self)
         self.settings_button.setFixedSize(32, 28)
+        self.settings_button.setToolTip("Configure scan profiles and psnmap options")
         self.settings_button.clicked.connect(self.open_settings_dialog)
         top_row.addWidget(self.settings_button)
 
@@ -985,6 +986,7 @@ class ScriptLauncher(QWidget):
         self.network_button = QPushButton("🌐", self)
         self.network_button.setFixedSize(32, 28)
         self.network_button.setCheckable(True)
+        self.network_button.setToolTip("Toggle WebMap — starts the WebMap container and opens the interactive map viewer")
         self.network_button.clicked.connect(self._toggle_network_button)
         top_row.addWidget(self.network_button)
 
