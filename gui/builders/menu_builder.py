@@ -2480,45 +2480,21 @@ def build_menu(main_window):
             # "Disable thinking" is Ollama-only; hide it for all other providers
             cb_think.setVisible(is_ollama)
 
+            from PyQt6.QtWidgets import QPlainTextEdit
             _PLACEHOLDER = (
                 '{"temperature": 0.7,\n'
                 '"thinking": {"type": "disabled"},\n'
                 '"system": "You are Skynet, an AI assistant'
                 ' helping me with tasks. Be concise and precise."}'
             )
-            custom_edit = QTextEdit()
-            custom_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+            custom_edit = QPlainTextEdit()
+            custom_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
             custom_edit.setFixedHeight(72)
+            custom_edit.setPlaceholderText(_PLACEHOLDER)
             custom_edit.setVisible(is_custom)
-
-            def _set_placeholder():
-                custom_edit.setPlainText(_PLACEHOLDER)
-                custom_edit.setStyleSheet("color: gray;")
-
-            def _clear_placeholder():
-                if custom_edit.toPlainText() == _PLACEHOLDER:
-                    custom_edit.clear()
-                    custom_edit.setStyleSheet("")
-
-            def _restore_placeholder_if_empty():
-                if not custom_edit.toPlainText().strip():
-                    _set_placeholder()
 
             if saved_custom:
                 custom_edit.setPlainText(saved_custom)
-            else:
-                _set_placeholder()
-
-            def _focus_in(e):
-                _clear_placeholder()
-                QTextEdit.focusInEvent(custom_edit, e)
-
-            def _focus_out(e):
-                _restore_placeholder_if_empty()
-                QTextEdit.focusOutEvent(custom_edit, e)
-
-            custom_edit.focusInEvent  = _focus_in
-            custom_edit.focusOutEvent = _focus_out
 
             def _on_custom_toggled():
                 _is = cb_custom.isChecked()
@@ -2530,6 +2506,13 @@ def build_menu(main_window):
                 custom_edit.setVisible(_is)
                 bdlg.adjustSize()
 
+            def _on_other_checkbox_checked(state):
+                if state and cb_custom.isChecked():
+                    cb_custom.setChecked(False)
+
+            cb_think.stateChanged.connect(_on_other_checkbox_checked)
+            cb_hide_think.stateChanged.connect(_on_other_checkbox_checked)
+            cb_fast.stateChanged.connect(_on_other_checkbox_checked)
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
             bform.addWidget(cb_think)
