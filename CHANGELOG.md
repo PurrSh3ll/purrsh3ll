@@ -82,6 +82,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Session restore**: files now reopen with the correct loader — `.purr` files (psnmap, psc2) and all other typed loaders restore using the saved `class_name` instead of falling back to `Text_file`; `session.json` format updated to `[{path, class_name}]` with full backwards-compatibility for old plain-string entries
+- **Behavior dialog**: clicking a checkbox (Disable thinking, Hide thinking, Fast answers) while Custom parameters is checked now checks the clicked option and automatically unchecks Custom parameters; previously those checkboxes were disabled and could not be interacted with
+- **Behavior dialog**: Custom parameters text field resizes with the dialog window — replaced `setFixedHeight` with `setMinimumHeight` and added `stretch=1`; dialog now has a visible resize grip
+- **Behavior dialog**: scrollbar click inside the Custom parameters field no longer clears the placeholder text — replaced `QTextEdit` + manual `focusInEvent`/`focusOutEvent` with `QPlainTextEdit` and native `setPlaceholderText()`
+- **AI Settings → RAG tab**: Rerank model combobox scrollbar color now matches the active theme — converted to `_ScrollableComboBox` with themed scrollbar stylesheet; both RAG comboboxes now update their scrollbar style on every theme change
+- **psnmap**: added tooltips to the options button (⚙ `Configure scan profiles and psnmap options`) and the WebMap button (🌐 `Start WebMap container`)
+- **psai**: thinking text color changed from dim (`\033[2m`) to gray (`\033[90m`) — consistent with info lines; animated braille spinner shown while thinking is hidden
+- **psai**: Hide thinking — display-only suppression replacing the unreliable API-level `disable_thinking` for non-Ollama providers; Ollama retains both checkboxes (Disable thinking + Hide thinking output)
 - **Terminal**: `Ctrl+Shift+V` (paste) no longer crashes the application when focus is in a file editor window — `TypeError` from `QScrollArea.parent()` traversal now caught and handled gracefully
 - **Installer**: duplicate info line before embedding model spinner removed
 - **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
