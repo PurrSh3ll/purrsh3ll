@@ -131,6 +131,7 @@ class TabManagerMixin:
 
         tab_entry["editor"] = content_widget
         tab_entry["file_class_name"] = file_class_name
+        tab_entry["icon_token"] = icon_token
         self.opened_tabs_tree[full_path] = tab_entry
 
         if len(self.opened_tabs_tree) > 0:
@@ -219,10 +220,14 @@ class TabManagerMixin:
         for i in range(execution_tabs.count()):
             tip = execution_tabs.tabToolTip(i)
             if tip and os.path.isfile(tip):
-                class_name = self.opened_tabs_tree.get(tip, {}).get("file_class_name")
+                tab_data = self.opened_tabs_tree.get(tip, {})
+                class_name = tab_data.get("file_class_name")
+                icon_token = tab_data.get("icon_token")
                 entry = {"path": tip}
                 if class_name:
                     entry["class_name"] = class_name
+                if icon_token:
+                    entry["icon_token"] = icon_token
                 tabs.append(entry)
 
         data = {
@@ -256,15 +261,17 @@ class TabManagerMixin:
         for entry in tabs:
             # Support both old format (plain string) and new format (dict with path + class_name)
             if isinstance(entry, str):
-                path, class_name = entry, None
+                path, class_name, icon_token = entry, None, None
             else:
-                path, class_name = entry.get("path", ""), entry.get("class_name")
+                path = entry.get("path", "")
+                class_name = entry.get("class_name")
+                icon_token = entry.get("icon_token")
 
             if not os.path.isfile(path):
                 continue
             try:
                 if class_name and class_name in FILE_LOADERS:
-                    self._load_file_into_tab(path, None, class_name, {"item": None, "source": "session"})
+                    self._load_file_into_tab(path, icon_token, class_name, {"item": None, "source": "session"})
                 else:
                     self.open_new_tab_for_terminal(file=path)
             except Exception:
