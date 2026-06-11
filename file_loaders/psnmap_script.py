@@ -986,7 +986,7 @@ class ScriptLauncher(QWidget):
         self.network_button = QPushButton("🌐", self)
         self.network_button.setFixedSize(32, 28)
         self.network_button.setCheckable(True)
-        self.network_button.setToolTip("Toggle WebMap — starts the WebMap container and opens the interactive map viewer")
+        self.network_button.setToolTip("Start WebMap container")
         self.network_button.clicked.connect(self._toggle_network_button)
         top_row.addWidget(self.network_button)
 
