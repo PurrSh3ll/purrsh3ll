@@ -97,7 +97,7 @@ def _print_stats(out_tok: int, elapsed: float, tps: float):
     if tps > 0:
         parts.append(f"{tps:.1f} tok/s")
     parts.append(f"{elapsed:.1f}s")
-    sys.stderr.write(f"\033[2m{'  ·  '.join(parts)}\033[0m\n")
+    sys.stderr.write(f"\033[90m{'  ·  '.join(parts)}\033[0m\n")
     sys.stderr.flush()
 
 
