@@ -2213,6 +2213,7 @@ def build_menu(main_window):
                 "model":            providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
                 "url":              meta.get("url", ""),
                 "disable_thinking": meta.get("disable_thinking", False),
+                "hide_thinking":    meta.get("hide_thinking", False),
                 "fast_answers":     meta.get("fast_answers", False),
                 "custom_params":    meta.get("custom_params", ""),
             }
@@ -2223,6 +2224,7 @@ def build_menu(main_window):
                 name_item.setData(Qt.ItemDataRole.UserRole, {
                     "url":              profile.get("url", ""),
                     "disable_thinking": bool(profile.get("disable_thinking", False)),
+                    "hide_thinking":    bool(profile.get("hide_thinking", False)),
                     "fast_answers":     bool(profile.get("fast_answers", False)),
                     "custom_params":    profile.get("custom_params", ""),
                 })
@@ -2463,15 +2465,20 @@ def build_menu(main_window):
 
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
+            is_ollama    = profile.get("provider", "") == "ollama"
 
-            cb_think  = QCheckBox("Disable thinking")
-            cb_fast   = QCheckBox("Fast answers  (short responses)")
-            cb_custom = QCheckBox("Custom parameters")
+            cb_think      = QCheckBox("Disable thinking  (sends think:false to API)")
+            cb_hide_think = QCheckBox("Hide thinking output")
+            cb_fast       = QCheckBox("Fast answers  (short responses)")
+            cb_custom     = QCheckBox("Custom parameters")
             cb_think.setChecked(bool(profile.get("disable_thinking", False)) and not is_custom)
+            cb_hide_think.setChecked(bool(profile.get("hide_thinking", False)))
             cb_fast.setChecked(bool(profile.get("fast_answers",     False)) and not is_custom)
             cb_custom.setChecked(is_custom)
             cb_think.setEnabled(not is_custom)
             cb_fast.setEnabled(not is_custom)
+            # "Disable thinking" is Ollama-only; hide it for all other providers
+            cb_think.setVisible(is_ollama)
 
             _PLACEHOLDER = (
                 '{"temperature": 0.7,\n'
@@ -2526,6 +2533,7 @@ def build_menu(main_window):
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
             bform.addWidget(cb_think)
+            bform.addWidget(cb_hide_think)
             bform.addWidget(cb_fast)
             bform.addWidget(cb_custom)
             bform.addWidget(custom_edit)
@@ -2546,6 +2554,7 @@ def build_menu(main_window):
                 return
             profile["context_tokens"]   = sb_ctx.value() if cb_ctx_override.isChecked() else 0
             profile["disable_thinking"] = cb_think.isChecked()
+            profile["hide_thinking"]    = cb_hide_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
             _raw = custom_edit.toPlainText().strip()
             profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
@@ -2613,6 +2622,7 @@ def build_menu(main_window):
             # Preserve existing behavior settings, update url
             existing = _table_row_to_dict(row)
             profile["disable_thinking"] = existing.get("disable_thinking", False)
+            profile["hide_thinking"]    = existing.get("hide_thinking", False)
             profile["fast_answers"]     = existing.get("fast_answers", False)
             profile["custom_params"]    = existing.get("custom_params", "")
             _set_row_meta(row, profile)

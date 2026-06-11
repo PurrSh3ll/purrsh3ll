@@ -184,7 +184,8 @@ def _parse_custom_params(profile: dict) -> dict | None:
 # ── LLM runners ───────────────────────────────────────────────────────────────
 
 def _stream_ollama_native(model: str, messages: list, base_url: str,
-                          disable_thinking: bool = False) -> str:
+                          disable_thinking: bool = False,
+                          hide_thinking: bool = False) -> str:
     """POST to Ollama native /api/chat — correctly honors think:false."""
     url = base_url.rstrip("/")
     # strip /v1 suffix if present — native API is at root
@@ -241,19 +242,22 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                     msg = d.get("message", {})
                     thinking = msg.get("thinking", "")
                     content  = msg.get("content", "")
-                    if thinking:
+                    if thinking and not hide_thinking:
                         if not _in_thinking[0]:
                             sys.stdout.write("\033[2m💭 ")
                             sys.stdout.flush()
                             _in_thinking[0] = True
                         sys.stdout.write(thinking)
                         sys.stdout.flush()
+                    elif thinking:
+                        _in_thinking[0] = True
                     if content:
                         if _t_first[0] is None:
                             _t_first[0] = _time.time()
                         if _in_thinking[0]:
-                            sys.stdout.write("\033[0m\n")
-                            sys.stdout.flush()
+                            if not hide_thinking:
+                                sys.stdout.write("\033[0m\n")
+                                sys.stdout.flush()
                             _in_thinking[0] = False
                         sys.stdout.write(content)
                         sys.stdout.flush()
@@ -265,7 +269,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                         break
                 except Exception:
                     pass
-        if _in_thinking[0]:
+        if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
         print()
         _elapsed = _time.time() - _t_start
@@ -279,7 +283,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
             _tps = 0
         _print_stats(_out_tok, _elapsed, _tps, in_tok=_prompt_count[0])
     except KeyboardInterrupt:
-        if _in_thinking[0]:
+        if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m")
         sys.stdout.write("\n")
         sys.stdout.flush()
@@ -294,8 +298,8 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
 
 
 def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: str,
-                           disable_thinking: bool = False, provider: str = "openai",
-                           custom_params: dict = None) -> str:
+                           provider: str = "openai", custom_params: dict = None,
+                           hide_thinking: bool = False) -> str:
     """POST to /chat/completions, stream tokens to stdout, return full response text."""
     url = base_url.rstrip("/") + "/chat/completions"
 
@@ -311,17 +315,6 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
 
     if custom_params:
         body.update(custom_params)
-    elif disable_thinking:
-        m = model.lower()
-        if provider == "openai":
-            if any(m.startswith(k) or f"/{k}" in m for k in ("o1", "o3", "o4")):
-                body["reasoning_effort"] = "low"
-        elif provider == "gemini":
-            if any(k in m for k in ("2.5", "thinking")):
-                body["reasoning_effort"] = "none"
-        elif provider == "openrouter":
-            if any(k in m for k in ("o1", "o3", "o4", "r1", "thinking", "qwq", "sonnet-3-7")):
-                body["reasoning"] = {"effort": "low"}
 
     headers = {
         "Content-Type":  "application/json",
@@ -359,26 +352,29 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     delta    = d["choices"][0]["delta"]
                     thinking = delta.get("reasoning", "")
                     content  = delta.get("content", "")
-                    if thinking:
+                    if thinking and not hide_thinking:
                         if not _in_thinking[0]:
                             sys.stdout.write("\033[2m💭 ")
                             sys.stdout.flush()
                             _in_thinking[0] = True
                         sys.stdout.write(thinking)
                         sys.stdout.flush()
+                    elif thinking:
+                        _in_thinking[0] = True
                     if content:
                         if _t_first[0] is None:
                             _t_first[0] = _time.time()
                         if _in_thinking[0]:
-                            sys.stdout.write("\033[0m\n")
-                            sys.stdout.flush()
+                            if not hide_thinking:
+                                sys.stdout.write("\033[0m\n")
+                                sys.stdout.flush()
                             _in_thinking[0] = False
                         sys.stdout.write(content)
                         sys.stdout.flush()
                         collected.append(content)
                 except Exception:
                     pass
-        if _in_thinking[0]:
+        if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
         print()
         _elapsed = _time.time() - _t_start
@@ -387,7 +383,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         _tps = _out_tok / _gen if _gen > 0 else 0
         _print_stats(_out_tok, _elapsed, _tps, in_tok=_prompt_tok[0])
     except KeyboardInterrupt:
-        if _in_thinking[0]:
+        if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m")
         sys.stdout.write("\n")
         sys.stdout.flush()
@@ -403,7 +399,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
 
 
 def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
-                       disable_thinking: bool = False) -> str:
+                       hide_thinking: bool = False) -> str:
     """POST to Anthropic /v1/messages, stream tokens to stdout, return full response text."""
     url = (base_url.rstrip("/") if base_url else "https://api.anthropic.com") + "/v1/messages"
 
@@ -413,9 +409,6 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     body = {"model": model, "max_tokens": 4096, "messages": user_msgs, "stream": True}
     if system_parts:
         body["system"] = "\n\n".join(system_parts)
-    if disable_thinking:
-        if any(k in model.lower() for k in ("claude-3-5", "claude-3-7", "claude-opus-4", "claude-sonnet-4")):
-            body["thinking"] = {"type": "disabled"}
 
     headers = {
         "Content-Type":      "application/json",
@@ -426,6 +419,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
     collected = []
+    _in_thinking = [False]
     import time as _time
     _t_start   = _time.time()
     _t_first   = [None]
@@ -440,20 +434,42 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                 try:
                     event = json.loads(line[5:].strip())
                     etype = event.get("type", "")
-                    if etype == "content_block_delta":
-                        delta = event.get("delta", {}).get("text", "")
-                        if delta:
-                            if _t_first[0] is None:
-                                _t_first[0] = _time.time()
-                            sys.stdout.write(delta)
+                    if etype == "content_block_start":
+                        block_type = event.get("content_block", {}).get("type", "")
+                        _in_thinking[0] = (block_type == "thinking")
+                        if _in_thinking[0] and not hide_thinking:
+                            sys.stdout.write("\033[2m💭 ")
                             sys.stdout.flush()
-                            collected.append(delta)
+                    elif etype == "content_block_stop":
+                        if _in_thinking[0]:
+                            if not hide_thinking:
+                                sys.stdout.write("\033[0m\n")
+                                sys.stdout.flush()
+                            _in_thinking[0] = False
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        dtype = delta.get("type", "")
+                        if dtype == "thinking_delta":
+                            thinking = delta.get("thinking", "")
+                            if thinking and not hide_thinking:
+                                sys.stdout.write(thinking)
+                                sys.stdout.flush()
+                        elif dtype == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                if _t_first[0] is None:
+                                    _t_first[0] = _time.time()
+                                sys.stdout.write(text)
+                                sys.stdout.flush()
+                                collected.append(text)
                     elif etype == "message_start":
                         _in_tok[0] = event.get("message", {}).get("usage", {}).get("input_tokens", 0)
                     elif etype == "message_delta":
                         _out_tok[0] = event.get("usage", {}).get("output_tokens", 0)
                 except Exception:
                     pass
+        if _in_thinking[0] and not hide_thinking:
+            sys.stdout.write("\033[0m\n")
         print()
         _elapsed = _time.time() - _t_start
         _tok     = _out_tok[0] or max(1, len("".join(collected)) // 4)
@@ -461,6 +477,8 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
         _tps     = _tok / _gen if _gen > 0 else 0
         _print_stats(_tok, _elapsed, _tps, in_tok=_in_tok[0])
     except KeyboardInterrupt:
+        if _in_thinking[0] and not hide_thinking:
+            sys.stdout.write("\033[0m")
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(130)
@@ -547,7 +565,8 @@ def _estimate_prompt_tokens(messages: list) -> int:
 
 
 def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
-             disable_thinking: bool = False, custom_params: dict = None) -> str:
+             disable_thinking: bool = False, custom_params: dict = None,
+             hide_thinking: bool = False) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
     try:
         import time as _time
@@ -558,12 +577,12 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
     except Exception:
         pass
     if provider == "anthropic":
-        return _stream_anthropic(model, messages, url, api_key, disable_thinking)
+        return _stream_anthropic(model, messages, url, api_key, hide_thinking)
 
     # Ollama: use native /api/chat (correctly honors think:false)
     # Fall back to OpenAI-compat only when custom_params are set
     if provider == "ollama" and not custom_params:
-        return _stream_ollama_native(model, messages, url, disable_thinking)
+        return _stream_ollama_native(model, messages, url, disable_thinking, hide_thinking)
 
     # Ollama with custom_params: ensure /v1 suffix for OpenAI-compat endpoint
     if provider == "ollama":
@@ -572,16 +591,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
             base += "/v1"
         url = base
 
-    # Groq: prepend /no_think to last user message for thinking models
-    if disable_thinking and provider == "groq" and not custom_params:
-        if any(k in model.lower() for k in ("qwq", "deepseek", "-r1", "thinking", "qwen3")):
-            messages = list(messages)
-            for i in range(len(messages) - 1, -1, -1):
-                if messages[i]["role"] == "user":
-                    messages[i] = {**messages[i], "content": "/no_think\n" + messages[i]["content"]}
-                    break
-
-    return _stream_openai_compat(model, messages, url, api_key, disable_thinking, provider, custom_params)
+    return _stream_openai_compat(model, messages, url, api_key, provider, custom_params, hide_thinking)
 
 
 # ── Chat session ──────────────────────────────────────────────────────────────
@@ -630,6 +640,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking    = bool(profile.get("hide_thinking",    False))
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
 
     query = " ".join(args.query)
@@ -645,7 +656,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if _SHOW_QUERYING:
         _info(f"Querying {model} via {provider}…\n")
     _run_llm(provider, model, [{"role": "user", "content": query}],
-             url, api_key, disable_thinking, custom_params)
+             url, api_key, disable_thinking, custom_params, hide_thinking)
 
 
 # ── Mode: chat ────────────────────────────────────────────────────────────────
@@ -658,6 +669,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     custom_params    = _parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking    = bool(profile.get("hide_thinking",    False))
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
 
     if args.clear:
@@ -709,7 +721,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if _SHOW_QUERYING:
         _info(f"Chatting with {model} via {provider}…\n")
 
-    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params)
+    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params, hide_thinking)
 
     if response:
         history.append({"role": "assistant", "content": response})
