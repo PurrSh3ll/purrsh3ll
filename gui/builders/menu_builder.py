@@ -2332,6 +2332,7 @@ def build_menu(main_window):
             bdlg.setWindowTitle(f"Behavior — {profile['name']}")
             bdlg.setModal(True)
             bdlg.resize(440, 150)
+            bdlg.setSizeGripEnabled(True)
             try:
                 bdlg.setStyleSheet(c.messagebox_stylesheet)
             except Exception:
@@ -2486,7 +2487,7 @@ def build_menu(main_window):
             )
             custom_edit = QTextEdit()
             custom_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-            custom_edit.setFixedHeight(72)
+            custom_edit.setMinimumHeight(72)
             custom_edit.setVisible(is_custom)
 
             def _set_placeholder():
@@ -2539,8 +2540,7 @@ def build_menu(main_window):
             bform.addWidget(cb_hide_think)
             bform.addWidget(cb_fast)
             bform.addWidget(cb_custom)
-            bform.addWidget(custom_edit)
-            bform.addStretch(1)
+            bform.addWidget(custom_edit, stretch=1)
 
             bbtn_row = QHBoxLayout()
             bbtn_ok     = QPushButton("OK")
