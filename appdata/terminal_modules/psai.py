@@ -91,6 +91,15 @@ def _info(msg: str):
 def _err(msg: str):
     print(f"\033[31m[psai] Error: {msg}\033[0m", file=sys.stderr)
 
+def _print_stats(out_tok: int, elapsed: float, tps: float):
+    """Print dim gray inference stats line to stderr after model response."""
+    parts = [f"↓{out_tok} tok"]
+    if tps > 0:
+        parts.append(f"{tps:.1f} tok/s")
+    parts.append(f"{elapsed:.1f}s")
+    sys.stderr.write(f"\033[2m{'  ·  '.join(parts)}\033[0m\n")
+    sys.stderr.flush()
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -203,6 +212,11 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                                  headers={"Content-Type": "application/json"}, method="POST")
     collected = []
     _in_thinking = [False]
+    import time as _time
+    _t_start        = _time.time()
+    _t_first        = [None]
+    _eval_count     = [0]
+    _eval_dur_ns    = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -222,6 +236,8 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                         sys.stdout.write(thinking)
                         sys.stdout.flush()
                     if content:
+                        if _t_first[0] is None:
+                            _t_first[0] = _time.time()
                         if _in_thinking[0]:
                             sys.stdout.write("\033[0m\n")
                             sys.stdout.flush()
@@ -230,12 +246,24 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                         sys.stdout.flush()
                         collected.append(content)
                     if d.get("done"):
+                        _eval_count[0]  = d.get("eval_count", 0)
+                        _eval_dur_ns[0] = d.get("eval_duration", 0)
                         break
                 except Exception:
                     pass
         if _in_thinking[0]:
             sys.stdout.write("\033[0m\n")
         print()
+        _elapsed = _time.time() - _t_start
+        _out_tok = _eval_count[0] or max(1, len("".join(collected)) // 4)
+        if _eval_dur_ns[0] > 0:
+            _tps = _eval_count[0] / (_eval_dur_ns[0] / 1e9)
+        elif _t_first[0]:
+            _gen = _elapsed - (_t_first[0] - _t_start)
+            _tps = _out_tok / _gen if _gen > 0 else 0
+        else:
+            _tps = 0
+        _print_stats(_out_tok, _elapsed, _tps)
     except KeyboardInterrupt:
         if _in_thinking[0]:
             sys.stdout.write("\033[0m")
@@ -264,7 +292,8 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         if system and not any(m["role"] == "system" for m in msgs):
             msgs.insert(0, {"role": "system", "content": system})
 
-    body = {"model": model, "messages": msgs, "stream": True}
+    body = {"model": model, "messages": msgs, "stream": True,
+            "stream_options": {"include_usage": True}}
 
     if custom_params:
         body.update(custom_params)
@@ -289,6 +318,10 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
 
     collected = []
     _in_thinking = [False]
+    import time as _time
+    _t_start     = _time.time()
+    _t_first     = [None]
+    _compl_tok   = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -299,9 +332,14 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                 if data_str == "[DONE]":
                     break
                 try:
-                    d = json.loads(data_str)["choices"][0]["delta"]
-                    thinking = d.get("reasoning", "")
-                    content  = d.get("content", "")
+                    d = json.loads(data_str)
+                    # usage chunk (stream_options): choices is empty
+                    if not d.get("choices") and d.get("usage"):
+                        _compl_tok[0] = d["usage"].get("completion_tokens", 0)
+                        continue
+                    delta    = d["choices"][0]["delta"]
+                    thinking = delta.get("reasoning", "")
+                    content  = delta.get("content", "")
                     if thinking:
                         if not _in_thinking[0]:
                             sys.stdout.write("\033[2m💭 ")
@@ -310,6 +348,8 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                         sys.stdout.write(thinking)
                         sys.stdout.flush()
                     if content:
+                        if _t_first[0] is None:
+                            _t_first[0] = _time.time()
                         if _in_thinking[0]:
                             sys.stdout.write("\033[0m\n")
                             sys.stdout.flush()
@@ -322,6 +362,11 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         if _in_thinking[0]:
             sys.stdout.write("\033[0m\n")
         print()
+        _elapsed = _time.time() - _t_start
+        _out_tok = _compl_tok[0] or max(1, len("".join(collected)) // 4)
+        _gen = (_elapsed - (_t_first[0] - _t_start)) if _t_first[0] else _elapsed
+        _tps = _out_tok / _gen if _gen > 0 else 0
+        _print_stats(_out_tok, _elapsed, _tps)
     except KeyboardInterrupt:
         if _in_thinking[0]:
             sys.stdout.write("\033[0m")
@@ -362,6 +407,10 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
     collected = []
+    import time as _time
+    _t_start   = _time.time()
+    _t_first   = [None]
+    _out_tok   = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -370,15 +419,25 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                     continue
                 try:
                     event = json.loads(line[5:].strip())
-                    if event.get("type") == "content_block_delta":
+                    etype = event.get("type", "")
+                    if etype == "content_block_delta":
                         delta = event.get("delta", {}).get("text", "")
                         if delta:
+                            if _t_first[0] is None:
+                                _t_first[0] = _time.time()
                             sys.stdout.write(delta)
                             sys.stdout.flush()
                             collected.append(delta)
+                    elif etype == "message_delta":
+                        _out_tok[0] = event.get("usage", {}).get("output_tokens", 0)
                 except Exception:
                     pass
         print()
+        _elapsed = _time.time() - _t_start
+        _tok     = _out_tok[0] or max(1, len("".join(collected)) // 4)
+        _gen     = (_elapsed - (_t_first[0] - _t_start)) if _t_first[0] else _elapsed
+        _tps     = _tok / _gen if _gen > 0 else 0
+        _print_stats(_tok, _elapsed, _tps)
     except KeyboardInterrupt:
         sys.stdout.write("\n")
         sys.stdout.flush()
