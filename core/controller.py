@@ -396,7 +396,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             pct = round(n / ctx * 100, 1)
             if n > ctx:
                 pct_str = f"{pct:.0f}%"
-                lbl.setText(f"⛔ ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
+                lbl.setText(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
             else:
                 steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
                 full   = steps // 2
