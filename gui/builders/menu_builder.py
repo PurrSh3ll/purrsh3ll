@@ -638,6 +638,38 @@ def build_menu(main_window):
 
         clear_chat_history_checkbox.stateChanged.connect(_on_clear_chat_history_changed)
 
+        # ── ps* tools group ───────────────────────────────────────────────────
+        grp_pstools = QGroupBox("ps* tools")
+        form_pstools = QFormLayout(grp_pstools)
+        form_pstools.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        psai_stats_checkbox = QCheckBox("Show inference stats after response", grp_pstools)
+        psai_stats_checkbox.setChecked(bool(llama_cfg.get("psai_show_stats", True)))
+        form_pstools.addRow(psai_stats_checkbox)
+
+        def _on_psai_stats_changed(state):
+            _save_llama_key("psai_show_stats", psai_stats_checkbox.isChecked())
+
+        psai_stats_checkbox.stateChanged.connect(_on_psai_stats_changed)
+
+        psai_querying_checkbox = QCheckBox("Show 'Querying model…' info line", grp_pstools)
+        psai_querying_checkbox.setChecked(bool(llama_cfg.get("psai_show_querying", True)))
+        form_pstools.addRow(psai_querying_checkbox)
+
+        def _on_psai_querying_changed(state):
+            _save_llama_key("psai_show_querying", psai_querying_checkbox.isChecked())
+
+        psai_querying_checkbox.stateChanged.connect(_on_psai_querying_changed)
+
+        psfix_popup_checkbox = QCheckBox("Auto-open psfix on command error", grp_pstools)
+        psfix_popup_checkbox.setChecked(bool(llama_cfg.get("psfix_auto_open", True)))
+        form_pstools.addRow(psfix_popup_checkbox)
+
+        def _on_psfix_popup_changed(state):
+            _save_llama_key("psfix_auto_open", psfix_popup_checkbox.isChecked())
+
+        psfix_popup_checkbox.stateChanged.connect(_on_psfix_popup_changed)
+
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         grp_rag_layout = QVBoxLayout(grp_rag)
@@ -2626,6 +2658,7 @@ def build_menu(main_window):
         settings_scroll_layout.setContentsMargins(4, 4, 4, 4)
         settings_scroll_layout.setSpacing(8)
         settings_scroll_layout.addWidget(grp_llm)
+        settings_scroll_layout.addWidget(grp_pstools)
         settings_scroll_layout.addStretch(1)
 
         settings_scroll = QScrollArea()
