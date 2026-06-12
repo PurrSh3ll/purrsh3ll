@@ -1890,7 +1890,9 @@ def build_menu(main_window):
         import stat
 
         _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "gemini",
-                              "openrouter", "huggingface", "llamacpp"]
+                              "openrouter", "huggingface", "mistral", "deepseek",
+                              "xai", "cerebras", "together", "perplexity", "fireworks",
+                              "llamacpp", "lmstudio", "jan", "koboldcpp"]
         _PROVIDER_BASE_URL = {
             "ollama":       "http://localhost:11434",
             "openai":       "https://api.openai.com/v1",
@@ -1899,7 +1901,17 @@ def build_menu(main_window):
             "gemini":       "https://generativelanguage.googleapis.com/v1beta/openai",
             "openrouter":   "https://openrouter.ai/api/v1",
             "huggingface":  "https://router.huggingface.co/featherless-ai/v1",
+            "mistral":      "https://api.mistral.ai/v1",
+            "deepseek":     "https://api.deepseek.com/v1",
+            "xai":          "https://api.x.ai/v1",
+            "cerebras":     "https://api.cerebras.ai/v1",
+            "together":     "https://api.together.xyz/v1",
+            "perplexity":   "https://api.perplexity.ai",
+            "fireworks":    "https://api.fireworks.ai/inference/v1",
             "llamacpp":     "http://localhost:8080/v1",
+            "lmstudio":     "http://localhost:1234/v1",
+            "jan":          "http://localhost:1337/v1",
+            "koboldcpp":    "http://localhost:5001/v1",
             "custom":       "",
         }
         _base_dir_prov  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
