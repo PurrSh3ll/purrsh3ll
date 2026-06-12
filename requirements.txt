@@ -1,0 +1,53 @@
+# PurrSh3ll — Python dependencies
+# This file is for reference only. The canonical install is via install.sh,
+# which also handles QTermWidget (custom wheel), system packages, and optional
+# voice/embedding components.
+
+# ── Core ──────────────────────────────────────────────────────────────────────
+PyQt6
+PyQt6-WebEngine
+pyqt6-sip
+QtPy
+watchdog
+
+# ── AI / RAG ──────────────────────────────────────────────────────────────────
+chromadb
+fastembed
+onnxruntime
+huggingface-hub
+
+# ── Security / system ─────────────────────────────────────────────────────────
+keyring
+SecretStorage
+cryptography
+jeepney
+docker
+
+# ── File handling ─────────────────────────────────────────────────────────────
+pymupdf
+mutagen
+Pillow
+
+# ── Terminal / UI ─────────────────────────────────────────────────────────────
+pyte
+pyfiglet
+pygame
+Pygments
+markdown2
+rich
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+numpy
+pydantic
+requests
+PyYAML
+loguru
+
+# ── Voice (optional — installed only when Voice component selected) ────────────
+# faster-whisper
+# openwakeword
+# sounddevice
+# scipy
+
+# ── Not on PyPI — installed via custom wheel by install.sh ────────────────────
+# qtermwidget

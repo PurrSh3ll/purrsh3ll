@@ -18,8 +18,6 @@ venv/
 
 # Projekt
 psc2.purr
-requirements.txt
-requirements_old.txt
 todo.txt
 
 # Appdata — dane runtime (nie wersjonujemy)
