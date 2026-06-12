@@ -15,9 +15,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Agent Configuration / AI Settings**: "Skills set" label renamed to "Skills & agents" — reflects that a set can contain both Claude Code skills (`.claude/skills/`) and subagents (`.claude/agents/`)
 - **apply_agent_files**: skill sets with a `skills/` subfolder now deploy to `.claude/skills/`; sets with an `agents/` subfolder deploy to `.claude/agents/`; direct skill folders retain existing behaviour
 - **psopen help**: updated with supported file type categories (any text or code file, PDF, images, audio, video) and improved `-m` usage description
-
-### Added
-
 - **AI Settings → Behavior**: new "Custom system prompt" checkbox — enter any text to be sent as the system message for that profile; combines with "Fast answers" (both texts merged into one system message)
 - **AI Settings → Settings**: "Max pschat turns" spinbox — configures how many past conversation turns `pschat` keeps in context (default 20, range 1–999)
 - **AI Settings → Settings**: "Max terminal turns" spinbox — configures how many terminal history entries are sent to `psreport` (standard mode), `psfix --analyze` and `psnext` (default 40, range 1–999)
@@ -27,6 +24,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Startup**: third-party library noise suppressed on stdout/stderr (onnxruntime, chromadb, fastembed, HuggingFace, PIL)
 - **uninstall.sh**: interactive uninstaller added — whiptail checklist to selectively remove venv, shortcuts, shell entries, user data, Docker images, Ollama models and app folder
 - **requirements.txt**: added with full list of Python dependencies for reference
+
+---
+
+## [1.1.0] — 2026-06-12
+
+### Added
 
 - **ps* tools**: `-m` / `--model` flag replaced by `-p` / `--profile` across all tools (`psai`, `pscmd`, `psfix`, `psnext`, `psrag`, `psreport`, `pstldr`, `psview`) — better reflects that the argument is a profile name, not a model name
 - **ps* tools**: short flag aliases added for all long-only flags where no conflicts exist — `-H`/`--host`, `-r`/`--rag`, `-n`/`--top-n`, `-s`/`--show-sources` (psrag), `-e`/`--explain`, `-a`/`--analyze` (psfix), `-t`/`--target`, `-r`/`--rag` (psnext), `-d`/`--deep`, `-v`/`--verbose`, `-f`/`--format`, `-t`/`--target`, `-T`/`--title` (psreport), `-c`/`--cmd`, `-N`/`--next` (psview), `-c`/`--clear` (pschat); flags without natural short forms or with conflicts remain long-only (`--new`, `--history`, `--full`, `--head`, `--tail`, `--paste-mode`)
@@ -41,12 +44,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **RAG index status label**: shows `⟳ Starting indexing…` immediately when indexing begins (both auto-index and manual Refresh index) — `QApplication.processEvents()` forces repaint before the worker thread starts so the label is visible before any potential freeze
 - **Terminal → Save selection to RAG memory**: RAG index status label near the voice button now shows `⟳ Saving to memory…` immediately on click, then `✔ Saved to memory` or `✖ Memory save failed` for 3 seconds after completion
 - **Terminal snippets preview**: increased from 30 to 40 characters
-- **Installer**: interactive whiptail checklist installer replacing `install.sh` and `install_full.sh` — optional components selectable per run (Ollama, aichat, Docker, Open WebUI, WebMap, Voice, AI Skills, embedding model)
-- **Installer**: optional multilingual embedding model download (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) selectable during install; downloaded once and reused on every RAG use
-- **Installer**: timer loop shows download percentage during Ollama install (`downloading: 42.3% (30s elapsed)`)
-- **Installer**: Docker image pulls show layer progress with total count (`8/47 layers done`) and download bytes per active layer
-- **Installer**: apt progress now visible during system dependencies install (`Get:`, `Unpacking`, `Setting up`)
-- **Installer**: pip package names visible during Python packages install (`Collecting`, `Downloading`, `Successfully installed`)
 - **Settings → Agent run command**: pre-filled with `claude --dangerously-skip-permissions` after fresh install
 - **README**: Requirements section simplified — only OS, Python and microphone listed; all other dependencies noted as installed by `install.sh`
 - **README**: RAM usage table extended with RAG reranking model (`+100–400 MB during reranking`) and Voice (`+300–600 MB during recognition`) rows
@@ -116,6 +113,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Installer**: aichat install wrapped in error handling — shows `warn` on failure instead of crashing with `set -e`
 - **Installer**: duplicate info line before embedding model spinner removed
 - **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
+- **Installer**: timer loop shows download percentage during Ollama install (`downloading: 42.3% (30s elapsed)`)
+- **Installer**: Docker image pulls show layer progress with total count (`8/47 layers done`) and download bytes per active layer
+- **Installer**: apt progress now visible during system dependencies install (`Get:`, `Unpacking`, `Setting up`)
+- **Installer**: pip package names visible during Python packages install (`Collecting`, `Downloading`, `Successfully installed`)
+- **Installer**: interactive whiptail checklist installer replacing `install.sh` and `install_full.sh` — optional components selectable per run (Ollama, aichat, Docker, Open WebUI, WebMap, Voice, AI Skills, embedding model)
+- **Installer**: optional multilingual embedding model download (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) selectable during install; downloaded once and reused on every RAG use
 - **psrag**: `_build_prompt(query, chunks)` now called before `_run_llm` — fixes `UnboundLocalError` on every query
 - **psview**: multimodal messages normalized to Ollama native format before sending — extracts base64 images into `images` array and joins text parts into plain string; fixes HTTP 400 on Ollama vision models
 - **Session restore**: files now reopen with the correct loader — `.purr` files (psnmap, psc2) and all other typed loaders restore using the saved `class_name` instead of falling back to `Text_file`; `session.json` format updated to `[{path, class_name, icon_token}]` with full backwards-compatibility for old plain-string entries
@@ -257,5 +260,3 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Author dialog with GitHub, LinkedIn, Email, and YouTube links
 - What's New and Check for Updates entries (coming soon popup)
 - Licenses dialog listing all open-source dependencies
-
-
