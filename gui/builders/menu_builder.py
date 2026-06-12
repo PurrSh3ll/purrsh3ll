@@ -1325,6 +1325,12 @@ def build_menu(main_window):
         files_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         form_kb.addRow("Indexed\nfiles:", files_list)
 
+        memory_list = QListWidget(grp_rag)
+        memory_list.setFixedHeight(6 * 24)
+        memory_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        memory_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        form_kb.addRow("Terminal\nsnippets:", memory_list)
+
         def _load_file_meta() -> dict:
             if os.path.exists(_meta_path_ui):
                 try:
