@@ -2049,7 +2049,7 @@ def build_menu(main_window):
                 # HF Hub API — models available via featherless-ai inference provider
                 endpoint = (
                     "https://huggingface.co/api/models"
-                    "?pipeline_tag=text-generation&inference_provider=featherless-ai&limit=50&sort=downloads&direction=-1"
+                    "?pipeline_tag=text-generation&inference_provider=featherless-ai&limit=300&sort=downloads&direction=-1"
                 )
                 headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
                 if key:
