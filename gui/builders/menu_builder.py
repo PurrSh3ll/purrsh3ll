@@ -630,7 +630,7 @@ def build_menu(main_window):
         _saved_skills = llama_cfg.get("skills_set", "")
         if _saved_skills in _skills:
             settings_skills_combo.setCurrentText(_saved_skills)
-        form_llm.addRow("Skills set:", settings_skills_combo)
+        form_llm.addRow("Skills & agents:", settings_skills_combo)
 
         clear_chat_history_checkbox = QCheckBox("Clear pschat history on exit", grp_llm)
         clear_chat_history_checkbox.setChecked(bool(llama_cfg.get("clear_chat_history_on_exit", False)))

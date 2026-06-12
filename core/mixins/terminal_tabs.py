@@ -469,7 +469,7 @@ class TerminalTabsMixin:
         _btn_del_skills.setFixedWidth(24)
         _btn_del_skills.setToolTip("Delete selected skills set")
         skills_row = QHBoxLayout()
-        skills_row.addWidget(QLabel("skills set:"))
+        skills_row.addWidget(QLabel("Skills & agents:"))
         skills_row.addWidget(_skills_combo)
         skills_row.addWidget(_btn_add_skills)
         skills_row.addWidget(_btn_del_skills)
