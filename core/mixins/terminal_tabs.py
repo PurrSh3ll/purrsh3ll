@@ -7,7 +7,8 @@ import shutil
 import shlex
 
 logger = logging.getLogger(__name__)
-from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject
+from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject, pyqtSignal
+from PyQt6.QtGui import QClipboard
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QColor, QIcon, QCursor
 from PyQt6.QtWidgets import (QApplication, QMenu, QToolButton, QPushButton, QWidget,
                               QHBoxLayout, QVBoxLayout, QLineEdit, QLabel, QDialog,
@@ -1140,22 +1141,11 @@ class TerminalTabsMixin:
         return term
 
     def _save_selection_to_rag(self, term):
-        """Copy terminal selection, embed it into the 'memory' ChromaDB collection,
+        """Embed the current terminal selection into the 'memory' ChromaDB collection,
         then refresh the Terminal snippets list in AI Settings if it is open."""
-        clip = QApplication.clipboard()
-        prev_text = clip.text()
-
-        try:
-            if hasattr(term, "copySelection"):
-                term.copySelection()
-            else:
-                return
-        except Exception:
-            return
-
-        selected = clip.text().strip()
-        clip.setText(prev_text)
-
+        # On Linux/X11 the primary selection IS the highlighted text — read it directly
+        # without touching the standard clipboard at all.
+        selected = QApplication.clipboard().text(QClipboard.Mode.Selection).strip()
         if not selected:
             return
 
@@ -1165,6 +1155,17 @@ class TerminalTabsMixin:
 
         config = getattr(self, "config", {})
         model_name = config.get("rag", {}).get("embedding_model", "")
+
+        # Build a QObject-based relay on the main thread so the worker can safely
+        # signal back to refresh the UI (QTimer.singleShot is not safe from a plain
+        # Python daemon thread that has no Qt event loop).
+        class _Relay(QObject):
+            done = pyqtSignal()
+
+        relay = _Relay()
+        mem_list = self.widgets.get("ai_settings_memory_list")
+        if mem_list is not None:
+            relay.done.connect(lambda ml=mem_list: self._refresh_memory_list_widget(ml, base_path))
 
         import threading
         from core.rag import indexer as _rag_idx
@@ -1178,11 +1179,9 @@ class TerminalTabsMixin:
                     model_name or _emb.DEFAULT_MODEL,
                 )
             except Exception:
-                return
-            # Refresh the Terminal snippets list on the main thread if AI Settings is open
-            mem_list = self.widgets.get("ai_settings_memory_list")
-            if mem_list is not None:
-                QTimer.singleShot(0, lambda ml=mem_list: self._refresh_memory_list_widget(ml, base_path))
+                pass
+            finally:
+                relay.done.emit()
 
         threading.Thread(target=_do_index, daemon=True).start()
 
