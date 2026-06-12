@@ -686,7 +686,7 @@ def build_menu(main_window):
         chat_history_row.addWidget(chat_history_spin)
         chat_history_row.addWidget(chat_history_reset_btn)
         chat_history_row.addStretch(1)
-        form_pstools.addRow("Chat history\n(messages):", chat_history_row)
+        form_pstools.addRow("Max pschat turns:", chat_history_row)
 
         def _on_chat_history_changed(value):
             _save_llama_key("chat_max_history", value)
@@ -707,7 +707,7 @@ def build_menu(main_window):
         term_history_row.addWidget(term_history_spin)
         term_history_row.addWidget(term_history_reset_btn)
         term_history_row.addStretch(1)
-        form_pstools.addRow("Terminal history\n(entries):", term_history_row)
+        form_pstools.addRow("Max terminal turns:", term_history_row)
 
         def _on_term_history_changed(value):
             _save_llama_key("terminal_history_limit", value)
