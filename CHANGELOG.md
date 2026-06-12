@@ -23,24 +23,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **RAG index status label**: shows `⟳ Starting indexing…` immediately when indexing begins (both auto-index and manual Refresh index) — `QApplication.processEvents()` forces repaint before the worker thread starts so the label is visible before any potential freeze
 - **Terminal → Save selection to RAG memory**: RAG index status label near the voice button now shows `⟳ Saving to memory…` immediately on click, then `✔ Saved to memory` or `✖ Memory save failed` for 3 seconds after completion
 - **Terminal snippets preview**: increased from 30 to 40 characters
-
-### Fixed
-
-- **pschat**: HTTP 400 from Groq (and other strict providers) caused by `model` field in assistant messages — `msgs_to_send` now strips all non-API fields (`model`, any future extras) before sending; `model` is retained in the session file for `--history` display only
-- **AI Settings → RAG tab**: checking an excluded file when "Enable automatic indexing" is off now sets the file status to `pending` instead of immediately triggering re-indexing; indexing will happen on the next manual "Refresh index" or when auto-indexing is re-enabled
-- **AI Settings → RAG tab**: RAG index status label and local dialog status now both visible immediately on Refresh index click — `QApplication.processEvents()` added before `worker.start()` in both `menu_builder.py` and `controller.py`
-
-- **Installer**: Ollama install retries up to 3 times on transient HTTP errors (504, 503, 502)
-- **Installer**: timer loop shows download percentage during Ollama install (`downloading: 42.3% (30s elapsed)`)
-- **Installer**: Docker image pulls show layer progress with total count (`8/47 layers done`) and download bytes per active layer
-- **Installer**: `sudo -v` refresh before each Docker image pull to prevent sudo password prompt mid-output
-- **Installer**: apt progress now visible during system dependencies install (`Get:`, `Unpacking`, `Setting up`)
-- **Installer**: pip package names visible during Python packages install (`Collecting`, `Downloading`, `Successfully installed`)
-- **Installer**: `docker-cli` added to apt install — provides `/usr/bin/docker` binary on Kali (previously only daemon was installed)
-- **Installer**: `DOCKER_OK` now set when Docker is already installed on re-run
-- **Installer**: `dpkg -s docker.io` used as fallback check when `command -v docker` misses freshly installed binary
 - **Installer**: interactive whiptail checklist installer replacing `install.sh` and `install_full.sh` — optional components selectable per run (Ollama, aichat, Docker, Open WebUI, WebMap, Voice, AI Skills, embedding model)
 - **Installer**: optional multilingual embedding model download (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) selectable during install; downloaded once and reused on every RAG use
+- **Installer**: timer loop shows download percentage during Ollama install (`downloading: 42.3% (30s elapsed)`)
+- **Installer**: Docker image pulls show layer progress with total count (`8/47 layers done`) and download bytes per active layer
+- **Installer**: apt progress now visible during system dependencies install (`Get:`, `Unpacking`, `Setting up`)
+- **Installer**: pip package names visible during Python packages install (`Collecting`, `Downloading`, `Successfully installed`)
 - **Settings → Agent run command**: pre-filled with `claude --dangerously-skip-permissions` after fresh install
 - **README**: Requirements section simplified — only OS, Python and microphone listed; all other dependencies noted as installed by `install.sh`
 - **README**: RAM usage table extended with RAG reranking model (`+100–400 MB during reranking`) and Voice (`+300–600 MB during recognition`) rows
@@ -82,15 +70,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **psai**: OpenRouter input token count now captured from usage field in last streaming chunk — fixes missing `↑` arrow in stats line
 - **AI Settings → ps* tools**: three new checkboxes — "Show inference stats after response" (`psai_show_stats`), "Show 'Querying model…' info line" (`psai_show_querying`), "Auto-open psfix on command error" (`psfix_auto_open`); all enabled by default
 - **pstldr**: PDF files now supported — text extracted via PyMuPDF (`fitz`) with automatic fallback to `pypdf`; all pages sent to the model without truncation
-- **psrag**: `_build_prompt(query, chunks)` now called before `_run_llm` — fixes `UnboundLocalError` on every query
-- **psview**: multimodal messages normalized to Ollama native format before sending — extracts base64 images into `images` array and joins text parts into plain string; fixes HTTP 400 on Ollama vision models
-- **Installer**: `OLLAMA_OK` and `AICHAT_OK` flags set when tools already installed — fixes summary showing `✗ failed` for pre-installed components
-- **Installer**: Open WebUI and WebMap Docker images skipped if already present locally (`docker image inspect`) — avoids re-pull on every re-run
-- **Installer**: Docker presence detected independently of checklist selection — Open WebUI/WebMap pulls now work when Docker is pre-installed but not selected
-- **Installer**: embedding model download skipped if `.onnx` files already present in cache directory
-- **Installer**: `git pull --ff-only` failure is non-fatal — shows warning and continues instead of aborting
-- **Installer**: incomplete QTermWidget wheel cache removed automatically (< 100 KB) and re-downloaded
-- **Installer**: aichat install wrapped in error handling — shows `warn` on failure instead of crashing with `set -e`
 
 ### Removed
 
@@ -102,40 +81,51 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **pschat**: HTTP 400 from Groq (and other strict providers) caused by `model` field in assistant messages — `msgs_to_send` now strips all non-API fields (`model`, any future extras) before sending; `model` is retained in the session file for `--history` display only
+- **AI Settings → RAG tab**: checking an excluded file when "Enable automatic indexing" is off now sets the file status to `pending` instead of immediately triggering re-indexing; indexing will happen on the next manual "Refresh index" or when auto-indexing is re-enabled
+- **AI Settings → RAG tab**: RAG index status label and local dialog status now both visible immediately on Refresh index click — `QApplication.processEvents()` added before `worker.start()` in both `menu_builder.py` and `controller.py`
+- **Installer**: Ollama install retries up to 3 times on transient HTTP errors (504, 503, 502)
+- **Installer**: `sudo -v` refresh before each Docker image pull to prevent sudo password prompt mid-output
+- **Installer**: `docker-cli` added to apt install — provides `/usr/bin/docker` binary on Kali (previously only daemon was installed)
+- **Installer**: `DOCKER_OK` now set when Docker is already installed on re-run
+- **Installer**: `dpkg -s docker.io` used as fallback check when `command -v docker` misses freshly installed binary
+- **Installer**: `OLLAMA_OK` and `AICHAT_OK` flags set when tools already installed — fixes summary showing `✗ failed` for pre-installed components
+- **Installer**: Open WebUI and WebMap Docker images skipped if already present locally (`docker image inspect`) — avoids re-pull on every re-run
+- **Installer**: Docker presence detected independently of checklist selection — Open WebUI/WebMap pulls now work when Docker is pre-installed but not selected
+- **Installer**: embedding model download skipped if `.onnx` files already present in cache directory
+- **Installer**: `git pull --ff-only` failure is non-fatal — shows warning and continues instead of aborting
+- **Installer**: incomplete QTermWidget wheel cache removed automatically (< 100 KB) and re-downloaded
+- **Installer**: aichat install wrapped in error handling — shows `warn` on failure instead of crashing with `set -e`
+- **Installer**: duplicate info line before embedding model spinner removed
+- **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
+- **psrag**: `_build_prompt(query, chunks)` now called before `_run_llm` — fixes `UnboundLocalError` on every query
+- **psview**: multimodal messages normalized to Ollama native format before sending — extracts base64 images into `images` array and joins text parts into plain string; fixes HTTP 400 on Ollama vision models
 - **Session restore**: files now reopen with the correct loader — `.purr` files (psnmap, psc2) and all other typed loaders restore using the saved `class_name` instead of falling back to `Text_file`; `session.json` format updated to `[{path, class_name, icon_token}]` with full backwards-compatibility for old plain-string entries
 - **Session restore**: tab icons now restored correctly — `icon_token` saved per-tab and reused on restore; previously all restored tabs showed the default file icon regardless of extension
 - **Script loader (.py)**: docs and help tabs now auto-refresh when the file is modified on disk — `QFileSystemWatcher` monitors the open file and calls `update_docs()` / `update_help()` automatically; handles atomic-save editors (PyCharm, VS Code) by re-adding the path to the watcher after each rename-based save
 - **Behavior dialog**: clicking a checkbox (Disable thinking, Hide thinking, Fast answers) while Custom parameters is checked now checks the clicked option and automatically unchecks Custom parameters; previously those checkboxes were disabled and could not be interacted with
 - **Behavior dialog**: Custom parameters text field resizes with the dialog window — replaced `setFixedHeight` with `setMinimumHeight` and added `stretch=1`; dialog now has a visible resize grip
 - **Behavior dialog**: scrollbar click inside the Custom parameters field no longer clears the placeholder text — replaced `QTextEdit` + manual `focusInEvent`/`focusOutEvent` with `QPlainTextEdit` and native `setPlaceholderText()`
+- **Behavior dialog — Context limit**: spinbox stepped from 0 instead of the default value (16 000) — fixed by subclassing `QSpinBox` and overriding `stepBy()` to start from `_ctx_default`
+- **Behavior dialog — Context limit**: context window number displayed as `131,072` — now formatted with space separator: `131 072`
 - **AI Settings → RAG tab**: Rerank model combobox scrollbar color now matches the active theme — converted to `_ScrollableComboBox` with themed scrollbar stylesheet; both RAG comboboxes now update their scrollbar style on every theme change
 - **psnmap**: added tooltips to the options button (⚙ `Configure scan profiles and psnmap options`) and the WebMap button (🌐 `Start WebMap container`)
 - **psai**: thinking text color changed from dim (`\033[2m`) to gray (`\033[90m`) — consistent with info lines; animated braille spinner shown while thinking is hidden
 - **psai**: Hide thinking — display-only suppression replacing the unreliable API-level `disable_thinking` for non-Ollama providers; Ollama retains both checkboxes (Disable thinking + Hide thinking output)
-- **Terminal**: `Ctrl+Shift+V` (paste) no longer crashes the application when focus is in a file editor window — `TypeError` from `QScrollArea.parent()` traversal now caught and handled gracefully
-- **Installer**: duplicate info line before embedding model spinner removed
-- **Installer**: Ollama size corrected to `~1.5 GB`, Open WebUI to `~4.8 GB`, WebMap to `~1.5 GB`
-- **Themes**: default theme reset to `default` — was incorrectly committed as `Red Team`
-- **Ollama**: `"think"` field no longer sent when `disable_thinking` is off — omitting it lets thinking-capable models use their default behavior, and prevents HTTP 400 errors on models that don't support thinking
-- **psopen**: files now open in the correct viewer based on extension (`.md` → Markdown, `.html` → HTML, `.pdf` → PDF viewer, audio/video → media player) — previously all files landed in the unsupported-file fallback due to `mode=null` overriding the `"Default"` parameter; `.py` opens as code viewer (`Python_file`), `.purr` opens as plain text
-- **psfix**: system info (`System: Linux …`) added to `--explain` and default fix mode prompts — was only present in `--analyze` mode
 - **psai ask / chat**: `KeyboardInterrupt` (Ctrl+C) now exits cleanly with code 130 and resets ANSI dim style if interrupted during thinking output — no traceback printed; all three streaming paths covered (`_stream_ollama_native`, `_stream_openai_compat`, `_stream_anthropic`) plus top-level `main()` handler
 - **psai ask / chat**: thinking process was always disabled — `think` flag must be at the **top level** of the request body, not inside `options`; fixed for Ollama native endpoint
 - **psai ask / chat**: `disable_thinking` in Behavior now correctly suppresses thinking output — switched Ollama calls to native `/api/chat` endpoint (`_stream_ollama_native`) which correctly honors `think: false`; `/v1/chat/completions` ignored the flag for this model family
 - **psai chat**: `delta.get("reasoning")` used instead of `delta.get("thinking")` — Ollama's OpenAI-compat stream uses field name `"reasoning"` for thinking tokens
-- **Behavior dialog — Context limit**: spinbox stepped from 0 instead of the default value (16 000) — fixed by subclassing `QSpinBox` and overriding `stepBy()` to start from `_ctx_default`
-- **Behavior dialog — Context limit**: context window number displayed as `131,072` — now formatted with space separator: `131 072`
-- **Welcome screen dialog**: colors did not match current theme — fixed by applying `c.dialog_stylesheet` instead of `c.messagebox_stylesheet`
-- **Terminal right-click context menu**: colors did not match current theme — `menu.setStyleSheet(menu_stylesheet)` applied to all three QMenu instances (main terminal, split terminal, tab bar) and their `_scheme_menu` submenus
-- **Observable Panel**: "Missing Data" warning dialog text color did not match theme — `c.messagebox_stylesheet` now applied before `msg.exec()`
-- **Syntax highlighting**: all 19 hand-written regex highlighters replaced by a single `PygmentsHighlighter` backed by the Pygments library — 500+ languages supported, edge-cases handled by the community, colors still driven by `qss_QPainter` theme
-- **Syntax highlighting**: files with unknown extensions (`.yaml`, `.toml`, `.css`, `.rs`, `.ts`, `.env`, `Dockerfile`, `Makefile` etc.) now auto-detect language via `guess_lexer_for_filename()` and receive syntax highlighting automatically
-- **File icons**: unknown extensions now show a neutral icon instead of "unsupported"; the unsupported icon is reserved for 62 known binary/non-openable formats (video, audio, archives, executables, fonts, 3D assets etc.)
-- **HTML viewer**: three view mode buttons (`</>` code, `◫` split, `≡` preview) added before the browser button — split view is the default
-- **testfolder**: removed `usermodules/testfolder/` from git tracking — folder is now ignored via `.gitignore` and will no longer appear in the repository; files remain locally
-- **Security**: sudo password no longer stored in GNOME Keyring — now kept in a `bytearray` in RAM for the session duration and securely zeroed at shutdown via `ctypes.memset`; eliminates "Unlock Login Keyring" popup on application exit
-- **Markdown preview**: zoom (buttons + Ctrl+Scroll) now scales images alongside text; images fit the preview width automatically and never upscale beyond natural size
-- **Markdown preview**: content no longer cut off on file open without requiring a splitter resize; horizontal scrollbar removed to prevent flicker
+- **Ollama**: `"think"` field no longer sent when `disable_thinking` is off — omitting it lets thinking-capable models use their default behavior, and prevents HTTP 400 errors on models that don't support thinking
+- **psfix**: system info (`System: Linux …`) added to `--explain` and default fix mode prompts — was only present in `--analyze` mode
+- **psopen**: files now open in the correct viewer based on extension (`.md` → Markdown, `.html` → HTML, `.pdf` → PDF viewer, audio/video → media player) — previously all files landed in the unsupported-file fallback due to `mode=null` overriding the `"Default"` parameter; `.py` opens as code viewer (`Python_file`), `.purr` opens as plain text
+- **psopen**: rewrote file opening to use OSC escape sequence protocol — fixes paths with spaces, eliminates race conditions between terminals
+- **psopen**: directories now open silently in the default file manager (`xdg-open`)
+- **psopen**: removed `PurrSh3ll opened >>` confirmation text from terminal output
+- **psview**: always showed 1 token regardless of image size — `len()` on multimodal content list returned list length instead of character count; fixed by `_estimate_prompt_tokens()` with PIL-based image size detection
+- **psrag**: `UnboundLocalError: cannot access local variable 'prompt'` on every query — `_build_prompt()` was defined but never called in `main()`
+- **psview + Ollama**: HTTP 400 `cannot unmarshal array into Go struct field ChatRequest.messages.content of type string` — Ollama native `/api/chat` requires `content` as string + `images` as separate list; fixed by normalizing messages in `_stream_ollama_native`
+- **Terminal**: `Ctrl+Shift+V` (paste) no longer crashes the application when focus is in a file editor window — `TypeError` from `QScrollArea.parent()` traversal now caught and handled gracefully
 - **Terminal**: split view labels corrected — "Split View Left-Right" and "Split View Top-Bottom"
 - **Terminal**: zoom (buttons, Ctrl+Scroll, right-click menu) now works correctly in split terminals, including Zoom Reset option
 - **Terminal**: commands executed in split terminals are now logged to `terminal_history.jsonl` (visible to `psfix`, `psnext`, `psreport`)
@@ -144,13 +134,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Terminal**: split terminal now receives silent variable/alias injection from Observable Panel (own FIFO assigned at creation, cleaned up on unsplit)
 - **Terminal**: split terminal right-click menu now includes Find option with theme-aware search bar styling
 - **Terminal**: reduced visual artifacts after search bar toggle and split/unsplit — improved repaint logic using `setTerminalFont` to trigger full character grid recalculation (known issue: artifacts may still appear in some cases)
-- **psopen**: rewrote file opening to use OSC escape sequence protocol — fixes paths with spaces, eliminates race conditions between terminals
-- **psopen**: directories now open silently in the default file manager (`xdg-open`)
-- **psopen**: removed `PurrSh3ll opened >>` confirmation text from terminal output
+- **Terminal right-click context menu**: colors did not match current theme — `menu.setStyleSheet(menu_stylesheet)` applied to all three QMenu instances (main terminal, split terminal, tab bar) and their `_scheme_menu` submenus
+- **Syntax highlighting**: all 19 hand-written regex highlighters replaced by a single `PygmentsHighlighter` backed by the Pygments library — 500+ languages supported, edge-cases handled by the community, colors still driven by `qss_QPainter` theme
+- **Syntax highlighting**: files with unknown extensions (`.yaml`, `.toml`, `.css`, `.rs`, `.ts`, `.env`, `Dockerfile`, `Makefile` etc.) now auto-detect language via `guess_lexer_for_filename()` and receive syntax highlighting automatically
+- **File icons**: unknown extensions now show a neutral icon instead of "unsupported"; the unsupported icon is reserved for 62 known binary/non-openable formats (video, audio, archives, executables, fonts, 3D assets etc.)
+- **HTML viewer**: three view mode buttons (`</>` code, `◫` split, `≡` preview) added before the browser button — split view is the default
 - **Snippets**: placeholder dialog is now non-modal — other windows (terminal, tabs) remain accessible while filling in values; all placeholders shown at once in a single form
-- **psview**: always showed 1 token regardless of image size — `len()` on multimodal content list returned list length instead of character count; fixed by `_estimate_prompt_tokens()` with PIL-based image size detection
-- **psrag**: `UnboundLocalError: cannot access local variable 'prompt'` on every query — `_build_prompt()` was defined but never called in `main()`
-- **psview + Ollama**: HTTP 400 `cannot unmarshal array into Go struct field ChatRequest.messages.content of type string` — Ollama native `/api/chat` requires `content` as string + `images` as separate list; fixed by normalizing messages in `_stream_ollama_native`
+- **Welcome screen dialog**: colors did not match current theme — fixed by applying `c.dialog_stylesheet` instead of `c.messagebox_stylesheet`
+- **Observable Panel**: "Missing Data" warning dialog text color did not match theme — `c.messagebox_stylesheet` now applied before `msg.exec()`
+- **Themes**: default theme reset to `default` — was incorrectly committed as `Red Team`
+- **Markdown preview**: zoom (buttons + Ctrl+Scroll) now scales images alongside text; images fit the preview width automatically and never upscale beyond natural size
+- **Markdown preview**: content no longer cut off on file open without requiring a splitter resize; horizontal scrollbar removed to prevent flicker
+- **Security**: sudo password no longer stored in GNOME Keyring — now kept in a `bytearray` in RAM for the session duration and securely zeroed at shutdown via `ctypes.memset`; eliminates "Unlock Login Keyring" popup on application exit
+- **testfolder**: removed `usermodules/testfolder/` from git tracking — folder is now ignored via `.gitignore` and will no longer appear in the repository; files remain locally
 - **QFileSystemWatcher / token label**: `QFileSystemWatcher` and `QTimer` were created in `Controller.__init__` before `QApplication` existed (module-level import ordering) — inotify registration failed silently; moved to `setup_psai_tok_watcher()` called via `QTimer.singleShot(0, ...)` in `_install_filters()`
 
 ---

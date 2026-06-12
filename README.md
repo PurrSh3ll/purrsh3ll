@@ -163,7 +163,7 @@ The core app, Python packages, and QTermWidget are always installed. Optional co
 | **Voice support** | Microphone, portaudio, Faster-Whisper |
 | **AI Skills** | `awesome-claude-skills-security` + `claude-code-pentest` |
 
-> **Note:** A full installation with all components may take **10–20 minutes** depending on your internet speed. Ollama and Docker images are downloaded during the process.
+> ☕ **Note:** A full installation with all components may take **15–40 minutes** depending on your internet speed. Ollama and Docker images are downloaded during the process. Grab a big coffee — you'll need it.
 
 ### Disk space requirements
 
@@ -313,3 +313,4 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 - [ChromaDB](https://github.com/chroma-core/chroma) — vector database
 - [WebMap](https://github.com/SabyasachiRana/WebMap) — Nmap result visualization
 - [fastembed](https://github.com/qdrant/fastembed) — lightweight, fast embedding library
+- [Pygments](https://github.com/pygments/pygments) — syntax highlighting for 500+ languages
