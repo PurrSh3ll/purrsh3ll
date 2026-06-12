@@ -79,6 +79,8 @@ class FileTreeWidget(QTreeWidget):
     def dragEnterEvent(self, event):
         if event.source() is self:
             event.accept()
+        elif event.mimeData().hasUrls():
+            event.acceptProposedAction()
         else:
             event.ignore()
 
@@ -90,7 +92,10 @@ class FileTreeWidget(QTreeWidget):
 
     def dragMoveEvent(self, event):
         if event.source() is not self:
-            event.ignore()
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
             return
 
         target_item = self.itemAt(event.position().toPoint())
@@ -116,9 +121,90 @@ class FileTreeWidget(QTreeWidget):
             if self._is_appmodules_root(candidate_dir):
                 event.ignore()
 
+    def _handle_external_drop(self, event):
+        dest_dir = self._resolve_drop_dir(event)
+        if dest_dir is None or self._is_appmodules_root(dest_dir):
+            event.ignore()
+            return
+
+        src_paths = [u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()]
+        if not src_paths:
+            event.ignore()
+            return
+
+        # Filter out items that would conflict or are already there
+        to_copy = []
+        skipped = []
+        for src in src_paths:
+            dest = os.path.join(dest_dir, os.path.basename(src))
+            if os.path.exists(dest):
+                skipped.append(os.path.basename(src))
+            else:
+                to_copy.append(src)
+
+        if not to_copy:
+            QMessageBox.warning(
+                self,
+                "Copy Failed",
+                "All dragged items already exist in the destination folder.",
+            )
+            event.ignore()
+            return
+
+        dest_name = os.path.basename(dest_dir)
+        if len(to_copy) == 1:
+            msg = f'Copy "{os.path.basename(to_copy[0])}" to "{dest_name}"?'
+        else:
+            msg = f'Copy {len(to_copy)} items to "{dest_name}"?'
+        if skipped:
+            msg += f'\n\n{len(skipped)} item(s) skipped (already exist): {", ".join(skipped)}'
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Copy",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            event.ignore()
+            return
+
+        errors = []
+        for src in to_copy:
+            dest = os.path.join(dest_dir, os.path.basename(src))
+            try:
+                if os.path.isdir(src):
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+            except Exception as e:
+                errors.append(f"{os.path.basename(src)}: {e}")
+
+        if errors:
+            QMessageBox.critical(self, "Copy Failed", "\n".join(errors))
+
+        event.acceptProposedAction()
+
+    def _resolve_drop_dir(self, event):
+        """Return destination directory from drop position, or None if invalid."""
+        target_item = self.itemAt(event.position().toPoint())
+        if target_item is None:
+            return None
+        target_path = target_item.data(0, Qt.ItemDataRole.UserRole)
+        if not target_path or target_path == "__separator__":
+            return None
+        indicator = self.dropIndicatorPosition()
+        if indicator == QAbstractItemView.DropIndicatorPosition.OnItem and os.path.isdir(target_path):
+            return target_path
+        return os.path.dirname(os.path.normpath(target_path))
+
     def dropEvent(self, event):
         if event.source() is not self:
-            event.ignore()
+            if not event.mimeData().hasUrls():
+                event.ignore()
+                return
+            self._handle_external_drop(event)
             return
 
         dragged_item = self.currentItem()
