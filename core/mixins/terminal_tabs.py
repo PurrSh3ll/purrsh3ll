@@ -260,6 +260,10 @@ class TerminalTabsMixin:
                 _act_v.triggered.connect(
                     lambda checked=False, w=_w, t=term: self._split_terminal_in_tab(w, t, Qt.Orientation.Vertical)
                 )
+            menu.addSeparator()
+            _act_rag = QAction("Save selection to RAG memory", menu)
+            menu.addAction(_act_rag)
+
             menu.exec(term.mapToGlobal(pos))
 
         term.customContextMenuRequested.connect(_on_context_menu)
