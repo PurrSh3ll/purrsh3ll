@@ -11,6 +11,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **pschat**: global chat history — session is now shared across all profiles (`global.json`); switching models mid-conversation no longer resets context; history format is plain `{"role", "content"}` text pairs, compatible with all providers
+- **pschat `--history`**: each assistant message now stores and displays the model name that actually responded — `model` field saved per assistant entry; old entries without the field fall back to the currently active model
 - **AI Settings → ps* tools**: "Chat history (messages)" spinbox — configures how many past user prompts are kept in context (default 20, range 1–999); "Default" button resets to 20; stored as `chat_max_history` in config, applied as `value × 2` messages internally
 - **pstldr**: `--head [N]` flag — send only the first N characters to the model (default 4000); `--tail [N]` flag — send only the last N characters (default 4000, useful for logs); both accept an optional character count; no flag sends the full content as before
 - **AI Settings → RAG tab**: Terminal snippets list now supports single-item deletion — click a snippet to select it, then press "Delete selected" (with confirmation dialog) to remove it from ChromaDB permanently

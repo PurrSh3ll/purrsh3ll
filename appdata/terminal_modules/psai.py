@@ -734,7 +734,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
             _info("No chat history.")
             return
         for msg in history:
-            role_label = "\033[1mYou\033[0m" if msg["role"] == "user" else f"\033[1m{model}\033[0m"
+            role_label = "\033[1mYou\033[0m" if msg["role"] == "user" else f"\033[1m{msg.get('model', model)}\033[0m"
             print(f"{role_label}: {msg['content']}\n")
         return
 
@@ -768,7 +768,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params, hide_thinking)
 
     if response:
-        history.append({"role": "assistant", "content": response})
+        history.append({"role": "assistant", "content": response, "model": model})
         _save_session(base_dir, name, history)
 
 
