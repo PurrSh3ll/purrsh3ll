@@ -15,10 +15,19 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os
-os.environ["QT_OPENGL"] = "software"
-os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
-os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
 import sys
+import warnings
+
+# ── Suppress third-party library noise on stdout/stderr ───────────────────────
+# Must be set before any library imports to take effect
+os.environ["QT_OPENGL"]                 = "software"
+os.environ["QTWEBENGINE_DISABLE_GPU"]   = "1"
+os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
+os.environ["ONNXRUNTIME_LOGLEVEL"]      = "3"   # ERROR only (0=VERBOSE … 4=FATAL)
+os.environ["TOKENIZERS_PARALLELISM"]    = "false"  # silences HuggingFace fork warning
+
+warnings.filterwarnings("ignore")  # suppress DeprecationWarning / UserWarning from libs
+
 from gui.main_window import MainWindow
 from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -26,7 +35,9 @@ from PyQt6.QtGui import QIcon
 from core.app_logger import setup_logging
 
 _BASE_PATH = os.path.dirname(os.path.abspath(__file__))
-setup_logging(_BASE_PATH, debug="--debug" in sys.argv)
+_DEBUG     = "--debug" in sys.argv
+setup_logging(_BASE_PATH, debug=_DEBUG)
+
 
 class _SlowTooltipStyle(QProxyStyle):
     """Delay all tooltips globally to reduce clutter when moving the mouse."""

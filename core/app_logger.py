@@ -13,8 +13,17 @@ def setup_logging(base_path: str, debug: bool = False) -> None:
     root.setLevel(logging.DEBUG)
 
     # Wycisz biblioteki które generują masowy szum w logach
-    logging.getLogger("watchdog").setLevel(logging.WARNING)
-    logging.getLogger("watchdog.observers.inotify_buffer").setLevel(logging.WARNING)
+    _noisy_libs = [
+        "watchdog", "watchdog.observers.inotify_buffer",
+        "chromadb", "chromadb.telemetry", "chromadb.api",
+        "fastembed", "fastembed.embedding",
+        "huggingface_hub", "huggingface_hub.utils",
+        "httpx", "httpcore",
+        "onnxruntime",
+        "PIL",
+    ]
+    for _lib in _noisy_libs:
+        logging.getLogger(_lib).setLevel(logging.ERROR)
 
     try:
         fh = logging.handlers.RotatingFileHandler(
