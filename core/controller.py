@@ -658,27 +658,59 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                     logger.warning("Failed to copy agent CLAUDE.md from %s", src_claude, exc_info=True)
 
         dst_skills_root = os.path.join(logs_dir, ".claude", "skills")
-        if os.path.isdir(dst_skills_root):
-            try:
-                shutil.rmtree(dst_skills_root)
-            except Exception as ex:
-                pass
+        dst_agents_root = os.path.join(logs_dir, ".claude", "agents")
+        for _dst in (dst_skills_root, dst_agents_root):
+            if os.path.isdir(_dst):
+                try:
+                    shutil.rmtree(_dst)
+                except Exception:
+                    pass
         if skills_set and skills_set != "none":
             src_skills_root = os.path.join(
                 self.base_path, "appdata", "agent_modes", "skills", skills_set
             )
             if os.path.isdir(src_skills_root):
-                os.makedirs(dst_skills_root, exist_ok=True)
-                for skill_name in os.listdir(src_skills_root):
-                    if skill_name.startswith("."):
+                for entry_name in os.listdir(src_skills_root):
+                    if entry_name.startswith("."):
                         continue
-                    src_skill = os.path.join(src_skills_root, skill_name)
-                    if not os.path.isdir(src_skill):
-                        continue
-                    try:
-                        shutil.copytree(src_skill, os.path.join(dst_skills_root, skill_name))
-                    except Exception as ex:
-                        logger.warning("Failed to copy skill '%s'", skill_name, exc_info=True)
+                    src_entry = os.path.join(src_skills_root, entry_name)
+
+                    if entry_name == "skills" and os.path.isdir(src_entry):
+                        # skills/ subfolder — contents go to .claude/skills/
+                        os.makedirs(dst_skills_root, exist_ok=True)
+                        for skill_name in os.listdir(src_entry):
+                            if skill_name.startswith("."):
+                                continue
+                            src_skill = os.path.join(src_entry, skill_name)
+                            if os.path.isdir(src_skill):
+                                try:
+                                    shutil.copytree(src_skill, os.path.join(dst_skills_root, skill_name))
+                                except Exception:
+                                    logger.warning("Failed to copy skill '%s'", skill_name, exc_info=True)
+
+                    elif entry_name == "agents" and os.path.isdir(src_entry):
+                        # agents/ subfolder — contents go to .claude/agents/
+                        os.makedirs(dst_agents_root, exist_ok=True)
+                        for agent_entry in os.listdir(src_entry):
+                            if agent_entry.startswith("."):
+                                continue
+                            src_agent = os.path.join(src_entry, agent_entry)
+                            dst_agent = os.path.join(dst_agents_root, agent_entry)
+                            try:
+                                if os.path.isdir(src_agent):
+                                    shutil.copytree(src_agent, dst_agent)
+                                elif os.path.isfile(src_agent):
+                                    shutil.copy2(src_agent, dst_agent)
+                            except Exception:
+                                logger.warning("Failed to copy agent '%s'", agent_entry, exc_info=True)
+
+                    elif os.path.isdir(src_entry):
+                        # Direct skill folder — copy to .claude/skills/<name>
+                        os.makedirs(dst_skills_root, exist_ok=True)
+                        try:
+                            shutil.copytree(src_entry, os.path.join(dst_skills_root, entry_name))
+                        except Exception:
+                            logger.warning("Failed to copy skill '%s'", entry_name, exc_info=True)
 
     def open_command_palette(self):
         if not hasattr(self, '_command_palette') or self._command_palette is None:

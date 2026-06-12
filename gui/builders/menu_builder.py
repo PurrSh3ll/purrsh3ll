@@ -458,7 +458,12 @@ def build_menu(main_window):
             • <a href="https://github.com/SabyasachiRana/WebMap">WebMap</a> – MIT<br>
             • <a href="https://github.com/open-webui/open-webui">Open WebUI</a> – BSD 3-Clause<br>
             • <a href="https://github.com/cr-gpt/awesome-claude-code-skills-security">awesome-claude-skills-security</a> – MIT<br>
-            • <a href="https://github.com/anthropics/claude-code">claude-code-pentest skills</a> – MIT<br><br>
+            • <a href="https://github.com/anthropics/claude-code">claude-code-pentest skills</a> – MIT<br>
+            • <a href="https://github.com/trilwu/secskills">secskills</a> – MIT<br>
+            • <a href="https://github.com/mahmutka/cybersecurity-claude-skills">cybersecurity-claude-skills</a> – MIT<br>
+            • <a href="https://github.com/transilienceai/communitytools">communitytools</a> – MIT<br>
+            • <a href="https://github.com/agamm/claude-code-owasp">claude-code-owasp</a> – MIT<br>
+            • <a href="https://github.com/0xSteph/pentest-ai-agents">pentest-ai-agents</a> – MIT<br><br>
 
             <hr>
             <div style="text-align: center; color: gray; font-size: 11px;">
