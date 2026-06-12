@@ -102,9 +102,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(prog="psfix", add_help=False)
-    parser.add_argument("--explain",    action="store_true",
+    parser.add_argument("-e", "--explain", action="store_true",
                         help="Explain why the command failed")
-    parser.add_argument("--analyze",    action="store_true",
+    parser.add_argument("-a", "--analyze", action="store_true",
                         help="Deep analysis using terminal history and working directory")
     parser.add_argument("--paste-mode", action="store_true",
                         help="Suppress streaming; print only clean command to stdout (used internally)")
@@ -124,10 +124,10 @@ def main():
         print(
             "psfix — AI-powered terminal error explainer/fixer\n\n"
             "Usage:\n"
-            "  psfix                  Paste the corrected command at the prompt\n"
-            "  psfix --explain        Explain why the last command failed\n"
-            "  psfix --analyze        Deep analysis with terminal history and cwd context\n"
-            "  psfix -m <profile>     Use a specific saved profile\n\n"
+            "  psfix                      Paste the corrected command at the prompt\n"
+            "  psfix -e, --explain        Explain why the last command failed\n"
+            "  psfix -a, --analyze        Deep analysis with terminal history and cwd context\n"
+            "  psfix -p, --profile        Use a specific saved profile\n\n"
             "psfix reads the last entry from terminal history automatically.\n"
         )
         sys.exit(0)

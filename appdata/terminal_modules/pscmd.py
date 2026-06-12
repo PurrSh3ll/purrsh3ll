@@ -73,12 +73,12 @@ def main():
             "pscmd — AI-powered shell command generator\n\n"
             "Usage:\n"
             "  pscmd <description>              Generate a shell command from description\n"
-            "  pscmd -m <profile> <description> Use a specific saved profile\n\n"
+            "  pscmd -p <profile> <description> Use a specific saved profile\n\n"
             "Examples:\n"
             "  pscmd list all open ports\n"
             "  pscmd find files modified in the last 24 hours\n"
             "  pscmd kill process using port 8080\n"
-            "  pscmd -m openai-gpt4o list all open ports\n"
+            "  pscmd -p openai-gpt4o list all open ports\n"
         )
         sys.exit(0)
 

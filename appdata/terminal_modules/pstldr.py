@@ -86,12 +86,12 @@ def main():
         print(
             "pstldr — AI-powered TL;DR summarizer\n\n"
             "Usage:\n"
-            "  pstldr <file>                Summarize a text or PDF file\n"
-            "  pstldr \"<text>\"              Summarize text passed directly\n"
-            "  cat file | pstldr            Summarize piped input\n"
-            "  pstldr -m <profile> <file>   Use a specific saved profile\n"
-            "  pstldr --head [N] <file>     Send only the first N chars (default 4000)\n"
-            "  pstldr --tail [N] <file>     Send only the last N chars (default 4000, useful for logs)\n\n"
+            "  pstldr <file>                    Summarize a text or PDF file\n"
+            "  pstldr \"<text>\"                  Summarize text passed directly\n"
+            "  cat file | pstldr               Summarize piped input\n"
+            "  pstldr -p, --profile <name>     Use a specific saved profile\n"
+            "  pstldr --head [N] <file>         Send only the first N chars (default 4000)\n"
+            "  pstldr --tail [N] <file>         Send only the last N chars (default 4000, useful for logs)\n\n"
             "Supported file types: plain text, PDF (requires pymupdf or pypdf)\n"
         )
         sys.exit(0)

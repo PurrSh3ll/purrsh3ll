@@ -5,10 +5,10 @@ psfix() {
 psfix — AI-powered terminal error explainer/fixer
 
 Usage:
-  psfix                  Paste the corrected command at the prompt (ready to run)
-  psfix --explain        Explain why the last command failed
-  psfix --analyze        Deep analysis using terminal history and working directory
-  psfix -p <profile>     Use a specific saved profile
+  psfix                      Paste the corrected command at the prompt (ready to run)
+  psfix -e, --explain        Explain why the last command failed
+  psfix -a, --analyze        Deep analysis using terminal history and working directory
+  psfix -p, --profile NAME   Use a specific saved profile
 
 psfix reads the last command from terminal history automatically.
 Triggered via the ⚠ Explain / 🔧 Fix / 🔍 Analyze overlay buttons
@@ -30,7 +30,7 @@ EOF
         return 1
     fi
 
-    if [[ "$*" == *"--explain"* ]]; then
+    if [[ "$*" == *"--explain"* ]] || [[ "$*" == *" -e"* ]] || [[ "$*" == "-e"* ]]; then
         # Explain mode: stream explanation to terminal (via 2>/dev/tty), capture fix command on stdout
         local _fix_cmd
         _fix_cmd=$("$_py" "$_script" --base-dir "$_base" "$@" 2>/dev/tty)
@@ -41,7 +41,7 @@ EOF
                 print -z "$_fix_cmd"
             fi
         fi
-    elif [[ "$*" == *"--analyze"* ]]; then
+    elif [[ "$*" == *"--analyze"* ]] || [[ "$*" == *" -a"* ]] || [[ "$*" == "-a"* ]]; then
         # Analyze mode: stream analysis to terminal (via 2>/dev/tty), capture fix command on stdout
         local _fix_cmd
         _fix_cmd=$("$_py" "$_script" --base-dir "$_base" "$@" 2>/dev/tty)

@@ -12,7 +12,7 @@ Examples:
   pscmd list all open ports
   pscmd find files modified in the last 24 hours
   pscmd kill process using port 8080
-  pscmd -m openai-gpt4o list all open ports
+  pscmd -p openai-gpt4o list all open ports
 EOF
         return 0
     fi

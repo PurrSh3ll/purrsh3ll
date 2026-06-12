@@ -238,8 +238,8 @@ psview -p gpt-4o screenshot.png
 ```
 
 Flags:
-- `--cmd` — analyze the image and paste the best suggested command into the terminal
-- `--next` — analyze the image and suggest next pentest steps using full history
+- `-c, --cmd` — analyze the image and paste the best suggested command into the terminal
+- `-N, --next` — analyze the image and suggest next pentest steps using full history
 - `-p <profile>` — override the active profile (must support vision)
 
 Supported formats: PNG, JPG, JPEG, WEBP, GIF.

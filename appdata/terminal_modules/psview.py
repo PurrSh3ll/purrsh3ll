@@ -154,9 +154,9 @@ def main():
                         help="Path to image file (PNG, JPG, JPEG, WebP, GIF)")
     parser.add_argument("question", nargs="*",
                         help="Optional question about the image")
-    parser.add_argument("--next",     action="store_true",
+    parser.add_argument("-N", "--next", action="store_true",
                         help="After analysis, run psnext-style next-step suggestion (uses full history)")
-    parser.add_argument("--cmd",      action="store_true",
+    parser.add_argument("-c", "--cmd",  action="store_true",
                         help="After analysis, ask y/n to paste the best command (image only, no history)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
@@ -169,11 +169,11 @@ def main():
         print(
             "psview — AI-powered screenshot / image analyzer\n\n"
             "Usage:\n"
-            "  psview <image>                      Analyze image with default pentest prompt\n"
-            "  psview <image> \"<question>\"         Ask a specific question about the image\n"
-            "  psview <image> --cmd                Analyze and paste best command (image only)\n"
-            "  psview <image> --next               Analyze and suggest next steps (full history)\n"
-            "  psview -m <profile> <image>         Use a specific saved profile\n\n"
+            "  psview <image>                          Analyze image with default pentest prompt\n"
+            "  psview <image> \"<question>\"             Ask a specific question about the image\n"
+            "  psview <image> -c, --cmd                Analyze and paste best command (image only)\n"
+            "  psview <image> -N, --next               Analyze and suggest next steps (full history)\n"
+            "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
             "The analysis is saved to terminal history so psnext/psreport can use it.\n"

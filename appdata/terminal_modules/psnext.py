@@ -90,11 +90,11 @@ def main():
     parser = argparse.ArgumentParser(prog="psnext", add_help=False)
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
-    parser.add_argument("--target",   default=None, metavar="TARGET",
+    parser.add_argument("-t", "--target", default=None, metavar="TARGET",
                         help="Target host/network for additional context")
-    parser.add_argument("--rag",      action="store_true",
+    parser.add_argument("-r", "--rag",    action="store_true",
                         help="Enrich prompt with knowledge base context")
-    parser.add_argument("-n",         type=int, default=5, metavar="N", dest="top_n",
+    parser.add_argument("-n", "--top-n",  type=int, default=5, metavar="N", dest="top_n",
                         help="Number of RAG chunks (default: 5, used with --rag)")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
@@ -105,11 +105,11 @@ def main():
         print(
             "psnext — AI pentest next-step advisor\n\n"
             "Usage:\n"
-            "  psnext                          Suggest next steps based on terminal history\n"
-            "  psnext --target 192.168.1.0/24  Include target context\n"
-            "  psnext --rag                    Enrich with knowledge base context\n"
-            "  psnext --rag -n 8               Use 8 RAG chunks\n"
-            "  psnext -m <profile>             Use a specific saved profile\n"
+            "  psnext                               Suggest next steps based on terminal history\n"
+            "  psnext -t, --target 192.168.1.0/24  Include target context\n"
+            "  psnext -r, --rag                    Enrich with knowledge base context\n"
+            "  psnext -r --rag -n 8                Use 8 RAG chunks\n"
+            "  psnext -p, --profile <name>         Use a specific saved profile\n"
         )
         sys.exit(0)
 

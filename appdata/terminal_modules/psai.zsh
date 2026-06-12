@@ -25,16 +25,16 @@ Usage:
   psask [options] <query>
 
 Options:
-  -p PROFILE    Use a specific saved profile by name
-  --host URL    Base URL override
-  --rag         Enrich prompt with RAG knowledge base context
-  -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)
-  -h, --help    Show this help
+  -p, --profile NAME   Use a specific saved profile by name
+  -H, --host URL       Base URL override
+  -r, --rag            Enrich prompt with RAG knowledge base context
+  -n, --top-n N        Number of RAG chunks to retrieve (default: 5, used with --rag)
+  -h, --help           Show this help
 
 Examples:
   psask "what is XSS?"
-  psask -m openai-gpt4o "explain SQL injection"
-  psask --rag "how to enumerate subdomains"
+  psask -p openai-gpt4o "explain SQL injection"
+  psask -r "how to enumerate subdomains"
 EOF
         return 0
     fi
@@ -54,19 +54,20 @@ Usage:
   pschat --new [message]     Clear history, optionally send first message
 
 Options:
-  -p PROFILE    Use a specific saved profile by name
-  --host URL    Base URL override
-  --rag         Enrich current message with RAG knowledge base context
-  -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)
-  -h, --help    Show this help
+  -p, --profile NAME   Use a specific saved profile by name
+  -H, --host URL       Base URL override
+  -r, --rag            Enrich current message with RAG knowledge base context
+  -n, --top-n N        Number of RAG chunks to retrieve (default: 5, used with --rag)
+  -c, --clear          Clear conversation history and exit
+  -h, --help           Show this help
 
 Examples:
   pschat "explain SQL injection"
   pschat "what did we talk about?"
-  pschat --rag "what do my notes say about XSS?"
+  pschat -r "what do my notes say about XSS?"
   pschat --new "start fresh: what is SSRF?"
   pschat --history
-  pschat --clear
+  pschat -c
 EOF
         return 0
     fi

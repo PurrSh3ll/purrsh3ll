@@ -781,12 +781,12 @@ def main():
     parser.add_argument("mode",    nargs="?", default="ask", choices=["ask", "chat"])
     parser.add_argument("query",   nargs="*")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE", dest="profile")
-    parser.add_argument("--host",         default="", metavar="URL")
+    parser.add_argument("-H", "--host",   default="", metavar="URL")
     parser.add_argument("--new",          action="store_true", help="Clear chat history (chat mode)")
-    parser.add_argument("--clear",        action="store_true", help="Clear chat history and exit (chat mode)")
+    parser.add_argument("-c", "--clear",  action="store_true", help="Clear chat history and exit (chat mode)")
     parser.add_argument("--history",      action="store_true", help="Show chat history (chat mode)")
-    parser.add_argument("--rag",          action="store_true", help="Enrich prompt with RAG context")
-    parser.add_argument("-n",             type=int, default=5, metavar="N", dest="top_n",
+    parser.add_argument("-r", "--rag",    action="store_true", help="Enrich prompt with RAG context")
+    parser.add_argument("-n", "--top-n",  type=int, default=5, metavar="N", dest="top_n",
                         help="Number of RAG chunks (default: 5, used with --rag)")
     parser.add_argument("--base-dir",     default=None)
     parser.add_argument("-h", "--help",   action="store_true")
@@ -815,7 +815,7 @@ def main():
             _err(
                 "No active API profile configured.\n"
                 "Go to AI Settings > API Providers and set an active profile,\n"
-                "or pass a profile name with:  psai ask -m <profile> <query>"
+                "or pass a profile name with:  psai ask -p <profile> <query>"
             )
         sys.exit(1)
 

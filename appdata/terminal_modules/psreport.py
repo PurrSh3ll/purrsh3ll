@@ -221,14 +221,14 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(prog="psreport", add_help=False)
-    parser.add_argument("--target",   default=None, metavar="TARGET")
-    parser.add_argument("--title",    default=None, metavar="TITLE")
-    parser.add_argument("--full",     action="store_true",
+    parser.add_argument("-t", "--target",  default=None, metavar="TARGET")
+    parser.add_argument("-T", "--title",   default=None, metavar="TITLE")
+    parser.add_argument("--full",          action="store_true",
                         help="Include full history without smart filtering")
-    parser.add_argument("--verbose",  action="store_true",
+    parser.add_argument("-v", "--verbose", action="store_true",
                         help="Stream report to terminal while saving (default: save only)")
-    parser.add_argument("--format",   default="md", choices=["md", "html"])
-    parser.add_argument("--deep",     action="store_true",
+    parser.add_argument("-f", "--format",  default="md", choices=["md", "html"])
+    parser.add_argument("-d", "--deep",    action="store_true",
                         help="Map-Reduce mode: chunk entire history for thorough analysis")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
@@ -241,14 +241,14 @@ def main():
         print(
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
-            "  psreport                              Generate report from filtered history\n"
-            "  psreport --deep                       Map-Reduce: thorough, chunks full history\n"
-            "  psreport --full                       Include full history without smart filter\n"
-            "  psreport --verbose                    Stream report to terminal while saving\n"
-            "  psreport --format html                Generate HTML report instead of Markdown\n"
-            "  psreport --target 192.168.1.0/24      Set target in report header\n"
-            "  psreport --title \"Internal Pentest\"    Set custom report title\n"
-            "  psreport -m <profile>                 Use a specific saved profile\n\n"
+            "  psreport                                    Generate report from filtered history\n"
+            "  psreport -d, --deep                         Map-Reduce: thorough, chunks full history\n"
+            "  psreport --full                             Include full history without smart filter\n"
+            "  psreport -v, --verbose                      Stream report to terminal while saving\n"
+            "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
+            "  psreport -t, --target 192.168.1.0/24        Set target in report header\n"
+            "  psreport -T, --title \"Internal Pentest\"      Set custom report title\n"
+            "  psreport -p, --profile <name>               Use a specific saved profile\n\n"
             "Report is saved to appmodules/Cyb3rCollector/reports/\n"
         )
         sys.exit(0)

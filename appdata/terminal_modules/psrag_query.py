@@ -560,11 +560,11 @@ def _err(msg: str):
 def main():
     parser = argparse.ArgumentParser(prog="psrag", add_help=False)
     parser.add_argument("query",           nargs="+")
-    parser.add_argument("-n",              type=int, default=5, metavar="N", dest="top_n")
+    parser.add_argument("-n", "--top-n",   type=int, default=5, metavar="N", dest="top_n")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE", dest="profile")
-    parser.add_argument("--host",          default="", metavar="URL",
+    parser.add_argument("-H", "--host",    default="", metavar="URL",
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
-    parser.add_argument("--show-sources",  action="store_true")
+    parser.add_argument("-s", "--show-sources", action="store_true")
     parser.add_argument("--base-dir",      default=None)
     parser.add_argument("-h", "--help",    action="store_true")
     args = parser.parse_args()
@@ -574,16 +574,16 @@ def main():
             "psrag — query the PurrSh3ll RAG knowledge base\n\n"
             "Usage: psrag [options] <query>\n\n"
             "Options:\n"
-            "  -n N             Context chunks to retrieve (default: 5)\n"
-            "  -m PROFILE       Use a specific saved profile by name\n"
-            "  --host URL       Provider host/base URL override\n"
-            "  --show-sources   Print source files and scores before answer\n"
-            "  -h, --help       Show this help\n\n"
+            "  -n, --top-n N        Context chunks to retrieve (default: 5)\n"
+            "  -p, --profile NAME   Use a specific saved profile by name\n"
+            "  -H, --host URL       Provider host/base URL override\n"
+            "  -s, --show-sources   Print source files and scores before answer\n"
+            "  -h, --help           Show this help\n\n"
             "Examples:\n"
             '  psrag "what is XSS?"\n'
-            '  psrag -n 3 --show-sources "how to enumerate subdomains"\n'
-            '  psrag -m my-ollama "explain SQL injection"\n'
-            '  psrag --host http://192.168.1.10:11434 "query"'
+            '  psrag -n 3 -s "how to enumerate subdomains"\n'
+            '  psrag -p my-ollama "explain SQL injection"\n'
+            '  psrag -H http://192.168.1.10:11434 "query"'
         )
         sys.exit(0)
 
@@ -601,7 +601,7 @@ def main():
             _err(
                 "No active API profile configured.\n"
                 "Go to AI Settings > API Providers and set an active profile,\n"
-                "or pass a profile name with:  psrag -m <profile> <query>"
+                "or pass a profile name with:  psrag -p <profile> <query>"
             )
         sys.exit(1)
 
