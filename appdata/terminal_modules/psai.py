@@ -755,11 +755,11 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     history.append({"role": "user", "content": query})
 
     # Build messages for API: keep last _MAX_HISTORY messages, replace last with RAG version if needed
-    msgs_to_send = history[-_MAX_HISTORY:]
+    # Strip non-API fields (e.g. 'model') — some providers reject unknown properties
+    msgs_to_send = [{"role": m["role"], "content": m["content"]} for m in history[-_MAX_HISTORY:]]
     if fast_answers and not any(m["role"] == "system" for m in msgs_to_send):
-        msgs_to_send = [{"role": "system", "content": "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."}] + list(msgs_to_send)
+        msgs_to_send = [{"role": "system", "content": "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."}] + msgs_to_send
     if query_for_api != query and msgs_to_send:
-        msgs_to_send = list(msgs_to_send)
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}
 
     if _SHOW_QUERYING:

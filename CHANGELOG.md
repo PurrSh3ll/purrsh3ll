@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **README**: added note that paid API providers (Anthropic, OpenAI) have not been end-to-end tested with real API keys
 - **pschat**: global chat history — session is now shared across all profiles (`global.json`); switching models mid-conversation no longer resets context; history format is plain `{"role", "content"}` text pairs, compatible with all providers
 - **pschat `--history`**: each assistant message now stores and displays the model name that actually responded — `model` field saved per assistant entry; old entries without the field fall back to the currently active model
 - **AI Settings → ps* tools**: "Chat history (messages)" spinbox — configures how many past user prompts are kept in context (default 20, range 1–999); "Default" button resets to 20; stored as `chat_max_history` in config, applied as `value × 2` messages internally
@@ -23,6 +24,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **pschat**: HTTP 400 from Groq (and other strict providers) caused by `model` field in assistant messages — `msgs_to_send` now strips all non-API fields (`model`, any future extras) before sending; `model` is retained in the session file for `--history` display only
 - **AI Settings → RAG tab**: checking an excluded file when "Enable automatic indexing" is off now sets the file status to `pending` instead of immediately triggering re-indexing; indexing will happen on the next manual "Refresh index" or when auto-indexing is re-enabled
 - **AI Settings → RAG tab**: RAG index status label and local dialog status now both visible immediately on Refresh index click — `QApplication.processEvents()` added before `worker.start()` in both `menu_builder.py` and `controller.py`
 

@@ -279,6 +279,8 @@ I have more ideas than time — building this solo alongside a full-time job mea
 
 I’m aware there are still areas that need improvement, such as widget colors, some untested tools, and parts of the UI. I have these in mind and will be addressing them over time.
 
+> **Note:** I have not yet tested the integration with paid API providers such as Anthropic and OpenAI. These providers are implemented based on their official API documentation, but end-to-end testing with real API keys has not been performed. If you encounter issues, please open an issue.
+
 If any of this sounds useful to you — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
 
 ---
