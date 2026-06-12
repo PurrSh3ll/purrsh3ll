@@ -83,13 +83,13 @@ Ask the active AI profile a direct question.
 ```bash
 psask "what is SSRF and how to exploit it"
 psask "explain the output of this nmap scan: ..."
-psask -m llama3.2 "what is privilege escalation?"
+psask -p llama3.2 "what is privilege escalation?"
 psask --rag "how to enumerate SMB shares"
 psask --rag -n 10 "lateral movement techniques"
 ```
 
 Flags:
-- `-m <model>` — override the model from the active profile
+- `-p <profile>` — override the active profile
 - `--rag` — enrich the prompt with relevant chunks from the knowledge base
 - `-n <N>` — number of RAG chunks to include (default: 5, used with `--rag`)
 
@@ -105,7 +105,7 @@ pschat --new
 pschat --history
 pschat --clear
 pschat --rag "what does my knowledge base say about SMB?"
-pschat -m gemma3 "continue our analysis"
+pschat -p gemma3 "continue our analysis"
 ```
 
 Flags:
@@ -114,7 +114,7 @@ Flags:
 - `--history` — show current conversation history
 - `--rag` — enrich the message with RAG context
 - `-n <N>` — number of RAG chunks (default: 5)
-- `-m <model>` — override the model
+- `-p <profile>` — override the active profile
 
 ---
 
@@ -126,11 +126,11 @@ Describe what you want to do in plain English and get the shell command.
 pscmd "find all SUID binaries on the system"
 pscmd "scan ports 80 and 443 on 192.168.1.0/24 with nmap"
 pscmd "compress the /var/log directory to a tar.gz archive"
-pscmd -m qwen3 "list all listening TCP ports"
+pscmd -p qwen3 "list all listening TCP ports"
 ```
 
 Flags:
-- `-m <model>` — override the model
+- `-p <profile>` — override the active profile
 
 ---
 
@@ -147,7 +147,7 @@ psfix --analyze
 Flags:
 - `--explain` — explain why the command failed without suggesting a fix
 - `--analyze` — deep mode with full terminal history and current directory context
-- `-m <model>` — override the model
+- `-p <profile>` — override the active profile
 
 ---
 
@@ -158,12 +158,12 @@ Reads recent terminal history and suggests the most promising next steps for the
 ```bash
 psnext
 psnext --target 192.168.1.0/24
-psnext -m llama3.2
+psnext -p llama3.2
 ```
 
 Flags:
 - `--target <TARGET>` — specify the target IP, hostname, or range for better suggestions
-- `-m <model>` — override the model
+- `-p <profile>` — override the active profile
 
 Useful when you are stuck or want a second opinion on attack paths.
 
@@ -203,7 +203,7 @@ Flags:
 - `--format md|html` — output format (default: md)
 - `--target <TARGET>` — target IP or range shown in report header
 - `--title <TITLE>` — custom report title
-- `-m <model>` — override the model
+- `-p <profile>` — override the active profile
 
 ---
 
@@ -216,12 +216,12 @@ pstldr
 pstldr report.txt
 pstldr --tail /var/log/syslog
 nmap -sV 10.10.10.1 | pstldr
-pstldr -m gemma3 report.txt
+pstldr -p gemma3 report.txt
 ```
 
 Flags:
 - `--tail` — read from the end of the file (useful for logs)
-- `-m <model>` — override the model
+- `-p <profile>` — override the active profile
 
 ---
 
@@ -234,13 +234,13 @@ psview screenshot.png
 psview /tmp/scan.png "what services are running?"
 psview screenshot.png --cmd
 psview screenshot.png --next
-psview -m gpt-4o screenshot.png
+psview -p gpt-4o screenshot.png
 ```
 
 Flags:
 - `--cmd` — analyze the image and paste the best suggested command into the terminal
 - `--next` — analyze the image and suggest next pentest steps using full history
-- `-m <model>` — override the model (must support vision)
+- `-p <profile>` — override the active profile (must support vision)
 
 Supported formats: PNG, JPG, JPEG, WEBP, GIF.
 
