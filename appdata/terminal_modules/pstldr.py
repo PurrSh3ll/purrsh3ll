@@ -94,7 +94,7 @@ def main():
             "  pstldr --tail [N] <file>         Send only the last N chars (default 4000, useful for logs)\n\n"
             "Supported file types:\n"
             "  Plain text  — .txt, .md, .log, source code, and any UTF-8 text file\n"
-            "  PDF         — .pdf (extracted via PyMuPDF; pypdf used as fallback)\n"
+            "  PDF         — .pdf\n"
         )
         sys.exit(0)
 

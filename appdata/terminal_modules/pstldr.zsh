@@ -14,7 +14,7 @@ Usage:
 
 Supported file types:
   Plain text  — .txt, .md, .log, source code, and any UTF-8 text file
-  PDF         — .pdf (extracted via PyMuPDF; pypdf used as fallback)
+  PDF         — .pdf
 EOF
         return 0
     fi
