@@ -5,7 +5,7 @@ import subprocess
 import threading
 
 from PyQt6.QtCore import Qt, QEvent, QObject, QSize, QTimer
-from PyQt6.QtGui import QFont, QMovie, QPixmap
+from PyQt6.QtGui import QFont, QImage, QMovie, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
@@ -34,8 +34,11 @@ _EXIFTOOL_SKIP = {
     'FilePermissions', 'FileType', 'FileTypeExtension', 'MIMEType',
 }
 
-# Animated formats handled via QMovie
+# Formats that may be animated — use QMovie; zoom via setScaledSize()
 _ANIMATED_EXTS = {'gif', 'webp'}
+
+# SVG formats — QPixmap can return null; use QSvgRenderer fallback
+_SVG_EXTS = {'svg', 'svgz'}
 
 
 class _TabPage(QWidget):
@@ -71,9 +74,8 @@ class Image_file:
         self._file_size_bytes = 0
         self._ext = ''
 
-        # Original pixmap (full resolution)
-        self._pixmap = None
-        self._movie = None
+        self._pixmap = None   # set for static images
+        self._movie = None    # set for animated images (GIF/WEBP)
         self._zoom = 1.0
         self._img_w = 0
         self._img_h = 0
@@ -81,6 +83,7 @@ class Image_file:
         self._page_display = None
         self._scroll_area = None
         self._zoom_label = None
+        self._dim_label = None
 
         self._exiftool_result = {}
         self._hash_result = {}
@@ -245,7 +248,6 @@ class Image_file:
 
         zoom_layout.addStretch()
 
-        # Dimensions label — filled after pixmap is loaded
         self._dim_label = QLabel("")
         self._dim_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
         self._dim_label.setEnabled(False)
@@ -272,89 +274,152 @@ class Image_file:
 
         layout.addWidget(self._scroll_area, stretch=1)
 
-        # Load image
+        # Load image — route by format
         if self._ext in _ANIMATED_EXTS:
             self._load_animated(path)
         else:
             self._load_static(path)
 
+    # ------------------------------------------------------------------
+    # Format loaders
+    # ------------------------------------------------------------------
+
     def _load_static(self, path):
+        """Load a static image. Falls back to QSvgRenderer (SVG) or Pillow (TIFF etc.)."""
         px = QPixmap(path)
+
+        # SVG: QPixmap may return null or 0×0 if Qt SVG plugin is unavailable
+        if (px.isNull() or px.width() == 0) and self._ext in _SVG_EXTS:
+            px = self._load_svg(path)
+
+        # General fallback via Pillow — covers TIFF and other unsupported Qt formats
+        if px.isNull():
+            px = self._load_via_pillow(path)
+
         if px.isNull():
             self._page_display.setText(
-                f"❌ Cannot display image.\nFormat may be unsupported or file is corrupted."
+                "❌ Cannot display image.\nFormat may be unsupported or file is corrupted."
             )
             return
+
         self._pixmap = px
         self._img_w = px.width()
         self._img_h = px.height()
         self._dim_label.setText(f"{self._img_w} × {self._img_h} px")
         self._apply_zoom()
 
+    def _load_svg(self, path) -> QPixmap:
+        """Render SVG to QPixmap via QSvgRenderer at its natural size."""
+        try:
+            from PyQt6.QtSvg import QSvgRenderer
+            from PyQt6.QtGui import QPainter
+            renderer = QSvgRenderer(path)
+            if not renderer.isValid():
+                return QPixmap()
+            sz = renderer.defaultSize()
+            w = sz.width() if sz.width() > 0 else 800
+            h = sz.height() if sz.height() > 0 else 600
+            img = QImage(w, h, QImage.Format.Format_ARGB32)
+            img.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(img)
+            renderer.render(painter)
+            painter.end()
+            return QPixmap.fromImage(img)
+        except Exception:
+            return QPixmap()
+
+    def _load_via_pillow(self, path) -> QPixmap:
+        """Load image via Pillow and convert to QPixmap (fallback for TIFF etc.)."""
+        try:
+            from PIL import Image as PILImage
+            pil_img = PILImage.open(path)
+            pil_img = pil_img.convert("RGBA")
+            data = bytes(pil_img.tobytes("raw", "RGBA"))
+            stride = pil_img.width * 4
+            qimg = QImage(data, pil_img.width, pil_img.height, stride,
+                          QImage.Format.Format_RGBA8888)
+            return QPixmap.fromImage(qimg)
+        except Exception:
+            return QPixmap()
+
     def _load_animated(self, path):
+        """Load animated GIF/WEBP via QMovie with full zoom support via setScaledSize()."""
         movie = QMovie(path)
         if not movie.isValid():
-            # Fallback to static
+            # Not actually animated — fall through to static loader
             self._load_static(path)
             return
+
         self._movie = movie
         self._page_display.setMovie(movie)
         movie.start()
-        # Get dimensions once first frame is ready
+
+        # currentPixmap() may be empty until the first frame is decoded;
+        # jumpToFrame(0) forces decoding synchronously.
+        movie.jumpToFrame(0)
         sz = movie.currentPixmap().size()
-        if sz.isValid():
+        if sz.isValid() and sz.width() > 0:
             self._img_w = sz.width()
             self._img_h = sz.height()
             self._dim_label.setText(f"{self._img_w} × {self._img_h} px")
-            self._page_display.resize(sz)
-        self._zoom_label.setText("—")  # Zoom disabled for animated
+
+        # Resume normal playback and apply 100% zoom via setScaledSize
+        movie.start()
+        self._apply_zoom()
 
     # ------------------------------------------------------------------
-    # Zoom
+    # Zoom — works for both static (QPixmap) and animated (QMovie)
     # ------------------------------------------------------------------
+
+    def _has_image(self) -> bool:
+        return self._pixmap is not None or (self._movie is not None and self._img_w > 0)
 
     def _apply_zoom(self):
-        if self._pixmap is None:
-            return
-        w = max(1, int(self._img_w * self._zoom))
-        h = max(1, int(self._img_h * self._zoom))
-        scaled = self._pixmap.scaled(
-            w, h,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._page_display.setPixmap(scaled)
-        self._page_display.resize(scaled.size())
-        self._zoom_label.setText(f"{int(self._zoom * 100)}%")
+        if self._pixmap is not None:
+            w = max(1, int(self._img_w * self._zoom))
+            h = max(1, int(self._img_h * self._zoom))
+            scaled = self._pixmap.scaled(
+                w, h,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._page_display.setPixmap(scaled)
+            self._page_display.resize(scaled.size())
+            self._zoom_label.setText(f"{int(self._zoom * 100)}%")
+
+        elif self._movie is not None and self._img_w > 0:
+            w = max(1, int(self._img_w * self._zoom))
+            h = max(1, int(self._img_h * self._zoom))
+            self._movie.setScaledSize(QSize(w, h))
+            self._page_display.resize(QSize(w, h))
+            self._zoom_label.setText(f"{int(self._zoom * 100)}%")
 
     def _zoom_in(self):
-        if self._pixmap is None:
+        if not self._has_image():
             return
         if self._zoom < 8.0:
             self._zoom = round(min(8.0, self._zoom + 0.25), 2)
             self._apply_zoom()
 
     def _zoom_out(self):
-        if self._pixmap is None:
+        if not self._has_image():
             return
         if self._zoom > 0.1:
             self._zoom = round(max(0.1, self._zoom - 0.25), 2)
             self._apply_zoom()
 
     def _zoom_fit(self):
-        if self._pixmap is None or self._img_w == 0 or self._img_h == 0:
+        if not self._has_image() or self._img_w == 0 or self._img_h == 0:
             return
         vp = self._scroll_area.viewport()
         vw, vh = vp.width(), vp.height()
         if vw <= 0 or vh <= 0:
             return
-        scale_w = vw / self._img_w
-        scale_h = vh / self._img_h
-        self._zoom = round(min(scale_w, scale_h), 4)
+        self._zoom = round(min(vw / self._img_w, vh / self._img_h), 4)
         self._apply_zoom()
 
     def _zoom_reset(self):
-        if self._pixmap is None:
+        if not self._has_image():
             return
         self._zoom = 1.0
         self._apply_zoom()
