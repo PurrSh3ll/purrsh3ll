@@ -1,8 +1,11 @@
 import hashlib
 import json
+import logging
 import os
 import uuid
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from core.rag import chunker
 from core.rag import embedder as emb
@@ -27,7 +30,7 @@ def _load_meta(meta_path: str) -> dict:
             with open(meta_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            pass
+            logger.warning("Failed to load RAG index meta from %s", meta_path, exc_info=True)
     return {}
 
 
@@ -64,7 +67,7 @@ def load_exclusions(exclusions_path: str) -> set:
             if isinstance(data, list):
                 return set(data)
         except Exception:
-            pass
+            logger.warning("Failed to load RAG exclusions from %s", exclusions_path, exc_info=True)
     return set()
 
 
@@ -156,7 +159,7 @@ class Indexer:
                     try:
                         self._collection.delete(ids=old_ids)
                     except Exception:
-                        pass
+                        logger.warning("Failed to delete stale chunks for %s from ChromaDB", abs_path, exc_info=True)
 
                 # Chunk
                 chunks = chunker.chunk_file(abs_path, self.kb_path, self.allowed_ext)
@@ -209,7 +212,7 @@ class Indexer:
                     try:
                         self._collection.delete(ids=old_ids)
                     except Exception:
-                        pass
+                        logger.warning("Failed to delete chunks for removed file %s from ChromaDB", abs_path, exc_info=True)
                 del meta[abs_path]
 
         _save_meta(self._meta_path, meta)
@@ -266,6 +269,7 @@ def get_memory_entries(base_path: str) -> list:
         entries.sort(key=lambda e: e["meta"].get("timestamp", ""), reverse=True)
         return entries
     except Exception:
+        logger.warning("Failed to retrieve RAG memory entries", exc_info=True)
         return []
 
 
@@ -274,4 +278,4 @@ def delete_memory_entry(entry_id: str, base_path: str) -> None:
     try:
         _memory_collection(base_path).delete(ids=[entry_id])
     except Exception:
-        pass
+        logger.warning("Failed to delete RAG memory entry %s", entry_id, exc_info=True)

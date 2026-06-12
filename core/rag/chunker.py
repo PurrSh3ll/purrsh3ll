@@ -1,4 +1,7 @@
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 ALL_EXTENSIONS = {
     "md", "txt", "py", "sh", "js", "ts", "json",
@@ -107,6 +110,7 @@ def _chunk_pdf(abs_path: str, kb_root: str) -> list[dict]:
     try:
         doc = fitz.open(abs_path)
     except Exception:
+        logger.warning("Failed to open PDF for chunking: %s", abs_path, exc_info=True)
         return []
 
     try:
@@ -129,6 +133,7 @@ def _chunk_pdf(abs_path: str, kb_root: str) -> list[dict]:
                 if text.strip():
                     pages.append((page_num + 1, text))
             except Exception:
+                logger.debug("Failed to extract text from page %d in %s", page_num, abs_path, exc_info=True)
                 continue
     finally:
         doc.close()

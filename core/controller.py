@@ -195,6 +195,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 return os.path.join(self.base_path, "appmodules", "BrainDump")
             return rag.get("custom_path", "")
         except Exception:
+            logger.warning("Failed to read RAG knowledge base path from config", exc_info=True)
             return ""
 
     def _get_rag_model(self) -> str:
@@ -206,6 +207,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
             )
         except Exception:
+            logger.warning("Failed to read RAG embedding model from config", exc_info=True)
             return "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
     def _get_rag_exclusions(self) -> set:
@@ -222,7 +224,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             if exts and isinstance(exts, list):
                 return set(exts)
         except Exception:
-            pass
+            logger.warning("Failed to read RAG index extensions from config", exc_info=True)
         return set(DEFAULT_EXTENSIONS)
 
     def _ensure_api_profiles(self):
@@ -233,7 +235,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 with open(self.api_profiles_path, "w", encoding="utf-8") as f:
                     json.dump({"active": "", "profiles": []}, f, indent=2)
             except Exception:
-                pass
+                logger.warning("Failed to create api_profiles.json", exc_info=True)
 
     def start_rag_watcher(self):
         self.stop_rag_watcher()
