@@ -343,10 +343,27 @@ class Image_file:
             return QPixmap()
 
     def _load_animated(self, path):
-        """Load animated GIF/WEBP via QMovie with full zoom support via setScaledSize()."""
+        """Load GIF/WEBP: use QMovie only for truly animated files; route static ones to
+        _load_static() so they benefit from SmoothTransformation zoom quality."""
+        # Use Pillow to check frame count reliably — QMovie.isValid() returns True for
+        # single-frame GIF/WEBP too, and QMovie scaling uses a low-quality algorithm.
+        is_animated = False
+        try:
+            from PIL import Image as PILImage
+            pil_img = PILImage.open(path)
+            is_animated = getattr(pil_img, 'n_frames', 1) > 1
+            pil_img.close()
+        except Exception:
+            pass
+
+        if not is_animated:
+            # Single-frame — use static path for high-quality SmoothTransformation zoom
+            self._load_static(path)
+            return
+
+        # Truly animated — use QMovie
         movie = QMovie(path)
         if not movie.isValid():
-            # Not actually animated — fall through to static loader
             self._load_static(path)
             return
 
@@ -354,8 +371,7 @@ class Image_file:
         self._page_display.setMovie(movie)
         movie.start()
 
-        # currentPixmap() may be empty until the first frame is decoded;
-        # jumpToFrame(0) forces decoding synchronously.
+        # jumpToFrame(0) forces first-frame decode so dimensions are available immediately
         movie.jumpToFrame(0)
         sz = movie.currentPixmap().size()
         if sz.isValid() and sz.width() > 0:
@@ -363,7 +379,6 @@ class Image_file:
             self._img_h = sz.height()
             self._dim_label.setText(f"{self._img_w} × {self._img_h} px")
 
-        # Resume normal playback and apply 100% zoom via setScaledSize
         movie.start()
         self._apply_zoom()
 
