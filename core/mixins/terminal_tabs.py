@@ -263,13 +263,6 @@ class TerminalTabsMixin:
             menu.addSeparator()
             _act_rag = QAction("Save selection to RAG memory", menu)
             _act_rag.triggered.connect(lambda checked=False, t=term: self._save_selection_to_rag(t))
-            # Enable only when there is an active selection
-            if hasattr(term, "hasSelection"):
-                _has_sel = term.hasSelection()
-            else:
-                from PyQt6.QtGui import QClipboard
-                _has_sel = bool(QApplication.clipboard().text(QClipboard.Mode.Selection).strip())
-            _act_rag.setEnabled(_has_sel)
             menu.addAction(_act_rag)
 
             menu.exec(term.mapToGlobal(pos))
