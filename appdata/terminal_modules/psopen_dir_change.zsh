@@ -10,16 +10,25 @@ Usage:
 
 Options:
   -f, --file <file>   Path to the file to open (required)
-  -m, --mode <mode>   Override the open mode (default: inferred from extension)
+  -m, --mode <mode>   Override the viewer mode (default: inferred from extension)
   -h, --help          Show this help
 
-Modes:
-  py, sh, js, html, json, txt, md, ...   open in editor with syntax highlighting
+Supported file types (auto-detected from extension):
+  Code / text   py, sh, js, html, php, rb, go, java, cpp, sql, json, xml, md, txt, csv, ...
+  PDF           pdf
+  Images        png, jpg, gif, webp, tiff, svg, bmp, ico, ...
+  Audio         mp3, flac, wav, ogg, opus, aac, ...
+  Video         mp4, mkv, avi, mov, webm, ...
+
+Use -m to force a viewer when the extension is missing or ambiguous,
+e.g. open a .dat file as text: psopen -f data.dat -m txt
 
 Examples:
   psopen notes.md
-  psopen /tmp/report.txt json
+  psopen photo.tiff
+  psopen /tmp/capture.mp4
   psopen -f /tmp/exploit.py
+  psopen -f /tmp/data -m txt
 USAGE
     return 0
   fi

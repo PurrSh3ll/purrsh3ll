@@ -261,19 +261,22 @@ Analysis results are saved to terminal history so `psnext` and `psreport` can us
 
 ### psopen — Open File in PurrSh3ll
 
-Open any file in the PurrSh3ll file viewer directly from the terminal. If the path is a directory, it opens in the system file manager.
+Open any file in the PurrSh3ll viewer directly from the terminal. The viewer is selected automatically based on file extension. If the path is a directory, it opens in the system file manager.
+
+Supported types: code/text files (py, sh, js, html, sql, json, md, csv, …), PDF, images (png, jpg, gif, webp, tiff, svg, …), audio (mp3, flac, wav, …), video (mp4, mkv, avi, …).
 
 ```bash
 psopen notes.md
-psopen /tmp/report.txt
+psopen photo.tiff
+psopen /tmp/capture.mp4
 psopen -f /tmp/exploit.py
-psopen -f /tmp/data.json -m json
+psopen -f /tmp/data -m txt
 psopen --help
 ```
 
 Flags:
 - `-f, --file <file>` — path to the file to open
-- `-m, --mode <mode>` — override viewer mode (e.g., py, sh, js, json, md, txt)
+- `-m, --mode <mode>` — override viewer mode (useful when extension is missing or ambiguous)
 - `-h, --help` — show help
 
 ---
