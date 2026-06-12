@@ -12,7 +12,7 @@ Usage:
   psreport --full                       Include full history (no smart filter)
   psreport --target <host/network>      Set target in report header
   psreport --title "<title>"            Set custom report title
-  psreport -m <profile>                 Use a specific saved profile
+  psreport -p <profile>                 Use a specific saved profile
 
 --deep prompts for confirmation before sending N+1 requests to the model.
 Report is saved to appmodules/Cyb3rCollector/reports/report_YYYY-MM-DD_HH-MM.{md,html}

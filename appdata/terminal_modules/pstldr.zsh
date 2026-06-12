@@ -10,7 +10,7 @@ Usage:
   pstldr --tail [N] <file>     Send only the last N chars (default 4000, useful for logs)
   pstldr "<text>"              Summarize text passed directly
   cat file | pstldr            Summarize piped input
-  pstldr -m <profile> <file>   Use a specific saved profile
+  pstldr -p <profile> <file>   Use a specific saved profile
 EOF
         return 0
     fi

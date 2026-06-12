@@ -9,7 +9,7 @@ Usage:
 
 Options:
   -n N             Number of context chunks to retrieve  (default: 5)
-  -m PROFILE       Use a specific saved profile by name
+  -p PROFILE       Use a specific saved profile by name
   --host URL       Provider host/base URL override
   --show-sources   Print source filenames and scores before the answer
   -h, --help       Show this help

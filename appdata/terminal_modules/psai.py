@@ -780,7 +780,7 @@ def main():
     parser = argparse.ArgumentParser(prog="psai", add_help=False)
     parser.add_argument("mode",    nargs="?", default="ask", choices=["ask", "chat"])
     parser.add_argument("query",   nargs="*")
-    parser.add_argument("-m", "--model",  default=None, metavar="PROFILE")
+    parser.add_argument("-p", "-m", "--profile", "--model", default=None, metavar="PROFILE", dest="profile")
     parser.add_argument("--host",         default="", metavar="URL")
     parser.add_argument("--new",          action="store_true", help="Clear chat history (chat mode)")
     parser.add_argument("--clear",        action="store_true", help="Clear chat history and exit (chat mode)")
@@ -808,10 +808,10 @@ def main():
     )
 
     config  = _load_config(base_dir)
-    profile = _resolve_profile(config, args.model)
+    profile = _resolve_profile(config, args.profile)
 
     if not profile:
-        if not args.model:
+        if not args.profile:
             _err(
                 "No active API profile configured.\n"
                 "Go to AI Settings > API Providers and set an active profile,\n"

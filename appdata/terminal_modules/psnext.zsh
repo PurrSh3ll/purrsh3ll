@@ -9,7 +9,7 @@ Usage:
   psnext --target <host/network>  Include target context in analysis
   psnext --rag                    Enrich with knowledge base context
   psnext --rag -n 8               Use 8 RAG chunks
-  psnext -m <profile>             Use a specific saved profile
+  psnext -p <profile>             Use a specific saved profile
 
 psnext reads the terminal session history and uses AI to summarize what
 has been done, identify gaps, and suggest the most promising next moves.

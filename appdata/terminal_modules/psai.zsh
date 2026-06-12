@@ -25,7 +25,7 @@ Usage:
   psask [options] <query>
 
 Options:
-  -m PROFILE    Use a specific saved profile by name
+  -p PROFILE    Use a specific saved profile by name
   --host URL    Base URL override
   --rag         Enrich prompt with RAG knowledge base context
   -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)
@@ -54,7 +54,7 @@ Usage:
   pschat --new [message]     Clear history, optionally send first message
 
 Options:
-  -m PROFILE    Use a specific saved profile by name
+  -p PROFILE    Use a specific saved profile by name
   --host URL    Base URL override
   --rag         Enrich current message with RAG knowledge base context
   -n N          Number of RAG chunks to retrieve (default: 5, used with --rag)

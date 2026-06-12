@@ -6,7 +6,7 @@ pscmd — AI-powered shell command generator
 
 Usage:
   pscmd <description>            Generate a shell command from natural-language description
-  pscmd -m <profile> <description> Use a specific saved profile
+  pscmd -p <profile> <description> Use a specific saved profile
 
 Examples:
   pscmd list all open ports

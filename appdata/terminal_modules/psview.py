@@ -160,8 +160,8 @@ def main():
                         help="After analysis, ask y/n to paste the best command (image only, no history)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
-    parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
-                        help="Use a specific saved profile by name")
+    parser.add_argument("-p", "-m", "--profile", "--model", default=None, metavar="PROFILE",
+                        dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -189,9 +189,9 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._resolve_profile(config, args.model)
+    profile = _ai._resolve_profile(config, args.profile)
     if not profile:
-        if not args.model:
+        if not args.profile:
             _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
