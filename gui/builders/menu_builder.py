@@ -694,16 +694,10 @@ def build_menu(main_window):
         form_dl = QFormLayout(grp_dl)
         form_dl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
-        grp_mem  = QGroupBox("Indexed memory")
-        form_mem = QVBoxLayout(grp_mem)
-        form_mem.setContentsMargins(6, 6, 6, 6)
-        form_mem.setSpacing(4)
-
         grp_rag_layout.addWidget(grp_kb)
         grp_rag_layout.addWidget(grp_emb)
         grp_rag_layout.addWidget(grp_rnk)
         grp_rag_layout.addWidget(grp_dl)
-        grp_rag_layout.addWidget(grp_mem)
 
         _rag_cfg = data.get("rag", {})
         _rag_mode = _rag_cfg.get("knowledge_base", "braindump")
@@ -1194,56 +1188,6 @@ def build_menu(main_window):
         rag_dl_list.currentRowChanged.connect(_dl_selection_changed)
         rag_dl_list.itemDoubleClicked.connect(_dl_show_info)
         rag_dl_remove_btn.clicked.connect(_dl_remove)
-
-        # ── Indexed memory ─────────────────────────────────────────────────────
-        mem_list = QListWidget(grp_mem)
-        mem_list.setFixedHeight(5 * 24)
-        mem_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        mem_list.setAlternatingRowColors(False)
-        mem_list.setToolTip("Text snippets saved from terminal via right-click → Save selection to RAG memory")
-
-        mem_delete_btn = QPushButton("🗑  Remove selected", grp_mem)
-        mem_delete_btn.setEnabled(False)
-
-        form_mem.addWidget(mem_list)
-        form_mem.addWidget(mem_delete_btn)
-
-        def _mem_populate():
-            mem_list.clear()
-            try:
-                from core.rag.indexer import get_memory_entries
-                entries = get_memory_entries(getattr(c, "base_path", _base_dir_rag))
-            except Exception:
-                entries = []
-            for entry in entries:
-                ts = entry.get("meta", {}).get("timestamp", "")
-                preview = entry["text"][:80].replace("\n", " ")
-                label = f"[{ts}]  {preview}" if ts else preview
-                item = QListWidgetItem(label)
-                item.setData(Qt.ItemDataRole.UserRole, entry["id"])
-                item.setToolTip(entry["text"])
-                mem_list.addItem(item)
-            mem_delete_btn.setEnabled(False)
-
-        _mem_populate()
-
-        def _mem_selection_changed():
-            mem_delete_btn.setEnabled(mem_list.currentRow() >= 0)
-
-        def _mem_delete():
-            item = mem_list.currentItem()
-            if not item:
-                return
-            entry_id = item.data(Qt.ItemDataRole.UserRole)
-            try:
-                from core.rag.indexer import delete_memory_entry
-                delete_memory_entry(entry_id, getattr(c, "base_path", _base_dir_rag))
-            except Exception:
-                pass
-            _mem_populate()
-
-        mem_list.currentRowChanged.connect(_mem_selection_changed)
-        mem_delete_btn.clicked.connect(_mem_delete)
 
         # ── Index extensions ───────────────────────────────────────────────────
         from core.rag.chunker import ALL_EXTENSIONS, DEFAULT_EXTENSIONS

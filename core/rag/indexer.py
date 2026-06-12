@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import datetime
 
 from core.rag import chunker
 from core.rag import embedder as emb
@@ -213,74 +212,3 @@ class Indexer:
                 del meta[abs_path]
 
         _save_meta(self._meta_path, meta)
-
-
-def _get_memory_collection(base_path: str):
-    """Return the ChromaDB 'memory' collection (creates it if needed)."""
-    import chromadb
-    try:
-        from chromadb.api.client import SharedSystemClient
-        SharedSystemClient.clear_system_cache()
-    except Exception:
-        pass
-    db_path = os.path.join(base_path, "appdata", "rag", "chroma_db")
-    os.makedirs(db_path, exist_ok=True)
-    client = chromadb.PersistentClient(path=db_path)
-    return client.get_or_create_collection(
-        name="memory",
-        metadata={"hnsw:space": "cosine"},
-    )
-
-
-def add_to_memory(text: str, base_path: str, model_name: str = emb.DEFAULT_MODEL,
-                  source: str = "terminal") -> None:
-    """Embed a text snippet and upsert it into the 'memory' collection.
-
-    Uses SHA-256 of the text as the document ID so identical snippets are
-    deduplicated automatically (upsert instead of add).
-    """
-    text = text.strip()
-    if not text:
-        return
-
-    doc_id = "mem_" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:40]
-    cache_dir = os.path.join(base_path, "appdata", "rag", "models")
-
-    model = emb.load_model(model_name, cache_dir)
-    try:
-        vectors = emb.embed_batch(model, [text])
-    finally:
-        emb.unload_model(model)
-
-    col = _get_memory_collection(base_path)
-    col.upsert(
-        ids=[doc_id],
-        documents=[text],
-        metadatas=[{
-            "source": source,
-            "timestamp": datetime.now().isoformat(timespec="seconds"),
-        }],
-        embeddings=[vectors[0]],
-    )
-
-
-def get_memory_entries(base_path: str) -> list:
-    """Return all entries from the 'memory' collection as list of dicts."""
-    try:
-        col = _get_memory_collection(base_path)
-        result = col.get(include=["documents", "metadatas"])
-        entries = []
-        for entry_id, doc, meta in zip(result["ids"], result["documents"], result["metadatas"]):
-            entries.append({"id": entry_id, "text": doc, "meta": meta})
-        return entries
-    except Exception:
-        return []
-
-
-def delete_memory_entry(entry_id: str, base_path: str) -> None:
-    """Delete a single entry from the 'memory' collection by its ID."""
-    try:
-        col = _get_memory_collection(base_path)
-        col.delete(ids=[entry_id])
-    except Exception:
-        pass

@@ -260,11 +260,6 @@ class TerminalTabsMixin:
                 _act_v.triggered.connect(
                     lambda checked=False, w=_w, t=term: self._split_terminal_in_tab(w, t, Qt.Orientation.Vertical)
                 )
-            menu.addSeparator()
-            _act_rag = QAction("Save selection to RAG memory", menu)
-            _act_rag.triggered.connect(lambda checked=False, t=term: self._save_selection_to_rag(t))
-            menu.addAction(_act_rag)
-
             menu.exec(term.mapToGlobal(pos))
 
         term.customContextMenuRequested.connect(_on_context_menu)
@@ -1132,49 +1127,5 @@ class TerminalTabsMixin:
         # Register in wrapper_to_console so the app-level TerminalEventFilter
         # picks up Ctrl+Scroll events for this split terminal (same as primary terminals)
         self.wrapper_to_console[term] = term
-
-    def _save_selection_to_rag(self, term):
-        """Copy terminal selection to clipboard, extract the text, restore the
-        original clipboard content, then embed and upsert into the 'memory'
-        ChromaDB collection in a background thread."""
-        clip = QApplication.clipboard()
-        prev_text = clip.text()
-
-        try:
-            if hasattr(term, "copySelection"):
-                term.copySelection()
-            else:
-                return
-        except Exception:
-            return
-
-        selected = clip.text().strip()
-        clip.setText(prev_text)  # restore — works for both empty and non-empty
-
-        if not selected:
-            return
-
-        base_path = getattr(self, "base_path", None)
-        if not base_path:
-            return
-
-        config = getattr(self, "config", {})
-        model_name = config.get("rag", {}).get("embedding_model", "")
-
-        import threading
-        from core.rag import indexer as _rag_idx
-        from core.rag import embedder as _emb
-
-        def _do_index():
-            try:
-                _rag_idx.add_to_memory(
-                    selected,
-                    base_path,
-                    model_name or _emb.DEFAULT_MODEL,
-                )
-            except Exception:
-                pass
-
-        threading.Thread(target=_do_index, daemon=True).start()
 
         return term

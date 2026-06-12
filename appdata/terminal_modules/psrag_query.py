@@ -191,28 +191,7 @@ def _search(base_dir: str, query_vec: list, top_n: int) -> list:
         results["distances"][0],
     ):
         chunks.append({"text": doc, "meta": meta, "distance": dist})
-
-    # Also search the 'memory' collection (terminal selections saved by user)
-    try:
-        mem_col = client.get_collection("memory")
-        mem_count = mem_col.count()
-        if mem_count > 0:
-            mem_results = mem_col.query(
-                query_embeddings=[query_vec],
-                n_results=min(top_n, mem_count),
-                include=["documents", "metadatas", "distances"],
-            )
-            for doc, meta, dist in zip(
-                mem_results["documents"][0],
-                mem_results["metadatas"][0],
-                mem_results["distances"][0],
-            ):
-                chunks.append({"text": doc, "meta": meta, "distance": dist})
-    except Exception:
-        pass
-
-    chunks.sort(key=lambda x: x["distance"])
-    return chunks[:top_n]
+    return chunks
 
 
 _RERANK_MODEL_DEFAULT = "Xenova/ms-marco-MiniLM-L-6-v2"
