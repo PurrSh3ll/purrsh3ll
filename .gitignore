@@ -40,11 +40,8 @@ appdata/scripts_notes/
 appdata/scripts_favorities/
 
 # Cyb3rCollector — dane runtime (listeners, stagers, webmap scans, reports)
-appmodules/Cyb3rCollector/reports/
-appmodules/Cyb3rCollector/listeners/
-appmodules/Cyb3rCollector/stagers/
-appmodules/Cyb3rCollector/webmap/*
-!appmodules/Cyb3rCollector/webmap/scan_sample.xml
+appmodules/Cyb3rCollector/*
+!appmodules/Cyb3rCollector/.gitkeep
 
 # BrainDump — prywatne notatki i pliki RAG (nie wersjonujemy)
 appmodules/BrainDump/*
@@ -53,8 +50,9 @@ appmodules/BrainDump/*
 # Pliki audio
 *.wav
 
-# Pliki testowe (licencje — nie wrzucamy na GitHub)
-usermodules/testfolder/
+# usermodules — pliki usera (nie wersjonujemy), tylko FIRST_STEPS.md
+usermodules/*
+!usermodules/FIRST_STEPS.md
 
 
 # Old installer scripts
