@@ -1124,6 +1124,9 @@ class TerminalTabsMixin:
             act_unsplit = QAction("Unsplit terminal", menu)
             act_unsplit.triggered.connect(lambda checked=False, ww=w: self._unsplit_terminal(ww))
             menu.addAction(act_unsplit)
+            menu.addSeparator()
+            _act_rag_split = QAction("Save selection to RAG memory", menu)
+            menu.addAction(_act_rag_split)
             menu.exec(t.mapToGlobal(pos))
 
         term.customContextMenuRequested.connect(_on_ctx)
