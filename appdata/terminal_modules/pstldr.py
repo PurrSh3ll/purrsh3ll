@@ -73,7 +73,7 @@ def main():
     parser.add_argument("input", nargs="*",
                         help="Text to summarize, or path to a file")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
-    parser.add_argument("-p", "-m", "--profile", "--model", default=None, metavar="PROFILE",
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("--head", nargs="?", const=4000, type=int, metavar="N",
                         help="Send only the first N characters (default 4000)")

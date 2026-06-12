@@ -561,7 +561,7 @@ def main():
     parser = argparse.ArgumentParser(prog="psrag", add_help=False)
     parser.add_argument("query",           nargs="+")
     parser.add_argument("-n",              type=int, default=5, metavar="N", dest="top_n")
-    parser.add_argument("-p", "-m", "--profile", "--model", default=None, metavar="PROFILE", dest="profile")
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE", dest="profile")
     parser.add_argument("--host",          default="", metavar="URL",
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
     parser.add_argument("--show-sources",  action="store_true")

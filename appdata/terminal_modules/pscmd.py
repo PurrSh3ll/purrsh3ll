@@ -63,7 +63,7 @@ def main():
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR",
                         help="Current working directory (for context)")
-    parser.add_argument("-p", "-m", "--profile", "--model", default=None, metavar="PROFILE",
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()

@@ -10,7 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **ps* tools**: `-m` flag renamed to `-p` / `--profile` across all tools (`psai`, `pscmd`, `psfix`, `psnext`, `psrag`, `psreport`, `pstldr`, `psview`) — better reflects that the argument is a profile name, not a model name; `-m` and `--model` kept as deprecated aliases for backwards compatibility
+- **ps* tools**: `-m` / `--model` flag replaced by `-p` / `--profile` across all tools (`psai`, `pscmd`, `psfix`, `psnext`, `psrag`, `psreport`, `pstldr`, `psview`) — better reflects that the argument is a profile name, not a model name
 - **README**: added note that paid API providers (Anthropic, OpenAI) have not been end-to-end tested with real API keys
 - **pschat**: global chat history — session is now shared across all profiles (`global.json`); switching models mid-conversation no longer resets context; history format is plain `{"role", "content"}` text pairs, compatible with all providers
 - **pschat `--history`**: each assistant message now stores and displays the model name that actually responded — `model` field saved per assistant entry; old entries without the field fall back to the currently active model

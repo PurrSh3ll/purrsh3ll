@@ -115,7 +115,7 @@ def main():
     parser.add_argument("--cmd",        default=None, metavar="CMD")
     parser.add_argument("--exit-code",  default=None, type=int, metavar="N")
     parser.add_argument("--output",     default=None, metavar="OUTPUT")
-    parser.add_argument("-p", "-m", "--profile", "--model", default=None, metavar="PROFILE",
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
