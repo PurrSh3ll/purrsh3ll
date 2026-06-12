@@ -11,6 +11,10 @@ Usage:
   pstldr "<text>"              Summarize text passed directly
   cat file | pstldr            Summarize piped input
   pstldr -p <profile> <file>   Use a specific saved profile
+
+Supported file types:
+  Plain text  — .txt, .md, .log, source code, and any UTF-8 text file
+  PDF         — .pdf (extracted via PyMuPDF; pypdf used as fallback)
 EOF
         return 0
     fi

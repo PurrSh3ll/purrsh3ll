@@ -92,7 +92,9 @@ def main():
             "  pstldr -p, --profile <name>     Use a specific saved profile\n"
             "  pstldr --head [N] <file>         Send only the first N chars (default 4000)\n"
             "  pstldr --tail [N] <file>         Send only the last N chars (default 4000, useful for logs)\n\n"
-            "Supported file types: plain text, PDF (requires pymupdf or pypdf)\n"
+            "Supported file types:\n"
+            "  Plain text  — .txt, .md, .log, source code, and any UTF-8 text file\n"
+            "  PDF         — .pdf (extracted via PyMuPDF; pypdf used as fallback)\n"
         )
         sys.exit(0)
 
