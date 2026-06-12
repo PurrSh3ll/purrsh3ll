@@ -123,6 +123,8 @@ class FileTreeWidget(QTreeWidget):
 
     def _handle_external_drop(self, event):
         dest_dir = self._resolve_drop_dir(event)
+        if dest_dir is None:
+            dest_dir = getattr(self.c, "user_modules_path", None)
         if dest_dir is None or self._is_appmodules_root(dest_dir):
             event.ignore()
             return
