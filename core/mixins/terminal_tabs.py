@@ -1190,13 +1190,10 @@ class TerminalTabsMixin:
         from core.rag.indexer import get_memory_entries
         mem_list.clear()
         for entry in get_memory_entries(base_path):
-            ts = entry["meta"].get("timestamp", "")
-            time_str = ts[11:16] if len(ts) >= 16 else ""
-            preview = entry["text"][:70].replace("\n", " ")
-            if len(entry["text"]) > 70:
+            preview = entry["text"][:30].replace("\n", " ")
+            if len(entry["text"]) > 30:
                 preview += "…"
-            label = f"[{time_str}]  {preview}" if time_str else preview
-            item = QListWidgetItem(label)
+            item = QListWidgetItem(preview)
             item.setData(Qt.ItemDataRole.UserRole, entry["id"])
-            item.setToolTip(entry["text"])
+            item.setToolTip(entry["text"][:800])
             mem_list.addItem(item)

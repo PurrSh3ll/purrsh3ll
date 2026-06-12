@@ -1339,15 +1339,12 @@ def build_menu(main_window):
             except Exception:
                 entries = []
             for entry in entries:
-                ts = entry["meta"].get("timestamp", "")
-                time_str = ts[11:16] if len(ts) >= 16 else ""
-                preview = entry["text"][:70].replace("\n", " ")
-                if len(entry["text"]) > 70:
+                preview = entry["text"][:30].replace("\n", " ")
+                if len(entry["text"]) > 30:
                     preview += "…"
-                label = f"[{time_str}]  {preview}" if time_str else preview
-                item = QListWidgetItem(label)
+                item = QListWidgetItem(preview)
                 item.setData(Qt.ItemDataRole.UserRole, entry["id"])
-                item.setToolTip(entry["text"])
+                item.setToolTip(entry["text"][:800])
                 memory_list.addItem(item)
 
         _mem_populate()
