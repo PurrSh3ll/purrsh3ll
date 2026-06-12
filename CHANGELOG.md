@@ -10,6 +10,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Image viewer**: new file loader for images — supports PNG, JPG, GIF, BMP, WEBP, TIFF, SVG, ICO and other Qt-native formats; animated GIF/WEBP via QMovie; zoom toolbar (Fit / 1:1 / +/− / Ctrl+Scroll); Info dialog with EXIF metadata (exiftool) and MD5/SHA256 integrity hashes; static GIF/WEBP use SmoothTransformation for quality zoom; SVG rendered via QSvgRenderer, TIFF via Pillow fallback
+- **Skills & agents**: added 5 MIT-licensed cybersecurity skill sets to the dropdown — `secskills` (16 skills + 6 subagents), `cybersecurity-claude-skills` (4 skills), `communitytools` (38 skills with reference docs), `claude-code-owasp` (OWASP Top 10:2025 + ASVS 5.0), `pentest-ai-agents` (36 specialised subagents)
+- **Agent Configuration / AI Settings**: "Skills set" label renamed to "Skills & agents" — reflects that a set can contain both Claude Code skills (`.claude/skills/`) and subagents (`.claude/agents/`)
+- **apply_agent_files**: skill sets with a `skills/` subfolder now deploy to `.claude/skills/`; sets with an `agents/` subfolder deploy to `.claude/agents/`; direct skill folders retain existing behaviour
+- **psopen help**: updated with supported file type categories (any text or code file, PDF, images, audio, video) and improved `-m` usage description
+
+### Added
+
 - **AI Settings → Behavior**: new "Custom system prompt" checkbox — enter any text to be sent as the system message for that profile; combines with "Fast answers" (both texts merged into one system message)
 - **AI Settings → Settings**: "Max pschat turns" spinbox — configures how many past conversation turns `pschat` keeps in context (default 20, range 1–999)
 - **AI Settings → Settings**: "Max terminal turns" spinbox — configures how many terminal history entries are sent to `psreport` (standard mode), `psfix --analyze` and `psnext` (default 40, range 1–999)
