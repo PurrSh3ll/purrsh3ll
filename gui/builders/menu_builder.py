@@ -693,6 +693,27 @@ def build_menu(main_window):
 
         chat_history_spin.valueChanged.connect(_on_chat_history_changed)
 
+        term_history_spin = QSpinBox(grp_pstools)
+        term_history_spin.setRange(1, 999)
+        term_history_spin.setSingleStep(1)
+        term_history_spin.setValue(int(llama_cfg.get("terminal_history_limit", 40)))
+        term_history_spin.setMinimumWidth(80)
+
+        term_history_reset_btn = QPushButton("Default", grp_pstools)
+        term_history_reset_btn.setFixedWidth(60)
+        term_history_reset_btn.clicked.connect(lambda: term_history_spin.setValue(40))
+
+        term_history_row = QHBoxLayout()
+        term_history_row.addWidget(term_history_spin)
+        term_history_row.addWidget(term_history_reset_btn)
+        term_history_row.addStretch(1)
+        form_pstools.addRow("Terminal history\n(entries):", term_history_row)
+
+        def _on_term_history_changed(value):
+            _save_llama_key("terminal_history_limit", value)
+
+        term_history_spin.valueChanged.connect(_on_term_history_changed)
+
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         grp_rag_layout = QVBoxLayout(grp_rag)

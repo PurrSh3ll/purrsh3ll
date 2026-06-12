@@ -18,7 +18,7 @@ import sys
 from datetime import datetime
 
 _OUTPUT_PER_ENTRY = 800   # max output chars per history entry
-_HISTORY_LIMIT    = 40    # max entries for standard mode
+_HISTORY_LIMIT    = 40    # default; overridden at runtime from config via _ai._TERMINAL_HIST_LIMIT
 
 # ── Pentest tool keywords ──────────────────────────────────────────────────────
 _TOOL_PATTERNS = {
@@ -343,7 +343,7 @@ def main():
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)
 
-        recent     = entries[-_HISTORY_LIMIT:]
+        recent     = entries[-_ai._TERMINAL_HIST_LIMIT:]
         history    = "\n".join(_format_entry(e) for e in recent)
         loaded     = len(recent)
         mode_label = "full" if args.full else "filtered"

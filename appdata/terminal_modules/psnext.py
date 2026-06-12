@@ -52,8 +52,8 @@ def _clean_command(text: str) -> str:
 
 
 
-def _load_history(base_dir: str) -> tuple[str, int]:
-    """Load last 40 terminal history entries. Returns (formatted_history, count)."""
+def _load_history(base_dir: str, limit: int = 40) -> tuple[str, int]:
+    """Load last N terminal history entries. Returns (formatted_history, count)."""
     path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
     try:
         with open(path, encoding="utf-8") as f:
@@ -69,7 +69,7 @@ def _load_history(base_dir: str) -> tuple[str, int]:
             pass
 
     parts = []
-    for entry in entries[-40:]:
+    for entry in entries[-limit:]:
         ec     = entry.get("exit_code", 0)
         cmd    = entry.get("cmd", "")
         out    = entry.get("output", "")[:600]
@@ -134,7 +134,7 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
 
-    history, count = _load_history(base_dir)
+    history, count = _load_history(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
     if not history:
         _ai._err("No terminal history found — run some commands first.")
         sys.exit(1)

@@ -23,8 +23,8 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     return None
 
 
-def _load_recent_history(base_dir: str) -> str:
-    """Load last 40 terminal history entries as formatted string (oldest → newest)."""
+def _load_recent_history(base_dir: str, limit: int = 40) -> str:
+    """Load last N terminal history entries as formatted string (oldest → newest)."""
     path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
     try:
         with open(path, encoding="utf-8") as f:
@@ -40,7 +40,7 @@ def _load_recent_history(base_dir: str) -> str:
             pass
 
     parts = []
-    for entry in entries[-40:]:
+    for entry in entries[-limit:]:
         ec  = entry.get("exit_code", 0)
         cmd = entry.get("cmd", "")
         out = entry.get("output", "")[:400]
@@ -177,7 +177,7 @@ def main():
     if args.analyze:
         cwd = (args.cwd or "").strip()
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        history_text = _load_recent_history(base_dir)
+        history_text = _load_recent_history(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
 
         prompt = f"System: {sys_info}\n"
         if cwd:

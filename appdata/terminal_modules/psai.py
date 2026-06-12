@@ -80,7 +80,8 @@ _DEFAULT_URLS = {
     "huggingface": "https://router.huggingface.co/featherless-ai/v1",
 }
 
-_MAX_HISTORY = 40  # max messages kept in chat session (20 turns); overridden by config
+_MAX_HISTORY          = 40  # max messages kept in chat session (20 turns); overridden by config
+_TERMINAL_HIST_LIMIT  = 40  # max terminal history entries for psfix/psnext/psreport; overridden by config
 
 
 # ── Display flags (set by _load_config, read by external scripts via _ai._SHOW_*) ──
@@ -116,7 +117,7 @@ def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def _load_config(base_dir: str) -> dict:
-    global _SHOW_STATS, _SHOW_QUERYING, _MAX_HISTORY
+    global _SHOW_STATS, _SHOW_QUERYING, _MAX_HISTORY, _TERMINAL_HIST_LIMIT
     try:
         with open(os.path.join(base_dir, "appdata", "app_config.json"), encoding="utf-8") as f:
             cfg = json.load(f)
@@ -130,9 +131,10 @@ def _load_config(base_dir: str) -> dict:
     except Exception:
         pass
     _llama = cfg.get("llama", {})
-    _SHOW_STATS    = bool(_llama.get("psai_show_stats",    True))
-    _SHOW_QUERYING = bool(_llama.get("psai_show_querying", True))
-    _MAX_HISTORY   = int(_llama.get("chat_max_history", 20)) * 2
+    _SHOW_STATS           = bool(_llama.get("psai_show_stats",          True))
+    _SHOW_QUERYING        = bool(_llama.get("psai_show_querying",        True))
+    _MAX_HISTORY          = int(_llama.get("chat_max_history",           20)) * 2
+    _TERMINAL_HIST_LIMIT  = int(_llama.get("terminal_history_limit",     40))
     return cfg
 
 
