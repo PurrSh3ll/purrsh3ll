@@ -12,7 +12,8 @@ from PyQt6.QtGui import QClipboard
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QColor, QIcon, QCursor
 from PyQt6.QtWidgets import (QApplication, QMenu, QToolButton, QPushButton, QWidget,
                               QHBoxLayout, QVBoxLayout, QLineEdit, QLabel, QDialog,
-                              QComboBox, QInputDialog, QSplitter, QFileDialog, QMessageBox, QListView)
+                              QComboBox, QInputDialog, QSplitter, QFileDialog, QMessageBox, QListView,
+                              QListWidgetItem)
 from QTermWidget import QTermWidget
 from gui.widgets.terminal_wrapper import TerminalWrapper
 
