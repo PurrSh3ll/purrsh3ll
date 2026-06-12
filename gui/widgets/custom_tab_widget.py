@@ -2,7 +2,6 @@ from PyQt6.QtWidgets import QTabWidget, QMenu
 from PyQt6.QtCore import Qt, QPoint
 from PyQt6.QtGui import QAction
 import os, subprocess
-import keyring
 from core.controller import controller_instance
 import traceback
 
@@ -91,8 +90,9 @@ class CustomTabWidget(QTabWidget):
             path = None
         if path and os.path.basename(path).lower() == "psnmap.purr":
             try:
-                pw = keyring.get_password(self.c.SERVICE, self.c.USER)
-                if pw:
+                pw_buf = self.c.sudo_password
+                if pw_buf:
+                    pw = pw_buf.decode('utf-8')
                     subprocess.run(
                         ["sudo", "-S", "--", "docker", "rm", "-f", "webmap"],
                         input=pw + "\n",

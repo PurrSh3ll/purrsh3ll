@@ -5,7 +5,8 @@ from PyQt6.QtCore import QRegularExpression
 
 from file_loaders.base_file_loader import BaseFileLoader
 from file_loaders.viewer_widgets import CustomUnsupportedLabel
-from file_loaders.highlighters.htaccess_highlighter import HtaccessHighlighter
+from file_loaders.highlighters.pygments_highlighter import PygmentsHighlighter
+from pygments.lexers import ApacheConfLexer
 
 class Htaccess_file(BaseFileLoader):
     def _extra_layout_widgets(self, layout):
@@ -31,7 +32,7 @@ class Htaccess_file(BaseFileLoader):
                 self._unsupported_info_label.setVisible(True)
             else:
                 if not hasattr(self, "syntax_highlighter") or self.syntax_highlighter is None:
-                    self.syntax_highlighter = HtaccessHighlighter(self.text_widget.document(), self.parent)
+                    self.syntax_highlighter = PygmentsHighlighter(self.text_widget.document(), self.parent, ApacheConfLexer())
                     self.parent.text_highlighters.append(self.syntax_highlighter)
                 self._unsupported_info_label.setVisible(False)
         except Exception:

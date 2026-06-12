@@ -26,24 +26,31 @@
     "terminal_history_disabled": false
   },
   "llama": {
-    "llm_cli_path": "",
+    "llm_cli_path": "aichat",
     "logs_terminal_cmd": "claude --dangerously-skip-permissions",
-    "agent_role": "ctf_mode",
-    "skills_set": "default"
+    "agent_role": "none",
+    "skills_set": "default",
+    "clear_chat_history_on_exit": true
   },
   "rag": {
     "knowledge_base": "braindump",
     "custom_path": "",
     "auto_index": true,
-    "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    "embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "rerank": false,
+    "rerank_model": "Xenova/ms-marco-MiniLM-L-12-v2",
+    "custom_embedding_models": [],
+    "index_extensions": [
+      "pdf",
+      "txt",
+      "md",
+      "rst",
+      "csv"
+    ]
   },
   "welcome": {
     "custom_text": "__default__",
     "image_path": "",
     "bg_path": ""
-  },
-  "api_providers": {
-    "active": "",
-    "profiles": []
   }
 }

@@ -31,6 +31,20 @@ class TerminalSetupMixin:
         widget = self.widgets["terminal_tabs"].widget(idx)
         if widget is None:
             return None
+
+        # Prefer the focused QTermWidget — handles split terminals correctly
+        focused = QApplication.focusWidget()
+        if focused is not None:
+            w = focused
+            while w is not None:
+                if isinstance(w, QTermWidget):
+                    return w
+                try:
+                    w = w.parent()
+                except TypeError:
+                    break
+
+        # Fallback: primary terminal for this tab
         term = self.wrapper_to_console.get(widget)
         if term is not None:
             return term
@@ -186,7 +200,7 @@ class TerminalSetupMixin:
     def _setup_corner_buttons(self):
         btn_add_left = QPushButton()
         btn_add_left.setFixedSize(24, 24)
-        btn_add_left.setToolTip("Add terminal tab")
+        btn_add_left.setToolTip("Open Claude Code agent")
         btn_add_left.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn_add_left.setIcon(self.get_icon("claude-icon.svg", QIcon()))
         btn_add_left.setIconSize(QSize(16, 16))

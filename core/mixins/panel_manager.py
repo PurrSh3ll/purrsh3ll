@@ -129,6 +129,14 @@ class PanelManagerMixin:
         if voice_btn is not None:
             voice_btn.move(new_x - voice_btn.width() - 4, new_y)
 
+        rag_lbl = self.widgets.get("rag_index_status_label")
+        if rag_lbl is not None and voice_btn is not None:
+            rag_lbl.move(voice_btn.x() - rag_lbl.width() - 6, new_y)
+
+        token_lbl = self.widgets.get("prompt_token_label")
+        if token_lbl is not None:
+            token_lbl.move(8, new_y)
+
         voice_popup = self.widgets.get("voice_popup")
         if voice_popup is not None and voice_popup.isVisible():
             voice_popup.adjustSize()

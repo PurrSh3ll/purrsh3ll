@@ -17,12 +17,44 @@ from PyQt6.QtWidgets import (
     QCheckBox, QTextEdit, QApplication, QSplitter, QTextBrowser,
     QButtonGroup, QMenu, QMessageBox, QToolTip
 )
-from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression
-from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction
+from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression, QEvent, QSizeF
+from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction, QTextImageFormat, QImage
 
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from file_loaders.viewer_widgets import Worker, LineNumberArea, TextEditWithLineNumbers
 from file_loaders.chunked_file_loader import ChunkedFileLoader
+
+
+class _ZoomEventFilter(QObject):
+    """Intercepts Ctrl+Scroll on a widget's viewport and routes it through
+    the provided zoom callbacks, consuming the event so the widget's own
+    wheelEvent does not fire a second time.
+    Also intercepts Resize events on the preview widget itself and triggers
+    a debounced rescale so images always fill the preview pane width."""
+
+    def __init__(self, on_zoom_in, on_zoom_out, on_resize=None, parent=None):
+        super().__init__(parent)
+        self._on_zoom_in = on_zoom_in
+        self._on_zoom_out = on_zoom_out
+        self._on_resize = on_resize
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(60)
+        if on_resize:
+            self._resize_timer.timeout.connect(on_resize)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier:
+                if event.angleDelta().y() > 0:
+                    self._on_zoom_in()
+                elif event.angleDelta().y() < 0:
+                    self._on_zoom_out()
+                return True
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show) and self._on_resize:
+            self._resize_timer.start()
+        return False
+
 
 class Markdown_file(ChunkedFileLoader):
     def __init__(self):
@@ -131,8 +163,15 @@ class Markdown_file(ChunkedFileLoader):
             search_field.setMinimumWidth(120)
             control_bar_layout.addWidget(search_field)
 
-            method_box = QComboBox(parent= control_bar_widget)
-            method_box.setView(QListView())
+            method_box = QComboBox(parent=control_bar_widget)
+            try:
+                method_box.setStyleSheet(self._controller.combo_stylesheet)
+                _mdv = QListView()
+                _mdv.setStyleSheet(self._controller.combo_view_stylesheet)
+                method_box.setView(_mdv)
+                self._controller.__class__.tracked_combos.append(method_box)
+            except Exception:
+                method_box.setView(QListView())
 
             method_box.addItems(["find", "replace", "regex", "replace regex"])
 
@@ -554,6 +593,8 @@ class Markdown_file(ChunkedFileLoader):
 
             preview_widget = QTextBrowser(self.content_area)
             preview_widget.setReadOnly(True)
+            preview_widget.document().setDocumentMargin(20)
+            preview_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
             preview_widget.setOpenLinks(False)
             preview_widget.setOpenExternalLinks(False)
@@ -638,6 +679,62 @@ class Markdown_file(ChunkedFileLoader):
                 _show_path_not_found_tooltip(str(resolved_path))
 
             preview_widget.anchorClicked.connect(on_link_clicked)
+
+            zoom_state = {"level": 0}
+            MIN_ZOOM = -10
+            MAX_ZOOM = 40
+            _img_natural_sizes = {}
+
+            def _rescale_images():
+                if preview_widget is None:
+                    return
+                full_viewport_w = preview_widget.viewport().width()
+                if full_viewport_w <= 0:
+                    return
+                doc_margin = int(preview_widget.document().documentMargin())
+                viewport_w = full_viewport_w - 2 * doc_margin
+                doc = preview_widget.document()
+
+                # Collect changes first, apply after — avoids iterator invalidation
+                changes = []
+                block = doc.begin()
+                while block.isValid():
+                    it = block.begin()
+                    while not it.atEnd():
+                        frag = it.fragment()
+                        fmt = frag.charFormat()
+                        if fmt.isImageFormat():
+                            img_fmt = fmt.toImageFormat()
+                            name = img_fmt.name()
+                            img_path = unquote(name)
+                            if not os.path.isabs(img_path):
+                                img_path = str(self.base_dir / img_path)
+                            if img_path not in _img_natural_sizes:
+                                qimg = QImage(img_path)
+                                if not qimg.isNull():
+                                    _img_natural_sizes[img_path] = (qimg.width(), qimg.height())
+                            if img_path in _img_natural_sizes:
+                                nat_w, nat_h = _img_natural_sizes[img_path]
+                                target_w = min(nat_w, max(1, viewport_w))
+                                target_h = int(target_w * nat_h / nat_w) if nat_w > 0 else target_w
+                                changes.append((frag.position(), frag.length(), name, target_w, target_h))
+                        it += 1
+                    block = block.next()
+
+                for pos, length, name, w, h in changes:
+                    new_fmt = QTextImageFormat()
+                    new_fmt.setName(name)
+                    new_fmt.setWidth(w)
+                    new_fmt.setHeight(h)
+                    c = QTextCursor(doc)
+                    c.setPosition(pos)
+                    c.setPosition(pos + length, QTextCursor.MoveMode.KeepAnchor)
+                    c.setCharFormat(new_fmt)
+
+                # Force document reflow at the correct viewport width —
+                # equivalent to what QTextEdit::resizeEvent does internally
+                doc.setPageSize(QSizeF(full_viewport_w, -1))
+
             def update_preview():
                 text = self.text_widget.toPlainText()
 
@@ -645,6 +742,7 @@ class Markdown_file(ChunkedFileLoader):
                 doc.setBaseUrl(QUrl.fromLocalFile(str(self.base_dir) + "/"))
 
                 preview_widget.setMarkdown(text if text.strip() else "")
+                QTimer.singleShot(0, _rescale_images)
 
             self.text_widget.textChanged.connect(update_preview)
 
@@ -712,10 +810,6 @@ class Markdown_file(ChunkedFileLoader):
 
             self.text_widget.textChanged.connect(update_file_info)
 
-            zoom_state = {"level": 0}
-            MIN_ZOOM = -10
-            MAX_ZOOM = 40
-
             def _update_zoom_buttons():
                 try:
                     zoom_out_btn.setEnabled(zoom_state["level"] > MIN_ZOOM)
@@ -727,7 +821,10 @@ class Markdown_file(ChunkedFileLoader):
                 if zoom_state["level"] < MAX_ZOOM:
                     try:
                         self.text_widget.zoomIn(1)
+                        if preview_widget is not None:
+                            preview_widget.zoomIn(1)
                         zoom_state["level"] += 1
+                        QTimer.singleShot(0, _rescale_images)
                     except Exception as e:
                         pass
                 _update_zoom_buttons()
@@ -736,13 +833,23 @@ class Markdown_file(ChunkedFileLoader):
                 if zoom_state["level"] > MIN_ZOOM:
                     try:
                         self.text_widget.zoomOut(1)
+                        if preview_widget is not None:
+                            preview_widget.zoomOut(1)
                         zoom_state["level"] -= 1
+                        QTimer.singleShot(0, _rescale_images)
                     except Exception as e:
                         pass
                 _update_zoom_buttons()
 
             zoom_in_btn.clicked.connect(_zoom_in)
             zoom_out_btn.clicked.connect(_zoom_out)
+
+            _zoom_filter = _ZoomEventFilter(_zoom_in, _zoom_out, on_resize=_rescale_images)
+            self.text_widget.viewport().installEventFilter(_zoom_filter)
+            preview_widget.viewport().installEventFilter(_zoom_filter)
+            preview_widget.installEventFilter(_zoom_filter)
+            self._zoom_filter = _zoom_filter
+            QTimer.singleShot(0, _rescale_images)
 
             _update_zoom_buttons()
 

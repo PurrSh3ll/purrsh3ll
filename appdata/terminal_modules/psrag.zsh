@@ -8,17 +8,17 @@ Usage:
   psrag [options] <query>
 
 Options:
-  -n N             Number of context chunks to retrieve  (default: 5)
-  -m MODEL         Model to use  (default: from active API profile)
-  --host URL       Provider host/base URL override
-  --show-sources   Print source filenames and scores before the answer
-  -h, --help       Show this help
+  -n, --top-n N        Number of context chunks to retrieve (default: 5)
+  -p, --profile NAME   Use a specific saved profile by name
+  -H, --host URL       Provider host/base URL override
+  -s, --show-sources   Print source filenames and scores before the answer
+  -h, --help           Show this help
 
 Examples:
   psrag "what is XSS?"
-  psrag -n 3 --show-sources "how to enumerate subdomains"
-  psrag -m llama3.2 "explain SQL injection"
-  psrag --host http://192.168.1.10:11434 "query"
+  psrag -n 3 -s "how to enumerate subdomains"
+  psrag -p my-ollama "explain SQL injection"
+  psrag -H http://192.168.1.10:11434 "query"
 EOF
         return 0
     fi

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import uuid
+from datetime import datetime
 
 from core.rag import chunker
 from core.rag import embedder as emb
@@ -36,24 +37,57 @@ def _save_meta(meta_path: str, meta: dict) -> None:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
 
-def _collect_files(kb_path: str) -> list[str]:
+def _collect_files(kb_path: str, allowed_ext: set, excluded_rel: set | None = None) -> list[str]:
+    _excluded = excluded_rel or set()
     files = []
     for root, _, names in os.walk(kb_path):
         for name in names:
-            files.append(os.path.join(root, name))
+            ext = os.path.splitext(name)[1].lstrip(".").lower()
+            if ext and ext not in allowed_ext:
+                continue
+            abs_path = os.path.join(root, name)
+            try:
+                rel = os.path.relpath(abs_path, kb_path)
+            except ValueError:
+                rel = abs_path
+            if rel in _excluded:
+                continue
+            files.append(abs_path)
     return sorted(files)
 
 
+def load_exclusions(exclusions_path: str) -> set:
+    if os.path.exists(exclusions_path):
+        try:
+            with open(exclusions_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return set(data)
+        except Exception:
+            pass
+    return set()
+
+
+def save_exclusions(exclusions_path: str, excluded_rel: set) -> None:
+    os.makedirs(os.path.dirname(exclusions_path), exist_ok=True)
+    with open(exclusions_path, "w", encoding="utf-8") as f:
+        json.dump(sorted(excluded_rel), f, indent=2, ensure_ascii=False)
+
+
 class Indexer:
-    def __init__(self, kb_path: str, base_path: str, model_name: str = emb.DEFAULT_MODEL):
+    def __init__(self, kb_path: str, base_path: str, model_name: str = emb.DEFAULT_MODEL,
+                 allowed_extensions: set | None = None, excluded_rel: set | None = None):
         self.kb_path    = os.path.normpath(kb_path)
         self.base_path  = base_path
         self.model_name = model_name
+        self.allowed_ext = allowed_extensions if allowed_extensions is not None else chunker.DEFAULT_EXTENSIONS
+        self.excluded_rel = excluded_rel if excluded_rel is not None else set()
 
         self._rag_dir   = os.path.join(base_path, "appdata", "rag")
         self._db_path   = os.path.join(self._rag_dir, "chroma_db")
         self._meta_path = os.path.join(self._rag_dir, "index_meta.json")
         self._cache_dir = os.path.join(self._rag_dir, "models")
+        self._exclusions_path = os.path.join(self._rag_dir, "excluded_files.json")
 
         os.makedirs(self._rag_dir, exist_ok=True)
 
@@ -79,71 +113,93 @@ class Indexer:
         Full incremental index of kb_path.
         progress_callback(current, total, filename) called for each file processed.
         """
-        meta     = _load_meta(self._meta_path)
-        all_files = _collect_files(self.kb_path)
+        meta      = _load_meta(self._meta_path)
+        excluded  = self.excluded_rel or load_exclusions(self._exclusions_path)
+        all_files = _collect_files(self.kb_path, self.allowed_ext, excluded)
         total     = len(all_files)
 
         # Track which absolute paths still exist (for cleanup)
         existing_abs = set(all_files)
 
-        for idx, abs_path in enumerate(all_files):
-            filename = os.path.basename(abs_path)
-            if progress_callback:
-                progress_callback(idx + 1, total, filename)
-
+        # Determine which files actually need (re)indexing before loading the model
+        to_index = []
+        for abs_path in all_files:
             file_hash = _sha256(abs_path)
             if not file_hash:
                 continue
-
             cached = meta.get(abs_path, {})
-            if cached.get("sha256") == file_hash:
-                continue  # unchanged — skip
+            if cached.get("sha256") != file_hash:
+                to_index.append((abs_path, file_hash))
 
-            # Remove stale chunks for this file
-            old_ids = cached.get("chunk_ids", [])
-            if old_ids:
-                try:
-                    self._collection.delete(ids=old_ids)
-                except Exception:
-                    pass
+        # Load embedding model once for the entire indexing run
+        model = None
+        if to_index:
+            model = emb.load_model(self.model_name, self._cache_dir)
 
-            # Chunk
-            chunks = chunker.chunk_file(abs_path, self.kb_path)
-            if not chunks:
-                meta[abs_path] = {"sha256": file_hash, "chunk_ids": []}
-                continue
+        try:
+            for idx, abs_path in enumerate(all_files):
+                filename = os.path.basename(abs_path)
+                if progress_callback:
+                    progress_callback(idx + 1, total, filename)
 
-            # Embed in batches
-            all_ids       = []
-            all_docs      = []
-            all_metas     = []
-            all_embeddings = []
+                file_hash = _sha256(abs_path)
+                if not file_hash:
+                    continue
 
-            texts = [c["text"] for c in chunks]
-            metas = [c["metadata"] for c in chunks]
+                cached = meta.get(abs_path, {})
+                if cached.get("sha256") == file_hash:
+                    continue  # unchanged — skip
 
-            for batch_start in range(0, len(texts), _BATCH_SIZE):
-                batch_texts = texts[batch_start:batch_start + _BATCH_SIZE]
-                batch_metas = metas[batch_start:batch_start + _BATCH_SIZE]
+                # Remove stale chunks for this file
+                old_ids = cached.get("chunk_ids", [])
+                if old_ids:
+                    try:
+                        self._collection.delete(ids=old_ids)
+                    except Exception:
+                        pass
 
-                vectors = emb.embed(batch_texts, self.model_name, self._cache_dir)
+                # Chunk
+                chunks = chunker.chunk_file(abs_path, self.kb_path, self.allowed_ext)
+                if not chunks:
+                    meta[abs_path] = {"sha256": file_hash, "chunk_ids": []}
+                    continue
 
-                for text, meta_item, vec in zip(batch_texts, batch_metas, vectors):
-                    chunk_id = str(uuid.uuid4())
-                    all_ids.append(chunk_id)
-                    all_docs.append(text)
-                    all_metas.append(meta_item)
-                    all_embeddings.append(vec)
+                # Embed in batches — reuse already-loaded model
+                all_ids        = []
+                all_docs       = []
+                all_metas      = []
+                all_embeddings = []
 
-            # Store in ChromaDB
-            self._collection.add(
-                ids=all_ids,
-                documents=all_docs,
-                metadatas=all_metas,
-                embeddings=all_embeddings,
-            )
+                texts = [c["text"] for c in chunks]
+                metas = [c["metadata"] for c in chunks]
 
-            meta[abs_path] = {"sha256": file_hash, "chunk_ids": all_ids}
+                for batch_start in range(0, len(texts), _BATCH_SIZE):
+                    batch_texts = texts[batch_start:batch_start + _BATCH_SIZE]
+                    batch_metas = metas[batch_start:batch_start + _BATCH_SIZE]
+
+                    vectors = emb.embed_batch(model, batch_texts)
+
+                    for text, meta_item, vec in zip(batch_texts, batch_metas, vectors):
+                        chunk_id = str(uuid.uuid4())
+                        all_ids.append(chunk_id)
+                        all_docs.append(text)
+                        all_metas.append(meta_item)
+                        all_embeddings.append(vec)
+
+                # Store in ChromaDB
+                self._collection.add(
+                    ids=all_ids,
+                    documents=all_docs,
+                    metadatas=all_metas,
+                    embeddings=all_embeddings,
+                )
+
+                meta[abs_path] = {"sha256": file_hash, "chunk_ids": all_ids}
+
+        finally:
+            # Always release model regardless of errors
+            if model is not None:
+                emb.unload_model(model)
 
         # Remove deleted files from DB and meta
         for abs_path in list(meta.keys()):
@@ -157,3 +213,65 @@ class Indexer:
                 del meta[abs_path]
 
         _save_meta(self._meta_path, meta)
+
+
+# ── Terminal snippet memory ────────────────────────────────────────────────────
+
+def _memory_collection(base_path: str):
+    import chromadb
+    try:
+        from chromadb.api.client import SharedSystemClient
+        SharedSystemClient.clear_system_cache()
+    except Exception:
+        pass
+    db_path = os.path.join(base_path, "appdata", "rag", "chroma_db")
+    os.makedirs(db_path, exist_ok=True)
+    client = chromadb.PersistentClient(path=db_path)
+    return client.get_or_create_collection(
+        name="memory",
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+def add_to_memory(text: str, base_path: str, model_name: str = emb.DEFAULT_MODEL,
+                  source: str = "terminal") -> None:
+    """Embed a text snippet and upsert it into the 'memory' collection.
+    SHA-256 of the text is used as the document ID for deduplication."""
+    text = text.strip()
+    if not text:
+        return
+    doc_id = "mem_" + hashlib.sha256(text.encode()).hexdigest()[:40]
+    cache_dir = os.path.join(base_path, "appdata", "rag", "models")
+    model = emb.load_model(model_name, cache_dir)
+    try:
+        vectors = emb.embed_batch(model, [text])
+    finally:
+        emb.unload_model(model)
+    _memory_collection(base_path).upsert(
+        ids=[doc_id],
+        documents=[text],
+        metadatas=[{"source": source, "timestamp": datetime.now().isoformat(timespec="seconds")}],
+        embeddings=[vectors[0]],
+    )
+
+
+def get_memory_entries(base_path: str) -> list:
+    """Return all 'memory' collection entries sorted newest-first."""
+    try:
+        col = _memory_collection(base_path)
+        result = col.get(include=["documents", "metadatas"])
+        entries = []
+        for entry_id, doc, meta in zip(result["ids"], result["documents"], result["metadatas"]):
+            entries.append({"id": entry_id, "text": doc, "meta": meta})
+        entries.sort(key=lambda e: e["meta"].get("timestamp", ""), reverse=True)
+        return entries
+    except Exception:
+        return []
+
+
+def delete_memory_entry(entry_id: str, base_path: str) -> None:
+    """Delete a single entry from the 'memory' collection by ID."""
+    try:
+        _memory_collection(base_path).delete(ids=[entry_id])
+    except Exception:
+        pass

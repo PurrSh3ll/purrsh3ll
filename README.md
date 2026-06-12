@@ -50,10 +50,16 @@ AI tools available directly in the terminal — no GUI required:
 Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemini, OpenRouter, HuggingFace**. Switch between them without leaving the app.
 
 ### RAG Knowledge Base
-- Index your own notes, writeups, and documentation
-- Powered by ChromaDB + sentence-transformers (runs fully offline)
+- Index your own notes, writeups, documentation, and PDF files
+- Powered by ChromaDB + fastembed — runs fully offline
+- Choose from 30+ embedding models grouped by category: English, Multilingual, Language-specific, Code, and Vision/Multimodal
+- Optional reranking with 6 reranker models for improved result precision
+- Configurable file extension filter (PDF, TXT, MD, RST, CSV, JSON, XML, YAML, code files, and more)
+- Per-file include/exclude manager — selectively disable indexing of specific files
 - Queries are automatically enriched with relevant context from your knowledge base
 - File changes are tracked and re-indexed automatically via watchdog
+- Indexing progress visible in the main UI status bar
+- Dedicated RAG tab in AI Settings for full configuration
 
 ### Voice Interface
 - Wake word detection — say **"Hey Jarvis"** to activate
@@ -69,7 +75,12 @@ Supports 7 AI providers out of the box: **Ollama, OpenAI, Anthropic, Groq, Gemin
 - Dependency detection with in-app package installation
 
 ### File Viewer
-- Syntax highlighting for 40+ file types
+- Syntax highlighting for 500+ languages via Pygments
+- CSV and TSV files rendered as interactive sortable tables
+- PDF files rendered with page navigation
+- Audio and video files playable directly in the app
+- Metadata and EXIF extraction via exiftool (GPS, codec info, camera data)
+- Game files (`.game`) with dedicated viewer
 - Chunked loading for large files
 - Built-in search with regex support
 
@@ -113,15 +124,18 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 
 - **OS:** Kali Linux (recommended), Debian/Ubuntu
 - **Python:** 3.10+
-- **Qt:** PyQt6 + QTermWidget
-- **Optional:** Ollama (for local LLM), Docker (for Open WebUI / WebMap)
-- **Optional (voice):** microphone, `portaudio`
+- **Voice (optional hardware):** microphone
+
+All other dependencies (PyQt6, QTermWidget, Ollama, Docker, etc.) are installed by `install.sh`.
 
 **RAM usage:**
 
 | Configuration | RAM |
 |---------------|-----|
 | App only (idle to multiple tabs + browser) | 200 MB – 1 GB |
+| + RAG embedding model (during indexing) | +90 MB – 2.3 GB (depends on model) |
+| + RAG reranking model (during reranking) | +100 – 400 MB (depends on model) |
+| + Voice (during recognition) | +300 – 600 MB |
 | + Open WebUI (Docker) | +500 MB – 1 GB |
 | + WebMap (Docker) | +200 – 400 MB |
 | Full stack with a large LLM model (~8B) | ~12 GB+ |
@@ -130,51 +144,39 @@ PurrSh3ll is designed to grow with you — from learning to professional engagem
 
 ## Installation
 
-Two installers are provided depending on your needs.
-
-### Option A — Lite (core app only)
-
-Installs PurrSh3ll with all Python dependencies and QTermWidget. No Ollama, no Docker images, no AI skills.
+PurrSh3ll ships with an interactive installer that lets you choose exactly which components to install.
 
 ```bash
-bash install.sh            # without voice support
-bash install.sh --voice    # with voice/audio support
+bash install.sh          # interactive — pick components via checklist
+bash install.sh --auto   # non-interactive — install everything
 ```
 
-What's included:
-- Core application and all Python packages
-- QTermWidget (downloaded from GitHub Releases)
-- Desktop shortcut and `purrsh3ll` launch command
+The core app, Python packages, and QTermWidget are always installed. Optional components you can select:
 
-### Option B — Full (recommended)
+| Component | Description |
+|-----------|-------------|
+| **Ollama** | Local LLM inference server |
+| **aichat** | CLI frontend for LLMs (multi-provider) |
+| **Docker** | Container runtime |
+| **Open WebUI** | Web UI for Ollama (Docker image) |
+| **WebMap** | Nmap result visualizer (Docker image) |
+| **Voice support** | Microphone, portaudio, Faster-Whisper |
+| **AI Skills** | `awesome-claude-skills-security` + `claude-code-pentest` |
 
-Installs everything in Lite plus all optional open-source components.
-
-```bash
-bash install_full.sh             # with voice support (default)
-bash install_full.sh --no-voice  # skip voice/audio
-```
-
-What's included, on top of Lite:
-- **Ollama** — local LLM inference server
-- **aichat** — CLI frontend for LLMs (multi-provider)
-- **Docker** — container runtime (if not already installed)
-- **Open WebUI** — web UI for Ollama (Docker image pre-pulled)
-- **WebMap** — Nmap result visualizer (Docker image pre-pulled)
-- **AI Skills** — `awesome-claude-skills-security` + `claude-code-pentest` (git submodules)
-
-> **Note:** The full installation may take **10–20 minutes** depending on your internet speed. Ollama and Docker container images are downloaded during the process — grab a coffee and let it run.
+> **Note:** A full installation with all components may take **10–20 minutes** depending on your internet speed. Ollama and Docker images are downloaded during the process.
 
 ### Disk space requirements
 
 | Variant | Approx. size |
 |---------|-------------|
-| `install.sh` (lite, no voice) | ~1.8 GB |
-| `install.sh --voice` | ~1.9 GB |
-| `install_full.sh --no-voice` | ~5.3 GB |
-| `install_full.sh` (full + voice) | ~5.4 GB |
+| Core only (no voice) | ~1.8 GB |
+| Core + voice | ~1.9 GB |
+| Core + embedding model | ~2.0 GB |
+| Full (no voice, no embed model) | ~5.3 GB |
+| Full (no voice) | ~5.5 GB |
+| Full + voice | ~5.6 GB |
 
-> Sizes include Python venv (~1.4 GB, dominated by PyQt6 + onnxruntime) and Docker images for Open WebUI and WebMap (~3 GB combined). Ollama LLM models are **not** included — each model is downloaded separately on demand (typically 2–8 GB per model).
+> Sizes include Python venv (~1.4 GB, dominated by PyQt6 + onnxruntime) and Docker images for Open WebUI and WebMap (~3 GB combined). The embedding model (`paraphrase-multilingual-MiniLM-L12-v2`, ~220 MB) is optional during install — if skipped it is downloaded automatically on first RAG use. Ollama LLM models are **not** included — each model is downloaded separately on demand (typically 2–8 GB per model).
 
 ### After installation
 
@@ -239,7 +241,8 @@ purrsh3ll/
 │   └── themes.json            # Theme definitions
 └── appmodules/
     ├── BrainDump/             # Default RAG knowledge base
-    └── Cyb3rBreak/            # Embedded CTF games
+    ├── Cyb3rBreak/            # Embedded CTF games (8 games)
+    └── Cyb3rCollector/        # Organized data collection (listeners, stagers, reports)
 ```
 
 <img src="docs/images/ai_and_opensource.png" width="900"/>
@@ -252,10 +255,11 @@ purrsh3ll/
 |-------|-----------|
 | GUI | PyQt6, QTermWidget |
 | Vector DB | ChromaDB |
-| Embeddings | sentence-transformers (multilingual MiniLM) |
+| Embeddings | fastembed (30+ models: English, Multilingual, Code, Vision) |
 | STT | Faster-Whisper (tiny, CPU int8) |
 | Wake word | OpenWakeWord |
-| Audio | sounddevice, scipy |
+| Audio | sounddevice, scipy, mutagen |
+| PDF | PyMuPDF (fitz) |
 | AI inference | ctranslate2, onnxruntime |
 | File watching | watchdog |
 | Web panel | PyQt6-WebEngine |
@@ -270,11 +274,12 @@ I have more ideas than time — building this solo alongside a full-time job mea
 
 - **Function calling & agentic loops** — AI that actually executes actions, not just suggests them
 - **MCP client support** — connect to the growing ecosystem of Model Context Protocol servers
-- **Expanded file support** — video, audio, and binary file handling
 - **Deeper pentest automation** — multi-step AI agents for recon, enumeration, and reporting
 - **Better multi-agent workflows** — specialized agents collaborating on complex tasks
 
 I’m aware there are still areas that need improvement, such as widget colors, some untested tools, and parts of the UI. I have these in mind and will be addressing them over time.
+
+> **Note:** I have not yet tested the integration with paid API providers such as Anthropic and OpenAI. These providers are implemented based on their official API documentation, but end-to-end testing with real API keys has not been performed. If you encounter issues, please open an issue.
 
 If any of this sounds useful to you — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
 
@@ -307,3 +312,4 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 - [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) — efficient Whisper implementation
 - [ChromaDB](https://github.com/chroma-core/chroma) — vector database
 - [WebMap](https://github.com/SabyasachiRana/WebMap) — Nmap result visualization
+- [fastembed](https://github.com/qdrant/fastembed) — lightweight, fast embedding library

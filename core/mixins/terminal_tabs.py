@@ -7,52 +7,48 @@ import shutil
 import shlex
 
 logger = logging.getLogger(__name__)
-from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject
+from PyQt6.QtCore import Qt, QEvent, QTimer, QSize, QObject, pyqtSignal
+from PyQt6.QtGui import QClipboard
 from PyQt6.QtGui import QAction, QKeySequence, QFont, QColor, QIcon, QCursor
 from PyQt6.QtWidgets import (QApplication, QMenu, QToolButton, QPushButton, QWidget,
                               QHBoxLayout, QVBoxLayout, QLineEdit, QLabel, QDialog,
-                              QComboBox, QInputDialog, QSplitter, QFileDialog, QMessageBox)
+                              QComboBox, QInputDialog, QSplitter, QFileDialog, QMessageBox, QListView,
+                              QListWidgetItem)
 from QTermWidget import QTermWidget
 from gui.widgets.terminal_wrapper import TerminalWrapper
 
 _ANSI_RE = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07')
 _PROMPT_RE = re.compile(r'[$%#]\s*$')
+_PSOPEN_RE = re.compile(r'\x1b\]1337;PSOPEN=(\{[^\x07]*\})\x07')
 
 
-class _TermRepaintFilter(QObject):
-    """Debounced resize → full repaint to eliminate black bands after geometry changes."""
-    def __init__(self, terminal):
-        super().__init__(terminal)
-        self._timer = QTimer(self)
-        self._timer.setSingleShot(True)
-        self._timer.setInterval(50)
-        self._timer.timeout.connect(terminal.update)
-        terminal.installEventFilter(self)
 
-    def eventFilter(self, obj, event):
-        if event.type() == QEvent.Type.Resize:
-            self._timer.start()
-        return False
+def _force_term_repaint(term):
+    """Force QTermWidget to recalculate its character grid and repaint fully.
+    setTerminalFont with the same font triggers internal propagateSize + update,
+    which fills the entire widget area — unlike plain update() which only repaints
+    the already-known character grid region."""
+    try:
+        font = term.getTerminalFont()
+        term.setTerminalFont(font)
+    except Exception:
+        try:
+            term.update()
+        except Exception:
+            pass
+
 
 class TerminalTabsMixin:
     def _on_terminal_received(self, data: str):
-        data = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
-        data = re.sub(r'\x1b\][^\x07]*\x07', '', data)
-        type(self).terminal_buffer += data
-
-        pattern = re.compile(r'PurrSh3ll opened >>\s*(.*?)(?=\r?\n|$)', re.DOTALL)
-        while True:
-            m = pattern.search(type(self).terminal_buffer)
-            if not m:
-                break
-            result = m.group(1).strip().split()
-            filepath = result[0]
-            mode = result[1] if len(result) == 2 else None
-            if mode:
-                self.open_new_tab_for_terminal(file=filepath, mode=mode)
-            else:
-                self.open_new_tab_for_terminal(file=filepath)
-            type(self).terminal_buffer = type(self).terminal_buffer[m.end():]
+        for m in _PSOPEN_RE.finditer(data):
+            try:
+                payload = json.loads(m.group(1))
+                filepath = payload.get("file")
+                mode = payload.get("mode") or "Default"
+                if filepath:
+                    self.open_new_tab_for_terminal(file=filepath, mode=mode)
+            except Exception:
+                pass
 
     def _add_new_terminal_tab(self, name=None, command=None, workdir=None):
         type(self).terminal_idx += 1
@@ -129,7 +125,8 @@ class TerminalTabsMixin:
                                 "output":    entry["output"],
                                 "cwd":       _state.get("cwd", ""),
                             }
-                            _w.show_error_overlay(exit_code)
+                            if getattr(self, "psfix_auto_open", True):
+                                _w.show_error_overlay(exit_code)
                         else:
                             _w.hide_error_overlay()
             if _state["cmd"] is not None:
@@ -200,23 +197,38 @@ class TerminalTabsMixin:
 
         act_find.triggered.connect(lambda checked=False, t=term: (
             t.toggleShowSearchBar(),
-            QTimer.singleShot(30, lambda: _apply_search_bar_style(t))
+            QTimer.singleShot(30, lambda: _apply_search_bar_style(t)),
+            QTimer.singleShot(50, lambda: _force_term_repaint(t))
         ))
 
         def _on_context_menu(pos):
             menu = QMenu(self.widgets["terminal_groupbox"])
+            try:
+                menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             menu.addAction(self._act_copy_selection)
             menu.addAction(self._act_paste_selection)
             menu.addSeparator()
             menu.addAction(self._act_paste_clipboard)
             menu.addSeparator()
-            menu.addAction(self._act_zoom_in)
-            menu.addAction(self._act_zoom_out)
-            menu.addAction(self._act_zoom_reset)
+            _act_zi = QAction("Zoom In", menu)
+            _act_zi.triggered.connect(lambda checked=False, t=term: (t.setFocus(), t.zoom(1)) if hasattr(t, "zoom") else self._zoom_in())
+            _act_zo = QAction("Zoom Out", menu)
+            _act_zo.triggered.connect(lambda checked=False, t=term: (t.setFocus(), t.zoom(-1)) if hasattr(t, "zoom") else self._zoom_out())
+            _act_zr = QAction("Zoom Reset", menu)
+            _act_zr.triggered.connect(lambda checked=False, t=term: (t.setFocus(), t.resetZoom()) if hasattr(t, "resetZoom") else self._zoom_reset())
+            menu.addAction(_act_zi)
+            menu.addAction(_act_zo)
+            menu.addAction(_act_zr)
             menu.addSeparator()
             menu.addAction(act_find)
             menu.addSeparator()
             _scheme_menu = QMenu("Color scheme", menu)
+            try:
+                _scheme_menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             try:
                 _scheme_dir = "/usr/share/qtermwidget6/color-schemes"
                 _schemes = sorted(
@@ -242,14 +254,19 @@ class TerminalTabsMixin:
                     lambda checked=False, w=_w: self._unsplit_terminal(w)
                 )
             else:
-                _act_h = menu.addAction("Split Horizontally")
+                _act_h = menu.addAction("Split View Left-Right")
                 _act_h.triggered.connect(
                     lambda checked=False, w=_w, t=term: self._split_terminal_in_tab(w, t, Qt.Orientation.Horizontal)
                 )
-                _act_v = menu.addAction("Split Vertically")
+                _act_v = menu.addAction("Split View Top-Bottom")
                 _act_v.triggered.connect(
                     lambda checked=False, w=_w, t=term: self._split_terminal_in_tab(w, t, Qt.Orientation.Vertical)
                 )
+            menu.addSeparator()
+            _act_rag = QAction("Save selection to RAG memory", menu)
+            _act_rag.triggered.connect(lambda checked=False, t=term: self._save_selection_to_rag(t))
+            menu.addAction(_act_rag)
+
             menu.exec(term.mapToGlobal(pos))
 
         term.customContextMenuRequested.connect(_on_context_menu)
@@ -315,7 +332,6 @@ class TerminalTabsMixin:
         self.wrapper_to_console[wrapper_widget] = term
         self.terminals[f"terminal_{idx}"] = term
         term._style_children_cache = None
-        term._repaint_filter = _TermRepaintFilter(term)
 
         self.update_dropdown_terminals()
         self.update_dropdown_menu_terminals()
@@ -406,6 +422,13 @@ class TerminalTabsMixin:
         _saved_agent_role = _cfg.get("agent_role", "")
         if _saved_agent_role in _agent_roles:
             _agent_role_combo.setCurrentText(_saved_agent_role)
+        try:
+            _agent_role_combo.setStyleSheet(self.__class__.combo_stylesheet)
+            _rv = QListView()
+            _rv.setStyleSheet(self.__class__.combo_view_stylesheet)
+            _agent_role_combo.setView(_rv)
+        except Exception:
+            pass
         _btn_add_role = QPushButton("+", dlg)
         _btn_add_role.setFixedWidth(24)
         _btn_add_role.setToolTip("Import agent role file")
@@ -432,6 +455,13 @@ class TerminalTabsMixin:
         _saved_skills = _cfg.get("skills_set", "")
         if _saved_skills in _skills:
             _skills_combo.setCurrentText(_saved_skills)
+        try:
+            _skills_combo.setStyleSheet(self.__class__.combo_stylesheet)
+            _sv = QListView()
+            _sv.setStyleSheet(self.__class__.combo_view_stylesheet)
+            _skills_combo.setView(_sv)
+        except Exception:
+            pass
         _btn_add_skills = QPushButton("+", dlg)
         _btn_add_skills.setFixedWidth(24)
         _btn_add_skills.setToolTip("Import skills set folder")
@@ -755,6 +785,10 @@ class TerminalTabsMixin:
                 idx = tabs.currentIndex()
 
             menu = QMenu(tabbar)
+            try:
+                menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             rename_action = QAction("Rename", menu)
             close_action = QAction("Close tab", menu)
             close_others_action = QAction("Close Others", menu)
@@ -868,6 +902,7 @@ class TerminalTabsMixin:
 
         wrapper_widget._split_term = new_term
         wrapper_widget._split_splitter = splitter
+        QTimer.singleShot(50, lambda: _force_term_repaint(term))
 
     def _unsplit_terminal(self, wrapper_widget):
         split_term = getattr(wrapper_widget, '_split_term', None)
@@ -880,6 +915,22 @@ class TerminalTabsMixin:
 
         if term:
             layout.addWidget(term)
+            QTimer.singleShot(50, lambda: _force_term_repaint(term))
+
+        self.wrapper_to_console.pop(split_term, None)
+
+        # Clean up FIFO for this specific split terminal
+        _fifo_key = getattr(split_term, "_fifo_key", None)
+        if _fifo_key and _fifo_key in self.terminal_fifos:
+            fifo_path, fifo_fd = self.terminal_fifos.pop(_fifo_key)
+            try:
+                os.close(fifo_fd)
+            except Exception:
+                pass
+            try:
+                os.unlink(fifo_path)
+            except Exception:
+                pass
 
         try:
             split_term.receivedData.disconnect()
@@ -892,38 +943,170 @@ class TerminalTabsMixin:
         wrapper_widget._split_splitter = None
 
     def _create_split_terminal(self, wrapper_widget):
+        type(self).terminal_idx += 1
+        _split_idx = type(self).terminal_idx
+
         term = QTermWidget(0)
         term.setScrollBarPosition(QTermWidget.ScrollBarPosition.ScrollBarRight)
         term.setStyleSheet(self.terminal_qss_scroll)
         term.setColorScheme(self.terminals_stylesheet)
         try:
             term.setShellProgram("/bin/zsh")
-            term.setEnvironment(self._term_env)
+            _fifo_dir = os.path.join(self.base_path, "appdata", "terminal_fifos")
+            os.makedirs(_fifo_dir, exist_ok=True)
+            _fifo_key = f"split_{_split_idx}"
+            _fifo_path = os.path.join(_fifo_dir, f"{_fifo_key}.fifo")
+            if os.path.exists(_fifo_path):
+                os.unlink(_fifo_path)
+            os.mkfifo(_fifo_path)
+            _fifo_fd = os.open(_fifo_path, os.O_RDWR | os.O_NONBLOCK)
+            self.terminal_fifos[_fifo_key] = (_fifo_path, _fifo_fd)
+            term._fifo_key = _fifo_key
+            _term_env_with_fifo = list(self._term_env) + [f"PURRSH_FIFO={_fifo_path}"]
+            term.setEnvironment(_term_env_with_fifo)
             term.startShellProgram()
         except Exception:
-            pass
+            self.terminal_fifos.pop(f"split_{_split_idx}", None)
+            try:
+                term.setEnvironment(self._term_env)
+                term.startShellProgram()
+            except Exception:
+                pass
         try:
             term.setTerminalFont(QFont("Monospace", 11))
         except Exception:
             pass
 
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": ""}
+        _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
+
+        def _on_split_log(data: str, _state=_log_state, _tid=f"split_{_split_idx}"):
+            if getattr(wrapper_widget, "_agent_monitoring_paused", False):
+                return
+            for typ, payload, ts, cwd_b64 in _osc_re.findall(data):
+                if typ == "cmd":
+                    try:
+                        cmd = base64.b64decode(payload + "==").decode("utf-8", errors="replace").strip()
+                    except Exception:
+                        cmd = payload
+                    _state["cmd"] = cmd
+                    _state["ts_start"] = int(ts)
+                    _state["output"] = []
+                    _state["cwd"] = ""
+                    if cwd_b64:
+                        try:
+                            _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
+                        except Exception:
+                            pass
+                elif typ == "end" and _state["cmd"] is not None:
+                    exit_code = int(payload)
+                    entry = {
+                        "ts": _state["ts_start"],
+                        "ts_end": int(ts),
+                        "terminal": _tid,
+                        "cmd": _state["cmd"],
+                        "exit_code": exit_code,
+                        "output": "".join(_state["output"]).strip()
+                    }
+                    _state["cmd"] = None
+                    _state["output"] = []
+                    if not getattr(self, "terminal_history_disabled", False):
+                        log_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.jsonl")
+                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                        try:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                            _max = getattr(self, "terminal_history_max_entries", 5000)
+                            try:
+                                with open(log_path, "r", encoding="utf-8") as f:
+                                    lines = f.readlines()
+                                if len(lines) > _max:
+                                    with open(log_path, "w", encoding="utf-8") as f:
+                                        f.writelines(lines[-_max:])
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+            if _state["cmd"] is not None:
+                clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
+                clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
+                if clean.strip():
+                    _state["output"].append(clean)
+
+        term.receivedData.connect(_on_split_log)
+        term.receivedData.connect(self._on_terminal_received)
+
         term.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+        def _apply_search_bar_style(t=term):
+            fg = self.actual_theme.get('foreground', {})
+            bg = self.actual_theme.get('background', {})
+            text = fg.get('text', '#ffffff')
+            bg_main = bg.get('main_window', '#2B2D30')
+            bg_btn = bg.get('buttons', '#37373B')
+            bg_hover = bg.get('buttons_hover', '#6C6C73')
+            bg_input = bg.get('tab_bar', '#3B3E40')
+            border = bg.get('buttons_pressed', '#2C5F8F')
+            for child in t.findChildren(QWidget):
+                if isinstance(child, QLineEdit):
+                    child.setStyleSheet(
+                        f"QLineEdit {{ background: {bg_input}; color: {text};"
+                        f" border: 1px solid {border}; border-radius: 3px; padding: 2px 4px; }}"
+                    )
+                elif isinstance(child, (QToolButton, QPushButton)):
+                    child.setStyleSheet(
+                        f"QToolButton, QPushButton {{ background: {bg_btn}; color: {text};"
+                        f" border: none; border-radius: 3px; padding: 2px 6px; }}"
+                        f"QToolButton:hover, QPushButton:hover {{ background: {bg_hover}; }}"
+                        f"QToolButton:pressed, QPushButton:pressed {{ background: {border}; }}"
+                    )
+                elif child is not t and not hasattr(child, 'sendText'):
+                    child.setStyleSheet(f"background: {bg_main}; color: {text};")
 
         def _on_ctx(pos, t=term, w=wrapper_widget):
             menu = QMenu(self.widgets["terminal_groupbox"])
-            menu.addAction("Copy selection", lambda: (hasattr(t, "copySelection") and t.copySelection()) or (hasattr(t, "copyClipboard") and t.copyClipboard()))
-            menu.addAction("Paste selection", lambda: (hasattr(t, "pasteSelection") and t.pasteSelection()) or (hasattr(t, "pasteClipboard") and t.pasteClipboard()))
+            try:
+                menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
+            def _do_copy(tt=t):
+                if hasattr(tt, "copySelection"):
+                    tt.copySelection()
+                elif hasattr(tt, "copyClipboard"):
+                    tt.copyClipboard()
+            def _do_paste(tt=t):
+                if hasattr(tt, "pasteSelection"):
+                    tt.pasteSelection()
+                elif hasattr(tt, "pasteClipboard"):
+                    tt.pasteClipboard()
+            menu.addAction("Copy selection", _do_copy)
+            menu.addAction("Paste selection", _do_paste)
             menu.addSeparator()
             menu.addAction("Paste clipboard", lambda: hasattr(t, "pasteClipboard") and t.pasteClipboard())
             menu.addSeparator()
             act_zi = QAction("Zoom In", menu)
-            act_zi.triggered.connect(lambda: t.zoom(1) if hasattr(t, "zoom") else None)
+            act_zi.triggered.connect(lambda checked=False, tt=t: (tt.setFocus(), QTimer.singleShot(0, self._zoom_in)))
             act_zo = QAction("Zoom Out", menu)
-            act_zo.triggered.connect(lambda: t.zoom(-1) if hasattr(t, "zoom") else None)
+            act_zo.triggered.connect(lambda checked=False, tt=t: (tt.setFocus(), QTimer.singleShot(0, self._zoom_out)))
+            act_zr = QAction("Zoom Reset", menu)
+            act_zr.triggered.connect(lambda checked=False, tt=t: (tt.setFocus(), QTimer.singleShot(0, self._zoom_reset)))
             menu.addAction(act_zi)
             menu.addAction(act_zo)
+            menu.addAction(act_zr)
+            menu.addSeparator()
+            act_find = QAction("Find", menu)
+            act_find.triggered.connect(lambda checked=False, tt=t: (
+                tt.toggleShowSearchBar(),
+                QTimer.singleShot(30, lambda: _apply_search_bar_style(tt)),
+                QTimer.singleShot(50, lambda: _force_term_repaint(tt))
+            ))
+            menu.addAction(act_find)
             menu.addSeparator()
             _scheme_menu = QMenu("Color scheme", menu)
+            try:
+                _scheme_menu.setStyleSheet(self.__class__.menu_stylesheet)
+            except Exception:
+                pass
             try:
                 _scheme_dir = "/usr/share/qtermwidget6/color-schemes"
                 _schemes = sorted(
@@ -944,7 +1127,101 @@ class TerminalTabsMixin:
             act_unsplit = QAction("Unsplit terminal", menu)
             act_unsplit.triggered.connect(lambda checked=False, ww=w: self._unsplit_terminal(ww))
             menu.addAction(act_unsplit)
+            menu.addSeparator()
+            _act_rag_split = QAction("Save selection to RAG memory", menu)
+            _act_rag_split.triggered.connect(lambda checked=False, tt=t: self._save_selection_to_rag(tt))
+            menu.addAction(_act_rag_split)
             menu.exec(t.mapToGlobal(pos))
 
         term.customContextMenuRequested.connect(_on_ctx)
+
+        # Register in wrapper_to_console so the app-level TerminalEventFilter
+        # picks up Ctrl+Scroll events for this split terminal (same as primary terminals)
+        self.wrapper_to_console[term] = term
+
         return term
+
+    def _save_selection_to_rag(self, term):
+        """Embed the current terminal selection into the 'memory' ChromaDB collection,
+        then refresh the Terminal snippets list in AI Settings if it is open."""
+        # On Linux/X11 the primary selection IS the highlighted text — read it directly
+        # without touching the standard clipboard at all.
+        selected = QApplication.clipboard().text(QClipboard.Mode.Selection).strip()
+        if not selected:
+            return
+
+        base_path = getattr(self, "base_path", None)
+        if not base_path:
+            return
+
+        config = getattr(self, "config", {})
+        model_name = config.get("rag", {}).get("embedding_model", "")
+
+        # Build a QObject-based relay on the main thread so the worker can safely
+        # signal back to refresh the UI (QTimer.singleShot is not safe from a plain
+        # Python daemon thread that has no Qt event loop).
+        class _Relay(QObject):
+            done = pyqtSignal(bool)  # True = success
+
+        relay = _Relay()
+        mem_list = self.widgets.get("ai_settings_memory_list")
+        if mem_list is not None:
+            relay.done.connect(lambda ok, ml=mem_list: self._refresh_memory_list_widget(ml, base_path))
+
+        # Show status label immediately and force repaint before the thread (and
+        # potential GIL freeze) starts, so the user sees feedback right away.
+        status_lbl = self.widgets.get("rag_index_status_label")
+        if status_lbl is not None:
+            status_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+            status_lbl.setText("⟳ Saving to memory…")
+            status_lbl.show()
+            QApplication.processEvents()
+
+        import threading
+        from core.rag import indexer as _rag_idx
+        from core.rag import embedder as _emb
+
+        def _do_index():
+            ok = True
+            try:
+                _rag_idx.add_to_memory(
+                    selected,
+                    base_path,
+                    model_name or _emb.DEFAULT_MODEL,
+                )
+            except Exception:
+                ok = False
+            finally:
+                relay.done.emit(ok)
+
+        def _on_done(ok: bool):
+            lbl = self.widgets.get("rag_index_status_label")
+            if lbl is None:
+                return
+            if ok:
+                lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
+                lbl.setText("✔ Saved to memory")
+            else:
+                lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
+                lbl.setText("✖ Memory save failed")
+            lbl.show()
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(3000, lambda: (
+                lbl.hide(),
+                lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;"),
+            ))
+
+        relay.done.connect(_on_done)
+        threading.Thread(target=_do_index, daemon=True).start()
+
+    def _refresh_memory_list_widget(self, mem_list, base_path: str):
+        from core.rag.indexer import get_memory_entries
+        mem_list.clear()
+        for entry in get_memory_entries(base_path):
+            preview = entry["text"][:40].replace("\n", " ")
+            if len(entry["text"]) > 40:
+                preview += "…"
+            item = QListWidgetItem(preview)
+            item.setData(Qt.ItemDataRole.UserRole, entry["id"])
+            item.setToolTip(entry["text"][:800])
+            mem_list.addItem(item)

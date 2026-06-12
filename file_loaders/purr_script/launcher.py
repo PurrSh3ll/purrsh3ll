@@ -6,7 +6,7 @@ import tempfile
 import resource
 import signal
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QFileSystemWatcher
 from collections import deque
 import pydoc
 import importlib.util
@@ -116,6 +116,9 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
 
         self._build_ui()
         self.update_imports_info()
+
+        self._file_watcher = QFileSystemWatcher([self.path], self)
+        self._file_watcher.fileChanged.connect(self._on_file_changed_on_disk)
 
 class Purr_script:
     def __init__(self):

@@ -25,9 +25,17 @@ _ANSI_RE = re.compile(rb'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 def _load_config(base_dir: str) -> dict:
     try:
         with open(os.path.join(base_dir, "appdata", "app_config.json"), encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
     except Exception:
-        return {}
+        cfg = {}
+    # Merge api_profiles.json (profiles stored separately, gitignored)
+    profiles_path = os.path.join(base_dir, "appdata", "api_profiles.json")
+    try:
+        with open(profiles_path, encoding="utf-8") as f:
+            cfg["api_providers"] = json.load(f)
+    except Exception:
+        pass
+    return cfg
 
 
 def _kb_path(config: dict, base_dir: str) -> str:
@@ -56,27 +64,92 @@ def _active_profile(config: dict) -> dict:
     return {}
 
 
+def _resolve_profile(config: dict, profile_arg: str | None) -> dict:
+    """Return the profile matching profile_arg by name, or the active profile if None."""
+    if not profile_arg:
+        return _active_profile(config)
+    all_profiles = config.get("api_providers", {}).get("profiles", [])
+    for p in all_profiles:
+        if p.get("name") == profile_arg:
+            return p
+    _err(f"Profile \"{profile_arg}\" not found. Check your profiles in AI Settings → API Providers.")
+    return {}
+
+
 # ── RAG pipeline ──────────────────────────────────────────────────────────────
+
+def _load_embedding_model(model_name: str, cache_dir: str):
+    """Load embedding model — supports built-in, custom HF ('hf:org/repo:onnx/path')
+    and local ONNX ('local:/model/dir:onnx/model.onnx') models."""
+    import warnings
+    kwargs = {}
+    if cache_dir:
+        kwargs["cache_dir"] = cache_dir
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if model_name.startswith("hf:"):
+            from fastembed.text.custom_text_embedding import CustomTextEmbedding
+            from fastembed.common.model_description import DenseModelDescription, ModelSource, PoolingType
+            rest     = model_name[3:]
+            parts    = rest.split(":", 1)
+            hf_id    = parts[0]
+            onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            if not any(m.model == hf_id for m in CustomTextEmbedding.SUPPORTED_MODELS):
+                CustomTextEmbedding.add_model(
+                    DenseModelDescription(model=hf_id, sources=ModelSource(hf=hf_id),
+                                         model_file=onnx_rel, description=f"Custom: {hf_id}",
+                                         license="unknown", size_in_GB=0.5, dim=384),
+                    PoolingType.MEAN, True,
+                )
+            return CustomTextEmbedding(model_name=hf_id, **kwargs)
+        if model_name.startswith("local:"):
+            from fastembed.text.custom_text_embedding import CustomTextEmbedding
+            from fastembed.common.model_description import DenseModelDescription, ModelSource, PoolingType
+            import onnxruntime as _ort
+            rest      = model_name[6:]
+            parts     = rest.split(":", 1)
+            model_dir = os.path.abspath(parts[0])
+            onnx_rel  = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            model_key = f"local:{model_dir}:{onnx_rel}"
+            if not any(m.model == model_key for m in CustomTextEmbedding.SUPPORTED_MODELS):
+                try:
+                    _sess = _ort.InferenceSession(os.path.join(model_dir, onnx_rel),
+                                                  providers=["CPUExecutionProvider"])
+                    _dim = int(_sess.get_outputs()[0].shape[-1])
+                except Exception:
+                    _dim = 384
+                CustomTextEmbedding.add_model(
+                    DenseModelDescription(model=model_key, sources=ModelSource(hf=model_key),
+                                         model_file=onnx_rel, description="Local ONNX",
+                                         license="unknown", size_in_GB=0.5, dim=_dim),
+                    PoolingType.MEAN, True,
+                )
+            return CustomTextEmbedding(model_name=model_key, specific_model_path=model_dir, **kwargs)
+        from fastembed import TextEmbedding
+        return TextEmbedding(model_name=model_name, **kwargs)
+
 
 def _embed(query: str, model_name: str, cache_dir: str) -> list:
     try:
-        from fastembed import TextEmbedding
+        from fastembed import TextEmbedding  # noqa: F401 — ensure fastembed is installed
     except ImportError:
         _err("fastembed is not installed. Run: pip install fastembed")
         sys.exit(1)
 
-    kwargs = {"model_name": model_name}
-    if cache_dir:
-        kwargs["cache_dir"] = cache_dir
     import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        model = TextEmbedding(**kwargs)
     try:
-        vec = [v.tolist() for v in model.embed([query])][0]
-    finally:
-        del model
-        gc.collect()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = _load_embedding_model(model_name, cache_dir)
+        try:
+            vec = [v.tolist() for v in model.embed([query])][0]
+        finally:
+            del model
+            gc.collect()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     return vec
 
 
@@ -118,7 +191,95 @@ def _search(base_dir: str, query_vec: list, top_n: int) -> list:
         results["distances"][0],
     ):
         chunks.append({"text": doc, "meta": meta, "distance": dist})
-    return chunks
+
+    # Also search terminal snippets saved via "Save selection to RAG memory"
+    try:
+        mem_col = client.get_collection("memory")
+        mem_count = mem_col.count()
+        if mem_count > 0:
+            mem_results = mem_col.query(
+                query_embeddings=[query_vec],
+                n_results=min(top_n, mem_count),
+                include=["documents", "metadatas", "distances"],
+            )
+            for doc, meta, dist in zip(
+                mem_results["documents"][0],
+                mem_results["metadatas"][0],
+                mem_results["distances"][0],
+            ):
+                chunks.append({"text": doc, "meta": meta, "distance": dist})
+    except Exception:
+        pass
+
+    chunks.sort(key=lambda x: x["distance"])
+    return chunks[:top_n]
+
+
+_RERANK_MODEL_DEFAULT = "Xenova/ms-marco-MiniLM-L-6-v2"
+_RERANK_POOL          = 20   # fetch this many chunks before re-ranking
+
+
+def _load_rerank_model(model_name: str, cache_dir: str):
+    """Load rerank model — supports built-in, custom HF ('hf:org/repo:onnx/path')
+    and local ONNX ('local:/path/to/model.onnx') models."""
+    import warnings
+    kwargs = {"cache_dir": cache_dir} if cache_dir else {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        if model_name.startswith("hf:"):
+            from fastembed.rerank.cross_encoder.custom_text_cross_encoder import CustomTextCrossEncoder
+            from fastembed.common.model_description import BaseModelDescription, ModelSource
+            rest     = model_name[3:]
+            parts    = rest.split(":", 1)
+            hf_id    = parts[0]
+            onnx_rel = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            if not any(m.model == hf_id for m in CustomTextCrossEncoder.SUPPORTED_MODELS):
+                CustomTextCrossEncoder.add_model(
+                    BaseModelDescription(model=hf_id, sources=ModelSource(hf=hf_id),
+                                         model_file=onnx_rel, description=f"Custom: {hf_id}",
+                                         license="unknown", size_in_GB=0.5)
+                )
+            return CustomTextCrossEncoder(model_name=hf_id, **kwargs)
+        if model_name.startswith("local:"):
+            from fastembed.rerank.cross_encoder.custom_text_cross_encoder import CustomTextCrossEncoder
+            from fastembed.common.model_description import BaseModelDescription, ModelSource
+            rest      = model_name[6:]
+            parts     = rest.split(":", 1)
+            model_dir = os.path.abspath(parts[0])
+            onnx_rel  = parts[1] if len(parts) > 1 else "onnx/model.onnx"
+            model_key = f"local:{model_dir}:{onnx_rel}"
+            if not any(m.model == model_key for m in CustomTextCrossEncoder.SUPPORTED_MODELS):
+                CustomTextCrossEncoder.add_model(
+                    BaseModelDescription(model=model_key, sources=ModelSource(hf=model_key),
+                                         model_file=onnx_rel, description="Local ONNX reranker",
+                                         license="unknown", size_in_GB=0.5)
+                )
+            return CustomTextCrossEncoder(model_name=model_key, specific_model_path=model_dir, **kwargs)
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+        return TextCrossEncoder(model_name=model_name, **kwargs)
+
+
+def _rerank(chunks: list, query: str, model_name: str, cache_dir: str) -> list:
+    """Re-rank chunks using a cross-encoder model (fastembed, ONNX — no PyTorch needed)."""
+    import warnings
+    texts = [c["text"] for c in chunks]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model = _load_rerank_model(model_name, cache_dir)
+        scores = list(model.rerank(query, texts))
+        del model
+        gc.collect()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
+    except Exception as e:
+        _info(f"Re-ranking failed ({e}) — using original order.")
+        return chunks
+
+    ranked = sorted(zip(scores, chunks), key=lambda x: x[0], reverse=True)
+    return [c for _, c in ranked]
 
 
 def _build_prompt(query: str, chunks: list) -> str:
@@ -199,6 +360,11 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
                     except OSError:
                         pass
                     break
+            except KeyboardInterrupt:
+                proc.terminate()
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                sys.exit(130)
             except OSError:
                 break
 
@@ -286,6 +452,10 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
                 except Exception:
                     pass
         print()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code} from {url}: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -339,6 +509,10 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
                 except Exception:
                     pass
         print()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)
     except urllib.error.HTTPError as e:
         _err(f"HTTP {e.code} from Anthropic: {e.read().decode('utf-8', errors='replace')}")
         sys.exit(1)
@@ -351,6 +525,14 @@ def _run_llm(provider: str, model: str, prompt: str,
              url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None):
     """Dispatch to the correct runner based on provider."""
+    try:
+        import os as _os, time as _time
+        _tok  = max(1, len(prompt) // 4)
+        _path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "logs", "psai_tok")
+        with open(_path, "w") as _f:
+            _f.write(f"{int(_time.time() * 1000)}:{_tok}")
+    except Exception:
+        pass
     if provider == "ollama":
         _run_ollama(model, prompt, disable_thinking, url)
     elif provider == "anthropic":
@@ -378,11 +560,11 @@ def _err(msg: str):
 def main():
     parser = argparse.ArgumentParser(prog="psrag", add_help=False)
     parser.add_argument("query",           nargs="+")
-    parser.add_argument("-n",              type=int, default=5, metavar="N", dest="top_n")
-    parser.add_argument("-m", "--model",   default=None, metavar="MODEL")
-    parser.add_argument("--host",          default="", metavar="URL",
+    parser.add_argument("-n", "--top-n",   type=int, default=5, metavar="N", dest="top_n")
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE", dest="profile")
+    parser.add_argument("-H", "--host",    default="", metavar="URL",
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
-    parser.add_argument("--show-sources",  action="store_true")
+    parser.add_argument("-s", "--show-sources", action="store_true")
     parser.add_argument("--base-dir",      default=None)
     parser.add_argument("-h", "--help",    action="store_true")
     args = parser.parse_args()
@@ -392,16 +574,16 @@ def main():
             "psrag — query the PurrSh3ll RAG knowledge base\n\n"
             "Usage: psrag [options] <query>\n\n"
             "Options:\n"
-            "  -n N             Context chunks to retrieve (default: 5)\n"
-            "  -m MODEL         Model override (default: from active API profile)\n"
-            "  --host URL       Provider host/base URL override\n"
-            "  --show-sources   Print source files and scores before answer\n"
-            "  -h, --help       Show this help\n\n"
+            "  -n, --top-n N        Context chunks to retrieve (default: 5)\n"
+            "  -p, --profile NAME   Use a specific saved profile by name\n"
+            "  -H, --host URL       Provider host/base URL override\n"
+            "  -s, --show-sources   Print source files and scores before answer\n"
+            "  -h, --help           Show this help\n\n"
             "Examples:\n"
             '  psrag "what is XSS?"\n'
-            '  psrag -n 3 --show-sources "how to enumerate subdomains"\n'
-            '  psrag -m llama3.2 "explain SQL injection"\n'
-            '  psrag --host http://192.168.1.10:11434 "query"'
+            '  psrag -n 3 -s "how to enumerate subdomains"\n'
+            '  psrag -p my-ollama "explain SQL injection"\n'
+            '  psrag -H http://192.168.1.10:11434 "query"'
         )
         sys.exit(0)
 
@@ -412,18 +594,19 @@ def main():
 
     config            = _load_config(base_dir)
     llama_cfg         = config.get("llama", {})
-    profile           = _active_profile(config)
+    profile           = _resolve_profile(config, args.profile)
 
-    if not profile and not args.model:
-        _err(
-            "No active API profile configured.\n"
-            "Go to AI Settings > API Providers and set an active profile,\n"
-            "or pass a model directly with:  psrag -m <model> <query>"
-        )
+    if not profile:
+        if not args.profile:
+            _err(
+                "No active API profile configured.\n"
+                "Go to AI Settings > API Providers and set an active profile,\n"
+                "or pass a profile name with:  psrag -p <profile> <query>"
+            )
         sys.exit(1)
 
     provider          = profile.get("provider", "ollama")
-    model             = args.model or profile.get("model", "")
+    model             = profile.get("model", "")
     if not model:
         _err(
             f"Active profile \"{profile.get('name', '?')}\" has no model configured.\n"
@@ -477,15 +660,25 @@ def main():
         "Use 1-3 sentences. No unnecessary explanations."
     )
 
+    _rag_cfg       = config.get("rag", {})
+    rerank_enabled = bool(_rag_cfg.get("rerank", False))
+    rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
+
     _info("Embedding query…")
     vec = _embed(query, embed_model, cache_dir)
 
     _info("Searching knowledge base…")
-    chunks = _search(base_dir, vec, args.top_n)
+    pool_n = max(_RERANK_POOL, args.top_n) if rerank_enabled else args.top_n
+    chunks = _search(base_dir, vec, pool_n)
 
     if not chunks:
         _err("No relevant chunks found.")
         sys.exit(1)
+
+    if rerank_enabled:
+        _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
+        chunks = _rerank(chunks, query, rerank_model, cache_dir)
+        chunks = chunks[:args.top_n]
 
     if args.show_sources:
         _info("Sources:")
@@ -498,26 +691,7 @@ def main():
                 print(f"  \033[90m• {src}  (score={score:.3f})\033[0m", file=sys.stderr)
         print(file=sys.stderr)
 
-    # Trim chunks to fit within half of model's context window
-    _CTX_BY_PROVIDER  = {"ollama": 4_096, "anthropic": 200_000, "openai": 128_000}
-    ctx_tokens        = int(profile.get("context_tokens") or 0) or _CTX_BY_PROVIDER.get(provider, 16_000)
-    max_prompt_tokens = ctx_tokens // 2
-    while chunks:
-        prompt = _build_prompt(query, chunks)
-        try:
-            import tiktoken
-            enc       = tiktoken.get_encoding("cl100k_base")
-            tok_count = len(enc.encode(prompt))
-        except Exception:
-            tok_count = len(prompt) // 4
-        if tok_count <= max_prompt_tokens:
-            break
-        chunks = chunks[:-1]  # drop lowest-relevance chunk and retry
-
-    if not chunks:
-        _err("Query + context exceeds model context window even with a single chunk.")
-        sys.exit(1)
-
+    prompt = _build_prompt(query, chunks)
     if fast_answers:
         prompt += _FAST_SUFFIX
     _info(f"Querying {model} via {provider}…\n")
@@ -525,4 +699,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)

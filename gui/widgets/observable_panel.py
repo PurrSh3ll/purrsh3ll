@@ -23,17 +23,28 @@ class ObserverRow:
         self.on_type_changed()
 
     def _build_widgets(self):
+        # Outer wrapper: content row + separator
         row = QWidget()
-        row.setFixedHeight(ObserverPanel.ROW_HEIGHT)
         row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        outer_layout = QVBoxLayout(row)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        layout = QHBoxLayout(row)
+        # Content row
+        content_widget = QWidget()
+        content_widget.setFixedHeight(ObserverPanel.ROW_HEIGHT)
+        layout = QHBoxLayout(content_widget)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(6)
-        layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
         type_combo = QComboBox()
-        type_combo.setView(QListView())
+        try:
+            type_combo.setStyleSheet(self.c.combo_stylesheet)
+            _tv = QListView()
+            _tv.setStyleSheet(self.c.combo_view_stylesheet)
+            type_combo.setView(_tv)
+        except Exception:
+            type_combo.setView(QListView())
         type_combo.addItems(["static", "dynamic", "command"])
 
         remove_button = QPushButton("🗑️")
@@ -49,21 +60,29 @@ class ObserverRow:
         name_edit = QLineEdit()
         name_edit.setPlaceholderText("Name")
         name_edit.setFixedHeight(ObserverPanel.BTN_SIZE)
-        name_edit.setFixedWidth(ObserverPanel.NAME_MIN_WIDTH)
-        name_edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        name_edit.setMinimumWidth(ObserverPanel.NAME_MIN_WIDTH)
+        name_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         value_edit = QLineEdit()
         value_edit.setPlaceholderText("Value")
         value_edit.setFixedHeight(ObserverPanel.BTN_SIZE)
-        value_edit.setFixedWidth(ObserverPanel.VALUE_MIN_WIDTH)
-        value_edit.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        value_edit.setMinimumWidth(ObserverPanel.VALUE_MIN_WIDTH)
+        value_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         user_vars_list = self.c.dynamic_vars.get("user_variables", [])
         names = [var.get("name") for var in user_vars_list if var.get("name")]
         dynamic_name_combo = QComboBox()
+        try:
+            dynamic_name_combo.setStyleSheet(self.c.combo_stylesheet)
+            _dv = QListView()
+            _dv.setStyleSheet(self.c.combo_view_stylesheet)
+            dynamic_name_combo.setView(_dv)
+        except Exception:
+            pass
         dynamic_name_combo.addItems(names)
         dynamic_name_combo.setVisible(False)
         dynamic_name_combo.setFixedHeight(ObserverPanel.BTN_SIZE)
+        dynamic_name_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         dynamic_value_label = QLineEdit()
         dynamic_value_label.setPlaceholderText("N/A")
@@ -71,17 +90,21 @@ class ObserverRow:
         dynamic_value_label.setFixedHeight(ObserverPanel.BTN_SIZE)
         dynamic_value_label.setReadOnly(True)
         dynamic_value_label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        dynamic_value_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        dynamic_value_label.setFixedWidth(ObserverPanel.VALUE_MIN_WIDTH)
+        dynamic_value_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        dynamic_value_label.setMinimumWidth(ObserverPanel.VALUE_MIN_WIDTH)
 
+        # New order: type | fields | stretch | action buttons
         layout.addWidget(type_combo)
-        layout.addWidget(remove_button)
-        layout.addWidget(confirm_button)
-        layout.addWidget(refresh_button)
         layout.addWidget(name_edit)
         layout.addWidget(value_edit)
         layout.addWidget(dynamic_name_combo)
         layout.addWidget(dynamic_value_label)
+        layout.addStretch(1)
+        layout.addWidget(confirm_button)
+        layout.addWidget(refresh_button)
+        layout.addWidget(remove_button)
+
+        outer_layout.addWidget(content_widget)
 
         self.row = row
         self.type_combo = type_combo
@@ -107,16 +130,11 @@ class ObserverRow:
         self.confirm_button.clicked.connect(self.toggle_confirm)
         self.refresh_button.clicked.connect(self.toggle_refresh)
         self.type_combo.currentIndexChanged.connect(self.on_type_changed)
-        self.name_edit.textChanged.connect(
-            lambda: p._auto_expand_line_edit(self.name_edit, p.NAME_MIN_WIDTH, p.FIELD_MAX_WIDTH)
-        )
-        self.value_edit.textChanged.connect(
-            lambda: p._auto_expand_line_edit(self.value_edit, p.VALUE_MIN_WIDTH, p.FIELD_MAX_WIDTH)
-        )
-        self.dynamic_value_label.textChanged.connect(
-            lambda: p._auto_expand_line_edit(self.dynamic_value_label, p.VALUE_MIN_WIDTH, p.FIELD_MAX_WIDTH)
-        )
         self.dynamic_name_combo.activated.connect(lambda: self.dynamic_value_label.setText(""))
+        self.name_edit.textChanged.connect(lambda t: self.name_edit.setToolTip(t))
+        self.value_edit.textChanged.connect(lambda t: self.value_edit.setToolTip(t))
+        self.dynamic_name_combo.currentTextChanged.connect(lambda t: self.dynamic_name_combo.setToolTip(t))
+        self.dynamic_value_label.textChanged.connect(lambda t: self.dynamic_value_label.setToolTip(t))
 
     def _all_widgets(self):
         return {k: getattr(self, k) for k in self.WIDGET_KEYS}
@@ -349,6 +367,10 @@ class ObserverRow:
         msg.setIcon(icon)
         msg.setWindowTitle(title)
         msg.setText(text)
+        try:
+            msg.setStyleSheet(self.c.messagebox_stylesheet)
+        except Exception:
+            pass
         msg.exec()
 
 class ObserverPanel(QWidget):
@@ -367,6 +389,7 @@ class ObserverPanel(QWidget):
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)

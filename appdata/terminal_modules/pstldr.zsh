@@ -5,11 +5,12 @@ pstldr() {
 pstldr — AI-powered TL;DR summarizer
 
 Usage:
-  pstldr <file>            Summarize a file (first part if truncated)
-  pstldr --tail <file>     Summarize a file (last part if truncated, useful for logs)
-  pstldr "<text>"          Summarize text passed directly
-  cat file | pstldr        Summarize piped input
-  pstldr -m <model> <file> Use a specific model
+  pstldr <file>                Summarize a file
+  pstldr --head [N] <file>     Send only the first N chars (default 4000)
+  pstldr --tail [N] <file>     Send only the last N chars (default 4000, useful for logs)
+  pstldr "<text>"              Summarize text passed directly
+  cat file | pstldr            Summarize piped input
+  pstldr -p <profile> <file>   Use a specific saved profile
 EOF
         return 0
     fi

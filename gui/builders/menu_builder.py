@@ -2,15 +2,46 @@ from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
+    QListView, QListWidget, QListWidgetItem, QMessageBox, QTabWidget, QSizePolicy,
+    QToolButton, QSlider,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QAction, QIntValidator
 import os
 import json
 import subprocess
+import threading
 
 from core.controller import controller_instance
+
+
+class _ScrollableComboBox(QComboBox):
+    """QComboBox popup capped at a fixed height with a real scrollbar (no arrow buttons)."""
+    _MAX_H = 300
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setMaxVisibleItems(200)
+        self._sb_qss = ""
+
+    def setScrollBarStyleSheet(self, qss: str):
+        self._sb_qss = qss
+
+    def showPopup(self):
+        super().showPopup()
+        container = self.view().parent()
+        if container and container is not self:
+            view = self.view()
+            for child in container.children():
+                if isinstance(child, QWidget) and child is not view:
+                    child.setMaximumHeight(0)
+                    child.hide()
+            view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+            if self._sb_qss:
+                view.verticalScrollBar().setStyleSheet(self._sb_qss)
+            if container.height() > self._MAX_H:
+                container.setFixedHeight(self._MAX_H)
 
 
 c = controller_instance
@@ -19,6 +50,7 @@ def build_menu(main_window):
 
     menu_button = QPushButton("⋯", c.widgets["central_widget"])
     menu_button.setGeometry(10, 0, 40, 12)
+    menu_button.setToolTip("Menu")
     c.register_widget("menu_button", menu_button)
 
     menu_bar = main_window.menuBar()
@@ -251,6 +283,45 @@ def build_menu(main_window):
         def _on_history_max_reset():
             history_max_spin.setValue(_HISTORY_MAX_DEFAULT)
 
+        def _save_window_settings():
+            w = width_spin.value()
+            h = height_spin.value()
+            x = x_spin.value()
+            y = y_spin.value()
+            c.width = w
+            c.height = h
+            c.start_x = x
+            c.start_y = y
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                cfg.setdefault("window", {})["resolution"] = [w, h]
+                cfg["window"]["start_screen"] = [x, y]
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _on_lw_changed(state):
+            c.lightweight_web_browser = lw_checkbox.isChecked()
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                cfg.setdefault("performance", {})["lightweight_web_browser"] = c.lightweight_web_browser
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        width_spin.valueChanged.connect(lambda _: _save_window_settings())
+        height_spin.valueChanged.connect(lambda _: _save_window_settings())
+        x_spin.valueChanged.connect(lambda _: _save_window_settings())
+        y_spin.valueChanged.connect(lambda _: _save_window_settings())
+        lw_checkbox.stateChanged.connect(_on_lw_changed)
         save_sys_checkbox.stateChanged.connect(_on_save_sys_changed)
         delete_logs_checkbox.stateChanged.connect(_on_delete_logs_changed)
         delete_notes_checkbox.stateChanged.connect(_on_delete_notes_changed)
@@ -277,59 +348,6 @@ def build_menu(main_window):
         except Exception:
             pass
 
-        # ── OK / Cancel ───────────────────────────────────────────────────────
-        btn_ok = QPushButton("OK", dlg)
-        btn_cancel = QPushButton("Cancel", dlg)
-
-        def _apply_and_close():
-            w = width_spin.value()
-            h = height_spin.value()
-            x = x_spin.value()
-            y = y_spin.value()
-            lw = bool(lw_checkbox.isChecked())
-
-            new_data = {}
-            try:
-                if settings_path and os.path.exists(settings_path):
-                    try:
-                        with open(settings_path, "r", encoding="utf-8") as f:
-                            new_data = json.load(f) or {}
-                    except Exception:
-                        new_data = {}
-
-                new_data.setdefault("window", {})
-                new_data.setdefault("performance", {})
-                new_data.setdefault("user_profile", {})
-                new_data["window"]["resolution"] = [w, h]
-                new_data["window"]["start_screen"] = [x, y]
-                new_data["window"].setdefault("fullscreen", False)
-                new_data["performance"]["lightweight_web_browser"] = lw
-                if settings_path:
-                    try:
-                        with open(settings_path, "w", encoding="utf-8") as f:
-                            json.dump(new_data, f, indent=2, ensure_ascii=False)
-                    except Exception:
-                        pass
-
-            except Exception:
-                pass
-
-            c.width = w
-            c.height = h
-            c.start_x = x
-            c.start_y = y
-            c.lightweight_web_browser = lw
-
-            dlg.accept()
-
-        btn_ok.clicked.connect(_apply_and_close)
-        btn_cancel.clicked.connect(dlg.reject)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch(1)
-        btn_layout.addWidget(btn_ok)
-        btn_layout.addWidget(btn_cancel)
-
         # ── Assemble dialog ───────────────────────────────────────────────────
         scroll_content = QWidget()
         scroll_content.setObjectName("settings_scroll_content")
@@ -351,7 +369,6 @@ def build_menu(main_window):
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
         main_layout.addWidget(scroll)
-        main_layout.addLayout(btn_layout)
 
     def create_about_qterm_dialog():
         qterminal_dialog = QDialog()
@@ -418,7 +435,10 @@ def build_menu(main_window):
             • <a href="https://pypi.org/project/pyte/">pyte 0.8.2</a> – LGPL v3<br>
             • <a href="https://pypi.org/project/markdown2/">markdown2 2.5.4</a> – MIT<br>
             • <a href="https://pypi.org/project/Pygments/">Pygments 2.19.2</a> – BSD 2-Clause<br>
-            • <a href="https://pypi.org/project/jeepney/">jeepney 0.9.0</a> – MIT<br><br>
+            • <a href="https://pypi.org/project/jeepney/">jeepney 0.9.0</a> – MIT<br>
+            • <a href="https://pypi.org/project/pymupdf/">PyMuPDF (fitz)</a> – AGPL v3<br>
+            • <a href="https://pypi.org/project/mutagen/">mutagen</a> – GPL v2<br>
+            • <a href="https://github.com/UKPLab/sentence-transformers">sentence-transformers</a> – Apache 2.0<br><br>
 
             <b>Voice &amp; Audio</b><br>
             • <a href="https://github.com/SYSTRAN/faster-whisper">faster-whisper 1.2.1</a> – MIT<br>
@@ -432,6 +452,7 @@ def build_menu(main_window):
 
             <hr>
             <b>External Tools &amp; Resources</b><br>
+            • <a href="https://exiftool.org">ExifTool</a> – Artistic / GPL<br>
             • <a href="https://github.com/ollama/ollama">Ollama</a> – MIT<br>
             • <a href="https://github.com/sigoden/aichat">aichat</a> – MIT<br>
             • <a href="https://github.com/SabyasachiRana/WebMap">WebMap</a> – MIT<br>
@@ -516,7 +537,7 @@ def build_menu(main_window):
 
         dlg = QDialog(main_window)
         dlg.setWindowTitle("AI Settings")
-        dlg.setModal(True)
+        dlg.setModal(False)
         dlg.setMinimumWidth(460)
         dlg.resize(480, 600)
 
@@ -606,29 +627,278 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills set:", settings_skills_combo)
 
+        clear_chat_history_checkbox = QCheckBox("Clear pschat history on exit", grp_llm)
+        clear_chat_history_checkbox.setChecked(bool(llama_cfg.get("clear_chat_history_on_exit", False)))
+        form_llm.addRow(clear_chat_history_checkbox)
+
+        def _on_clear_chat_history_changed(state):
+            val = clear_chat_history_checkbox.isChecked()
+            _save_llama_key("clear_chat_history_on_exit", val)
+            c.clear_chat_history_on_exit = val
+
+        clear_chat_history_checkbox.stateChanged.connect(_on_clear_chat_history_changed)
+
+        # ── ps* tools group ───────────────────────────────────────────────────
+        grp_pstools = QGroupBox("ps* tools")
+        form_pstools = QFormLayout(grp_pstools)
+        form_pstools.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        psai_stats_checkbox = QCheckBox("Show inference stats after response", grp_pstools)
+        psai_stats_checkbox.setChecked(bool(llama_cfg.get("psai_show_stats", True)))
+        form_pstools.addRow(psai_stats_checkbox)
+
+        def _on_psai_stats_changed(state):
+            _save_llama_key("psai_show_stats", psai_stats_checkbox.isChecked())
+
+        psai_stats_checkbox.stateChanged.connect(_on_psai_stats_changed)
+
+        psai_querying_checkbox = QCheckBox("Show 'Querying model…' info line", grp_pstools)
+        psai_querying_checkbox.setChecked(bool(llama_cfg.get("psai_show_querying", True)))
+        form_pstools.addRow(psai_querying_checkbox)
+
+        def _on_psai_querying_changed(state):
+            _save_llama_key("psai_show_querying", psai_querying_checkbox.isChecked())
+
+        psai_querying_checkbox.stateChanged.connect(_on_psai_querying_changed)
+
+        psfix_popup_checkbox = QCheckBox("Auto-open psfix on command error", grp_pstools)
+        psfix_popup_checkbox.setChecked(bool(llama_cfg.get("psfix_auto_open", True)))
+        form_pstools.addRow(psfix_popup_checkbox)
+
+        def _on_psfix_popup_changed(state):
+            val = psfix_popup_checkbox.isChecked()
+            _save_llama_key("psfix_auto_open", val)
+            c.psfix_auto_open = val
+
+        psfix_popup_checkbox.stateChanged.connect(_on_psfix_popup_changed)
+
+        chat_history_spin = QSpinBox(grp_pstools)
+        chat_history_spin.setRange(1, 999)
+        chat_history_spin.setSingleStep(1)
+        chat_history_spin.setValue(int(llama_cfg.get("chat_max_history", 20)))
+        chat_history_spin.setMinimumWidth(80)
+
+        chat_history_reset_btn = QPushButton("Default", grp_pstools)
+        chat_history_reset_btn.setFixedWidth(60)
+        chat_history_reset_btn.clicked.connect(lambda: chat_history_spin.setValue(20))
+
+        chat_history_row = QHBoxLayout()
+        chat_history_row.addWidget(chat_history_spin)
+        chat_history_row.addWidget(chat_history_reset_btn)
+        chat_history_row.addStretch(1)
+        form_pstools.addRow("Chat history\n(messages):", chat_history_row)
+
+        def _on_chat_history_changed(value):
+            _save_llama_key("chat_max_history", value)
+
+        chat_history_spin.valueChanged.connect(_on_chat_history_changed)
+
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
-        form_rag = QFormLayout(grp_rag)
-        form_rag.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        grp_rag_layout = QVBoxLayout(grp_rag)
+        grp_rag_layout.setSpacing(8)
+        grp_rag_layout.setContentsMargins(6, 6, 6, 6)
+
+        grp_kb  = QGroupBox("Knowledge")
+        form_kb = QFormLayout(grp_kb)
+        form_kb.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_emb  = QGroupBox("Embedding")
+        form_emb = QFormLayout(grp_emb)
+        form_emb.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_rnk  = QGroupBox("Re-ranking")
+        form_rnk = QFormLayout(grp_rnk)
+        form_rnk.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_dl  = QGroupBox("Downloaded models")
+        form_dl = QFormLayout(grp_dl)
+        form_dl.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        grp_rag_layout.addWidget(grp_kb)
+        grp_rag_layout.addWidget(grp_emb)
+        grp_rag_layout.addWidget(grp_rnk)
+        grp_rag_layout.addWidget(grp_dl)
 
         _rag_cfg = data.get("rag", {})
         _rag_mode = _rag_cfg.get("knowledge_base", "braindump")
         _rag_custom_path = _rag_cfg.get("custom_path", "")
 
+        # (label, model_id) — model_id=None means a non-selectable group header
         _RAG_MODELS = [
-            ("paraphrase-multilingual-MiniLM-L12-v2 (120MB, PL+EN)",
-             "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
-            ("bge-small-en-v1.5 (33MB, EN)",
-             "BAAI/bge-small-en-v1.5"),
-            ("bge-base-en-v1.5 (109MB, EN)",
-             "BAAI/bge-base-en-v1.5"),
-            ("nomic-embed-text-v1.5 (274MB, EN)",
-             "nomic-ai/nomic-embed-text-v1.5"),
+            # ── English ──────────────────────────────────────────────────────
+            ("English",                                    None),
+            ("bge-small-en",                               "BAAI/bge-small-en"),
+            ("bge-small-en-v1.5",                          "BAAI/bge-small-en-v1.5"),
+            ("bge-base-en",                                "BAAI/bge-base-en"),
+            ("bge-base-en-v1.5",                           "BAAI/bge-base-en-v1.5"),
+            ("bge-large-en-v1.5",                          "BAAI/bge-large-en-v1.5"),
+            ("all-MiniLM-L6-v2",                           "sentence-transformers/all-MiniLM-L6-v2"),
+            ("gte-base",                                   "thenlper/gte-base"),
+            ("gte-large",                                  "thenlper/gte-large"),
+            ("mxbai-embed-large-v1",                       "mixedbread-ai/mxbai-embed-large-v1"),
+            ("arctic-embed-xs",                            "snowflake/snowflake-arctic-embed-xs"),
+            ("arctic-embed-s",                             "snowflake/snowflake-arctic-embed-s"),
+            ("arctic-embed-m",                             "snowflake/snowflake-arctic-embed-m"),
+            ("arctic-embed-m-long",                        "snowflake/snowflake-arctic-embed-m-long"),
+            ("arctic-embed-l",                             "snowflake/snowflake-arctic-embed-l"),
+            ("jina-embeddings-v2-base-en",                 "jinaai/jina-embeddings-v2-base-en"),
+            # ── Multilingual ─────────────────────────────────────────────────
+            ("Multilingual",                               None),
+            ("nomic-embed-text-v1.5-Q",                    "nomic-ai/nomic-embed-text-v1.5-Q"),
+            ("nomic-embed-text-v1.5",                      "nomic-ai/nomic-embed-text-v1.5"),
+            ("nomic-embed-text-v1",                        "nomic-ai/nomic-embed-text-v1"),
+            ("paraphrase-multilingual-MiniLM-L12-v2",      "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"),
+            ("paraphrase-multilingual-mpnet-base-v2",      "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"),
+            ("multilingual-e5-large",                      "intfloat/multilingual-e5-large"),
+            ("jina-embeddings-v3",                         "jinaai/jina-embeddings-v3"),
+            # ── Language-specific ─────────────────────────────────────────────
+            ("Language-specific",                          None),
+            ("jina-embeddings-v2-base-de  [DE]",           "jinaai/jina-embeddings-v2-base-de"),
+            ("jina-embeddings-v2-base-es  [ES]",           "jinaai/jina-embeddings-v2-base-es"),
+            ("jina-embeddings-v2-base-zh  [ZH]",           "jinaai/jina-embeddings-v2-base-zh"),
+            ("bge-small-zh-v1.5  [ZH]",                   "BAAI/bge-small-zh-v1.5"),
+            # ── Code ──────────────────────────────────────────────────────────
+            ("Code",                                       None),
+            ("jina-embeddings-v2-base-code",               "jinaai/jina-embeddings-v2-base-code"),
+            # ── Vision / Multimodal ───────────────────────────────────────────
+            ("Vision / Multimodal",                        None),
+            ("jina-clip-v1",                               "jinaai/jina-clip-v1"),
+            ("clip-ViT-B-32-text",                         "Qdrant/clip-ViT-B-32-text"),
         ]
         _DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         _saved_model   = _rag_cfg.get("embedding_model", _DEFAULT_MODEL)
 
+        _EMB_TOOLTIPS = {
+            "BAAI/bge-small-en":
+                "Size: 130MB | Dim: 384 | English\nRetrieval, semantic search. Older version — v1.5 recommended.",
+            "BAAI/bge-small-en-v1.5":
+                "Size: 67MB | Dim: 384 | English\nRetrieval, semantic search. Lightest BGE model.",
+            "BAAI/bge-base-en":
+                "Size: 420MB | Dim: 768 | English\nRetrieval, semantic similarity.",
+            "BAAI/bge-base-en-v1.5":
+                "Size: 210MB | Dim: 768 | English\nRetrieval, MTEB 63.55. Good size/quality balance.",
+            "BAAI/bge-large-en-v1.5":
+                "Size: 1.2GB | Dim: 1024 | English\nBest English BGE. MTEB 64.23. Recommended for RAG.",
+            "sentence-transformers/all-MiniLM-L6-v2":
+                "Size: 90MB | Dim: 384 | English\nSemantic search, clustering. Most popular (254M+ downloads/month).",
+            "thenlper/gte-base":
+                "Size: 440MB | Dim: 768 | English\nRetrieval, similarity, reranking. Max 512 tokens.",
+            "thenlper/gte-large":
+                "Size: 1.2GB | Dim: 1024 | English\nRetrieval, similarity, reranking. Max 512 tokens.",
+            "mixedbread-ai/mxbai-embed-large-v1":
+                "Size: 640MB | Dim: 1024 | English\nSemantic search. MTEB 64.68 (SOTA BERT-large).\nSupports Matryoshka and binary quantization.",
+            "snowflake/snowflake-arctic-embed-xs":
+                "Size: 90MB | Dim: 384 | English\nRetrieval with strict latency constraints. 22M params.",
+            "snowflake/snowflake-arctic-embed-s":
+                "Size: 130MB | Dim: 384 | English\nRetrieval, small and fast.",
+            "snowflake/snowflake-arctic-embed-m":
+                "Size: 430MB | Dim: 768 | English\nRetrieval, good quality/speed tradeoff.",
+            "snowflake/snowflake-arctic-embed-m-long":
+                "Size: 540MB | Dim: 768 | English\nLong document retrieval. Up to 2048 tokens (8192 with RPE).",
+            "snowflake/snowflake-arctic-embed-l":
+                "Size: 1.0GB | Dim: 1024 | English\nHigh quality retrieval.",
+            "jinaai/jina-embeddings-v2-base-en":
+                "Size: 520MB | Dim: 768 | English\nLong context (8k tokens), RAG, semantic search. 137M params.",
+            "nomic-ai/nomic-embed-text-v1.5-Q":
+                "Size: 130MB | Dim: 768 | English (primary)\nMulti-task, 8192 tokens. Matryoshka resizable embeddings. Quantized.",
+            "nomic-ai/nomic-embed-text-v1.5":
+                "Size: 520MB | Dim: 768 | English (primary)\nMulti-task, 8192 tokens. Matryoshka resizable embeddings. Full precision.",
+            "nomic-ai/nomic-embed-text-v1":
+                "Size: 520MB | Dim: 768 | English (primary)\nOlder version — v1.5 recommended.",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2":
+                "Size: 220MB | Dim: 384 | 50+ languages\nSemantic similarity, clustering. Lightweight multilingual.",
+            "sentence-transformers/paraphrase-multilingual-mpnet-base-v2":
+                "Size: 1.0GB | Dim: 768 | 50+ languages\nSemantic similarity, clustering. Higher quality than MiniLM.",
+            "intfloat/multilingual-e5-large":
+                "Size: 2.24GB | Dim: 1024 | 94+ languages\nRetrieval, bitext mining. Requires 'query:'/'passage:' prefixes.",
+            "jinaai/jina-embeddings-v3":
+                "Size: 2.29GB | Dim: 1024 | Multilingual\nLargest Jina model. Long context, high quality.",
+            "jinaai/jina-embeddings-v2-base-de":
+                "Size: 320MB | Dim: 768 | German + English\nLong context (8k tokens), semantic search.",
+            "jinaai/jina-embeddings-v2-base-es":
+                "Size: 640MB | Dim: 768 | Spanish + English\nLong context (8k tokens), semantic search.",
+            "jinaai/jina-embeddings-v2-base-zh":
+                "Size: 640MB | Dim: 768 | Chinese + English\nLong context (8k tokens), semantic search.",
+            "BAAI/bge-small-zh-v1.5":
+                "Size: 90MB | Dim: 512 | Chinese\nRetrieval, lightweight Chinese model.",
+            "jinaai/jina-embeddings-v2-base-code":
+                "Size: 640MB | Dim: 768 | English + 30 programming languages\nCode search, technical Q&A. 8k tokens. Trained on 150M+ coding QA pairs.",
+            "jinaai/jina-clip-v1":
+                "Size: 550MB | Dim: 768 | English\nText + Image retrieval. Combines CLIP with text embeddings. SOTA cross-modal.",
+            "Qdrant/clip-ViT-B-32-text":
+                "Size: 250MB | Dim: 512 | Multilingual (CLIP-based)\nText-only ONNX port of clip-ViT-B-32. Similarity, classification.",
+        }
+
+        _RNK_TOOLTIPS = {
+            "Xenova/ms-marco-MiniLM-L-6-v2":
+                "Size: 80MB | English\nFast reranking, lightweight. Good for everyday use.",
+            "Xenova/ms-marco-MiniLM-L-12-v2":
+                "Size: 120MB | English\nBetter quality than L-6 at moderate speed cost.",
+            "BAAI/bge-reranker-base":
+                "Size: 1.04GB | Chinese + English\nCross-encoder, accurate but slower. 300M params.",
+            "jinaai/jina-reranker-v1-tiny-en":
+                "Size: 130MB | English\nFastest Jina reranker. 8k context.",
+            "jinaai/jina-reranker-v1-turbo-en":
+                "Size: 150MB | English\nFast, 8k context, knowledge-distilled. NDCG@10: 49.60.",
+            "jinaai/jina-reranker-v2-base-multilingual":
+                "Size: 1.11GB | 26+ languages\nMultilingual reranking. Sliding window for long inputs. Flash Attention.",
+        }
+
         _base_dir_rag = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rag_models_cache_dir = os.path.join(
+            getattr(c, "base_path", _base_dir_rag), "appdata", "rag", "models"
+        )
+
+        def _build_cache_map(list_fn):
+            result = {}
+            try:
+                for m in list_fn():
+                    mid    = m.get("model", "")
+                    hf_src = m.get("sources", {}).get("hf", "")
+                    if mid and hf_src and "/" in hf_src:
+                        org, repo = hf_src.split("/", 1)
+                        result[mid] = f"models--{org}--{repo}"
+            except Exception:
+                pass
+            return result
+
+        def _is_cached(model_id, cache_map):
+            key = cache_map.get(model_id)
+            return bool(key and os.path.isdir(os.path.join(_rag_models_cache_dir, key)))
+
+        def _cache_dir_for(model_id, cache_map):
+            key = cache_map.get(model_id)
+            if not key:
+                return None
+            full = os.path.join(_rag_models_cache_dir, key)
+            return full if os.path.isdir(full) else None
+
+        def _cache_dir_path(model_id, cache_map):
+            """Like _cache_dir_for but without existence check (for post-delete use)."""
+            key = cache_map.get(model_id)
+            return os.path.join(_rag_models_cache_dir, key) if key else None
+
+        def _dir_size_mb(path):
+            try:
+                total = sum(
+                    os.path.getsize(os.path.join(root, f))
+                    for root, _, files in os.walk(path)
+                    for f in files
+                )
+                return total / (1024 * 1024)
+            except Exception:
+                return 0.0
+
+        try:
+            from fastembed import TextEmbedding as _TE
+            from fastembed.rerank.cross_encoder import TextCrossEncoder as _TCE
+            _emb_cache_map = _build_cache_map(_TE.list_supported_models)
+            _rnk_cache_map = _build_cache_map(_TCE.list_supported_models)
+        except Exception:
+            _emb_cache_map = {}
+            _rnk_cache_map = {}
+
         _braindump_path = os.path.join(
             getattr(c, "app_modules_path", os.path.join(_base_dir_rag, "appmodules")),
             "BrainDump"
@@ -644,7 +914,7 @@ def build_menu(main_window):
         rag_radio_row.addWidget(rag_radio_braindump)
         rag_radio_row.addWidget(rag_radio_custom)
         rag_radio_row.addStretch(1)
-        form_rag.addRow("Knowledge base:", rag_radio_row)
+        form_kb.addRow("Knowledge base:", rag_radio_row)
 
         rag_path_edit = QLineEdit(grp_rag)
         rag_path_edit.setPlaceholderText("Select folder…")
@@ -661,17 +931,376 @@ def build_menu(main_window):
         rag_path_row = QHBoxLayout()
         rag_path_row.addWidget(rag_path_edit)
         rag_path_row.addWidget(rag_browse_btn)
-        form_rag.addRow("Path:", rag_path_row)
+        form_kb.addRow("Path:", rag_path_row)
 
-        rag_model_combo = QComboBox(grp_rag)
+        # ── Embedding model ────────────────────────────────────────────────────
+        from PyQt6.QtGui import QStandardItem
+        rag_model_combo = _ScrollableComboBox(grp_rag)
+        _emb_bg = c.actual_theme.get("background", {})
+        rag_model_combo.setScrollBarStyleSheet(f"""
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {_emb_bg.get("scroll", "#555555")};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {_emb_bg.get("scroll_handle", "#707070")};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0; background: none; border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: {_emb_bg.get("scroll_area", "#1E1F22")};
+            }}
+        """)
         for _label, _val in _RAG_MODELS:
-            rag_model_combo.addItem(_label, _val)
+            if _val is None:
+                _hdr = QStandardItem(f"  ── {_label} ──")
+                _hdr.setEnabled(False)
+                _hdr.setData(None, Qt.ItemDataRole.UserRole)
+                rag_model_combo.model().appendRow(_hdr)
+            else:
+                _sfx = "  ✓ downloaded" if _is_cached(_val, _emb_cache_map) else ""
+                rag_model_combo.addItem("    " + _label + _sfx, _val)
+                _tip = _EMB_TOOLTIPS.get(_val)
+                if _tip:
+                    rag_model_combo.setItemData(rag_model_combo.count() - 1, _tip, Qt.ItemDataRole.ToolTipRole)
         _saved_idx = next(
-            (i for i, (_, v) in enumerate(_RAG_MODELS) if v == _saved_model), 0
+            (i for i in range(rag_model_combo.count())
+             if rag_model_combo.itemData(i) == _saved_model), 0
         )
         rag_model_combo.setCurrentIndex(_saved_idx)
-        form_rag.addRow("Embedding model:", rag_model_combo)
+        form_emb.addRow("Embedding model:", rag_model_combo)
 
+        _emb_info_btn = QToolButton(grp_emb)
+        _emb_info_btn.setText("ℹ")
+        _emb_info_btn.setAutoRaise(True)
+        _emb_info_btn.setToolTip("⚠ Warning: selecting a model that does not support your language will result in inaccurate or no search results.")
+
+        def _show_emb_info():
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle("Choosing an Embedding Model")
+            msg.setText(
+                "<b>Things to consider when selecting an embedding model</b>"
+                "<hr>"
+                "<b>Language support</b><br>"
+                "Ensure the model covers the language(s) of your documents. "
+                "A model that does not support your document language will produce "
+                "poor or no matches during search."
+                "<br><br>"
+                "<b>Use case</b><br>"
+                "Models differ in what they are optimised for: semantic search, retrieval, "
+                "clustering, or cross-lingual tasks. Hover over a model name in the list "
+                "to see its intended use case and supported languages."
+                "<br><br>"
+                "<b>Memory footprint</b><br>"
+                "Larger models generally produce better results but consume significantly "
+                "more RAM during indexing. Consider your available system resources when "
+                "choosing between a lightweight and a high-accuracy model."
+            )
+            msg.setStyleSheet(c.messagebox_stylesheet)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+        _emb_info_btn.clicked.connect(_show_emb_info)
+        _emb_info_row = QHBoxLayout()
+        _emb_info_row.addWidget(_emb_info_btn)
+        _emb_info_row.addStretch(1)
+        form_emb.addRow(_emb_info_row)
+
+        # ── Re-ranking ─────────────────────────────────────────────────────────
+        _rag_rerank = _rag_cfg.get("rerank", False)
+        rag_rerank_checkbox = QCheckBox(
+            "Enable re-ranking  (better results, ~1–2 s extra per query)", grp_rag
+        )
+        rag_rerank_checkbox.setChecked(bool(_rag_rerank))
+        form_rnk.addRow("Enable:", rag_rerank_checkbox)
+
+        _RERANK_MODELS = [
+            ("ms-marco-MiniLM-L-6-v2",            "Xenova/ms-marco-MiniLM-L-6-v2"),
+            ("ms-marco-MiniLM-L-12-v2",           "Xenova/ms-marco-MiniLM-L-12-v2"),
+            ("jina-reranker-v1-tiny-en",           "jinaai/jina-reranker-v1-tiny-en"),
+            ("jina-reranker-v1-turbo-en",          "jinaai/jina-reranker-v1-turbo-en"),
+            ("bge-reranker-base",                  "BAAI/bge-reranker-base"),
+            ("jina-reranker-v2-base-multilingual", "jinaai/jina-reranker-v2-base-multilingual"),
+        ]
+        _DEFAULT_RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
+        _saved_rerank_model   = _rag_cfg.get("rerank_model", _DEFAULT_RERANK_MODEL)
+
+        rag_rerank_combo = _ScrollableComboBox(grp_rag)
+        rag_rerank_combo.setScrollBarStyleSheet(f"""
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {_emb_bg.get("scroll", "#555555")};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {_emb_bg.get("scroll_handle", "#707070")};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0; background: none; border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: {_emb_bg.get("scroll_area", "#1E1F22")};
+            }}
+        """)
+        for _label, _val in _RERANK_MODELS:
+            _sfx = "  ✓ downloaded" if _is_cached(_val, _rnk_cache_map) else ""
+            rag_rerank_combo.addItem(_label + _sfx, _val)
+            _tip = _RNK_TOOLTIPS.get(_val)
+            if _tip:
+                rag_rerank_combo.setItemData(rag_rerank_combo.count() - 1, _tip, Qt.ItemDataRole.ToolTipRole)
+        _saved_rerank_idx = next(
+            (i for i in range(rag_rerank_combo.count())
+             if rag_rerank_combo.itemData(i) == _saved_rerank_model), 0
+        )
+        rag_rerank_combo.setCurrentIndex(_saved_rerank_idx)
+        rag_rerank_combo.setEnabled(bool(_rag_rerank))
+        form_rnk.addRow("Rerank model:", rag_rerank_combo)
+
+        _rnk_info_btn = QToolButton(grp_rnk)
+        _rnk_info_btn.setText("ℹ")
+        _rnk_info_btn.setAutoRaise(True)
+        _rnk_info_btn.setToolTip("⚠ Warning: selecting a reranker that does not support your language will result in inaccurate or no search results.")
+
+        def _show_rnk_info():
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle("Choosing a Rerank Model")
+            msg.setText(
+                "<b>Things to consider when selecting a reranker</b>"
+                "<hr>"
+                "<b>Language support</b><br>"
+                "Ensure the reranker covers the language(s) of your documents. "
+                "Most rerankers are optimised for English only. Hover over a model "
+                "name in the list to see its supported languages."
+                "<br><br>"
+                "<b>Use case</b><br>"
+                "Rerankers re-score retrieval results for higher precision. "
+                "Lightweight models offer lower latency, while larger models may produce "
+                "more accurate rankings at the cost of additional processing time."
+                "<br><br>"
+                "<b>Memory footprint</b><br>"
+                "Rerankers are loaded on every query when re-ranking is enabled. "
+                "Larger models will increase per-query RAM usage and response time."
+            )
+            msg.setStyleSheet(c.messagebox_stylesheet)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+        _rnk_info_btn.clicked.connect(_show_rnk_info)
+        _rnk_info_row = QHBoxLayout()
+        _rnk_info_row.addWidget(_rnk_info_btn)
+        _rnk_info_row.addStretch(1)
+        form_rnk.addRow(_rnk_info_row)
+
+        # ── Downloaded models ──────────────────────────────────────────────────
+        rag_dl_list = QListWidget(grp_rag)
+        rag_dl_list.setFixedHeight(5 * 24)
+        rag_dl_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        rag_dl_list.setAlternatingRowColors(False)
+
+        rag_dl_remove_btn = QPushButton("🗑  Remove selected", grp_rag)
+        rag_dl_remove_btn.setEnabled(False)
+
+        rag_dl_col = QVBoxLayout()
+        rag_dl_col.setSpacing(4)
+        rag_dl_col.addWidget(rag_dl_list)
+        rag_dl_col.addWidget(rag_dl_remove_btn)
+        form_dl.addRow("Models:", rag_dl_col)
+
+        def _dl_list_populate():
+            rag_dl_list.clear()
+            _seen_dirs = set()
+            for _label, _val in _RAG_MODELS:
+                if _is_cached(_val, _emb_cache_map):
+                    _d = _cache_dir_for(_val, _emb_cache_map)
+                    if _d in _seen_dirs:
+                        continue
+                    _seen_dirs.add(_d)
+                    item = QListWidgetItem(f"[Embed]   {_label}")
+                    item.setData(Qt.ItemDataRole.UserRole, ("embed", _val))
+                    rag_dl_list.addItem(item)
+            for _label, _val in _RERANK_MODELS:
+                if _is_cached(_val, _rnk_cache_map):
+                    _d = _cache_dir_for(_val, _rnk_cache_map)
+                    if _d in _seen_dirs:
+                        continue
+                    _seen_dirs.add(_d)
+                    item = QListWidgetItem(f"[Rerank]  {_label}")
+                    item.setData(Qt.ItemDataRole.UserRole, ("rerank", _val))
+                    rag_dl_list.addItem(item)
+            rag_dl_remove_btn.setEnabled(False)
+
+        _dl_list_populate()
+
+        def _dl_selection_changed():
+            rag_dl_remove_btn.setEnabled(rag_dl_list.currentRow() >= 0)
+
+        def _dl_remove():
+            item = rag_dl_list.currentItem()
+            if not item:
+                return
+            kind, model_id = item.data(Qt.ItemDataRole.UserRole)
+            cache_map = _emb_cache_map if kind == "embed" else _rnk_cache_map
+            cache_path = _cache_dir_for(model_id, cache_map)
+            if not cache_path:
+                return
+            from PyQt6.QtWidgets import QMessageBox
+            import shutil
+            if kind == "embed" and model_id == (rag_model_combo.currentData() or ""):
+                QMessageBox.warning(
+                    dlg, "Cannot delete",
+                    "This model is currently selected as the active Embedding model.\n\n"
+                    "Select a different model first, then delete this one."
+                )
+                return
+            reply = QMessageBox.question(
+                dlg, "Delete model cache",
+                f"Delete cached files for:\n{item.text()}\n\nFolder:\n{cache_path}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                shutil.rmtree(cache_path)
+            except Exception as e:
+                QMessageBox.warning(dlg, "Error", f"Failed to delete:\n{e}")
+                return
+            # Remove ✓ downloaded from all combo items sharing the same cache dir
+            for i in range(rag_model_combo.count()):
+                _mid = rag_model_combo.itemData(i) or ""
+                if _cache_dir_path(_mid, _emb_cache_map) == cache_path:
+                    rag_model_combo.setItemText(i, rag_model_combo.itemText(i).replace("  ✓ downloaded", ""))
+            for i in range(rag_rerank_combo.count()):
+                _mid = rag_rerank_combo.itemData(i) or ""
+                if _cache_dir_path(_mid, _rnk_cache_map) == cache_path:
+                    rag_rerank_combo.setItemText(i, rag_rerank_combo.itemText(i).replace("  ✓ downloaded", ""))
+            _dl_list_populate()
+
+        def _dl_show_info(item):
+            if not item:
+                return
+            kind, model_id = item.data(Qt.ItemDataRole.UserRole)
+            tips = _EMB_TOOLTIPS if kind == "embed" else _RNK_TOOLTIPS
+            tip = tips.get(model_id, "")
+            label = item.text().split(None, 1)[1].strip() if item.text() else model_id
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle(label)
+            msg.setText(f"<b>{label}</b>")
+            msg.setInformativeText(tip if tip else model_id)
+            msg.setStyleSheet(c.messagebox_stylesheet)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+
+        rag_dl_list.currentRowChanged.connect(_dl_selection_changed)
+        rag_dl_list.itemDoubleClicked.connect(_dl_show_info)
+        rag_dl_remove_btn.clicked.connect(_dl_remove)
+
+        # ── Index extensions ───────────────────────────────────────────────────
+        from core.rag.chunker import ALL_EXTENSIONS, DEFAULT_EXTENSIONS
+        _saved_exts = set(_rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS)))
+
+        _EXT_GROUPS = [
+            ("Documents", ["pdf", "txt", "md", "rst"]),
+            ("Data",      ["csv", "json", "xml", "yaml", "yml", "toml"]),
+            ("Code",      ["py", "js", "ts", "sh", "html"]),
+        ]
+
+        def _ext_summary(exts: set) -> str:
+            active = [e for grp in _EXT_GROUPS for e in grp[1] if e in exts and e in ALL_EXTENSIONS]
+            return ", ".join(f".{e}" for e in active) if active else "none"
+
+        ext_row_widget = QWidget(grp_rag)
+        ext_row = QHBoxLayout(ext_row_widget)
+        ext_row.setContentsMargins(0, 0, 0, 0)
+        ext_row.setSpacing(6)
+        ext_summary_lbl = QLabel(_ext_summary(_saved_exts), ext_row_widget)
+        ext_summary_lbl.setStyleSheet("font-size: 11px;")
+        ext_configure_btn = QPushButton("Configure…", ext_row_widget)
+        ext_configure_btn.setFixedWidth(90)
+        ext_row.addWidget(ext_summary_lbl)
+        ext_row.addStretch(1)
+        ext_row.addWidget(ext_configure_btn)
+        form_kb.addRow("Index\nextensions:", ext_row_widget)
+
+        def _open_ext_dialog():
+            popup = QDialog(dlg)
+            popup.setWindowTitle("Index extensions")
+            popup.setModal(True)
+            popup_layout = QVBoxLayout(popup)
+            popup_layout.setSpacing(10)
+            popup_layout.setContentsMargins(16, 12, 16, 12)
+
+            _ext_checkboxes: dict[str, QCheckBox] = {}
+            current_exts = set(_rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS)))
+
+            for _group_label, _group_exts in _EXT_GROUPS:
+                grp = QGroupBox(_group_label, popup)
+                grp_layout = QHBoxLayout(grp)
+                grp_layout.setSpacing(8)
+                for _ext in _group_exts:
+                    if _ext not in ALL_EXTENSIONS:
+                        continue
+                    cb = QCheckBox(f".{_ext}", grp)
+                    cb.setChecked(_ext in current_exts)
+                    _ext_checkboxes[_ext] = cb
+                    grp_layout.addWidget(cb)
+                grp_layout.addStretch(1)
+                popup_layout.addWidget(grp)
+
+            close_btn = QPushButton("Close", popup)
+            close_btn.setFixedWidth(80)
+            close_btn.clicked.connect(popup.accept)
+            btn_row = QHBoxLayout()
+            btn_row.addStretch(1)
+            btn_row.addWidget(close_btn)
+            popup_layout.addLayout(btn_row)
+
+            def _on_ext_changed():
+                chosen = [e for e, cb in _ext_checkboxes.items() if cb.isChecked()]
+                _save_rag_key("index_extensions", chosen)
+                _rag_cfg["index_extensions"] = chosen
+                ext_summary_lbl.setText(_ext_summary(set(chosen)))
+
+                # Remove indexed files whose extension is no longer active
+                chosen_set = set(chosen)
+                meta = _load_file_meta()
+                changed = False
+                for abs_path in list(meta.keys()):
+                    ext = os.path.splitext(abs_path)[1].lstrip(".").lower()
+                    if ext and ext not in chosen_set:
+                        chunk_ids = meta[abs_path].get("chunk_ids", [])
+                        _delete_chunks_from_db(chunk_ids)
+                        del meta[abs_path]
+                        changed = True
+                if changed:
+                    _save_file_meta(meta)
+
+                _populate_files_list()
+
+            for _cb in _ext_checkboxes.values():
+                _cb.stateChanged.connect(_on_ext_changed)
+
+            popup.setStyleSheet(c.messagebox_stylesheet)
+            popup.exec()
+
+        ext_configure_btn.clicked.connect(_open_ext_dialog)
+
+        # ── Indexing ───────────────────────────────────────────────────────────
         _rag_auto_index = _rag_cfg.get("auto_index", False)
         rag_auto_checkbox = QCheckBox("Enable automatic indexing", grp_rag)
         rag_auto_checkbox.setChecked(bool(_rag_auto_index))
@@ -687,8 +1316,9 @@ def build_menu(main_window):
         rag_index_row.addStretch(1)
         rag_index_row.addWidget(rag_reindex_btn)
         rag_index_row.addWidget(rag_delete_btn)
-        form_rag.addRow("Indexing:", rag_index_row)
+        form_kb.addRow("Indexing:", rag_index_row)
 
+        # ── Status ─────────────────────────────────────────────────────────────
         rag_status_label = QLabel("", grp_rag)
         rag_status_label.setStyleSheet("color: gray; font-size: 11px;")
         rag_status_label.setTextInteractionFlags(
@@ -696,7 +1326,259 @@ def build_menu(main_window):
             Qt.TextInteractionFlag.TextSelectableByKeyboard
         )
         rag_status_label.setWordWrap(True)
-        form_rag.addRow("Status:", rag_status_label)
+        form_kb.addRow("Status:", rag_status_label)
+
+        # ── Indexed files manager ──────────────────────────────────────────────
+        _base_dir_files = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _rag_dir_files  = os.path.join(getattr(c, "base_path", _base_dir_files), "appdata", "rag")
+        _excl_path      = os.path.join(_rag_dir_files, "excluded_files.json")
+        _meta_path_ui   = os.path.join(_rag_dir_files, "index_meta.json")
+
+        from core.rag.indexer import load_exclusions, save_exclusions
+
+        _STATUS_INDEXED  = "✓ indexed"
+        _STATUS_PENDING  = "⟳ pending"
+        _STATUS_EXCLUDED = "✗ excluded"
+
+        files_list = QListWidget(grp_rag)
+        files_list.setFixedHeight(6 * 24)
+        files_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        files_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        form_kb.addRow("Indexed\nfiles:", files_list)
+
+        memory_list = QListWidget(grp_rag)
+        memory_list.setFixedHeight(6 * 24)
+        memory_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        memory_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        mem_del_btn = QPushButton("Delete selected")
+        mem_del_btn.setEnabled(False)
+        mem_clear_btn = QPushButton("Delete all snippets")
+
+        mem_btn_layout = QHBoxLayout()
+        mem_btn_layout.setContentsMargins(0, 0, 0, 0)
+        mem_btn_layout.setSpacing(4)
+        mem_btn_layout.addWidget(mem_del_btn)
+        mem_btn_layout.addWidget(mem_clear_btn)
+
+        mem_snippet_layout = QVBoxLayout()
+        mem_snippet_layout.setContentsMargins(0, 0, 0, 0)
+        mem_snippet_layout.setSpacing(2)
+        mem_snippet_layout.addWidget(memory_list)
+        mem_snippet_layout.addLayout(mem_btn_layout)
+        mem_snippet_widget = QWidget(grp_rag)
+        mem_snippet_widget.setLayout(mem_snippet_layout)
+        form_kb.addRow("Terminal\nsnippets:", mem_snippet_widget)
+
+        def _mem_populate():
+            memory_list.clear()
+            mem_del_btn.setEnabled(False)
+            try:
+                from core.rag.indexer import get_memory_entries
+                entries = get_memory_entries(getattr(c, "base_path", _base_dir_rag))
+            except Exception:
+                entries = []
+            for entry in entries:
+                preview = entry["text"][:40].replace("\n", " ")
+                if len(entry["text"]) > 40:
+                    preview += "…"
+                item = QListWidgetItem(preview)
+                item.setData(Qt.ItemDataRole.UserRole, entry["id"])
+                item.setToolTip(entry["text"][:800])
+                memory_list.addItem(item)
+
+        _mem_populate()
+
+        def _on_mem_selection_changed():
+            mem_del_btn.setEnabled(bool(memory_list.selectedItems()))
+
+        def _on_mem_delete():
+            item = memory_list.currentItem()
+            if item is None:
+                return
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                grp_rag, "Delete snippet",
+                "Are you sure you want to delete the selected snippet?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            entry_id = item.data(Qt.ItemDataRole.UserRole)
+            try:
+                from core.rag.indexer import delete_memory_entry
+                delete_memory_entry(entry_id, getattr(c, "base_path", _base_dir_rag))
+            except Exception:
+                pass
+            _mem_populate()
+
+        def _on_mem_clear_all():
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                grp_rag, "Clear all snippets",
+                "Are you sure you want to delete all terminal snippets?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                from core.rag.indexer import get_memory_entries, delete_memory_entry
+                base = getattr(c, "base_path", _base_dir_rag)
+                for entry in get_memory_entries(base):
+                    delete_memory_entry(entry["id"], base)
+            except Exception:
+                pass
+            _mem_populate()
+
+        memory_list.itemSelectionChanged.connect(_on_mem_selection_changed)
+        mem_del_btn.clicked.connect(_on_mem_delete)
+        mem_clear_btn.clicked.connect(_on_mem_clear_all)
+
+        def _load_file_meta() -> dict:
+            if os.path.exists(_meta_path_ui):
+                try:
+                    with open(_meta_path_ui, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+            return {}
+
+        def _delete_chunks_from_db(chunk_ids: list) -> None:
+            if not chunk_ids:
+                return
+            try:
+                import chromadb
+                from chromadb.api.client import SharedSystemClient
+                try:
+                    SharedSystemClient.clear_system_cache()
+                except Exception:
+                    pass
+                _db_path = os.path.join(_rag_dir_files, "chroma_db")
+                client = chromadb.PersistentClient(path=_db_path)
+                col = client.get_or_create_collection("rag_kb", metadata={"hnsw:space": "cosine"})
+                col.delete(ids=chunk_ids)
+            except Exception:
+                pass
+
+        def _save_file_meta(meta: dict) -> None:
+            try:
+                with open(_meta_path_ui, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        def _kb_path_now() -> str:
+            kb = rag_path_edit.text().strip()
+            return kb if kb and os.path.isdir(kb) else ""
+
+        def _active_exts() -> set:
+            exts = _rag_cfg.get("index_extensions", None)
+            return set(exts) if exts else set(DEFAULT_EXTENSIONS)
+
+        def _populate_files_list():
+            files_list.clear()
+            kb = _kb_path_now()
+            if not kb:
+                item = QListWidgetItem("  No knowledge base folder set.")
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                files_list.addItem(item)
+                return
+
+            exts      = _active_exts()
+            meta      = _load_file_meta()
+            excluded  = load_exclusions(_excl_path)
+
+            # Collect all files matching extension filter (ignoring exclusions — show them too)
+            all_files: list[str] = []
+            for root, _, names in os.walk(kb):
+                for name in names:
+                    ext = os.path.splitext(name)[1].lstrip(".").lower()
+                    if ext and ext not in exts:
+                        continue
+                    all_files.append(os.path.join(root, name))
+            all_files.sort()
+
+            if not all_files:
+                item = QListWidgetItem("  No files found for current extension filter.")
+                item.setFlags(Qt.ItemFlag.NoItemFlags)
+                files_list.addItem(item)
+                return
+
+            for abs_path in all_files:
+                try:
+                    rel = os.path.relpath(abs_path, kb)
+                except ValueError:
+                    rel = abs_path
+
+                is_excluded = rel in excluded
+                file_meta   = meta.get(abs_path, {})
+                has_chunks  = bool(file_meta.get("chunk_ids"))
+
+                if is_excluded:
+                    status = _STATUS_EXCLUDED
+                elif has_chunks:
+                    status = _STATUS_INDEXED
+                else:
+                    status = _STATUS_PENDING
+
+                item = QListWidgetItem()
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked if is_excluded else Qt.CheckState.Checked)
+                item.setText(f"  {rel}    {status}")
+                item.setData(Qt.ItemDataRole.UserRole, (abs_path, rel))
+
+                if status == _STATUS_INDEXED:
+                    item.setForeground(files_list.palette().text())
+                elif status == _STATUS_PENDING:
+                    item.setForeground(files_list.palette().mid())
+                else:
+                    item.setForeground(files_list.palette().placeholderText())
+
+                files_list.addItem(item)
+
+        _populate_files_list()
+
+        def _on_file_item_changed(item: QListWidgetItem):
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if data is None:
+                return
+            abs_path, rel = data
+            checked = item.checkState() == Qt.CheckState.Checked
+
+            files_list.blockSignals(True)
+            try:
+                excluded = load_exclusions(_excl_path)
+                if not checked:
+                    # Exclude: remove chunks from DB, remove from meta, save exclusion
+                    excluded.add(rel)
+                    save_exclusions(_excl_path, excluded)
+                    meta = _load_file_meta()
+                    chunk_ids = meta.get(abs_path, {}).get("chunk_ids", [])
+                    _delete_chunks_from_db(chunk_ids)
+                    if abs_path in meta:
+                        del meta[abs_path]
+                        _save_file_meta(meta)
+                    item.setText(f"  {rel}    {_STATUS_EXCLUDED}")
+                    item.setForeground(files_list.palette().placeholderText())
+                else:
+                    # Include: remove from exclusions
+                    excluded.discard(rel)
+                    save_exclusions(_excl_path, excluded)
+                    if rag_auto_checkbox.isChecked():
+                        item.setText(f"  {rel}    ⟳ indexing…")
+                        item.setForeground(files_list.palette().mid())
+                    else:
+                        item.setText(f"  {rel}    {_STATUS_PENDING}")
+                        item.setForeground(files_list.palette().mid())
+            finally:
+                files_list.blockSignals(False)
+
+            if checked and rag_auto_checkbox.isChecked():
+                _on_rag_reindex()
+
+        files_list.itemChanged.connect(_on_file_item_changed)
 
         def _save_rag_key(key, value):
             if not os.path.exists(c.config_path):
@@ -828,6 +1710,23 @@ def build_menu(main_window):
             else:
                 c.stop_rag_watcher()
 
+        def _on_rag_rerank_changed(state):
+            enabled = rag_rerank_checkbox.isChecked()
+            _save_rag_key("rerank", enabled)
+            rag_rerank_combo.setEnabled(enabled)
+
+        def _on_rag_rerank_model_changed(idx):
+            val = rag_rerank_combo.itemData(idx) or ""
+            _save_rag_key("rerank_model", val)
+            if val and not _is_cached(val, _rnk_cache_map):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    dlg, "Rerank model",
+                    "This model is not downloaded yet.\n\n"
+                    "It will be downloaded automatically on the first RAG query\n"
+                    "with re-ranking enabled."
+                )
+
         _spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         _spinner_idx = [0]
 
@@ -838,12 +1737,15 @@ def build_menu(main_window):
                 QMessageBox.warning(dlg, "RAG", "Knowledge base folder not found.\nCheck the path in AI Settings > RAG.")
                 return
             model_name = rag_model_combo.currentData()
+            _exts_list = _rag_cfg.get("index_extensions", list(DEFAULT_EXTENSIONS))
+            allowed_extensions = set(_exts_list) if _exts_list else None
+            excluded_rel = load_exclusions(_excl_path)
             from core.rag.index_worker import IndexWorker
-            worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name)
+            worker = IndexWorker(kb_path, getattr(c, "base_path", ""), model_name, allowed_extensions, excluded_rel)
             c._rag_index_worker = worker
             rag_reindex_btn.setEnabled(False)
             rag_delete_btn.setEnabled(False)
-            rag_status_label.setText("Starting…")
+            rag_status_label.setText("⟳ Starting indexing…")
             spinner_timer = QTimer(dlg)
             spinner_timer.setInterval(100)
 
@@ -857,6 +1759,13 @@ def build_menu(main_window):
             def _on_progress(current, total, filename):
                 short = filename[:28] + "…" if len(filename) > 30 else filename
                 rag_status_label.setText(f"{current}/{total}  {short}")
+                global_lbl = c.widgets.get("rag_index_status_label")
+                if global_lbl is not None:
+                    short_g = filename[:18] + "…" if len(filename) > 20 else filename
+                    global_lbl.setText(f"⟳ {current}/{total}  {short_g}")
+                    if not global_lbl.isVisible():
+                        global_lbl.show()
+                        c.set_position_active_profile_combo()
 
             def _on_finished(result):
                 spinner_timer.stop()
@@ -865,11 +1774,36 @@ def build_menu(main_window):
                 rag_delete_btn.setEnabled(True)
                 if result == "OK":
                     rag_status_label.setText("✔ Indexing complete.")
+                    _populate_files_list()
                     rag_status_label.setStyleSheet("color: green; font-size: 11px;")
                 else:
                     rag_status_label.setText(f"✖ {result}")
                     rag_status_label.setStyleSheet("color: red; font-size: 11px;")
                 c._rag_index_worker = None
+                global_lbl = c.widgets.get("rag_index_status_label")
+                if global_lbl is not None:
+                    if result == "OK":
+                        global_lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
+                        global_lbl.setText("✔ RAG indexing complete")
+                    else:
+                        global_lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
+                        global_lbl.setText(f"✖ {result[:40]}")
+                    global_lbl.show()
+
+                    def _reset_global():
+                        global_lbl.hide()
+                        global_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+
+                    QTimer.singleShot(5000, _reset_global)
+
+            global_lbl = c.widgets.get("rag_index_status_label")
+            if global_lbl is not None:
+                global_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+                global_lbl.setText("⟳ Starting indexing…")
+                global_lbl.show()
+                c.set_position_active_profile_combo()
+
+            QApplication.processEvents()
 
             worker.progress.connect(_on_progress)
             worker.finished.connect(_on_finished)
@@ -902,6 +1836,7 @@ def build_menu(main_window):
                     QMessageBox.information(dlg, "Done", "Vector database deleted.\n(Embedding models cache kept.)")
                 else:
                     QMessageBox.information(dlg, "Done", "Nothing to delete — database was already empty.")
+                _populate_files_list()
             except Exception as e:
                 QMessageBox.critical(dlg, "Error", f"Failed to delete database:\n{e}")
 
@@ -920,6 +1855,8 @@ def build_menu(main_window):
         rag_radio_custom.toggled.connect(_on_rag_custom_toggled)
         rag_browse_btn.clicked.connect(_on_rag_browse)
         rag_auto_checkbox.stateChanged.connect(_on_rag_auto_index_changed)
+        rag_rerank_checkbox.stateChanged.connect(_on_rag_rerank_changed)
+        rag_rerank_combo.currentIndexChanged.connect(_on_rag_rerank_model_changed)
         rag_reindex_btn.clicked.connect(_on_rag_reindex)
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
@@ -947,7 +1884,9 @@ def build_menu(main_window):
         _api_keys_path  = os.path.join(
             getattr(c, "base_path", _base_dir_prov), "appdata", "api_keys.json"
         )
-        _providers_cfg_key = "api_providers"
+        _api_profiles_path = getattr(c, "api_profiles_path",
+            os.path.join(getattr(c, "base_path", _base_dir_prov), "appdata", "api_profiles.json")
+        )
 
         # ── persistence helpers ───────────────────────────────────────────────
         _KR_SERVICE = "purrsh3ll"
@@ -1020,26 +1959,19 @@ def build_menu(main_window):
 
         def _load_providers_config():
             try:
-                if os.path.exists(c.config_path):
-                    with open(c.config_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                    return cfg.get(_providers_cfg_key, {})
+                if os.path.exists(_api_profiles_path):
+                    with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                        return json.load(f)
             except Exception:
                 pass
             return {}
 
         def _save_providers_to_config(profiles_list, active_name):
             try:
-                cfg = {}
-                if os.path.exists(c.config_path):
-                    with open(c.config_path, "r", encoding="utf-8") as f:
-                        cfg = json.load(f)
-                cfg[_providers_cfg_key] = {
-                    "active":   active_name,
-                    "profiles": profiles_list,
-                }
-                with open(c.config_path, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+                os.makedirs(os.path.dirname(_api_profiles_path), exist_ok=True)
+                data = {"active": active_name, "profiles": profiles_list}
+                with open(_api_profiles_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
 
@@ -1147,13 +2079,12 @@ def build_menu(main_window):
         providers_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         providers_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         providers_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        providers_table.horizontalHeader().resizeSection(3, 60)
+        providers_table.horizontalHeader().resizeSection(3, 80)
         providers_table.verticalHeader().setVisible(False)
         providers_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         providers_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         providers_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        providers_table.setMinimumHeight(120)
-        providers_table.setMaximumHeight(180)
+        providers_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         grp_providers_layout.addWidget(providers_table)
 
         # Table action buttons
@@ -1165,6 +2096,7 @@ def build_menu(main_window):
         btn_remove_provider.setEnabled(False)
         for _b in (btn_add_provider, btn_edit_provider, btn_remove_provider):
             _b.setFixedWidth(70)
+            _b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             tbl_btn_row.addWidget(_b)
         tbl_btn_row.addStretch(1)
         grp_providers_layout.addLayout(tbl_btn_row)
@@ -1177,7 +2109,7 @@ def build_menu(main_window):
             pdlg.setModal(True)
             pdlg.resize(420, 290)
             try:
-                pdlg.setStyleSheet(c.messagebox_stylesheet)
+                pdlg.setStyleSheet(c.messagebox_stylesheet + c.combo_stylesheet)
             except Exception:
                 pass
             form = QFormLayout(pdlg)
@@ -1190,6 +2122,13 @@ def build_menu(main_window):
             f_provider.addItems(_PROVIDER_TYPES)
             if d.get("provider") in _PROVIDER_TYPES:
                 f_provider.setCurrentText(d["provider"])
+            try:
+                f_provider.setStyleSheet(c.combo_stylesheet)
+                _pv = QListView()
+                _pv.setStyleSheet(c.combo_view_stylesheet)
+                f_provider.setView(_pv)
+            except Exception:
+                pass
             f_url = QLineEdit(d.get("url", ""))
 
             # Model: editable combo + Fetch button
@@ -1200,11 +2139,17 @@ def build_menu(main_window):
                 f_model.addItem(d["model"])
                 f_model.setCurrentText(d["model"])
             f_model.lineEdit().setPlaceholderText("e.g. llama3.2 / gpt-4o")
+            try:
+                f_model.setStyleSheet(c.combo_stylesheet)
+                f_model.view().setStyleSheet(c.combo_view_stylesheet)
+            except Exception:
+                pass
 
             fetch_status = QLabel("")
             fetch_status.setStyleSheet("font-size: 11px; color: gray;")
             btn_fetch = QPushButton("Fetch models")
             btn_fetch.setFixedWidth(100)
+            btn_fetch.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             model_row = QHBoxLayout()
             model_row.addWidget(f_model, 1)
             model_row.addWidget(btn_fetch)
@@ -1258,9 +2203,92 @@ def build_menu(main_window):
                 except Exception as e:
                     return [], str(e)
 
+            def _open_model_picker(models):
+                picker = QDialog(pdlg)
+                picker.setWindowTitle("Select model")
+                picker.setModal(True)
+                picker.resize(560, 420)
+                try:
+                    picker.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+
+                layout = QVBoxLayout(picker)
+                layout.setContentsMargins(12, 12, 12, 12)
+                layout.setSpacing(8)
+
+                search = QLineEdit(picker)
+                search.setPlaceholderText("Filter models…")
+                search.setClearButtonEnabled(True)
+                layout.addWidget(search)
+
+                lw = QListWidget(picker)
+                lw.setAlternatingRowColors(True)
+                try:
+                    lw.setStyleSheet(
+                        "QListWidget { font-size: 12px; }"
+                        "QListWidget::item { padding: 4px 8px; }"
+                        "QListWidget::item:selected { color: palette(highlighted-text);"
+                        " background: palette(highlight); }"
+                    )
+                except Exception:
+                    pass
+                for name in models:
+                    lw.addItem(QListWidgetItem(name))
+                # Pre-select current model if present
+                current = f_model.currentText().strip()
+                if current:
+                    hits = lw.findItems(current, Qt.MatchFlag.MatchExactly)
+                    if hits:
+                        lw.setCurrentItem(hits[0])
+                        lw.scrollToItem(hits[0])
+                layout.addWidget(lw)
+
+                btn_row = QHBoxLayout()
+                btn_row.addStretch(1)
+                btn_select = QPushButton("Select")
+                btn_select.setFixedWidth(80)
+                btn_cancel2 = QPushButton("Cancel")
+                btn_cancel2.setFixedWidth(80)
+                btn_row.addWidget(btn_select)
+                btn_row.addWidget(btn_cancel2)
+                layout.addLayout(btn_row)
+
+                def _apply_filter(text):
+                    txt = text.strip().lower()
+                    for i in range(lw.count()):
+                        item = lw.item(i)
+                        item.setHidden(bool(txt) and txt not in item.text().lower())
+
+                def _do_select():
+                    sel = lw.currentItem()
+                    if sel and not sel.isHidden():
+                        f_model.blockSignals(True)
+                        # Keep current items, just update the editable text
+                        if f_model.findText(sel.text()) < 0:
+                            f_model.insertItem(0, sel.text())
+                        f_model.setCurrentText(sel.text())
+                        f_model.blockSignals(False)
+                        picker.accept()
+
+                search.textChanged.connect(_apply_filter)
+                lw.itemDoubleClicked.connect(lambda _: _do_select())
+                btn_select.clicked.connect(_do_select)
+                btn_cancel2.clicked.connect(picker.reject)
+
+                # Select first visible item if nothing selected
+                if not lw.currentItem():
+                    for i in range(lw.count()):
+                        if not lw.item(i).isHidden():
+                            lw.setCurrentRow(i)
+                            break
+
+                picker.exec()
+
             def _on_fetch():
                 btn_fetch.setEnabled(False)
                 fetch_status.setText("Fetching…")
+                fetch_status.setStyleSheet("font-size: 11px; color: gray;")
                 result = [None]
 
                 def _worker():
@@ -1273,20 +2301,9 @@ def build_menu(main_window):
                         fetch_status.setText(f"Error: {err[:60]}")
                         fetch_status.setStyleSheet("font-size: 11px; color: red;")
                     else:
-                        current = f_model.currentText()
-                        f_model.blockSignals(True)
-                        f_model.clear()
-                        for name in models:
-                            f_model.addItem(name)
-                            f_model.setItemData(
-                                f_model.count() - 1, name,
-                                Qt.ItemDataRole.ToolTipRole
-                            )
-                        idx = f_model.findText(current)
-                        f_model.setCurrentIndex(max(0, idx))
-                        f_model.blockSignals(False)
                         fetch_status.setText(f"{len(models)} models found")
                         fetch_status.setStyleSheet("font-size: 11px; color: green;")
+                        _open_model_picker(models)
 
                 t = threading.Thread(target=_worker, daemon=True)
                 t.start()
@@ -1312,6 +2329,8 @@ def build_menu(main_window):
             btn_cancel = QPushButton("Cancel")
             btn_ok.setFixedWidth(80)
             btn_cancel.setFixedWidth(80)
+            btn_ok.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            btn_cancel.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             btn_row.addStretch(1)
             btn_row.addWidget(btn_ok)
             btn_row.addWidget(btn_cancel)
@@ -1326,6 +2345,7 @@ def build_menu(main_window):
                 "model":    f_model,
                 "url":      f_url,
                 "key":      f_key,
+                "btn_ok":   btn_ok,
             }
 
         # ── table helpers ─────────────────────────────────────────────────────
@@ -1340,9 +2360,9 @@ def build_menu(main_window):
                 "model":            providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
                 "url":              meta.get("url", ""),
                 "disable_thinking": meta.get("disable_thinking", False),
+                "hide_thinking":    meta.get("hide_thinking", False),
                 "fast_answers":     meta.get("fast_answers", False),
                 "custom_params":    meta.get("custom_params", ""),
-                "context_tokens":   int(meta.get("context_tokens", 0)),
             }
 
         def _set_row_meta(row, profile):
@@ -1351,9 +2371,9 @@ def build_menu(main_window):
                 name_item.setData(Qt.ItemDataRole.UserRole, {
                     "url":              profile.get("url", ""),
                     "disable_thinking": bool(profile.get("disable_thinking", False)),
+                    "hide_thinking":    bool(profile.get("hide_thinking", False)),
                     "fast_answers":     bool(profile.get("fast_answers", False)),
                     "custom_params":    profile.get("custom_params", ""),
-                    "context_tokens":   int(profile.get("context_tokens", 0)),
                 })
 
         def _insert_table_row(row_idx, profile):
@@ -1363,17 +2383,22 @@ def build_menu(main_window):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 providers_table.setItem(row_idx, col, item)
             _set_row_meta(row_idx, profile)
-            # Gear button in Behavior column
+            # Gear button in Behavior column — centered wrapper
             gear_btn = QPushButton("⚙")
             gear_btn.setFixedSize(24, 20)
             gear_btn.setToolTip("Behavior settings")
             def _on_gear(checked=False, b=gear_btn):
                 for _r in range(providers_table.rowCount()):
-                    if providers_table.cellWidget(_r, 3) is b:
+                    if providers_table.cellWidget(_r, 3).findChild(QPushButton) is b:
                         _on_behavior(_r)
                         return
             gear_btn.clicked.connect(_on_gear)
-            providers_table.setCellWidget(row_idx, 3, gear_btn)
+            _cell_w = QWidget()
+            _cell_layout = QHBoxLayout(_cell_w)
+            _cell_layout.setContentsMargins(0, 0, 0, 0)
+            _cell_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _cell_layout.addWidget(gear_btn)
+            providers_table.setCellWidget(row_idx, 3, _cell_w)
 
         def _refresh_active_combo(keep=None):
             keep = keep or active_profile_combo.currentText()
@@ -1410,12 +2435,51 @@ def build_menu(main_window):
                 "url":      fields["url"].text().strip(),
             }
 
+        def _lookup_ctx_window(profile):
+            """Return context window (int) for the given profile, or None if unknown."""
+            try:
+                _reg_path = os.path.join(
+                    getattr(c, "base_path", _base_dir_prov), "appdata", "model_ctx_registry.json"
+                )
+                with open(_reg_path, encoding="utf-8") as _f:
+                    _reg = json.load(_f)
+            except Exception:
+                return None
+            provider = profile.get("provider", "").lower()
+            model    = profile.get("model", "")
+            # Normalize model name:
+            # 1. Strip "models/" prefix (Gemini API format: "models/gemini-2.5-flash")
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            # 2. Strip OpenRouter variant suffixes (":free", ":extended", ":nitro", etc.)
+            if ":" in model:
+                model = model.split(":")[0]
+            model_lc = model.lower()
+            section  = _reg.get(provider, {})
+            if not section:
+                return None
+            models = section.get("models", {})
+            # exact match (case-insensitive)
+            for key, val in models.items():
+                if model_lc == key.lower():
+                    return val
+            # exact match preserving original case (for HuggingFace Qwen/Qwen3-4B style)
+            for key, val in models.items():
+                if model == key:
+                    return val
+            # prefix match (case-insensitive)
+            for key, val in models.items():
+                if model_lc.startswith(key.lower()):
+                    return val
+            return section.get("default")
+
         def _on_behavior(row):
             profile = _table_row_to_dict(row)
             bdlg = QDialog(dlg)
             bdlg.setWindowTitle(f"Behavior — {profile['name']}")
             bdlg.setModal(True)
             bdlg.resize(440, 150)
+            bdlg.setSizeGripEnabled(True)
             try:
                 bdlg.setStyleSheet(c.messagebox_stylesheet)
             except Exception:
@@ -1424,17 +2488,143 @@ def build_menu(main_window):
             bform.setContentsMargins(16, 16, 16, 12)
             bform.setSpacing(8)
 
+            from math import log, exp
+            _CTX_SAFE_DEFAULT = 32_768
+            _CTX_MIN, _CTX_MAX = 512, 2_000_000
+            _SLIDER_STEPS = 1000
+            _LOG_MIN = log(_CTX_MIN)
+            _LOG_MAX = log(_CTX_MAX)
+
+            def _val_to_pos(v):
+                return int(_SLIDER_STEPS * (log(max(v, _CTX_MIN)) - _LOG_MIN) / (_LOG_MAX - _LOG_MIN))
+
+            def _pos_to_val(p):
+                return int(exp(_LOG_MIN + (p / _SLIDER_STEPS) * (_LOG_MAX - _LOG_MIN)))
+
+            ctx_registry_val = _lookup_ctx_window(profile)
+            ctx_default = ctx_registry_val if ctx_registry_val else _CTX_SAFE_DEFAULT
+            saved_ctx = int(profile.get("context_tokens") or 0)
+            ctx_initial = saved_ctx if saved_ctx >= _CTX_MIN else ctx_default
+
+            class _CtxSpinBox(QSpinBox):
+                def textFromValue(self, v):
+                    return f"{v:,}".replace(",", " ")
+                def valueFromText(self, t):
+                    try:
+                        return int(t.replace(" ", "").replace(",", ""))
+                    except ValueError:
+                        return self.minimum()
+                def validate(self, inp, pos):
+                    from PyQt6.QtGui import QValidator
+                    clean = inp.replace(" ", "").replace(",", "")
+                    if not clean:
+                        return QValidator.State.Intermediate, inp, pos
+                    if clean.isdigit():
+                        v = int(clean)
+                        if self.minimum() <= v <= self.maximum():
+                            return QValidator.State.Acceptable, inp, pos
+                        return QValidator.State.Intermediate, inp, pos
+                    return QValidator.State.Invalid, inp, pos
+                def stepBy(self, steps):
+                    v = self.value()
+                    if v < 4_096:
+                        delta = 512
+                    elif v < 16_384:
+                        delta = 1_024
+                    elif v < 65_536:
+                        delta = 4_096
+                    elif v < 262_144:
+                        delta = 8_192
+                    else:
+                        delta = 16_384
+                    self.setValue(max(self.minimum(), min(self.maximum(), v + steps * delta)))
+
+            if ctx_registry_val:
+                ctx_info_text = f"Context window: {ctx_registry_val:,}".replace(",", " ") + " tokens"
+            else:
+                safe_str = f"{_CTX_SAFE_DEFAULT:,}".replace(",", " ")
+                ctx_info_text = f"Context window: unknown model — safe default: {safe_str} tokens"
+            ctx_info_lbl = QLabel(ctx_info_text)
+            ctx_info_lbl.setStyleSheet("font-size: 11px;")
+            bform.addWidget(ctx_info_lbl)
+
+            cb_ctx_override = QCheckBox("Override context window for prompt compensation")
+            cb_ctx_override.setChecked(saved_ctx >= _CTX_MIN)
+            bform.addWidget(cb_ctx_override)
+
+            ctx_override_widget = QWidget()
+            ctx_override_layout = QVBoxLayout(ctx_override_widget)
+            ctx_override_layout.setContentsMargins(0, 0, 0, 0)
+            ctx_override_layout.setSpacing(4)
+
+            sb_ctx = _CtxSpinBox()
+            sb_ctx.setRange(_CTX_MIN, _CTX_MAX)
+            sb_ctx.setValue(ctx_initial)
+            sb_ctx.setFixedWidth(100)
+
+            ctx_reset_btn = QPushButton("Default")
+            ctx_reset_btn.setFixedWidth(62)
+            default_str = f"{ctx_default:,}".replace(",", " ")
+            ctx_reset_btn.setToolTip(f"Reset to registry default: {default_str} tokens")
+            ctx_reset_btn.clicked.connect(lambda: sb_ctx.setValue(ctx_default))
+
+            ctx_row = QHBoxLayout()
+            ctx_row.addWidget(sb_ctx)
+            ctx_row.addWidget(QLabel("tokens"))
+            ctx_row.addStretch(1)
+            ctx_row.addWidget(ctx_reset_btn)
+
+            ctx_slider = QSlider(Qt.Orientation.Horizontal)
+            ctx_slider.setRange(0, _SLIDER_STEPS)
+            ctx_slider.setValue(_val_to_pos(ctx_initial))
+
+            _ctx_updating = [False]
+
+            def _on_slider(pos):
+                if _ctx_updating[0]:
+                    return
+                _ctx_updating[0] = True
+                sb_ctx.setValue(_pos_to_val(pos))
+                _ctx_updating[0] = False
+
+            def _on_spinbox(val):
+                if _ctx_updating[0]:
+                    return
+                _ctx_updating[0] = True
+                ctx_slider.setValue(_val_to_pos(val))
+                _ctx_updating[0] = False
+
+            ctx_slider.valueChanged.connect(_on_slider)
+            sb_ctx.valueChanged.connect(_on_spinbox)
+
+            ctx_override_layout.addLayout(ctx_row)
+            ctx_override_layout.addWidget(ctx_slider)
+
+            ctx_override_widget.setVisible(saved_ctx >= _CTX_MIN)
+
+            def _on_ctx_override_toggled(checked):
+                ctx_override_widget.setVisible(checked)
+                w = bdlg.width()
+                bdlg.adjustSize()
+                bdlg.resize(w, bdlg.height())
+
+            cb_ctx_override.toggled.connect(_on_ctx_override_toggled)
+            bform.addWidget(ctx_override_widget)
+
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
+            is_ollama    = profile.get("provider", "") == "ollama"
 
-            cb_think  = QCheckBox("Disable thinking")
-            cb_fast   = QCheckBox("Fast answers  (short responses)")
-            cb_custom = QCheckBox("Custom parameters")
+            cb_think      = QCheckBox("Disable thinking")
+            cb_hide_think = QCheckBox("Hide thinking output")
+            cb_fast       = QCheckBox("Fast answers  (short responses)")
+            cb_custom     = QCheckBox("Custom parameters")
             cb_think.setChecked(bool(profile.get("disable_thinking", False)) and not is_custom)
+            cb_hide_think.setChecked(bool(profile.get("hide_thinking", False)))
             cb_fast.setChecked(bool(profile.get("fast_answers",     False)) and not is_custom)
             cb_custom.setChecked(is_custom)
-            cb_think.setEnabled(not is_custom)
-            cb_fast.setEnabled(not is_custom)
+            # "Disable thinking" is Ollama-only; hide it for all other providers
+            cb_think.setVisible(is_ollama)
 
             _PLACEHOLDER = (
                 '{"temperature": 0.7,\n'
@@ -1444,7 +2634,7 @@ def build_menu(main_window):
             )
             custom_edit = QTextEdit()
             custom_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-            custom_edit.setFixedHeight(72)
+            custom_edit.setMinimumHeight(72)
             custom_edit.setVisible(is_custom)
 
             def _set_placeholder():
@@ -1481,29 +2671,23 @@ def build_menu(main_window):
                 if _is:
                     cb_think.setChecked(False)
                     cb_fast.setChecked(False)
-                cb_think.setEnabled(not _is)
-                cb_fast.setEnabled(not _is)
                 custom_edit.setVisible(_is)
                 bdlg.adjustSize()
 
+            def _on_other_checkbox_checked(state):
+                if state and cb_custom.isChecked():
+                    cb_custom.setChecked(False)
+
+            cb_think.stateChanged.connect(_on_other_checkbox_checked)
+            cb_hide_think.stateChanged.connect(_on_other_checkbox_checked)
+            cb_fast.stateChanged.connect(_on_other_checkbox_checked)
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
-            ctx_row = QHBoxLayout()
-            ctx_label = QLabel("Context limit (tokens):")
-            sb_ctx = QSpinBox()
-            sb_ctx.setRange(0, 500_000)
-            sb_ctx.setSingleStep(1_000)
-            sb_ctx.setSpecialValueText("default (16 000)")
-            sb_ctx.setValue(int(profile.get("context_tokens", 0)))
-            ctx_row.addWidget(ctx_label)
-            ctx_row.addWidget(sb_ctx)
-
             bform.addWidget(cb_think)
+            bform.addWidget(cb_hide_think)
             bform.addWidget(cb_fast)
             bform.addWidget(cb_custom)
-            bform.addWidget(custom_edit)
-            bform.addLayout(ctx_row)
-            bform.addStretch(1)
+            bform.addWidget(custom_edit, stretch=1)
 
             bbtn_row = QHBoxLayout()
             bbtn_ok     = QPushButton("OK")
@@ -1518,21 +2702,51 @@ def build_menu(main_window):
             bbtn_cancel.clicked.connect(bdlg.reject)
             if bdlg.exec() != QDialog.DialogCode.Accepted:
                 return
+            profile["context_tokens"]   = sb_ctx.value() if cb_ctx_override.isChecked() else 0
             profile["disable_thinking"] = cb_think.isChecked()
+            profile["hide_thinking"]    = cb_hide_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
             _raw = custom_edit.toPlainText().strip()
             profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
-            profile["context_tokens"]   = sb_ctx.value()
             _set_row_meta(row, profile)
             _persist()
 
         def _on_add_provider():
             pdlg, fields = _build_profile_dialog("Add Provider Profile")
+
+            def _warn(title, text):
+                from PyQt6.QtWidgets import QMessageBox
+                mb = QMessageBox(pdlg)
+                mb.setWindowTitle(title)
+                mb.setText(text)
+                mb.setIcon(QMessageBox.Icon.Warning)
+                try:
+                    mb.setStyleSheet(c.messagebox_stylesheet)
+                except Exception:
+                    pass
+                mb.exec()
+
+            def _validate_and_accept():
+                name = fields["name"].text().strip()
+                if not name:
+                    _warn("Name required", "Profile name cannot be empty.\nPlease enter a name and try again.")
+                    return
+                existing = [
+                    providers_table.item(r, 0).text()
+                    for r in range(providers_table.rowCount())
+                    if providers_table.item(r, 0)
+                ]
+                if name in existing:
+                    _warn("Duplicate name", f"A profile named \"{name}\" already exists.\nPlease choose a different name.")
+                    return
+                pdlg.accept()
+
+            fields["btn_ok"].clicked.disconnect()
+            fields["btn_ok"].clicked.connect(_validate_and_accept)
+
             if pdlg.exec() != QDialog.DialogCode.Accepted:
                 return
             profile = _profile_from_fields(fields)
-            if not profile["name"]:
-                return
             _insert_table_row(providers_table.rowCount(), profile)
             _save_api_key(profile["name"], fields["key"].text())
             _refresh_active_combo()
@@ -1558,9 +2772,9 @@ def build_menu(main_window):
             # Preserve existing behavior settings, update url
             existing = _table_row_to_dict(row)
             profile["disable_thinking"] = existing.get("disable_thinking", False)
+            profile["hide_thinking"]    = existing.get("hide_thinking", False)
             profile["fast_answers"]     = existing.get("fast_answers", False)
             profile["custom_params"]    = existing.get("custom_params", "")
-            profile["context_tokens"]   = existing.get("context_tokens", 0)
             _set_row_meta(row, profile)
             if profile["name"] != old_name:
                 _rename_api_key(old_name, profile["name"])
@@ -1598,41 +2812,120 @@ def build_menu(main_window):
         btn_remove_provider.clicked.connect(_on_remove_provider)
 
         # ── Assemble dialog ───────────────────────────────────────────────────
-        scroll_content = QWidget()
-        scroll_content.setObjectName("ai_settings_scroll_content")
-        scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setContentsMargins(4, 4, 4, 4)
-        scroll_layout.setSpacing(8)
-        scroll_layout.addWidget(grp_llm)
-        scroll_layout.addWidget(grp_rag)
-        scroll_layout.addWidget(grp_providers)
-        scroll_layout.addStretch(1)
+        # ── Tab: Settings (AI/LLM) ────────────────────────────────────────────
+        settings_scroll_content = QWidget()
+        settings_scroll_content.setObjectName("ai_settings_scroll_content")
+        settings_scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        settings_scroll_layout = QVBoxLayout(settings_scroll_content)
+        settings_scroll_layout.setContentsMargins(4, 4, 4, 4)
+        settings_scroll_layout.setSpacing(8)
+        settings_scroll_layout.addWidget(grp_llm)
+        settings_scroll_layout.addWidget(grp_pstools)
+        settings_scroll_layout.addStretch(1)
 
-        scroll = QScrollArea(dlg)
-        scroll.setObjectName("ai_settings_scroll")
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(scroll_content)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        settings_scroll = QScrollArea()
+        settings_scroll.setObjectName("ai_settings_scroll")
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setWidget(settings_scroll_content)
+        settings_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
-        btn_close = QPushButton("Close", dlg)
-        btn_close.clicked.connect(dlg.accept)
-        btn_layout = QHBoxLayout()
-        btn_layout.addStretch(1)
-        btn_layout.addWidget(btn_close)
+        # ── Tab: RAG ──────────────────────────────────────────────────────────
+        rag_scroll_content = QWidget()
+        rag_scroll_content.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        rag_scroll_layout = QVBoxLayout(rag_scroll_content)
+        rag_scroll_layout.setContentsMargins(4, 4, 4, 4)
+        rag_scroll_layout.setSpacing(8)
+        rag_scroll_layout.addWidget(grp_rag)
+        rag_scroll_layout.addStretch(1)
+
+        rag_scroll = QScrollArea()
+        rag_scroll.setWidgetResizable(True)
+        rag_scroll.setWidget(rag_scroll_content)
+        rag_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        # ── Tab: Profiles (API Providers table) ───────────────────────────────
+        profiles_tab = QWidget()
+        profiles_tab_layout = QVBoxLayout(profiles_tab)
+        profiles_tab_layout.setContentsMargins(8, 8, 8, 8)
+        profiles_tab_layout.setSpacing(6)
+        profiles_tab_layout.addWidget(grp_providers)
+
+        # ── QTabWidget ────────────────────────────────────────────────────────
+        tabs = QTabWidget(dlg)
+        tabs.addTab(settings_scroll, "  Settings  ")
+        tabs.addTab(rag_scroll, "  RAG  ")
+        tabs.addTab(profiles_tab, "  Profiles  ")
+
+        _bg  = c.actual_theme.get("background", {})
+        _fg  = c.actual_theme.get("foreground", {})
+        _bd  = c.actual_theme.get("border", {})
+        tabs.setStyleSheet(f"""
+            QTabBar::tab {{
+                min-width: 90px;
+                padding-top: 7px;
+                padding-bottom: 7px;
+                padding-left: 0px;
+                padding-right: 0px;
+                margin-left: 4px;
+                margin-right: 4px;
+                background: {_bg.get("tab_bar", "#3B3E40")};
+                color: {_fg.get("tab_bar", "#ffffff")};
+                border: 1px solid {_bd.get("default", "#555")};
+                border-bottom: none;
+                border-radius: 4px 4px 0 0;
+            }}
+            QTabBar::tab:first {{
+                margin-left: 0px;
+            }}
+            QTabBar::tab:selected {{
+                background: {_bg.get("tab_bar_selected", "#1E1F22")};
+                color: {_fg.get("tab_bar_selected", "#ffffff")};
+            }}
+            QTabBar::tab:hover:!selected {{
+                background: {_bg.get("buttons_hover", "#6C6C73")};
+            }}
+        """)
 
         main_layout = QVBoxLayout(dlg)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(6)
-        main_layout.addWidget(scroll)
-        main_layout.addLayout(btn_layout)
+        main_layout.addWidget(tabs)
+
+        # ── Cache refresh timer ────────────────────────────────────────────────
+        _DOWNLOADED_SUFFIX = "  ✓ downloaded"
+
+        def _refresh_cache_labels():
+            _list_changed = False
+            for i in range(rag_model_combo.count()):
+                val  = rag_model_combo.itemData(i) or ""
+                text = rag_model_combo.itemText(i)
+                if _DOWNLOADED_SUFFIX not in text and _is_cached(val, _emb_cache_map):
+                    rag_model_combo.setItemText(i, text + _DOWNLOADED_SUFFIX)
+                    _list_changed = True
+            for i in range(rag_rerank_combo.count()):
+                val  = rag_rerank_combo.itemData(i) or ""
+                text = rag_rerank_combo.itemText(i)
+                if _DOWNLOADED_SUFFIX not in text and _is_cached(val, _rnk_cache_map):
+                    rag_rerank_combo.setItemText(i, text + _DOWNLOADED_SUFFIX)
+                    _list_changed = True
+            if _list_changed:
+                _dl_list_populate()
+
+        cache_refresh_timer = QTimer(dlg)
+        cache_refresh_timer.setInterval(4000)
+        cache_refresh_timer.timeout.connect(_refresh_cache_labels)
 
         try:
-            c.register_widget("ai_settings_dialog", dlg)
+            c.register_widget("ai_settings_dialog",             dlg)
+            c.register_widget("ai_settings_tabs",               tabs)
             c.register_widget("ai_settings_llm_cli_edit",       llm_cli_edit)
             c.register_widget("ai_settings_logs_terminal_edit", logs_terminal_edit)
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
+            c.register_widget("ai_settings_rag_model_combo",    rag_model_combo)
+            c.register_widget("ai_settings_rag_rerank_combo",   rag_rerank_combo)
+            c.register_widget("ai_settings_memory_list",        memory_list)
+            c.register_widget("ai_settings_cache_timer",        cache_refresh_timer)
         except Exception:
             pass
 
@@ -1656,7 +2949,7 @@ def build_menu(main_window):
                 </tr>
                 <tr>
                     <td>💼&nbsp;<b>LinkedIn</b></td>
-                    <td><a href="https://www.linkedin.com/in/damian-z%C4%85bek-905518364/">linkedin.com/in/damian-ząbek</a></td>
+                    <td><a href="https://www.linkedin.com/in/damian-ząbek-905518364/">linkedin.com/in/damian-ząbek</a></td>
                 </tr>
                 <tr>
                     <td>📧&nbsp;<b>Email</b></td>

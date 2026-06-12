@@ -8,7 +8,7 @@ from PyQt6.QtCore import QThread
 from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QSizePolicy,
     QPlainTextEdit, QTextEdit, QLabel, QCheckBox, QFrame,
-    QLineEdit, QComboBox, QStackedLayout, QScrollArea
+    QLineEdit, QComboBox, QStackedLayout, QScrollArea, QListView,
 )
 
 from gui.panels.history_script_wdg import HistoryScriptWdg
@@ -165,6 +165,14 @@ class UIMixin:
         row1.setSpacing(12)
         lbl_interpreter = QLabel("Interpreter", parent=self)
         self.cmb_interpreter = QComboBox(parent=self)
+        try:
+            self.cmb_interpreter.setStyleSheet(self.controller.combo_stylesheet)
+            _iv = QListView()
+            _iv.setStyleSheet(self.controller.combo_view_stylesheet)
+            self.cmb_interpreter.setView(_iv)
+            self.controller.__class__.tracked_combos.append(self.cmb_interpreter)
+        except Exception:
+            pass
         row1.addWidget(lbl_interpreter)
         row1.addWidget(self.cmb_interpreter)
         self.btn_refresh_interpreter = QPushButton("↺", parent=self)
@@ -363,6 +371,14 @@ class UIMixin:
         priority_levels_dict = {"Critical": -20, "High": -10, "Normal": 0, "Low": 10, "Lowest": 19}
         lbl_priority = QLabel("Priority", parent=self)
         self.cmb_priority = QComboBox(parent=self)
+        try:
+            self.cmb_priority.setStyleSheet(self.controller.combo_stylesheet)
+            _pv = QListView()
+            _pv.setStyleSheet(self.controller.combo_view_stylesheet)
+            self.cmb_priority.setView(_pv)
+            self.controller.__class__.tracked_combos.append(self.cmb_priority)
+        except Exception:
+            pass
         self.cmb_priority.addItems(priority_levels)
         self.cmb_priority.setCurrentText("Normal")
         row3.addWidget(lbl_priority)

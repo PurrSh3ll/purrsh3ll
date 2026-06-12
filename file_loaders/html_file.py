@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QHBoxLayout, QVBoxLayout, QSizePolicy,
     QScrollArea, QFrame, QComboBox, QListView, QPushButton,
     QLineEdit, QCheckBox, QTextEdit, QApplication, QMenu,
-    QSplitter, QMessageBox
+    QSplitter, QMessageBox, QButtonGroup
 )
 from PyQt6.QtCore import Qt, QThread, QTimer, QRegularExpression, QUrl
 from PyQt6.QtGui import QTextCharFormat, QColor, QFont, QTextCursor, QCursor
@@ -20,7 +20,8 @@ from PyQt6.QtWebEngineCore import QWebEngineSettings
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from gui.widgets.web_preview import WebPreview
 from file_loaders.viewer_widgets import Worker, LineNumberArea, TextEditWithLineNumbers, CustomUnsupportedLabel
-from file_loaders.highlighters.html_highlighter import HtmlHighlighter
+from file_loaders.highlighters.pygments_highlighter import PygmentsHighlighter
+from pygments.lexers import HtmlLexer
 from file_loaders.chunked_file_loader import ChunkedFileLoader
 
 class Html_file(ChunkedFileLoader):
@@ -128,8 +129,15 @@ class Html_file(ChunkedFileLoader):
             search_field.setMinimumWidth(120)
             control_bar_layout.addWidget(search_field)
 
-            method_box = QComboBox(parent= control_bar_widget)
-            method_box.setView(QListView())
+            method_box = QComboBox(parent=control_bar_widget)
+            try:
+                method_box.setStyleSheet(self._controller.combo_stylesheet)
+                _hv = QListView()
+                _hv.setStyleSheet(self._controller.combo_view_stylesheet)
+                method_box.setView(_hv)
+                self._controller.__class__.tracked_combos.append(method_box)
+            except Exception:
+                method_box.setView(QListView())
 
             method_box.addItems(["find", "replace", "regex", "replace regex"])
 
@@ -341,6 +349,56 @@ class Html_file(ChunkedFileLoader):
             control_bar_layout.addWidget(copy_matches_btn)
 
             control_bar_layout.addStretch()
+
+            editor_view_btn = QPushButton("</>", parent=control_bar_widget)
+            side_by_side_btn = QPushButton("◫", parent=control_bar_widget)
+            reading_view_btn = QPushButton("≡", parent=control_bar_widget)
+            for _btn in (editor_view_btn, side_by_side_btn, reading_view_btn):
+                _btn.setFixedSize(30, 30)
+                _btn.setCheckable(True)
+            editor_view_btn.setToolTip("Code view")
+            side_by_side_btn.setToolTip("Split view")
+            reading_view_btn.setToolTip("Preview")
+            view_button_group = QButtonGroup(control_bar_widget)
+            view_button_group.setExclusive(True)
+            view_button_group.addButton(editor_view_btn)
+            view_button_group.addButton(side_by_side_btn)
+            view_button_group.addButton(reading_view_btn)
+            side_by_side_btn.setChecked(True)
+
+            def _html_reset_splitter():
+                self.left_container.setVisible(True)
+                self.right_container.setVisible(True)
+                splitter.setHandleWidth(5)
+
+            def on_editor_view_clicked():
+                self.left_container.setVisible(True)
+                self.right_container.setVisible(False)
+                splitter.setStretchFactor(0, 1)
+                splitter.setStretchFactor(1, 0)
+                splitter.setSizes([1, 0])
+
+            def on_side_by_side_clicked():
+                _html_reset_splitter()
+                splitter.setStretchFactor(0, 1)
+                splitter.setStretchFactor(1, 2)
+                splitter.setSizes([800, 400])
+
+            def on_reading_view_clicked():
+                self.left_container.setVisible(False)
+                self.right_container.setVisible(True)
+                splitter.setStretchFactor(0, 0)
+                splitter.setStretchFactor(1, 1)
+                splitter.setSizes([0, 1])
+
+            editor_view_btn.clicked.connect(on_editor_view_clicked)
+            side_by_side_btn.clicked.connect(on_side_by_side_clicked)
+            reading_view_btn.clicked.connect(on_reading_view_clicked)
+
+            control_bar_layout.addWidget(editor_view_btn)
+            control_bar_layout.addWidget(side_by_side_btn)
+            control_bar_layout.addWidget(reading_view_btn)
+
             layout.addWidget(control_bar_widget)
 
             open_browser_btn = QPushButton("🌐", parent= control_bar_widget)
@@ -692,8 +750,7 @@ class Html_file(ChunkedFileLoader):
                         unsupported_info_label.setVisible(True)
                     elif num_lines <= 1000:
                         if not hasattr(self, "syntax_highlighter") or self.syntax_highlighter is None:
-                            self.syntax_highlighter = 1
-                            self.syntax_highlighter = HtmlHighlighter(self.text_widget.document(), self._controller)
+                            self.syntax_highlighter = PygmentsHighlighter(self.text_widget.document(), self._controller, HtmlLexer())
                             self._controller.text_highlighters.append(self.syntax_highlighter)
                         unsupported_info_label.setVisible(False)
                 except:

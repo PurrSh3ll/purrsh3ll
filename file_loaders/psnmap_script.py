@@ -1,8 +1,6 @@
 import logging
 import os, re, shutil, subprocess, threading, time
 from datetime import datetime
-import keyring
-
 logger = logging.getLogger(__name__)
 
 from PyQt6.QtGui import QMovie
@@ -16,7 +14,8 @@ from PyQt6.QtWidgets import (
     QFrame,
     QStackedLayout,
     QComboBox,
-    QInputDialog
+    QInputDialog,
+    QListView,
 )
 
 from PyQt6.QtWidgets import (
@@ -689,30 +688,23 @@ class ScriptLauncher(QWidget):
             self._handle_disable_action()
 
     def _ensure_root_password(self):
-        SERVICE = self.controller.SERVICE
-        USER = self.controller.USER
+        if self.controller.sudo_password is not None:
+            return True
 
-        root_pw = keyring.get_password(SERVICE, USER)
-
-        if root_pw is None:
-            pw, ok = QInputDialog.getText(
-                self,
-                "Enter Password",
-                "Please enter the root password",
-                QLineEdit.EchoMode.Password
-            )
-            if ok and pw:
-                keyring.set_password(SERVICE, USER, pw)
-                return True
-            return False
-
-        return True
+        pw, ok = QInputDialog.getText(
+            self,
+            "Enter Password",
+            "Please enter the root password",
+            QLineEdit.EchoMode.Password
+        )
+        if ok and pw:
+            self.controller.sudo_password = bytearray(pw.encode('utf-8'))
+            return True
+        return False
 
     def _check_docker_status_with_retry(self, container_name):
-        SERVICE = self.controller.SERVICE
-        USER = self.controller.USER
-
-        pw = keyring.get_password(SERVICE, USER)
+        pw_buf = self.controller.sudo_password
+        pw = pw_buf.decode('utf-8') if pw_buf else None
         docker_status = self.check_docker(pw, container_name)
 
         if not docker_status["password"]:
@@ -722,16 +714,16 @@ class ScriptLauncher(QWidget):
                 "Invalid root password. Please try again."
             )
 
-            pw, ok = QInputDialog.getText(
+            pw_str, ok = QInputDialog.getText(
                 self,
                 "Enter Password",
                 "Please enter the root password",
                 QLineEdit.EchoMode.Password
             )
 
-            if ok and pw:
-                keyring.set_password(SERVICE, USER, pw)
-                docker_status = self.check_docker(pw, container_name)
+            if ok and pw_str:
+                self.controller.sudo_password = bytearray(pw_str.encode('utf-8'))
+                docker_status = self.check_docker(pw_str, container_name)
 
                 if not docker_status["password"]:
                     QMessageBox.critical(
@@ -754,7 +746,8 @@ class ScriptLauncher(QWidget):
         lub tworzy i uruchamia nowy kontener jeśli nie istnieje.
         """
         expected_port = str(self.parsed_data.get("port", ""))
-        pw = keyring.get_password(self.controller.SERVICE, self.controller.USER)
+        pw_buf = self.controller.sudo_password
+        pw = pw_buf.decode('utf-8') if pw_buf else None
 
         if not docker_status["container"]:
 
@@ -838,7 +831,8 @@ class ScriptLauncher(QWidget):
         msg_box.exec()
         clicked = msg_box.clickedButton()
 
-        pw = keyring.get_password(self.controller.SERVICE, self.controller.USER)
+        pw_buf = self.controller.sudo_password
+        pw = pw_buf.decode('utf-8') if pw_buf else None
 
         def run_docker_command(docker_args, error_title=None):
             def worker():
@@ -894,7 +888,8 @@ class ScriptLauncher(QWidget):
 
     def _show_token(self):
         """Wykonuje 'docker exec webmap /root/token' i pokazuje output w modalnym oknie."""
-        pw = keyring.get_password(self.controller.SERVICE, self.controller.USER)
+        pw_buf = self.controller.sudo_password
+        pw = pw_buf.decode('utf-8') if pw_buf else None
 
         try:
             result = _run_sudo(
@@ -954,6 +949,14 @@ class ScriptLauncher(QWidget):
         top_row.addWidget(self.target_input, 1)
 
         self.profile_combo = QComboBox(self)
+        try:
+            self.profile_combo.setStyleSheet(self.controller.combo_stylesheet)
+            _pcv = QListView()
+            _pcv.setStyleSheet(self.controller.combo_view_stylesheet)
+            self.profile_combo.setView(_pcv)
+            self.controller.__class__.tracked_combos.append(self.profile_combo)
+        except Exception:
+            pass
         self.profile_combo.setFixedWidth(250)
         self.profile_combo.setFixedHeight(28)
 
@@ -970,6 +973,7 @@ class ScriptLauncher(QWidget):
 
         self.settings_button = QPushButton("⚙", self)
         self.settings_button.setFixedSize(32, 28)
+        self.settings_button.setToolTip("Configure scan profiles and psnmap options")
         self.settings_button.clicked.connect(self.open_settings_dialog)
         top_row.addWidget(self.settings_button)
 
@@ -982,6 +986,7 @@ class ScriptLauncher(QWidget):
         self.network_button = QPushButton("🌐", self)
         self.network_button.setFixedSize(32, 28)
         self.network_button.setCheckable(True)
+        self.network_button.setToolTip("Start WebMap container")
         self.network_button.clicked.connect(self._toggle_network_button)
         top_row.addWidget(self.network_button)
 

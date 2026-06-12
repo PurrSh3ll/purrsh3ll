@@ -77,6 +77,23 @@ class HandlersMixin:
                 term.receivedData.connect(self.term_recived_data)
                 return
 
+    def _on_file_changed_on_disk(self, path: str):
+        """Called by QFileSystemWatcher when the file is modified on disk.
+
+        Editors that use atomic save (PyCharm, VS Code) replace the file via
+        rename, which removes it from the watcher. Re-add the path so future
+        changes are still detected.
+        """
+        if os.path.isfile(path):
+            if path not in self._file_watcher.files():
+                self._file_watcher.addPath(path)
+            try:
+                self.file_mtime = os.path.getmtime(path)
+            except OSError:
+                pass
+            self.update_docs()
+            self.update_help()
+
     def _on_checkable_clicked(self, button: QPushButton):
         name = button.text().lower()
         currently_checked = button.isChecked()

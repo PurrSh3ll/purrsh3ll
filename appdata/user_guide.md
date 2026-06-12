@@ -2,7 +2,7 @@
 
 ![img.png](images/user_guide_1.png)
 
-**PurrSh3ll** is an AI-powered desktop environment for penetration testers and security researchers. It combines a terminal emulator, AI assistant, RAG knowledge base, script manager, and note-taking system into a single unified interface.
+**PurrSh3ll** is an AI-powered desktop environment for penetration testers and security researchers. It combines a terminal emulator, AI assistant, RAG knowledge base, script manager, file viewer, and note-taking system into a single unified interface.
 
 ---
 
@@ -59,79 +59,113 @@ PurrSh3ll uses a real terminal emulator (QTermWidget / zsh). Multiple tabs are s
 **Tab management:**
 - Open a new tab using the `+` button in the tab bar
 - Close a tab using the `×` button on the tab
-- **Rename a tab** by clicking on the tab label
+- **Rename a tab** by double-clicking the tab label
 - Adjust terminal font size with `Ctrl + Mouse Scroll`
 
-**Full session recording** — every terminal session is recorded automatically to `appdata/logs/terminal_history.jsonl`. This includes not just executed commands but also the full input and output streams, giving AI tools like `psfix`, `psnext`, and `psreport` complete context of everything that happened in the terminal.
+**Full session recording** — every terminal session is recorded automatically to `appdata/logs/terminal_history.jsonl`. This includes executed commands and their output, giving AI tools like `psfix`, `psnext`, and `psreport` complete context of everything that happened in the terminal.
 
 ---
 
 ## AI Tools — ps* Commands
 
-PurrSh3ll includes a suite of AI-powered terminal commands. All tools use the active AI provider configured in **Settings → AI Settings → API Providers**.
+PurrSh3ll includes a suite of AI-powered terminal commands. All tools use the active AI provider configured in **File → AI Settings → Profiles**.
 
 Type `pshelp` in any terminal to list all available tools:
 
 [Run pshelp](action://run/command/pshelp%0A)
 
-Use `pshelp <command>` to show detailed help for a specific tool:
-
-```bash
-pshelp psrag
-pshelp psfix
-```
-
 ---
 
 ### psask — Ask AI
 
-Ask the active AI profile a direct question:
+Ask the active AI profile a direct question.
 
 ```bash
 psask "what is SSRF and how to exploit it"
 psask "explain the output of this nmap scan: ..."
+psask -p llama3.2 "what is privilege escalation?"
+psask -r "how to enumerate SMB shares"
+psask -r -n 10 "lateral movement techniques"
 ```
+
+Flags:
+- `-p, --profile <profile>` — override the active profile
+- `-r, --rag` — enrich the prompt with relevant chunks from the knowledge base
+- `-n, --top-n <N>` — number of RAG chunks to include (default: 5, used with `--rag`)
 
 ---
 
 ### pschat — Chat with AI
 
-Start a persistent interactive chat session with the active AI profile:
+Start a persistent interactive chat session. History is preserved between runs.
 
 ```bash
-pschat
+pschat "let's analyze this target: 10.10.10.5"
+pschat --new
+pschat --history
+pschat -c
+pschat -r "what does my knowledge base say about SMB?"
+pschat -p gemma3 "continue our analysis"
 ```
+
+Flags:
+- `--new` — clear history and start a new session
+- `-c, --clear` — clear history and exit
+- `--history` — show current conversation history
+- `-r, --rag` — enrich the message with RAG context
+- `-n, --top-n <N>` — number of RAG chunks (default: 5)
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
 ### pscmd — Command Generator
 
-Describe what you want to do in plain English and get the shell command:
+Describe what you want to do in plain English and get the shell command.
 
 ```bash
 pscmd "find all SUID binaries on the system"
 pscmd "scan ports 80 and 443 on 192.168.1.0/24 with nmap"
+pscmd "compress the /var/log directory to a tar.gz archive"
+pscmd -p qwen3 "list all listening TCP ports"
 ```
+
+Flags:
+- `-p <profile>` — override the active profile
 
 ---
 
 ### psfix — Error Explainer
 
-Automatically reads the last failed command from terminal history and asks the AI to explain the error and suggest a fix:
+Reads the last failed command from terminal history and asks the AI to explain the error and suggest a fix.
 
 ```bash
 psfix
+psfix -e
+psfix -a
 ```
+
+Flags:
+- `-e, --explain` — explain why the command failed without suggesting a fix
+- `-a, --analyze` — deep mode with full terminal history and current directory context
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
 ### psnext — Pentest Advisor
 
-Reads recent terminal history and suggests the most promising next steps for the current engagement:
+Reads recent terminal history and suggests the most promising next steps for the current engagement.
 
 ```bash
 psnext
+psnext -t 192.168.1.0/24
+psnext -p llama3.2
 ```
+
+Flags:
+- `-t, --target <TARGET>` — specify the target IP, hostname, or range for better suggestions
+- `-r, --rag` — enrich with knowledge base context
+- `-n, --top-n <N>` — number of RAG chunks (default: 5, used with `--rag`)
+- `-p, --profile <profile>` — override the active profile
 
 Useful when you are stuck or want a second opinion on attack paths.
 
@@ -139,52 +173,87 @@ Useful when you are stuck or want a second opinion on attack paths.
 
 ### psrag — RAG Query
 
-Query your local knowledge base and receive an AI-synthesized answer:
+Query your local knowledge base and receive an AI-synthesized answer enriched with relevant document chunks.
 
 ```bash
 psrag "how to enumerate SMB shares"
-psrag -n 5 --show-sources "SQL injection bypass techniques"
+psrag "SQL injection bypass techniques"
+psrag -n 10 "lateral movement techniques"
+psrag -s "how to enumerate subdomains"
 ```
 
 Flags:
-- `-n N` — number of chunks to retrieve (default: 3)
-- `--show-sources` — print the source files used
-- `-m MODEL` — override the model for this query
+- `-n, --top-n <N>` — number of context chunks to retrieve (default: 5)
+- `-s, --show-sources` — print source filenames and relevance scores before the answer
+- `-H, --host <URL>` — provider host/base URL override
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
 ### psreport — Pentest Report Generator
 
-Generate a structured Markdown/HTML pentest report from terminal history:
+Generate a structured Markdown or HTML pentest report from terminal history. Reports are saved to `appmodules/Cyb3rCollector/reports/`.
 
 ```bash
-psreport              # fast mode
-psreport --deep       # thorough Map-Reduce mode (multiple LLM calls)
+psreport
+psreport -d
+psreport --full
+psreport -v
+psreport -f html
+psreport -t 192.168.1.0/24
+psreport -T "Internal Network Pentest"
+psreport -t 10.10.10.5 -f html -v
 ```
 
-Reports are saved to `appmodules/Cyb3rCollector/reports/`.
+Flags:
+- `-d, --deep` — Map-Reduce mode: processes full history in chunks (N+1 LLM calls, thorough)
+- `--full` — include full history without smart-filtering for pentest keywords
+- `-v, --verbose` — stream the report to terminal while saving
+- `-f, --format md|html` — output format (default: md)
+- `-t, --target <TARGET>` — target IP or range shown in report header
+- `-T, --title <TITLE>` — custom report title
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
 ### pstldr — TL;DR Summarizer
 
-Summarize the last command output, a file, or piped input:
+Summarize the last command output, a file, or piped input.
 
 ```bash
+pstldr
 pstldr report.txt
+pstldr --tail /var/log/syslog
+pstldr --tail 8000 /var/log/syslog
 nmap -sV 10.10.10.1 | pstldr
+pstldr -p gemma3 report.txt
 ```
+
+Flags:
+- `--head [N]` — send only the first N characters to the model (default: 4000)
+- `--tail [N]` — send only the last N characters to the model (default: 4000, useful for logs)
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
 ### psview — Image / Screenshot Analyzer
 
-Send a screenshot or image to a vision-capable AI model for analysis:
+Send a screenshot or image to a vision-capable AI model for analysis. Requires a vision-capable model (e.g., llava, gpt-4o, gemini-pro-vision).
 
 ```bash
 psview screenshot.png
-psview screenshot.png --next    # also suggest next pentest steps
+psview /tmp/scan.png "what services are running?"
+psview screenshot.png --cmd
+psview screenshot.png --next
+psview -p gpt-4o screenshot.png
 ```
+
+Flags:
+- `-c, --cmd` — analyze the image and paste the best suggested command into the terminal
+- `-N, --next` — analyze the image and suggest next pentest steps using full history
+- `-p <profile>` — override the active profile (must support vision)
+
+Supported formats: PNG, JPG, JPEG, WEBP, GIF.
 
 Analysis results are saved to terminal history so `psnext` and `psreport` can use them.
 
@@ -192,13 +261,30 @@ Analysis results are saved to terminal history so `psnext` and `psreport` can us
 
 ### psopen — Open File in PurrSh3ll
 
-Open any file or navigate to a directory directly from the terminal:
+Open any file in the PurrSh3ll file viewer directly from the terminal. If the path is a directory, it opens in the system file manager.
 
 ```bash
 psopen notes.md
 psopen /tmp/report.txt
 psopen -f /tmp/exploit.py
+psopen -f /tmp/data.json -m json
+psopen --help
 ```
+
+Flags:
+- `-f, --file <file>` — path to the file to open
+- `-m, --mode <mode>` — override viewer mode (e.g., py, sh, js, json, md, txt)
+- `-h, --help` — show help
+
+---
+
+### pshelp — List All Tools
+
+```bash
+pshelp
+```
+
+Displays all available `ps*` commands with short descriptions.
 
 ---
 
@@ -212,24 +298,48 @@ The Chat panel provides a GUI interface for interacting with AI. Three modes are
 | **run + web** | Starts Open WebUI in a Docker container, opens in embedded browser |
 | **connect** | Connects directly to any OpenAI-compatible API endpoint |
 
-Configure AI profiles in **Settings → AI Settings → API Providers**.
+Configure AI profiles in **File → AI Settings → Profiles**.
+
+> **Note:** When using **run + web** mode, Open WebUI runs inside a Docker container and may take **30–60 seconds** to start, especially on first launch. If you see a blank or loading page, wait for the container to fully initialize.
+>
+> To check if the container is running:
+> ```bash
+> docker ps | grep open-webui
+> ```
+> To check startup logs:
+> ```bash
+> docker logs open-webui --tail 50
+> ```
 
 ---
 
 ## RAG Knowledge Base
 
-PurrSh3ll includes a local Retrieval-Augmented Generation (RAG) system powered by ChromaDB and local embeddings.
+PurrSh3ll includes a local Retrieval-Augmented Generation (RAG) system powered by ChromaDB and local embedding models.
 
-**Knowledge base location:** `appmodules/BrainDump/`
+**Knowledge base location (default):** `appmodules/BrainDump/`
 
-Drop any files (`.md`, `.txt`, `.pdf`, `.py`, etc.) into the BrainDump folder. The system indexes them automatically via a file watcher — no manual action required.
+Drop files (`.md`, `.txt`, `.pdf`, `.csv`, and more) into the BrainDump folder. The system indexes them automatically via a file watcher when auto-indexing is enabled. No manual action required.
 
-**Query the knowledge base** with `psrag` from any terminal tab.
+**Query the knowledge base** with `psrag` from any terminal tab, or enrich any AI query with `--rag`:
 
-**Settings** (Settings → AI Settings → RAG):
-- Switch between knowledge bases
-- Change the embedding model
-- Enable/disable auto-indexing
+```bash
+psrag "how to enumerate SMB shares"
+psask --rag "what is pass-the-hash?"
+```
+
+**RAG Settings** (File → AI Settings → RAG tab):
+
+- **Knowledge base** — switch between BrainDump and a custom folder path
+- **Index extensions** — configure which file types are indexed (PDF, TXT, MD, CSV, JSON, YAML, code files, and more)
+- **Indexed files** — view all indexed files; uncheck individual files to exclude them from indexing
+- **Embedding model** — choose from 30+ models grouped by category (English, Multilingual, Language-specific, Code, Vision). Hover over a model name to see its size, languages, and use case
+- **Re-ranking** — optionally enable reranking to improve result precision; choose from 6 reranker models
+- **Automatic indexing** — enable to watch the folder and re-index on any file change
+- **Refresh index** — manually trigger re-indexing
+- **Delete vector DB** — remove all indexed data and start fresh
+
+> **Important:** Choose an embedding model that supports the language of your documents. Using an English-only model with non-English documents will produce poor or no search results.
 
 ---
 
@@ -238,11 +348,11 @@ Drop any files (`.md`, `.txt`, `.pdf`, `.py`, etc.) into the BrainDump folder. T
 Store, organize, and run Python scripts from one place.
 
 **Features:**
-- Automatic extraction of `--help` output
-- Automatic extraction of docstrings
+- Automatic extraction of `--help` output and docstrings
 - Execution history per script
-- Automatic installation of missing libraries on run
-- Run scripts directly from the panel
+- Per-script notes and favorites
+- Automatic installation of missing dependencies on run
+- Scripts are watched for file changes and reloaded automatically
 
 Scripts are stored in `usermodules/` and `appmodules/`.
 
@@ -252,7 +362,7 @@ Scripts are stored in `usermodules/` and `appmodules/`.
 
 PurrSh3ll supports Markdown files with live rendering in the Notes panel.
 
-**Action links** embedded in Markdown files allow you to execute terminal commands directly from the document by clicking a link. Example:
+**Action links** embedded in Markdown files allow you to execute terminal commands directly from the document by clicking a link:
 
 ```markdown
 [Run nmap scan](action://run/command/nmap%20-sV%2010.10.10.1%0A)
@@ -266,6 +376,13 @@ This makes it possible to build interactive runbooks and checklists directly ins
 ## File Viewer
 
 Open and view files of various types directly within PurrSh3ll without leaving the application. Use `psopen` from any terminal tab to open a file in the viewer.
+
+Supported content types:
+- **Code** — Python, JavaScript, C/C++, Java, Go, Rust, Bash, PowerShell, HTML, and more — with syntax highlighting via Pygments
+- **Data** — JSON, XML, YAML, CSV (interactive sortable tables), SQL, TOML
+- **Documents** — PDF with page navigation
+- **Media** — audio and video files playable in-app
+- **Metadata** — EXIF, GPS, codec info extracted via exiftool
 
 ---
 
@@ -282,20 +399,21 @@ Manage shell environment variables and aliases through the GUI panel.
 
 ## Voice Control
 
-Voice control requires optional voice packages (installed with `--voice` flag during installation).
+Voice control requires optional voice packages installed during setup.
 
 **Capabilities:**
-- **Wake word detection** — activate listening hands-free
-- **Speech-to-text** — Whisper-based transcription
+- **Wake word detection** — say "Hey Jarvis" to activate hands-free
+- **Speech-to-text** — Faster-Whisper transcription (tiny model, CPU, ~75 MB)
 - **Voice commands** — control the application or query AI by speaking
+- **Voice confirmation** — say "accept" to run the generated command or "cancel" to discard
 
-The voice button in the toolbar activates/deactivates listening.
+The voice button in the toolbar activates and deactivates listening.
 
 ---
 
 ## Themes & Customization
 
-PurrSh3ll includes multiple built-in themes. Switch theme from **Settings → Theme** or click the links below:
+PurrSh3ll includes a large collection of built-in themes. Switch theme from **View → Theme** or click the links below:
 
 - [Legacy Hacker](action://change/theme/Legacy%20Hacker)
 - [Cyberpunk](action://change/theme/Cyberpunk)
@@ -318,11 +436,11 @@ Double-click the welcome screen to open the editor. You can set:
 
 ## AI Settings
 
-Access via **Settings → AI Settings**.
+Access via **File → AI Settings**. The dialog has three tabs: **Settings**, **RAG**, and **Profiles**.
 
-### API Providers
+### Settings Tab
 
-Configure one or more AI provider profiles:
+Configure the LLM backend:
 
 | Field | Description |
 |-------|-------------|
@@ -331,23 +449,56 @@ Configure one or more AI provider profiles:
 | URL | Base URL of the API endpoint |
 | API Key | Stored securely in system keyring |
 
-Multiple profiles can be created and switched between.
-
-### Agent Mode
-
-Set the AI agent behavior profile:
+**Agent Mode:**
 - **Agent Role** — defines the system prompt and workflow (e.g. `pentest_mode`, `ctf_mode`)
 - **Skills Set** — loads a specific set of AI skills and context files
 
-### LLM CLI Path
+> **Note on Ollama model size:** When using Ollama with a local model, the model must fit in available RAM. If the model is too large, responses will be extremely slow or may not arrive at all.
+>
+> | Model size | RAM required (approx.) |
+> |------------|------------------------|
+> | 3B params  | ~3 GB                  |
+> | 8B params  | ~6–8 GB                |
+> | 13B params | ~10–12 GB              |
+> | 70B params | ~40–50 GB              |
+>
+> Check available RAM: `free -h`
+> Check loaded model: `ollama ps`
+> List downloaded models: `ollama list`
+>
+> If you have limited RAM, use a smaller model such as `llama3.2:3b`, `gemma3:4b`, or `qwen3:4b`. Cloud providers (Groq, Gemini, OpenRouter) do not have this limitation.
+>
+> **Recommended models for CPU-only machines** (~3 GB free RAM):
+>
+> | Model | Ollama pull command |
+> |-------|---------------------|
+> | Qwen3 3B | `ollama pull qwen3:3b` |
+> | Gemma 3 4B | `ollama pull gemma3:4b` |
+> | Phi-3.5 Mini | `ollama pull phi3.5` |
+> | SmolLM3 3B | `ollama pull smollm3:3b` |
+> | Llama 3.2 3B Instruct | `ollama pull llama3.2:3b` |
+>
+> **With image analysis support** (slightly slower on CPU):
+>
+> | Model | Ollama pull command |
+> |-------|---------------------|
+> | fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive | `ollama pull fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN` |
+>
+> Use `psview screenshot.png` to analyze images with the vision model.
 
-Path to an external CLI tool (e.g. `aichat`) used in `run + cli` chat mode.
+### RAG Tab
+
+Full RAG configuration — see the [RAG Knowledge Base](#rag-knowledge-base) section above.
+
+### Profiles Tab
+
+Create, edit, and delete AI provider profiles. Each profile stores provider, model, API key, endpoint, and custom parameters. Multiple profiles can be created and switched between.
 
 ---
 
 ## Session & Behavior
 
-Configurable in **Settings → Behavior**:
+Configurable in **File → Settings**:
 
 | Setting | Description |
 |---------|-------------|

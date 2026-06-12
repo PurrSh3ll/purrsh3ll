@@ -86,6 +86,16 @@
             "profile_name": "sample scan",
             "command": "sudo nmap -sS -sU -T4 -A -v localhost",
             "datetime": "2026-05-21 08:34:35"
+        },
+        {
+            "profile_name": "intense scan plus udp",
+            "command": "nmap -sS -sU -T4 -A -v localhost",
+            "datetime": "2026-05-29 09:22:45"
+        },
+        {
+            "profile_name": "sample scan",
+            "command": "sudo nmap -sS -sU -T4 -A -v localhost",
+            "datetime": "2026-05-29 09:22:56"
         }
     ],
     "port": 8000

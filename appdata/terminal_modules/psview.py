@@ -32,7 +32,6 @@ _DEFAULT_QUESTION = (
     "tool output, and any other findings. "
     "Be specific — extract exact values, not just descriptions."
 )
-_HISTORY_TOKENS = 6_000   # budget for psnext inline analysis
 
 
 def _read_image(path: str) -> tuple[str, str]:
@@ -76,8 +75,8 @@ def _save_to_history(base_dir: str, filename: str, analysis: str, cwd: str):
         pass  # history write failure is non-fatal
 
 
-def _load_history_for_next(base_dir: str, token_budget: int, _ai) -> tuple[str, int]:
-    """Load recent terminal history (including the just-saved screenshot entry)."""
+def _load_history_for_next(base_dir: str) -> tuple[str, int]:
+    """Load last 40 terminal history entries (including the just-saved screenshot entry)."""
     path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
     try:
         with open(path, encoding="utf-8") as f:
@@ -92,9 +91,8 @@ def _load_history_for_next(base_dir: str, token_budget: int, _ai) -> tuple[str, 
         except Exception:
             pass
 
-    collected = []
-    used = 0
-    for entry in reversed(entries):
+    parts = []
+    for entry in entries[-40:]:
         ec     = entry.get("exit_code", 0)
         cmd    = entry.get("cmd", "")
         out    = entry.get("output", "")[:600]
@@ -105,15 +103,8 @@ def _load_history_for_next(base_dir: str, token_budget: int, _ai) -> tuple[str, 
             part += f"  # cwd: {cwd}"
         if out:
             part += f"\n{out}"
-        tokens = _ai._count_tokens(part)
-        if used + tokens > token_budget:
-            break
-        collected.append(part)
-        used += tokens
-
-    if not collected:
-        return "", 0
-    return "\n".join(reversed(collected)), len(collected)
+        parts.append(part)
+    return "\n".join(parts), len(parts)
 
 
 def _clean_command(text: str) -> str:
@@ -163,14 +154,14 @@ def main():
                         help="Path to image file (PNG, JPG, JPEG, WebP, GIF)")
     parser.add_argument("question", nargs="*",
                         help="Optional question about the image")
-    parser.add_argument("--next",     action="store_true",
+    parser.add_argument("-N", "--next", action="store_true",
                         help="After analysis, run psnext-style next-step suggestion (uses full history)")
-    parser.add_argument("--cmd",      action="store_true",
+    parser.add_argument("-c", "--cmd",  action="store_true",
                         help="After analysis, ask y/n to paste the best command (image only, no history)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
+                        dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -178,11 +169,11 @@ def main():
         print(
             "psview — AI-powered screenshot / image analyzer\n\n"
             "Usage:\n"
-            "  psview <image>                      Analyze image with default pentest prompt\n"
-            "  psview <image> \"<question>\"         Ask a specific question about the image\n"
-            "  psview <image> --cmd                Analyze and paste best command (image only)\n"
-            "  psview <image> --next               Analyze and suggest next steps (full history)\n"
-            "  psview -m <model> <image>           Use a specific model\n\n"
+            "  psview <image>                          Analyze image with default pentest prompt\n"
+            "  psview <image> \"<question>\"             Ask a specific question about the image\n"
+            "  psview <image> -c, --cmd                Analyze and paste best command (image only)\n"
+            "  psview <image> -N, --next               Analyze and suggest next steps (full history)\n"
+            "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
             "The analysis is saved to terminal history so psnext/psreport can use it.\n"
@@ -198,18 +189,18 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.profile)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.profile:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key          = _ai._load_api_key(profile.get("name", ""), base_dir)
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-    ctx_tokens       = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
 
     # ── Load image ─────────────────────────────────────────────────────────────
     image_path = args.image
@@ -244,7 +235,9 @@ def main():
     messages = _build_messages(b64, media_type, cmd_question, provider)
 
     # ── Stream analysis ────────────────────────────────────────────────────────
-    _ai._info(f"Analyzing {filename} with {model}...\n")
+    if _ai._SHOW_QUERYING:
+        _ai._info(f"Querying {model} via {provider}…\n")
+    _ai._info(f"Analyzing {filename}...\n")
 
     stream_to_stderr = args.next or args.cmd
     if stream_to_stderr:
@@ -277,8 +270,7 @@ def main():
         sys.exit(0)
 
     # ── --next: psnext-style analysis using updated history ────────────────────
-    history_budget = ctx_tokens // 2
-    history, count = _load_history_for_next(base_dir, history_budget, _ai)
+    history, count = _load_history_for_next(base_dir)
     if not history:
         sys.exit(0)
 
@@ -315,4 +307,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)

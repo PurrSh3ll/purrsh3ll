@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QComboBox, QDialog, QPlainTextEdit, QFrame, QToolButton, QMenu, QLineEdit,
-    QFormLayout,
+    QFormLayout, QListView,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QMovie, QAction, QTextOption
@@ -635,11 +635,13 @@ def build_chat_panel(main_window):
     )
 
     def _load_ollama_profiles():
-        """Return list of ollama profiles (full dicts) from global config."""
+        """Return list of ollama profiles (full dicts) from api_profiles.json."""
         try:
-            with open(c.config_path, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            profiles = cfg.get("api_providers", {}).get("profiles", [])
+            _api_profiles_path = getattr(c, "api_profiles_path",
+                os.path.join(getattr(c, "base_path", ""), "appdata", "api_profiles.json"))
+            with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                prov = json.load(f)
+            profiles = prov.get("profiles", [])
             return [p for p in profiles if p.get("provider", "").lower() == "ollama" and p.get("model")]
         except Exception:
             return []
@@ -647,7 +649,11 @@ def build_chat_panel(main_window):
     def _build_ollama_run_cmd(profile: dict) -> str:
         """Build 'ollama run <model> [flags]' from profile settings."""
         model = profile.get("model", "")
+        env_prefix = ""
         flags = []
+        # fast_answers → --system with brevity instruction
+        if profile.get("fast_answers"):
+            flags.append('--system "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."')
         # disable_thinking checkbox → --think=false
         if profile.get("disable_thinking"):
             flags.append("--think=false")
@@ -663,7 +669,7 @@ def build_chat_panel(main_window):
                         flags.append(f"--{k}={v}")
             except Exception:
                 pass
-        cmd = f"ollama run {model}"
+        cmd = f"{env_prefix}ollama run {model}"
         if flags:
             cmd += " " + " ".join(flags)
         return cmd
@@ -759,6 +765,13 @@ def build_chat_panel(main_window):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
         cat_combo = QComboBox(dlg)
+        try:
+            cat_combo.setStyleSheet(c.combo_stylesheet)
+            _cav = QListView()
+            _cav.setStyleSheet(c.combo_view_stylesheet)
+            cat_combo.setView(_cav)
+        except Exception:
+            pass
         cat_combo.addItems(["cli", "web"])
         cat_combo.setCurrentText(chat_combo_interface.currentText())
         form.addRow("Category:", cat_combo)

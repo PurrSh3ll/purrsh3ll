@@ -40,7 +40,13 @@ class CustomDialog(QDialog):
         self.input_name = QLineEdit()
         self.input_name.setPlaceholderText("Name")
         self.input_type = QComboBox()
-        self.input_type.setView(QListView())
+        try:
+            self.input_type.setStyleSheet(self.c.combo_stylesheet)
+            _itv = QListView()
+            _itv.setStyleSheet(self.c.combo_view_stylesheet)
+            self.input_type.setView(_itv)
+        except Exception:
+            self.input_type.setView(QListView())
         self.variable_type_data = {}
 
         self.load_variable_types()

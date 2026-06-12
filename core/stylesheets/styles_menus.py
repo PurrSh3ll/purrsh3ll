@@ -95,6 +95,63 @@ def build_menu_styles(bg, fg, bd, gl) -> dict:
                 border-left: 1px solid {bd.get("default", "#555")};
                 width: 16px;
             }}
+            QGroupBox {{
+                color: {fg.get("text", "#ffffff")};
+                border: 1px solid {bd.get("default", "#555")};
+                border-radius: 4px;
+                margin-top: 6px;
+                padding-top: 4px;
+            }}
+            QGroupBox::title {{
+                color: {fg.get("text", "#ffffff")};
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 4px;
+            }}
+            QRadioButton {{
+                color: {fg.get("text", "#ffffff")};
+                background: transparent;
+            }}
+            QRadioButton::indicator {{
+                border: 1px solid {bd.get("checkbox_indicator", "#555")};
+                border-radius: 6px;
+            }}
+            QRadioButton::indicator:checked {{
+                background: {bg.get("check_box_ind_chk", "#2C5F8F")};
+            }}
+            QListWidget {{
+                background-color: {bg.get("tab_bar_selected", "#1E1F22")};
+                color: {fg.get("text", "#ffffff")};
+                border: 1px solid {bd.get("default", "#555")};
+                border-radius: 4px;
+            }}
+            QListWidget::item:selected {{
+                background-color: {bg.get("buttons_pressed", "#2C5F8F")};
+                color: {fg.get("text", "#ffffff")};
+            }}
+            QListWidget::item:hover {{
+                background-color: {bg.get("buttons_hover", "#6C6C73")};
+            }}
+            QListWidget QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+            }}
+            QListWidget QScrollBar::handle:vertical {{
+                background: {bg.get("scroll", "#555555")};
+                border-radius: 4px;
+                min-height: 20px;
+            }}
+            QListWidget QScrollBar::handle:vertical:hover {{
+                background: {bg.get("scroll_handle", "#707070")};
+            }}
+            QListWidget QScrollBar::add-line:vertical,
+            QListWidget QScrollBar::sub-line:vertical {{
+                background: none; border: none;
+            }}
+            QListWidget QScrollBar::add-page:vertical,
+            QListWidget QScrollBar::sub-page:vertical {{
+                background: {bg.get("scroll_area", "#1E1F22")};
+            }}
 
             """
 

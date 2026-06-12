@@ -26,6 +26,7 @@ todo.txt
 appdata/logs/
 appdata/rag/
 appdata/api_keys.json
+appdata/api_profiles.json
 appdata/session.json
 appdata/psnotes.txt
 appdata/ob_panel_state.json
@@ -38,9 +39,22 @@ appdata/scripts_history/
 appdata/scripts_notes/
 appdata/scripts_favorities/
 
-# Wygenerowane raporty
-appmodules/Cyb3rCollector/reports/
+# Cyb3rCollector — dane runtime (listeners, stagers, webmap scans, reports)
+appmodules/Cyb3rCollector/*
+!appmodules/Cyb3rCollector/.gitkeep
+
+# BrainDump — prywatne notatki i pliki RAG (nie wersjonujemy)
+appmodules/BrainDump/*
+!appmodules/BrainDump/purrsh3ll_app_guide.md
 
 # Pliki audio
 *.wav
 
+# usermodules — pliki usera (nie wersjonujemy), tylko FIRST_STEPS.md
+usermodules/*
+!usermodules/FIRST_STEPS.md
+
+
+# Old installer scripts
+install_old.sh
+install_full_old.sh

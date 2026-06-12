@@ -1,5 +1,5 @@
 from gui.widgets.observable_panel import ObserverPanel
-from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QToolButton, QPushButton
+from PyQt6.QtWidgets import QApplication, QWidget, QLineEdit, QToolButton, QPushButton, QListView
 from PyQt6.QtCore import QTimer
 from PyQt6.sip import isdeleted
 
@@ -77,6 +77,7 @@ def change_theme(controller):
     qterminal_dialog = c.widgets.get("qterminal_dialog")
     qt_dialog = c.widgets.get("qt_dialog")
     licenses_dialog = c.widgets.get("licenses_dialog")
+    author_dialog = c.widgets.get("author_dialog")
 
     bg = theme.get("background", {})
     fg = theme.get("foreground", {})
@@ -88,6 +89,18 @@ def change_theme(controller):
     s.update(build_base_styles(bg, fg, bd, gl))
     s.update(build_panel_styles(bg, fg, bd))
     s.update(build_terminal_styles(bg, fg, bd))
+
+    def _style_combo(combo):
+        """Apply combo widget style + install a pre-styled QListView as the popup view."""
+        if combo is None:
+            return
+        try:
+            combo.setStyleSheet(s["qss_QComboBox"])
+            _view = QListView()
+            _view.setStyleSheet(s["qss_QComboBox_view"])
+            combo.setView(_view)
+        except Exception:
+            pass
 
     # Rozwiązanie 1: setUpdatesEnabled — blokuje ~50 pośrednich repaintów,
     # wykonuje jedno przerysowanie po zakończeniu bloku.
@@ -118,17 +131,39 @@ def change_theme(controller):
         chat_button.setStyleSheet(s["qss_QPushButton"])
         notes_button.setStyleSheet(s["qss_QPushButton"])
         mode_button.setStyleSheet(s["qss_QPushButton"])
+
+        # Voice button — OFF state uses theme colors; active states keep
+        # semantic colors (red/green/blue) so they stay visible on any theme.
+        voice_button = c.widgets.get("voice_button")
+        if voice_button is not None:
+            _voice_off = (
+                f"QPushButton {{ "
+                f"background: {bg.get('buttons', '#37373B')}; "
+                f"border: 1px solid {bd.get('default', '#555555')}; "
+                f"border-radius: 3px; font-size: 13px; "
+                f"color: {fg.get('text', '#cccccc')}; }}"
+                f"QPushButton:hover {{ "
+                f"background: {bg.get('buttons_hover', '#6C6C73')}; "
+                f"border-color: {bd.get('gradient_hover', bd.get('default', '#888888'))}; "
+                f"color: {fg.get('text_hover', fg.get('text', '#ffffff'))}; }}"
+            )
+            c.widgets["_voice_off_style"] = _voice_off
+            if not voice_button.isChecked():
+                voice_button.setStyleSheet(_voice_off)
+
+        # Profile combobox in the toolbar
+        _style_combo(c.widgets.get("global_active_profile_combo"))
         welcome_label.setStyleSheet(s["qss_QLabel_welcome"])
+        _token_lbl = c.widgets.get("prompt_token_label")
+        if _token_lbl is not None:
+            _token_lbl.setStyleSheet(s["qss_QLabel"] + " font-size: 11px;")
 
         chat_panel.setStyleSheet(s["qss_QFrame"])
         if chat_future_label:
             chat_future_label.setStyleSheet(s["qss_QLabel"])
-        if chat_combo_interface:
-            chat_combo_interface.setStyleSheet(s["qss_QComboBox"])
-        if chat_combo_input:
-            chat_combo_input.setStyleSheet(s["qss_QComboBox"])
-        if chat_combo_context:
-            chat_combo_context.setStyleSheet(s["qss_QComboBox"])
+        _style_combo(chat_combo_interface)
+        _style_combo(chat_combo_input)
+        _style_combo(chat_combo_context)
         if chat_btn_settings:
             chat_btn_settings.setStyleSheet(s["qss_QPushButton"])
         if chat_btn_info:
@@ -139,8 +174,7 @@ def change_theme(controller):
             chat_btn_run_menu.setStyleSheet(s["qss_QMenu"])
         if chat_cmd_preview:
             chat_cmd_preview.setStyleSheet(s["qss_QPlainTextEdit_terminal"] + s["qss_QScrollArea"])
-        if chat_combo_custom:
-            chat_combo_custom.setStyleSheet(s["qss_QComboBox"])
+        _style_combo(chat_combo_custom)
         if chat_btn_add:
             chat_btn_add.setStyleSheet(s["qss_QPushButton"])
         chat_info_cmd_label = c.widgets.get("chat_info_cmd_label")
@@ -184,6 +218,7 @@ def change_theme(controller):
                 QFrame#snippet_sep {{ color: {bd.get("default", "#555")}; }}
                 """
             )
+            _style_combo(c.widgets.get("snippet_cat_filter"))
         if snippet_button:
             snippet_button.setStyleSheet(s["qss_QPushButton"])
 
@@ -239,6 +274,68 @@ def change_theme(controller):
         qterminal_dialog.setStyleSheet(s["qss_QDialog_global"])
         qt_dialog.setStyleSheet(s["qss_QDialog_global"])
         licenses_dialog.setStyleSheet(s["qss_QDialog_global"])
+        if author_dialog:
+            author_dialog.setStyleSheet(s["qss_QDialog_global"])
+        ai_settings_dialog = c.widgets.get("ai_settings_dialog")
+        if ai_settings_dialog:
+            ai_settings_dialog.setStyleSheet(
+                s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
+                s["qss_QGroupBox"] + s["qss_QTable"] + s["qss_QScrollArea"] +
+                f"""
+                QScrollArea#ai_settings_scroll {{
+                    background-color: {_bg_main};
+                    border: none;
+                }}
+                QScrollArea#ai_settings_scroll > QWidget {{
+                    background-color: {_bg_main};
+                }}
+                QWidget#ai_settings_scroll_content {{
+                    background-color: {_bg_main};
+                }}
+                QRadioButton {{
+                    color: {fg.get("text", "#ffffff")};
+                    background: transparent;
+                }}
+                QRadioButton:hover {{
+                    color: {fg.get("text_hover", "#ffffff")};
+                }}
+                QPushButton:focus {{
+                    border: 1px solid {bd.get("default", "#555555")};
+                    outline: none;
+                }}
+                """
+            )
+            for _wk in ("ai_settings_agent_role_combo", "ai_settings_skills_combo",
+                        "ai_settings_rag_model_combo", "ai_settings_rag_rerank_combo"):
+                _style_combo(c.widgets.get(_wk))
+            _rag_sb_qss = f"""
+                QScrollBar:vertical {{
+                    background: transparent;
+                    width: 8px;
+                    margin: 0;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {bg.get("scroll", "#555555")};
+                    border-radius: 4px;
+                    min-height: 20px;
+                }}
+                QScrollBar::handle:vertical:hover {{
+                    background: {bg.get("scroll_handle", "#707070")};
+                }}
+                QScrollBar::add-line:vertical,
+                QScrollBar::sub-line:vertical {{
+                    height: 0; background: none; border: none;
+                }}
+                QScrollBar::add-page:vertical,
+                QScrollBar::sub-page:vertical {{
+                    background: {bg.get("scroll_area", "#1E1F22")};
+                }}
+            """
+            for _wk in ("ai_settings_rag_model_combo", "ai_settings_rag_rerank_combo"):
+                _c = c.widgets.get(_wk)
+                if _c is not None and hasattr(_c, "setScrollBarStyleSheet"):
+                    _c.setScrollBarStyleSheet(_rag_sb_qss)
+        _style_combo(c.widgets.get("ai_active_profile_combo"))
         if chat_webui_dialog:
             chat_webui_dialog.setStyleSheet(s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QLabel"])
         chat_llama_dialog = c.widgets.get("chat_llama_dialog")
@@ -267,6 +364,10 @@ def change_theme(controller):
         )
         c.__class__.messagebox_stylesheet = s["qss_QMesssageBox"]
         c.__class__.button_stylesheet = s["qss_QPushButton"]
+        c.__class__.combo_stylesheet = s["qss_QComboBox"]
+        c.__class__.combo_view_stylesheet = s["qss_QComboBox_view"]
+        c.__class__.table_stylesheet = s["qss_QTable"]
+        c.__class__.tab_stylesheet = s["qss_QTabWidget"]
         c.__class__.dialog_stylesheet = s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"]
         c.__class__.chat_panel_dialog_stylesheet = (
             s["qss_QDialog_global"] + s["qss_QLineEdit"] + s["qss_QComboBox"] +
@@ -340,6 +441,14 @@ def change_theme(controller):
         for highlighter in c.__class__.text_highlighters:
             if hasattr(highlighter, "update_colors"):
                 highlighter.update_colors()
+
+        c.__class__.tracked_combos[:] = [obj for obj in c.__class__.tracked_combos if not isdeleted(obj)]
+        for _combo in c.__class__.tracked_combos:
+            _style_combo(_combo)
+
+        c.__class__.tracked_tables[:] = [obj for obj in c.__class__.tracked_tables if not isdeleted(obj)]
+        for _table in c.__class__.tracked_tables:
+            _table.setStyleSheet(s["qss_QTable"])
 
         # app.setStyleSheet wewnątrz bloku — main_window nie repaintuje
         # podczas rekalkukacji stylu globalnego

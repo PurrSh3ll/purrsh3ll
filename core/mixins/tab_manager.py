@@ -37,6 +37,9 @@ from file_loaders.psnmap_file import Purr_file
 from file_loaders.psc2_file import Psc2_file
 from file_loaders.unsupported_file import Unsupported_file
 from file_loaders.visualbasic_file import Visualbasic_file
+from file_loaders.audio_file import Audio_file
+from file_loaders.video_file import Video_file
+from file_loaders.pdf_file import Pdf_file
 
 FILE_LOADERS = {
     "Text_file": Text_file,
@@ -69,6 +72,9 @@ FILE_LOADERS = {
     "Psc2_file": Psc2_file,
     "Unsupported_file": Unsupported_file,
     "Visualbasic_file": Visualbasic_file,
+    "Audio_file": Audio_file,
+    "Video_file": Video_file,
+    "Pdf_file": Pdf_file,
 }
 
 class TabManagerMixin:
@@ -124,6 +130,8 @@ class TabManagerMixin:
         execution_tabs.setCurrentWidget(content_widget)
 
         tab_entry["editor"] = content_widget
+        tab_entry["file_class_name"] = file_class_name
+        tab_entry["icon_token"] = icon_token
         self.opened_tabs_tree[full_path] = tab_entry
 
         if len(self.opened_tabs_tree) > 0:
@@ -159,18 +167,17 @@ class TabManagerMixin:
             else:
                 token = self.files_category.get(extension, "__unsupported_file")
                 icon_token = None
+                file_class_name = None
                 if extension == "py":
                     icon_token = "__python_file.png"
+                    file_class_name = "Python_file"
                 elif extension == "purr":
-                    stem = os.path.splitext(os.path.basename(file))[0].lower()
-                    if stem == "psc2":
-                        token = "__psc2_file"
-                        icon_token = "__purr_file.png"
-                    elif stem != "psnmap":
-                        token = "__unsupported_file"
+                    icon_token = "__purr_file.png"
+                    file_class_name = "Text_file"
                 if icon_token is None:
                     icon_token = token if token.endswith(".png") else f"{token}.png"
-                file_class_name = token[2:].capitalize() if token.startswith("__") else token.capitalize()
+                if file_class_name is None:
+                    file_class_name = token[2:].capitalize() if token.startswith("__") else token.capitalize()
         else:
             token = self.files_category.get(extension, "__unsupported_file")
             icon_token = token if token.endswith(".png") else f"{token}.png"
@@ -209,15 +216,23 @@ class TabManagerMixin:
         if execution_tabs is None:
             return
 
-        paths = []
+        tabs = []
         for i in range(execution_tabs.count()):
             tip = execution_tabs.tabToolTip(i)
             if tip and os.path.isfile(tip):
-                paths.append(tip)
+                tab_data = self.opened_tabs_tree.get(tip, {})
+                class_name = tab_data.get("file_class_name")
+                icon_token = tab_data.get("icon_token")
+                entry = {"path": tip}
+                if class_name:
+                    entry["class_name"] = class_name
+                if icon_token:
+                    entry["icon_token"] = icon_token
+                tabs.append(entry)
 
         data = {
             "active_index": execution_tabs.currentIndex(),
-            "tabs": paths,
+            "tabs": tabs,
         }
 
         try:
@@ -243,12 +258,24 @@ class TabManagerMixin:
         tabs = data.get("tabs", [])
         active_index = data.get("active_index", 0)
 
-        for path in tabs:
-            if os.path.isfile(path):
-                try:
+        for entry in tabs:
+            # Support both old format (plain string) and new format (dict with path + class_name)
+            if isinstance(entry, str):
+                path, class_name, icon_token = entry, None, None
+            else:
+                path = entry.get("path", "")
+                class_name = entry.get("class_name")
+                icon_token = entry.get("icon_token")
+
+            if not os.path.isfile(path):
+                continue
+            try:
+                if class_name and class_name in FILE_LOADERS:
+                    self._load_file_into_tab(path, icon_token, class_name, {"item": None, "source": "session"})
+                else:
                     self.open_new_tab_for_terminal(file=path)
-                except Exception:
-                    logger.warning("Failed to restore tab: %s", path, exc_info=True)
+            except Exception:
+                logger.warning("Failed to restore tab: %s", path, exc_info=True)
 
         execution_tabs = self.widgets.get('execution_tabs')
         if execution_tabs and 0 <= active_index < execution_tabs.count():

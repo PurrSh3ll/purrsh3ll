@@ -142,30 +142,35 @@ def build_main_layout(main_window):
         slide_button = QPushButton("👁️", c.widgets["central_widget"])
         slide_button.setFixedWidth(20)
         slide_button.setFixedHeight(50)
+        slide_button.setToolTip("Observable Variables")
         c.register_widget("slide_button", slide_button)
 
     def create_chat_button():
         chat_button = QPushButton("🤖", c.widgets["central_widget"])
         chat_button.setFixedWidth(20)
         chat_button.setFixedHeight(50)
+        chat_button.setToolTip("AI Chat")
         c.register_widget("chat_button", chat_button)
 
     def create_notes_button():
         notes_button = QPushButton("📝", c.widgets["central_widget"])
         notes_button.setFixedWidth(20)
         notes_button.setFixedHeight(50)
+        notes_button.setToolTip("Notes")
         c.register_widget("notes_button", notes_button)
 
     def create_mode_button():
         mode_button = QPushButton("🔧", c.widgets["central_widget"])
         mode_button.setFixedWidth(20)
         mode_button.setFixedHeight(50)
+        mode_button.setToolTip("System Info")
         c.register_widget("mode_button", mode_button)
 
     def create_snippet_button():
         snippet_button = QPushButton("✂️", c.widgets["central_widget"])
         snippet_button.setFixedWidth(20)
         snippet_button.setFixedHeight(50)
+        snippet_button.setToolTip("Snippets")
         c.register_widget("snippet_button", snippet_button)
 
     def create_welcome_text():
@@ -323,7 +328,7 @@ def build_main_layout(main_window):
             layout.setContentsMargins(16, 16, 16, 16)
             layout.setSpacing(6)
             try:
-                dlg.setStyleSheet(c.messagebox_stylesheet)
+                dlg.setStyleSheet(c.dialog_stylesheet)
             except Exception:
                 pass
 
@@ -568,7 +573,7 @@ def build_main_layout(main_window):
         welcome_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         welcome_label.setToolTip("Double-click to edit")
         gif_label = _GifLabel()
-        gif_label.setToolTip("Double-click to change image")
+        gif_label.setToolTip("Double-click to edit")
         _apply_image(_load_image_path(), gif_label)
         welcome_text_layout.addWidget(welcome_label, 0)
         welcome_text_layout.addWidget(gif_label, 1)
@@ -593,7 +598,7 @@ def build_main_layout(main_window):
         central_widget = c.widgets["central_widget"]
         btn = QPushButton("🎙", central_widget)
         btn.setFixedSize(26, 22)
-        btn.setToolTip("Voice command mode")
+        btn.setToolTip("Voice mode — wake word + speech-to-command")
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setCheckable(True)
         btn.setChecked(False)
@@ -601,7 +606,7 @@ def build_main_layout(main_window):
         _STYLE_OFF = (
             "QPushButton { background: transparent; border: 1px solid #555; "
             "border-radius: 3px; font-size: 13px; color: #aaa; }"
-            "QPushButton:hover { border-color: #888; color: #fff; }"
+            "QPushButton:hover { background: #3d6ed4; border-color: #5588ff; color: #ffffff; }"
         )
         _STYLE_ON = (
             "QPushButton { background: #6a1a1a; border: 1px solid #e05555; "
@@ -719,8 +724,8 @@ def build_main_layout(main_window):
         cancel_btn.clicked.connect(_on_cancel)
 
         def _set_idle_style():
-            btn.setStyleSheet(_STYLE_OFF)
-            btn.setToolTip("Voice command mode")
+            btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
+            btn.setToolTip("Voice mode — wake word + speech-to-command")
 
         def _on_state_changed(state: str):
             if state == "idle":
@@ -739,7 +744,7 @@ def build_main_layout(main_window):
                 msg_text = state[6:]
                 import logging as _log
                 _log.getLogger(__name__).error("VoiceThread error: %s", msg_text)
-                btn.setStyleSheet(_STYLE_OFF)
+                btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
                 btn.setToolTip(f"Voice error: {msg_text}")
                 btn.blockSignals(True)
                 btn.setChecked(False)
@@ -846,45 +851,92 @@ def build_main_layout(main_window):
                 btn.blockSignals(True)
                 btn.setChecked(False)
                 btn.blockSignals(False)
-                btn.setStyleSheet(_STYLE_OFF)
+                btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
 
         btn.clicked.connect(_on_clicked)
         c.register_widget("voice_button", btn)
+
+    def create_rag_status_label():
+        lbl = QLabel("", c.widgets["central_widget"])
+        lbl.setFixedWidth(180)
+        lbl.setFixedHeight(22)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+        lbl.hide()
+        c.register_widget("rag_index_status_label", lbl)
+
+    def create_prompt_token_label():
+        lbl = QLabel("PurrSh3ll", c.widgets["central_widget"])
+        lbl.setFixedHeight(22)
+        lbl.setFixedWidth(240)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        c.register_widget("prompt_token_label", lbl)
 
     def create_active_profile_combo():
         central_widget = c.widgets["central_widget"]
         combo = QComboBox(central_widget)
         combo.setFixedHeight(22)
         combo.setFixedWidth(170)
-        combo.setToolTip("Active API profile")
+        combo.setToolTip("Active AI profile — used by psai tools and AI chat")
         combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        _api_profiles_path = getattr(c, "api_profiles_path",
+            os.path.join(getattr(c, "base_path", ""), "appdata", "api_profiles.json"))
+
+        _profiles_cache = []
+
+        def _update_tooltip():
+            name = combo.currentData() or ""
+            if not name:
+                combo.setToolTip("Active AI profile — used by psai tools and AI chat")
+                return
+            for p in _profiles_cache:
+                if p.get("name") == name:
+                    provider = p.get("provider", "—")
+                    model = p.get("model", "—")
+                    combo.setToolTip(
+                        f"Active AI profile — used by psai tools and AI chat\n"
+                        f"Provider:  {provider}\n"
+                        f"Model:     {model}"
+                    )
+                    return
+            combo.setToolTip("Active AI profile — used by psai tools and AI chat")
 
         def _reload(keep=None):
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("— none —", "")
             try:
-                with open(c.config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                prov = cfg.get("api_providers", {})
+                with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                    prov = json.load(f)
                 active = keep if keep is not None else prov.get("active", "")
-                for p in prov.get("profiles", []):
+                _profiles_cache.clear()
+                _profiles_cache.extend(prov.get("profiles", []))
+                for p in _profiles_cache:
                     combo.addItem(p["name"], p["name"])
+                    idx = combo.count() - 1
+                    provider = p.get("provider", "—")
+                    model = p.get("model", "—")
+                    combo.setItemData(idx,
+                        f"Provider:  {provider}\nModel:     {model}",
+                        Qt.ItemDataRole.ToolTipRole)
                 idx = combo.findData(active)
                 combo.setCurrentIndex(max(0, idx))
             except Exception:
                 pass
             combo.blockSignals(False)
+            _update_tooltip()
 
         def _on_changed():
             name = combo.currentData() or ""
-            # save to config
+            _update_tooltip()
+            # save to api_profiles.json
             try:
-                with open(c.config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                cfg.setdefault("api_providers", {})["active"] = name
-                with open(c.config_path, "w", encoding="utf-8") as f:
-                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+                with open(_api_profiles_path, "r", encoding="utf-8") as f:
+                    prov = json.load(f)
+                prov["active"] = name
+                with open(_api_profiles_path, "w", encoding="utf-8") as f:
+                    json.dump(prov, f, indent=2, ensure_ascii=False)
             except Exception:
                 pass
             # sync AI Settings combo if open
@@ -940,5 +992,7 @@ def build_main_layout(main_window):
     create_snippet_button()
     create_active_profile_combo()
     create_voice_button()
+    create_rag_status_label()
+    create_prompt_token_label()
     dropdown_menu_button()
     add_widgets_to_layout_and_setup()

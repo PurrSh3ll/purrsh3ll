@@ -99,7 +99,7 @@ def build_side_panels(main_window):
         btn_height = 28
 
         panel_del_all_rows_btn = QPushButton("🗑️")
-        panel_del_all_rows_btn.setToolTip("Remove All")
+        panel_del_all_rows_btn.setToolTip("Remove all variables")
         panel_del_all_rows_btn.setMinimumHeight(btn_height)
 
         panel_options_btn = QPushButton("⚙️")
@@ -107,6 +107,7 @@ def build_side_panels(main_window):
         panel_options_btn.setMinimumHeight(btn_height)
 
         panel_slide_add_btn = QPushButton("➕")
+        panel_slide_add_btn.setToolTip("Add variable")
         panel_slide_add_btn.setMinimumHeight(btn_height)
 
         for btn in (panel_del_all_rows_btn, panel_options_btn, panel_slide_add_btn):

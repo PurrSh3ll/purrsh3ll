@@ -1,6 +1,6 @@
 import logging
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication
 
@@ -46,6 +46,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     qss_QPainter = {}
     text_loaders = []
     text_highlighters = []
+    tracked_combos = []
+    tracked_tables = []
     change_theme_limit_tabs = 30
     open_loaders = {}
     threads = []
@@ -54,8 +56,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     terminals_stylesheet = ""
     terminal_qss_scroll = ""
     qss_QInputDialog_terminal = ""
-    terminal_buffer = ""
     qss_info = ""
+    sudo_password = None  # bytearray; cached for session, zeroed at shutdown
 
     files_category = FILES_CATEGORY
 
@@ -80,6 +82,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.save_system_vars = True
             self.delete_logs_at_close = True
             self.delete_notes_at_close = False
+            self.clear_chat_history_on_exit = False
+            self.psfix_auto_open = True
             self.terminal_history_max_entries = 5000
             self.terminal_history_disabled = False
 
@@ -104,6 +108,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                     self.session_restore_enabled = behavior.get("restore_session_at_start", True)
                     self.terminal_history_max_entries = behavior.get("terminal_history_max_entries", 5000)
                     self.terminal_history_disabled = behavior.get("terminal_history_disabled", False)
+                    self.clear_chat_history_on_exit = config.get("llama", {}).get("clear_chat_history_on_exit", False)
+                    self.psfix_auto_open = config.get("llama", {}).get("psfix_auto_open", True)
 
                 except Exception as e:
                     logger.warning("Failed to load config from %s", self.config_path, exc_info=True)
@@ -137,7 +143,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.icons_path = os.path.join(self.base_path, "icons")
             self.sys_vars_path = os.path.join(self.base_path, "appdata", "terminal_modules", "system_vars.zsh")
             self.observer_panel_state_path = os.path.join(self.base_path, "appdata", "ob_panel_state.json")
+            self.api_profiles_path = os.path.join(self.base_path, "appdata", "api_profiles.json")
             self.session_path = os.path.join(self.base_path, "appdata", "session.json")
+            self._ensure_api_profiles()
             self.build_in_libs = self.get_std_lib()
             self.themes_path = os.path.join(self.base_path, 'appdata', 'themes.json')
             self._debounce_ms = 500
@@ -145,6 +153,12 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._update_timer = QTimer()
             self._update_timer.setSingleShot(True)
             self._update_timer.timeout.connect(self._do_update_modules)
+
+            self._psai_tok_path = os.path.join(
+                self.base_path, "appdata", "logs", "psai_tok"
+            )
+            self._psai_tok_hide = None
+            self._psai_tok_watcher = None
 
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
@@ -194,6 +208,33 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         except Exception:
             return "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+    def _get_rag_exclusions(self) -> set:
+        exclusions_path = os.path.join(self.base_path, "appdata", "rag", "excluded_files.json")
+        from core.rag.indexer import load_exclusions
+        return load_exclusions(exclusions_path)
+
+    def _get_rag_extensions(self) -> set:
+        from core.rag.chunker import DEFAULT_EXTENSIONS
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            exts = cfg.get("rag", {}).get("index_extensions", None)
+            if exts and isinstance(exts, list):
+                return set(exts)
+        except Exception:
+            pass
+        return set(DEFAULT_EXTENSIONS)
+
+    def _ensure_api_profiles(self):
+        """Create api_profiles.json with empty defaults if it does not exist."""
+        if not os.path.exists(self.api_profiles_path):
+            try:
+                os.makedirs(os.path.dirname(self.api_profiles_path), exist_ok=True)
+                with open(self.api_profiles_path, "w", encoding="utf-8") as f:
+                    json.dump({"active": "", "profiles": []}, f, indent=2)
+            except Exception:
+                pass
+
     def start_rag_watcher(self):
         self.stop_rag_watcher()
         kb_path = self._get_rag_kb_path()
@@ -221,13 +262,52 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         if not kb_path or not os.path.isdir(kb_path):
             return
         model_name = self._get_rag_model()
+        allowed_extensions = self._get_rag_extensions()
+        excluded_rel = self._get_rag_exclusions()
         from core.rag.index_worker import IndexWorker
-        worker = IndexWorker(kb_path, self.base_path, model_name)
+        worker = IndexWorker(kb_path, self.base_path, model_name, allowed_extensions, excluded_rel)
         self._rag_index_worker = worker
+
+        def _show_rag_label(current, total, filename):
+            lbl = self.widgets.get("rag_index_status_label")
+            if lbl is None:
+                return
+            short = filename[:18] + "…" if len(filename) > 20 else filename
+            lbl.setText(f"⟳ {current}/{total}  {short}")
+            if not lbl.isVisible():
+                lbl.show()
+                self.set_position_active_profile_combo()
 
         def _done(_result):
             self._rag_index_worker = None
+            lbl = self.widgets.get("rag_index_status_label")
+            if lbl is None:
+                return
+            from PyQt6.QtCore import QTimer
+            if _result == "OK":
+                lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
+                lbl.setText("✔ RAG indexing complete")
+            else:
+                lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
+                lbl.setText(f"✖ {_result[:40]}")
+            lbl.show()
 
+            def _reset():
+                lbl.hide()
+                lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+
+            QTimer.singleShot(5000, _reset)
+
+        lbl = self.widgets.get("rag_index_status_label")
+        if lbl is not None:
+            lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+            lbl.setText("⟳ Starting indexing…")
+            lbl.show()
+            self.set_position_active_profile_combo()
+
+        QApplication.processEvents()
+
+        worker.progress.connect(_show_rag_label)
         worker.finished.connect(_done)
         worker.start()
 
@@ -236,6 +316,121 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def get_widget(self, name: str):
         return Controller.widgets.get(name)
+
+    def setup_psai_tok_watcher(self):
+        self._psai_tok_hide = QTimer()
+        self._psai_tok_hide.setSingleShot(True)
+        self._psai_tok_hide.timeout.connect(self._hide_tok_label)
+        self._psai_tok_watcher = QFileSystemWatcher()
+        self._psai_tok_watcher.addPath(
+            os.path.join(self.base_path, "appdata", "logs")
+        )
+        if os.path.exists(self._psai_tok_path):
+            self._psai_tok_watcher.addPath(self._psai_tok_path)
+        self._psai_tok_watcher.fileChanged.connect(self._on_psai_tok_changed)
+        self._psai_tok_watcher.directoryChanged.connect(self._on_psai_logs_dir_changed)
+
+    def _on_psai_logs_dir_changed(self, _path):
+        if (os.path.exists(self._psai_tok_path) and
+                self._psai_tok_path not in self._psai_tok_watcher.files()):
+            self._psai_tok_watcher.addPath(self._psai_tok_path)
+            self._on_psai_tok_changed(self._psai_tok_path)
+
+    def _get_active_ctx_window(self):
+        """Return context window size for the active profile, or None if unknown."""
+        try:
+            with open(self.api_profiles_path, encoding="utf-8") as f:
+                data = json.load(f)
+            active_name = data.get("active", "")
+            profile = next(
+                (p for p in data.get("profiles", []) if p.get("name") == active_name),
+                None
+            )
+            if profile is None:
+                return None
+            # Use explicit override if set
+            override = int(profile.get("context_tokens") or 0)
+            if override > 0:
+                return override
+            # Look up in registry
+            reg_path = os.path.join(self.base_path, "appdata", "model_ctx_registry.json")
+            with open(reg_path, encoding="utf-8") as f:
+                reg = json.load(f)
+            provider = profile.get("provider", "").lower()
+            model = profile.get("model", "")
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            if ":" in model:
+                model = model.split(":")[0]
+            model_lc = model.lower()
+            section = reg.get(provider, {})
+            if not section:
+                return None
+            models = section.get("models", {})
+            for key, val in models.items():
+                if model_lc == key.lower():
+                    return val
+            for key, val in models.items():
+                if model == key:
+                    return val
+            for key, val in models.items():
+                if model_lc.startswith(key.lower()):
+                    return val
+            return section.get("default")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fmt_ctx(n):
+        if n >= 1_000_000:
+            v = n / 1_000_000
+            return f"{v:.0f}M" if v == int(v) else f"{v:.1f}M"
+        if n >= 1_000:
+            return f"{n // 1000}k"
+        return str(n)
+
+    def _on_psai_tok_changed(self, path):
+        if not self._psai_tok_watcher.files():
+            self._psai_tok_watcher.addPath(self._psai_tok_path)
+        try:
+            with open(self._psai_tok_path) as f:
+                content = f.read().strip()
+            n = int(content.split(":")[1])
+        except Exception:
+            return
+        lbl = self.widgets.get("prompt_token_label")
+        if lbl is None:
+            return
+        prompt_str = f"~{n:,}".replace(",", "\u202f")
+        ctx = self._get_active_ctx_window()
+        _normal_stylesheet = f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')}; font-size: 11px; background: transparent;"
+        if ctx:
+            pct = round(n / ctx * 100, 1)
+            if n > ctx:
+                pct_str = f"{pct:.0f}%"
+                lbl.setText(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
+                _err_color = self.actual_theme.get("background", {}).get("button_info_hover", "#ff5555")
+                lbl.setStyleSheet(f"color: {_err_color}; font-size: 11px; background: transparent;")
+            else:
+                steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
+                full   = steps // 2
+                half   = steps % 2
+                bar    = "▓" * full + "▒" * half + "░" * (10 - full - half)
+                pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
+                lbl.setText(f"{bar} {pct_str}")
+                lbl.setStyleSheet(_normal_stylesheet)
+        else:
+            lbl.setText(f"{prompt_str} tok")
+            lbl.setStyleSheet(_normal_stylesheet)
+        self._psai_tok_hide.stop()
+        self._psai_tok_hide.start(10_000)
+
+    def _hide_tok_label(self):
+        lbl = self.widgets.get("prompt_token_label")
+        if lbl is not None:
+            lbl.setText("PurrSh3ll")
+            _normal_stylesheet = f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')}; font-size: 11px; background: transparent;"
+            lbl.setStyleSheet(_normal_stylesheet)
 
     def load_themes(self):
         try:
@@ -496,7 +691,32 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
     def open_ai_settings(self):
         self._refresh_settings_agent_combos()
-        Controller.widgets["ai_settings_dialog"].exec()
+        dlg  = Controller.widgets["ai_settings_dialog"]
+        tabs = Controller.widgets.get("ai_settings_tabs")
+        try:
+            dlg.setStyleSheet(self.__class__.dialog_stylesheet)
+        except Exception:
+            pass
+        try:
+            if tabs is not None:
+                extra = (
+                    "QScrollArea { background: transparent; border: none; }"
+                    "QScrollArea > QWidget > QWidget { background: transparent; }"
+                    "QWidget#ai_settings_scroll_content { background: transparent; }"
+                )
+                tabs.setStyleSheet(
+                    self.__class__.tab_stylesheet +
+                    self.__class__.table_stylesheet +
+                    extra
+                )
+        except Exception:
+            pass
+        _cache_timer = Controller.widgets.get("ai_settings_cache_timer")
+        if _cache_timer is not None:
+            _cache_timer.start()
+        dlg.exec()
+        if _cache_timer is not None:
+            _cache_timer.stop()
 
     def _refresh_settings_agent_combos(self):
         import json, os

@@ -23,9 +23,8 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     return None
 
 
-def _load_recent_history(base_dir: str, token_budget: int, _ai) -> str:
-    """Load recent terminal history as formatted string, limited by token budget.
-    Returns entries in chronological order (oldest → newest)."""
+def _load_recent_history(base_dir: str) -> str:
+    """Load last 40 terminal history entries as formatted string (oldest → newest)."""
     path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
     try:
         with open(path, encoding="utf-8") as f:
@@ -40,26 +39,17 @@ def _load_recent_history(base_dir: str, token_budget: int, _ai) -> str:
         except Exception:
             pass
 
-    # Walk newest → oldest, accumulate within budget, then reverse for display
-    collected = []
-    used = 0
-    for entry in reversed(entries):
+    parts = []
+    for entry in entries[-40:]:
         ec  = entry.get("exit_code", 0)
         cmd = entry.get("cmd", "")
-        out = entry.get("output", "")[:400]  # cap per-entry output to keep things concise
+        out = entry.get("output", "")[:400]
         status = f"exit {ec}" if ec != 0 else "ok"
         part = f"$ {cmd} [{status}]"
         if out:
             part += f"\n{out}"
-        tokens = _ai._count_tokens(part)
-        if used + tokens > token_budget:
-            break
-        collected.append(part)
-        used += tokens
-
-    if not collected:
-        return ""
-    return "\n".join(reversed(collected))
+        parts.append(part)
+    return "\n".join(parts)
 
 
 def _clean_command(text: str) -> str:
@@ -112,9 +102,9 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(prog="psfix", add_help=False)
-    parser.add_argument("--explain",    action="store_true",
+    parser.add_argument("-e", "--explain", action="store_true",
                         help="Explain why the command failed")
-    parser.add_argument("--analyze",    action="store_true",
+    parser.add_argument("-a", "--analyze", action="store_true",
                         help="Deep analysis using terminal history and working directory")
     parser.add_argument("--paste-mode", action="store_true",
                         help="Suppress streaming; print only clean command to stdout (used internally)")
@@ -125,8 +115,8 @@ def main():
     parser.add_argument("--cmd",        default=None, metavar="CMD")
     parser.add_argument("--exit-code",  default=None, type=int, metavar="N")
     parser.add_argument("--output",     default=None, metavar="OUTPUT")
-    parser.add_argument("-m", "--model", default=None, metavar="MODEL",
-                        help="Override model from active profile")
+    parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
+                        dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -134,10 +124,10 @@ def main():
         print(
             "psfix — AI-powered terminal error explainer/fixer\n\n"
             "Usage:\n"
-            "  psfix                  Paste the corrected command at the prompt\n"
-            "  psfix --explain        Explain why the last command failed\n"
-            "  psfix --analyze        Deep analysis with terminal history and cwd context\n"
-            "  psfix -m <model>       Use a specific model\n\n"
+            "  psfix                      Paste the corrected command at the prompt\n"
+            "  psfix -e, --explain        Explain why the last command failed\n"
+            "  psfix -a, --analyze        Deep analysis with terminal history and cwd context\n"
+            "  psfix -p, --profile        Use a specific saved profile\n\n"
             "psfix reads the last entry from terminal history automatically.\n"
         )
         sys.exit(0)
@@ -151,9 +141,10 @@ def main():
     import psai as _ai
 
     config  = _ai._load_config(base_dir)
-    profile = _ai._active_profile(config)
+    profile = _ai._resolve_profile(config, args.profile)
     if not profile:
-        _ai._err("No active API profile. Set one in AI Settings > API Providers.")
+        if not args.profile:
+            _ai._err("No active API profile. Set one in AI Settings > API Providers.")
         sys.exit(1)
 
     api_key = _ai._load_api_key(profile.get("name", ""), base_dir)
@@ -178,17 +169,15 @@ def main():
 
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
-    model            = args.model or profile.get("model", "")
+    model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
-    ctx_tokens       = int(profile.get("context_tokens") or 0) or _ai._default_ctx(provider)
 
     # ── Analyze mode ──────────────────────────────────────────────────────────
     if args.analyze:
         cwd = (args.cwd or "").strip()
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        # Reserve half context for history; the rest covers prompt overhead + response
-        history_text = _load_recent_history(base_dir, ctx_tokens // 2, _ai)
+        history_text = _load_recent_history(base_dir)
 
         prompt = f"System: {sys_info}\n"
         if cwd:
@@ -206,6 +195,8 @@ def main():
             "At the very end, on a new line, write ONLY the corrected command "
             "with no prefix, no explanation, no backticks — just the raw command."
         )
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Analyzing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
@@ -226,7 +217,8 @@ def main():
 
     # ── Explain mode ──────────────────────────────────────────────────────────
     elif args.explain:
-        prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
+        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+        prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
         prompt += (
@@ -235,6 +227,8 @@ def main():
             "At the very end, on a new line, write ONLY the corrected command "
             "with no prefix, no explanation, no backticks — just the raw command."
         )
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Explaining: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
@@ -254,13 +248,16 @@ def main():
 
     # ── Fix mode ──────────────────────────────────────────────────────────────
     else:
-        prompt = f"Command: {cmd}\nExit code: {exit_code}\n"
+        sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+        prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
         prompt += (
             "\nReturn ONLY the corrected shell command. "
             "No explanation, no markdown, no backticks — just the raw command on a single line."
         )
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Fixing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
@@ -280,4 +277,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        sys.exit(130)

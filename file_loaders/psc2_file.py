@@ -5,7 +5,8 @@ import json
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QLineEdit,
     QPushButton, QSizePolicy, QStackedWidget, QScrollArea, QComboBox,
-    QGridLayout, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView
+    QGridLayout, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
+    QListView,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QMovie
@@ -138,6 +139,14 @@ class Psc2_file(QWidget):
 
             if widget_type == "combobox":
                 right = QComboBox()
+                try:
+                    right.setStyleSheet(self._controller.combo_stylesheet)
+                    _cv = QListView()
+                    _cv.setStyleSheet(self._controller.combo_view_stylesheet)
+                    right.setView(_cv)
+                    self._controller.__class__.tracked_combos.append(right)
+                except Exception:
+                    pass
                 if isinstance(value, list):
                     right.addItems([str(v) for v in value])
                 elif value is not None:

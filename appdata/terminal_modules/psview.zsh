@@ -5,11 +5,11 @@ psview() {
 psview — AI-powered screenshot / image analyzer
 
 Usage:
-  psview <image>                      Analyze image with default pentest prompt
-  psview <image> "<question>"         Ask a specific question about the image
-  psview <image> --cmd                Analyze and paste best command (image only, y/n)
-  psview <image> --next               Analyze and suggest next steps (full history, y/n)
-  psview -m <model> <image>           Use a specific model
+  psview <image>                          Analyze image with default pentest prompt
+  psview <image> "<question>"             Ask a specific question about the image
+  psview <image> -c, --cmd                Analyze and paste best command (image only, y/n)
+  psview <image> -N, --next               Analyze and suggest next steps (full history, y/n)
+  psview -p, --profile NAME <image>       Use a specific saved profile
 
 Supported formats: PNG, JPG, JPEG, WebP, GIF
 
@@ -32,7 +32,7 @@ EOF
         return 1
     fi
 
-    if [[ "$*" == *"--next"* ]] || [[ "$*" == *"--cmd"* ]]; then
+    if [[ "$*" == *"--next"* ]] || [[ "$*" == *" -N"* ]] || [[ "$*" == *"--cmd"* ]] || [[ "$*" == *" -c"* ]]; then
         # Stream analysis to terminal (via 2>/dev/tty),
         # capture best command on stdout, then ask y/n
         local _cmd
