@@ -10,6 +10,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **AI Settings → RAG tab**: Terminal snippets list now supports single-item deletion — click a snippet to select it, then press "Delete selected" (with confirmation dialog) to remove it from ChromaDB permanently
+- **AI Settings → RAG tab**: "Delete all snippets" button added next to "Delete selected" — removes all terminal snippets from the memory collection with a confirmation dialog
+- **AI Settings → RAG tab**: AI Settings dialog is now non-modal — main window remains accessible and interactive while AI Settings is open
+- **RAG index status label**: shows `⟳ Starting indexing…` immediately when indexing begins (both auto-index and manual Refresh index) — `QApplication.processEvents()` forces repaint before the worker thread starts so the label is visible before any potential freeze
+- **Terminal → Save selection to RAG memory**: RAG index status label near the voice button now shows `⟳ Saving to memory…` immediately on click, then `✔ Saved to memory` or `✖ Memory save failed` for 3 seconds after completion
+- **Terminal snippets preview**: increased from 30 to 40 characters
+
+### Fixed
+
+- **AI Settings → RAG tab**: checking an excluded file when "Enable automatic indexing" is off now sets the file status to `pending` instead of immediately triggering re-indexing; indexing will happen on the next manual "Refresh index" or when auto-indexing is re-enabled
+- **AI Settings → RAG tab**: RAG index status label and local dialog status now both visible immediately on Refresh index click — `QApplication.processEvents()` added before `worker.start()` in both `menu_builder.py` and `controller.py`
+
 - **Installer**: Ollama install retries up to 3 times on transient HTTP errors (504, 503, 502)
 - **Installer**: timer loop shows download percentage during Ollama install (`downloading: 42.3% (30s elapsed)`)
 - **Installer**: Docker image pulls show layer progress with total count (`8/47 layers done`) and download bytes per active layer

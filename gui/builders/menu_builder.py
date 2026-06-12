@@ -537,7 +537,7 @@ def build_menu(main_window):
 
         dlg = QDialog(main_window)
         dlg.setWindowTitle("AI Settings")
-        dlg.setModal(True)
+        dlg.setModal(False)
         dlg.setMinimumWidth(460)
         dlg.resize(480, 600)
 
@@ -1327,20 +1327,39 @@ def build_menu(main_window):
 
         memory_list = QListWidget(grp_rag)
         memory_list.setFixedHeight(6 * 24)
-        memory_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        memory_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         memory_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        form_kb.addRow("Terminal\nsnippets:", memory_list)
+
+        mem_del_btn = QPushButton("Delete selected")
+        mem_del_btn.setEnabled(False)
+        mem_clear_btn = QPushButton("Delete all snippets")
+
+        mem_btn_layout = QHBoxLayout()
+        mem_btn_layout.setContentsMargins(0, 0, 0, 0)
+        mem_btn_layout.setSpacing(4)
+        mem_btn_layout.addWidget(mem_del_btn)
+        mem_btn_layout.addWidget(mem_clear_btn)
+
+        mem_snippet_layout = QVBoxLayout()
+        mem_snippet_layout.setContentsMargins(0, 0, 0, 0)
+        mem_snippet_layout.setSpacing(2)
+        mem_snippet_layout.addWidget(memory_list)
+        mem_snippet_layout.addLayout(mem_btn_layout)
+        mem_snippet_widget = QWidget(grp_rag)
+        mem_snippet_widget.setLayout(mem_snippet_layout)
+        form_kb.addRow("Terminal\nsnippets:", mem_snippet_widget)
 
         def _mem_populate():
             memory_list.clear()
+            mem_del_btn.setEnabled(False)
             try:
                 from core.rag.indexer import get_memory_entries
                 entries = get_memory_entries(getattr(c, "base_path", _base_dir_rag))
             except Exception:
                 entries = []
             for entry in entries:
-                preview = entry["text"][:30].replace("\n", " ")
-                if len(entry["text"]) > 30:
+                preview = entry["text"][:40].replace("\n", " ")
+                if len(entry["text"]) > 40:
                     preview += "…"
                 item = QListWidgetItem(preview)
                 item.setData(Qt.ItemDataRole.UserRole, entry["id"])
@@ -1348,6 +1367,53 @@ def build_menu(main_window):
                 memory_list.addItem(item)
 
         _mem_populate()
+
+        def _on_mem_selection_changed():
+            mem_del_btn.setEnabled(bool(memory_list.selectedItems()))
+
+        def _on_mem_delete():
+            item = memory_list.currentItem()
+            if item is None:
+                return
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                grp_rag, "Delete snippet",
+                "Are you sure you want to delete the selected snippet?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            entry_id = item.data(Qt.ItemDataRole.UserRole)
+            try:
+                from core.rag.indexer import delete_memory_entry
+                delete_memory_entry(entry_id, getattr(c, "base_path", _base_dir_rag))
+            except Exception:
+                pass
+            _mem_populate()
+
+        def _on_mem_clear_all():
+            from PyQt6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                grp_rag, "Clear all snippets",
+                "Are you sure you want to delete all terminal snippets?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                from core.rag.indexer import get_memory_entries, delete_memory_entry
+                base = getattr(c, "base_path", _base_dir_rag)
+                for entry in get_memory_entries(base):
+                    delete_memory_entry(entry["id"], base)
+            except Exception:
+                pass
+            _mem_populate()
+
+        memory_list.itemSelectionChanged.connect(_on_mem_selection_changed)
+        mem_del_btn.clicked.connect(_on_mem_delete)
+        mem_clear_btn.clicked.connect(_on_mem_clear_all)
 
         def _load_file_meta() -> dict:
             if os.path.exists(_meta_path_ui):
@@ -1476,15 +1542,19 @@ def build_menu(main_window):
                     item.setText(f"  {rel}    {_STATUS_EXCLUDED}")
                     item.setForeground(files_list.palette().placeholderText())
                 else:
-                    # Include: remove from exclusions, trigger immediate re-index
+                    # Include: remove from exclusions
                     excluded.discard(rel)
                     save_exclusions(_excl_path, excluded)
-                    item.setText(f"  {rel}    ⟳ indexing…")
-                    item.setForeground(files_list.palette().mid())
+                    if rag_auto_checkbox.isChecked():
+                        item.setText(f"  {rel}    ⟳ indexing…")
+                        item.setForeground(files_list.palette().mid())
+                    else:
+                        item.setText(f"  {rel}    {_STATUS_PENDING}")
+                        item.setForeground(files_list.palette().mid())
             finally:
                 files_list.blockSignals(False)
 
-            if checked:
+            if checked and rag_auto_checkbox.isChecked():
                 _on_rag_reindex()
 
         files_list.itemChanged.connect(_on_file_item_changed)
@@ -1654,7 +1724,7 @@ def build_menu(main_window):
             c._rag_index_worker = worker
             rag_reindex_btn.setEnabled(False)
             rag_delete_btn.setEnabled(False)
-            rag_status_label.setText("Starting…")
+            rag_status_label.setText("⟳ Starting indexing…")
             spinner_timer = QTimer(dlg)
             spinner_timer.setInterval(100)
 
@@ -1704,6 +1774,15 @@ def build_menu(main_window):
                         global_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
 
                     QTimer.singleShot(5000, _reset_global)
+
+            global_lbl = c.widgets.get("rag_index_status_label")
+            if global_lbl is not None:
+                global_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+                global_lbl.setText("⟳ Starting indexing…")
+                global_lbl.show()
+                c.set_position_active_profile_combo()
+
+            QApplication.processEvents()
 
             worker.progress.connect(_on_progress)
             worker.finished.connect(_on_finished)

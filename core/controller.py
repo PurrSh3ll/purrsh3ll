@@ -298,6 +298,15 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
             QTimer.singleShot(5000, _reset)
 
+        lbl = self.widgets.get("rag_index_status_label")
+        if lbl is not None:
+            lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
+            lbl.setText("⟳ Starting indexing…")
+            lbl.show()
+            self.set_position_active_profile_combo()
+
+        QApplication.processEvents()
+
         worker.progress.connect(_show_rag_label)
         worker.finished.connect(_done)
         worker.start()
