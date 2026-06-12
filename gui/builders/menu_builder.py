@@ -1890,7 +1890,7 @@ def build_menu(main_window):
         import stat
 
         _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "gemini",
-                              "openrouter", "huggingface"]
+                              "openrouter", "huggingface", "llamacpp"]
         _PROVIDER_BASE_URL = {
             "ollama":       "http://localhost:11434",
             "openai":       "https://api.openai.com/v1",
@@ -1899,6 +1899,7 @@ def build_menu(main_window):
             "gemini":       "https://generativelanguage.googleapis.com/v1beta/openai",
             "openrouter":   "https://openrouter.ai/api/v1",
             "huggingface":  "https://router.huggingface.co/featherless-ai/v1",
+            "llamacpp":     "http://localhost:8080/v1",
             "custom":       "",
         }
         _base_dir_prov  = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
