@@ -263,7 +263,7 @@ Analysis results are saved to terminal history so `psnext` and `psreport` can us
 
 Open any file in the PurrSh3ll viewer directly from the terminal. The viewer is selected automatically based on file extension. If the path is a directory, it opens in the system file manager.
 
-Supported types: code/text files (py, sh, js, html, sql, json, md, csv, …), PDF, images (png, jpg, gif, webp, tiff, svg, …), audio (mp3, flac, wav, …), video (mp4, mkv, avi, …).
+Supported types: any text or code file, PDF, images, audio, video.
 
 ```bash
 psopen notes.md
