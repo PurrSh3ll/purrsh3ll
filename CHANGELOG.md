@@ -13,6 +13,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **AI Settings → Behavior**: new "Custom system prompt" checkbox — enter any text to be sent as the system message for that profile; combines with "Fast answers" (both texts merged into one system message)
 - **AI Settings → Settings**: "Max pschat turns" spinbox — configures how many past conversation turns `pschat` keeps in context (default 20, range 1–999)
 - **AI Settings → Settings**: "Max terminal turns" spinbox — configures how many terminal history entries are sent to `psreport` (standard mode), `psfix --analyze` and `psnext` (default 40, range 1–999)
+- **File tree**: drag-and-drop from system file manager now supported — files and folders are copied (not moved) to the drop target with a confirmation dialog; dropping on empty space copies to `usermodules/`
+- **API providers**: added llamacpp (`localhost:8080`), LM Studio (`localhost:1234`), Jan (`localhost:1337`), koboldcpp (`localhost:5001`), Mistral, DeepSeek, xAI, Cerebras, Together AI, Perplexity, Fireworks AI
+- **HuggingFace model fetch**: increased limit from 50 to 300 models
+- **Startup**: third-party library noise suppressed on stdout/stderr (onnxruntime, chromadb, fastembed, HuggingFace, PIL)
+- **uninstall.sh**: interactive uninstaller added — whiptail checklist to selectively remove venv, shortcuts, shell entries, user data, Docker images, Ollama models and app folder
+- **requirements.txt**: added with full list of Python dependencies for reference
 
 - **ps* tools**: `-m` / `--model` flag replaced by `-p` / `--profile` across all tools (`psai`, `pscmd`, `psfix`, `psnext`, `psrag`, `psreport`, `pstldr`, `psview`) — better reflects that the argument is a profile name, not a model name
 - **ps* tools**: short flag aliases added for all long-only flags where no conflicts exist — `-H`/`--host`, `-r`/`--rag`, `-n`/`--top-n`, `-s`/`--show-sources` (psrag), `-e`/`--explain`, `-a`/`--analyze` (psfix), `-t`/`--target`, `-r`/`--rag` (psnext), `-d`/`--deep`, `-v`/`--verbose`, `-f`/`--format`, `-t`/`--target`, `-T`/`--title` (psreport), `-c`/`--cmd`, `-N`/`--next` (psview), `-c`/`--clear` (pschat); flags without natural short forms or with conflicts remain long-only (`--new`, `--history`, `--full`, `--head`, `--tail`, `--paste-mode`)
