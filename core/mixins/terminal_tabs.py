@@ -262,6 +262,7 @@ class TerminalTabsMixin:
                 )
             menu.addSeparator()
             _act_rag = QAction("Save selection to RAG memory", menu)
+            _act_rag.triggered.connect(lambda checked=False, t=term: self._save_selection_to_rag(t))
             menu.addAction(_act_rag)
 
             menu.exec(term.mapToGlobal(pos))
@@ -1126,6 +1127,7 @@ class TerminalTabsMixin:
             menu.addAction(act_unsplit)
             menu.addSeparator()
             _act_rag_split = QAction("Save selection to RAG memory", menu)
+            _act_rag_split.triggered.connect(lambda checked=False, tt=t: self._save_selection_to_rag(tt))
             menu.addAction(_act_rag_split)
             menu.exec(t.mapToGlobal(pos))
 
@@ -1136,3 +1138,65 @@ class TerminalTabsMixin:
         self.wrapper_to_console[term] = term
 
         return term
+
+    def _save_selection_to_rag(self, term):
+        """Copy terminal selection, embed it into the 'memory' ChromaDB collection,
+        then refresh the Terminal snippets list in AI Settings if it is open."""
+        clip = QApplication.clipboard()
+        prev_text = clip.text()
+
+        try:
+            if hasattr(term, "copySelection"):
+                term.copySelection()
+            else:
+                return
+        except Exception:
+            return
+
+        selected = clip.text().strip()
+        clip.setText(prev_text)
+
+        if not selected:
+            return
+
+        base_path = getattr(self, "base_path", None)
+        if not base_path:
+            return
+
+        config = getattr(self, "config", {})
+        model_name = config.get("rag", {}).get("embedding_model", "")
+
+        import threading
+        from core.rag import indexer as _rag_idx
+        from core.rag import embedder as _emb
+
+        def _do_index():
+            try:
+                _rag_idx.add_to_memory(
+                    selected,
+                    base_path,
+                    model_name or _emb.DEFAULT_MODEL,
+                )
+            except Exception:
+                return
+            # Refresh the Terminal snippets list on the main thread if AI Settings is open
+            mem_list = self.widgets.get("ai_settings_memory_list")
+            if mem_list is not None:
+                QTimer.singleShot(0, lambda ml=mem_list: self._refresh_memory_list_widget(ml, base_path))
+
+        threading.Thread(target=_do_index, daemon=True).start()
+
+    def _refresh_memory_list_widget(self, mem_list, base_path: str):
+        from core.rag.indexer import get_memory_entries
+        mem_list.clear()
+        for entry in get_memory_entries(base_path):
+            ts = entry["meta"].get("timestamp", "")
+            time_str = ts[11:16] if len(ts) >= 16 else ""
+            preview = entry["text"][:70].replace("\n", " ")
+            if len(entry["text"]) > 70:
+                preview += "…"
+            label = f"[{time_str}]  {preview}" if time_str else preview
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, entry["id"])
+            item.setToolTip(entry["text"])
+            mem_list.addItem(item)

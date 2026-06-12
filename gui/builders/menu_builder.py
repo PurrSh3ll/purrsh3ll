@@ -1331,6 +1331,27 @@ def build_menu(main_window):
         memory_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         form_kb.addRow("Terminal\nsnippets:", memory_list)
 
+        def _mem_populate():
+            memory_list.clear()
+            try:
+                from core.rag.indexer import get_memory_entries
+                entries = get_memory_entries(getattr(c, "base_path", _base_dir_rag))
+            except Exception:
+                entries = []
+            for entry in entries:
+                ts = entry["meta"].get("timestamp", "")
+                time_str = ts[11:16] if len(ts) >= 16 else ""
+                preview = entry["text"][:70].replace("\n", " ")
+                if len(entry["text"]) > 70:
+                    preview += "…"
+                label = f"[{time_str}]  {preview}" if time_str else preview
+                item = QListWidgetItem(label)
+                item.setData(Qt.ItemDataRole.UserRole, entry["id"])
+                item.setToolTip(entry["text"])
+                memory_list.addItem(item)
+
+        _mem_populate()
+
         def _load_file_meta() -> dict:
             if os.path.exists(_meta_path_ui):
                 try:
@@ -2806,6 +2827,7 @@ def build_menu(main_window):
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
             c.register_widget("ai_settings_rag_model_combo",    rag_model_combo)
             c.register_widget("ai_settings_rag_rerank_combo",   rag_rerank_combo)
+            c.register_widget("ai_settings_memory_list",        memory_list)
             c.register_widget("ai_settings_cache_timer",        cache_refresh_timer)
         except Exception:
             pass
