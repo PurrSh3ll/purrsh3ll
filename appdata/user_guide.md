@@ -84,14 +84,14 @@ Ask the active AI profile a direct question.
 psask "what is SSRF and how to exploit it"
 psask "explain the output of this nmap scan: ..."
 psask -p llama3.2 "what is privilege escalation?"
-psask --rag "how to enumerate SMB shares"
-psask --rag -n 10 "lateral movement techniques"
+psask -r "how to enumerate SMB shares"
+psask -r -n 10 "lateral movement techniques"
 ```
 
 Flags:
-- `-p <profile>` — override the active profile
-- `--rag` — enrich the prompt with relevant chunks from the knowledge base
-- `-n <N>` — number of RAG chunks to include (default: 5, used with `--rag`)
+- `-p, --profile <profile>` — override the active profile
+- `-r, --rag` — enrich the prompt with relevant chunks from the knowledge base
+- `-n, --top-n <N>` — number of RAG chunks to include (default: 5, used with `--rag`)
 
 ---
 
@@ -103,18 +103,18 @@ Start a persistent interactive chat session. History is preserved between runs.
 pschat "let's analyze this target: 10.10.10.5"
 pschat --new
 pschat --history
-pschat --clear
-pschat --rag "what does my knowledge base say about SMB?"
+pschat -c
+pschat -r "what does my knowledge base say about SMB?"
 pschat -p gemma3 "continue our analysis"
 ```
 
 Flags:
 - `--new` — clear history and start a new session
-- `--clear` — clear history and exit
+- `-c, --clear` — clear history and exit
 - `--history` — show current conversation history
-- `--rag` — enrich the message with RAG context
-- `-n <N>` — number of RAG chunks (default: 5)
-- `-p <profile>` — override the active profile
+- `-r, --rag` — enrich the message with RAG context
+- `-n, --top-n <N>` — number of RAG chunks (default: 5)
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
@@ -140,14 +140,14 @@ Reads the last failed command from terminal history and asks the AI to explain t
 
 ```bash
 psfix
-psfix --explain
-psfix --analyze
+psfix -e
+psfix -a
 ```
 
 Flags:
-- `--explain` — explain why the command failed without suggesting a fix
-- `--analyze` — deep mode with full terminal history and current directory context
-- `-p <profile>` — override the active profile
+- `-e, --explain` — explain why the command failed without suggesting a fix
+- `-a, --analyze` — deep mode with full terminal history and current directory context
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
@@ -157,13 +157,15 @@ Reads recent terminal history and suggests the most promising next steps for the
 
 ```bash
 psnext
-psnext --target 192.168.1.0/24
+psnext -t 192.168.1.0/24
 psnext -p llama3.2
 ```
 
 Flags:
-- `--target <TARGET>` — specify the target IP, hostname, or range for better suggestions
-- `-p <profile>` — override the active profile
+- `-t, --target <TARGET>` — specify the target IP, hostname, or range for better suggestions
+- `-r, --rag` — enrich with knowledge base context
+- `-n, --top-n <N>` — number of RAG chunks (default: 5, used with `--rag`)
+- `-p, --profile <profile>` — override the active profile
 
 Useful when you are stuck or want a second opinion on attack paths.
 
@@ -176,8 +178,15 @@ Query your local knowledge base and receive an AI-synthesized answer enriched wi
 ```bash
 psrag "how to enumerate SMB shares"
 psrag "SQL injection bypass techniques"
-psrag "lateral movement techniques"
+psrag -n 10 "lateral movement techniques"
+psrag -s "how to enumerate subdomains"
 ```
+
+Flags:
+- `-n, --top-n <N>` — number of context chunks to retrieve (default: 5)
+- `-s, --show-sources` — print source filenames and relevance scores before the answer
+- `-H, --host <URL>` — provider host/base URL override
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
@@ -187,23 +196,23 @@ Generate a structured Markdown or HTML pentest report from terminal history. Rep
 
 ```bash
 psreport
-psreport --deep
+psreport -d
 psreport --full
-psreport --verbose
-psreport --format html
-psreport --target 192.168.1.0/24
-psreport --title "Internal Network Pentest"
-psreport --target 10.10.10.5 --format html --verbose
+psreport -v
+psreport -f html
+psreport -t 192.168.1.0/24
+psreport -T "Internal Network Pentest"
+psreport -t 10.10.10.5 -f html -v
 ```
 
 Flags:
-- `--deep` — Map-Reduce mode: processes full history in chunks (N+1 LLM calls, thorough)
+- `-d, --deep` — Map-Reduce mode: processes full history in chunks (N+1 LLM calls, thorough)
 - `--full` — include full history without smart-filtering for pentest keywords
-- `--verbose` — stream the report to terminal while saving
-- `--format md|html` — output format (default: md)
-- `--target <TARGET>` — target IP or range shown in report header
-- `--title <TITLE>` — custom report title
-- `-p <profile>` — override the active profile
+- `-v, --verbose` — stream the report to terminal while saving
+- `-f, --format md|html` — output format (default: md)
+- `-t, --target <TARGET>` — target IP or range shown in report header
+- `-T, --title <TITLE>` — custom report title
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
@@ -215,13 +224,15 @@ Summarize the last command output, a file, or piped input.
 pstldr
 pstldr report.txt
 pstldr --tail /var/log/syslog
+pstldr --tail 8000 /var/log/syslog
 nmap -sV 10.10.10.1 | pstldr
 pstldr -p gemma3 report.txt
 ```
 
 Flags:
-- `--tail` — read from the end of the file (useful for logs)
-- `-p <profile>` — override the active profile
+- `--head [N]` — send only the first N characters to the model (default: 4000)
+- `--tail [N]` — send only the last N characters to the model (default: 4000, useful for logs)
+- `-p, --profile <profile>` — override the active profile
 
 ---
 
