@@ -651,9 +651,15 @@ def build_chat_panel(main_window):
         model = profile.get("model", "")
         env_prefix = ""
         flags = []
-        # fast_answers → --system with brevity instruction
+        # custom_system / fast_answers → --system flag (combined if both set)
+        _sys_parts = []
+        if profile.get("custom_system", "").strip():
+            _sys_parts.append(profile["custom_system"].strip())
         if profile.get("fast_answers"):
-            flags.append('--system "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."')
+            _sys_parts.append("Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations.")
+        if _sys_parts:
+            import shlex
+            flags.append(f"--system {shlex.quote(chr(10).join(_sys_parts))}")
         # disable_thinking checkbox → --think=false
         if profile.get("disable_thinking"):
             flags.append("--think=false")

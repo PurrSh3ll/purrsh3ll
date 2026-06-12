@@ -175,6 +175,9 @@ def _load_api_key(profile_name: str, base_dir: str) -> str:
         return ""
 
 
+_FAST_BRIEF = "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
+
+
 def _parse_custom_params(profile: dict) -> dict | None:
     raw = profile.get("custom_params", "")
     if not raw:
@@ -683,6 +686,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     url      = args.host or profile.get("url", "") or _DEFAULT_URLS.get(provider, "")
 
     custom_params    = _parse_custom_params(profile)
+    custom_system    = profile.get("custom_system", "").strip()
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking",    False))
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
@@ -694,13 +698,20 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
         if enriched:
             query = enriched
 
+    sys_parts = []
+    if custom_system:
+        sys_parts.append(custom_system)
     if fast_answers:
-        query += "\n\nAnswer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."
+        sys_parts.append(_FAST_BRIEF)
+
+    msgs = []
+    if sys_parts:
+        msgs.append({"role": "system", "content": "\n\n".join(sys_parts)})
+    msgs.append({"role": "user", "content": query})
 
     if _SHOW_QUERYING:
         _info(f"Querying {model} via {provider}…\n")
-    _run_llm(provider, model, [{"role": "user", "content": query}],
-             url, api_key, disable_thinking, custom_params, hide_thinking)
+    _run_llm(provider, model, msgs, url, api_key, disable_thinking, custom_params, hide_thinking)
 
 
 # ── Mode: chat ────────────────────────────────────────────────────────────────
@@ -712,6 +723,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     name     = profile.get("name", "default")
 
     custom_params    = _parse_custom_params(profile)
+    custom_system    = profile.get("custom_system", "").strip()
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking",    False))
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
@@ -757,8 +769,13 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     # Build messages for API: keep last _MAX_HISTORY messages, replace last with RAG version if needed
     # Strip non-API fields (e.g. 'model') — some providers reject unknown properties
     msgs_to_send = [{"role": m["role"], "content": m["content"]} for m in history[-_MAX_HISTORY:]]
-    if fast_answers and not any(m["role"] == "system" for m in msgs_to_send):
-        msgs_to_send = [{"role": "system", "content": "Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations."}] + msgs_to_send
+    if (custom_system or fast_answers) and not any(m["role"] == "system" for m in msgs_to_send):
+        sys_parts = []
+        if custom_system:
+            sys_parts.append(custom_system)
+        if fast_answers:
+            sys_parts.append(_FAST_BRIEF)
+        msgs_to_send = [{"role": "system", "content": "\n\n".join(sys_parts)}] + msgs_to_send
     if query_for_api != query and msgs_to_send:
         msgs_to_send[-1] = {"role": "user", "content": query_for_api}
 
