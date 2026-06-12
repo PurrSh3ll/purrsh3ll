@@ -75,6 +75,10 @@ def main():
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("-m", "--model", default=None, metavar="PROFILE",
                         help="Use a specific saved profile by name")
+    parser.add_argument("--head", nargs="?", const=4000, type=int, metavar="N",
+                        help="Send only the first N characters (default 4000)")
+    parser.add_argument("--tail", nargs="?", const=4000, type=int, metavar="N",
+                        help="Send only the last N characters (default 4000)")
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -82,10 +86,12 @@ def main():
         print(
             "pstldr — AI-powered TL;DR summarizer\n\n"
             "Usage:\n"
-            "  pstldr <file>              Summarize a text or PDF file\n"
-            "  pstldr \"<text>\"            Summarize text passed directly\n"
-            "  cat file | pstldr          Summarize piped input\n"
-            "  pstldr -m <profile> <file> Use a specific saved profile\n\n"
+            "  pstldr <file>                Summarize a text or PDF file\n"
+            "  pstldr \"<text>\"              Summarize text passed directly\n"
+            "  cat file | pstldr            Summarize piped input\n"
+            "  pstldr -m <profile> <file>   Use a specific saved profile\n"
+            "  pstldr --head [N] <file>     Send only the first N chars (default 4000)\n"
+            "  pstldr --tail [N] <file>     Send only the last N chars (default 4000, useful for logs)\n\n"
             "Supported file types: plain text, PDF (requires pymupdf or pypdf)\n"
         )
         sys.exit(0)
@@ -152,6 +158,11 @@ def main():
     if not content:
         _ai._err("Input is empty — nothing to summarize.")
         sys.exit(1)
+
+    if args.head is not None:
+        content = content[:args.head]
+    elif args.tail is not None:
+        content = content[-args.tail:]
 
     # ── Build prompt ───────────────────────────────────────────────────────────
     prompt = (

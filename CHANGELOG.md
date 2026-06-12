@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **pstldr**: `--head [N]` flag — send only the first N characters to the model (default 4000); `--tail [N]` flag — send only the last N characters (default 4000, useful for logs); both accept an optional character count; no flag sends the full content as before
 - **AI Settings → RAG tab**: Terminal snippets list now supports single-item deletion — click a snippet to select it, then press "Delete selected" (with confirmation dialog) to remove it from ChromaDB permanently
 - **AI Settings → RAG tab**: "Delete all snippets" button added next to "Delete selected" — removes all terminal snippets from the memory collection with a confirmation dialog
 - **AI Settings → RAG tab**: AI Settings dialog is now non-modal — main window remains accessible and interactive while AI Settings is open
