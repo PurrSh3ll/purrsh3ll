@@ -672,6 +672,27 @@ def build_menu(main_window):
 
         psfix_popup_checkbox.stateChanged.connect(_on_psfix_popup_changed)
 
+        chat_history_spin = QSpinBox(grp_pstools)
+        chat_history_spin.setRange(1, 999)
+        chat_history_spin.setSingleStep(1)
+        chat_history_spin.setValue(int(llama_cfg.get("chat_max_history", 20)))
+        chat_history_spin.setMinimumWidth(80)
+
+        chat_history_reset_btn = QPushButton("Default", grp_pstools)
+        chat_history_reset_btn.setFixedWidth(60)
+        chat_history_reset_btn.clicked.connect(lambda: chat_history_spin.setValue(20))
+
+        chat_history_row = QHBoxLayout()
+        chat_history_row.addWidget(chat_history_spin)
+        chat_history_row.addWidget(chat_history_reset_btn)
+        chat_history_row.addStretch(1)
+        form_pstools.addRow("Chat history\n(messages):", chat_history_row)
+
+        def _on_chat_history_changed(value):
+            _save_llama_key("chat_max_history", value)
+
+        chat_history_spin.valueChanged.connect(_on_chat_history_changed)
+
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         grp_rag_layout = QVBoxLayout(grp_rag)

@@ -80,7 +80,7 @@ _DEFAULT_URLS = {
     "huggingface": "https://router.huggingface.co/featherless-ai/v1",
 }
 
-_MAX_HISTORY = 40  # max messages kept in chat session (20 turns)
+_MAX_HISTORY = 40  # max messages kept in chat session (20 turns); overridden by config
 
 
 # ── Display flags (set by _load_config, read by external scripts via _ai._SHOW_*) ──
@@ -116,7 +116,7 @@ def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def _load_config(base_dir: str) -> dict:
-    global _SHOW_STATS, _SHOW_QUERYING
+    global _SHOW_STATS, _SHOW_QUERYING, _MAX_HISTORY
     try:
         with open(os.path.join(base_dir, "appdata", "app_config.json"), encoding="utf-8") as f:
             cfg = json.load(f)
@@ -132,6 +132,7 @@ def _load_config(base_dir: str) -> dict:
     _llama = cfg.get("llama", {})
     _SHOW_STATS    = bool(_llama.get("psai_show_stats",    True))
     _SHOW_QUERYING = bool(_llama.get("psai_show_querying", True))
+    _MAX_HISTORY   = int(_llama.get("chat_max_history", 20)) * 2
     return cfg
 
 
@@ -640,9 +641,8 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
 
 # ── Chat session ──────────────────────────────────────────────────────────────
 
-def _session_path(base_dir: str, profile_name: str) -> str:
-    safe = re.sub(r"[^\w\-]", "_", profile_name)
-    return os.path.join(base_dir, "appdata", "chat_sessions", f"{safe}.json")
+def _session_path(base_dir: str, profile_name: str = "") -> str:
+    return os.path.join(base_dir, "appdata", "chat_sessions", "global.json")
 
 
 def _load_session(base_dir: str, profile_name: str) -> list:
