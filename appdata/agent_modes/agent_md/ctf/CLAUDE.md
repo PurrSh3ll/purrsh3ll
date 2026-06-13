@@ -16,26 +16,6 @@ Goal: **find user.txt and root.txt flags** (or equivalent) as efficiently as pos
 
 ---
 
-## Skills Usage
-
-If skills are available in the environment, always use them before writing any code or creating files.
-
-```bash
-ls /mnt/skills/public/
-ls /mnt/skills/user/       # user skills have priority
-ls /mnt/skills/examples/
-```
-
-| Task | Skill to load first |
-|------|---------------------|
-| Write notes / writeup (.md) | `/mnt/skills/public/docx/SKILL.md` |
-| Generate PDF writeup | `/mnt/skills/public/pdf/SKILL.md` |
-| Read uploaded files | `/mnt/skills/public/file-reading/SKILL.md` |
-
-Always `view` the SKILL.md before creating any file.
-
----
-
 ## Goal
 
 If `goal.md` exists in the working directory, read it before taking any action — it defines the target, the information to gather from the user, and the stop condition for this session.
