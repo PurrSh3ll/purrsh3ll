@@ -155,6 +155,10 @@ def build_tree_tab_styles(bg, fg, bd, gl) -> dict:
             background-color: {bg.get("table_alt", "#3D3D40")};
             color: {fg.get("text", "#ffffff")};
         }}
+        QTableWidget::item:alternate:selected, QTableView::item:alternate:selected {{
+            background-color: {bg.get("buttons_pressed", "#2C5F8F")};
+            color: {fg.get("table_selected", "#ffffff")};
+        }}
         QHeaderView::section {{
             background-color: {bg.get("table_header", "#2B2D30")};
             color: {fg.get("text", "#ffffff")};
