@@ -3,14 +3,16 @@
 pshistory — query the PurrSh3ll terminal history SQLite database.
 
 Usage:
-  pshistory                    — show last 20 commands
-  pshistory -n 50              — show last 50 commands
-  pshistory -s                 — list sessions
-  pshistory --session 3        — show commands in session 3
-  pshistory -q nmap            — search commands/output for 'nmap'
-  pshistory --findings         — show all findings
-  pshistory --stats            — show DB stats
-  pshistory --db /path/to/db   — use a custom DB path
+  pshistory                    show last 20 commands
+  pshistory -n 50              show last 50 commands
+  pshistory --all              show full history (all commands)
+  pshistory -q nmap            search commands/output for 'nmap'
+  pshistory --findings         show all findings
+  pshistory --stats            show DB statistics
+  pshistory --show 42          show full output of command id=42
+  pshistory --clear            delete entire history (asks for confirmation)
+  pshistory --clear -y         delete without confirmation
+  pshistory --db /path/to.db   use a custom DB path
 """
 
 import argparse
@@ -41,6 +43,11 @@ def _trunc(text, n=80):
     return text[:n] + "…" if len(text) > n else text
 
 
+def _ec(row):
+    ec = row['exit_code']
+    return str(ec) if ec is not None else '?'
+
+
 def _connect(db_path):
     if not os.path.exists(db_path):
         print(f"[pshistory] DB not found: {db_path}", file=sys.stderr)
@@ -51,42 +58,33 @@ def _connect(db_path):
     return conn
 
 
-def cmd_list(conn, n, session_id):
-    if session_id is not None:
-        rows = conn.execute(
-            "SELECT * FROM commands WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
-            (session_id, n)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM commands ORDER BY ts DESC LIMIT ?", (n,)
-        ).fetchall()
+def _print_commands(rows):
+    print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND")
+    print("-" * 100)
+    for r in rows:
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {_ec(r):>4}  "
+              f"{(r['terminal'] or ''):12}  {_trunc(r['cmd'], 60)}")
 
+
+def cmd_list(conn, n):
+    rows = conn.execute(
+        "SELECT * FROM commands ORDER BY ts DESC LIMIT ?", (n,)
+    ).fetchall()
     rows = list(reversed(rows))
     if not rows:
         print("No commands found.")
         return
+    _print_commands(rows)
 
-    print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND")
+
+def cmd_all(conn):
+    total = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+    rows = conn.execute("SELECT * FROM commands ORDER BY ts ASC").fetchall()
+    print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND  ({total} total)")
     print("-" * 100)
     for r in rows:
-        ec = r['exit_code']
-        ec_str = str(ec) if ec is not None else '?'
-        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {ec_str:>4}  "
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {_ec(r):>4}  "
               f"{(r['terminal'] or ''):12}  {_trunc(r['cmd'], 60)}")
-
-
-def cmd_sessions(conn):
-    rows = conn.execute("SELECT * FROM sessions ORDER BY started_at DESC LIMIT 50").fetchall()
-    if not rows:
-        print("No sessions found.")
-        return
-
-    print(f"{'ID':>4}  {'STARTED':19}  {'ENDED':19}  {'MODE':10}  {'TARGET':16}  LABEL")
-    print("-" * 100)
-    for r in rows:
-        print(f"{r['id']:>4}  {_ts(r['started_at']):19}  {_ts(r['ended_at']):19}  "
-              f"{(r['mode'] or ''):10}  {(r['target_ip'] or ''):16}  {r['label'] or ''}")
 
 
 def cmd_search(conn, pattern, n):
@@ -96,39 +94,26 @@ def cmd_search(conn, pattern, n):
         (like, like, n)
     ).fetchall()
     rows = list(reversed(rows))
-
     if not rows:
         print(f"No results for '{pattern}'.")
         return
-
     print(f"Found {len(rows)} result(s) for '{pattern}':\n")
     print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  COMMAND")
     print("-" * 100)
     for r in rows:
-        ec = r['exit_code']
-        ec_str = str(ec) if ec is not None else '?'
-        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {ec_str:>4}  "
-              f"{_trunc(r['cmd'], 60)}")
-        if r['output']:
-            for line in (r['output'] or "").split("\n"):
-                if pattern.lower() in line.lower():
-                    print(f"{'':>6}  {'':19}        ↳ {_trunc(line, 70)}")
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {_ec(r):>4}  {_trunc(r['cmd'], 60)}")
+        for line in (r['output'] or "").split("\n"):
+            if pattern.lower() in line.lower():
+                print(f"{'':>6}  {'':19}        ↳ {_trunc(line, 70)}")
 
 
-def cmd_findings(conn, session_id):
-    if session_id is not None:
-        rows = conn.execute(
-            "SELECT * FROM findings WHERE session_id = ? ORDER BY ts DESC", (session_id,)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM findings ORDER BY ts DESC LIMIT 200"
-        ).fetchall()
-
+def cmd_findings(conn):
+    rows = conn.execute(
+        "SELECT * FROM findings ORDER BY ts DESC LIMIT 200"
+    ).fetchall()
     if not rows:
         print("No findings found.")
         return
-
     print(f"{'ID':>5}  {'TYPE':12}  {'TARGET':16}  {'PORT':>5}  VALUE")
     print("-" * 100)
     for r in rows:
@@ -137,16 +122,14 @@ def cmd_findings(conn, session_id):
 
 
 def cmd_stats(conn):
-    n_cmd = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-    n_ses = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    n_cmd  = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
     n_find = conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0]
     n_tags = conn.execute("SELECT COUNT(*) FROM command_tags").fetchone()[0]
-    n_tgt = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+    n_tgt  = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
     n_ports = conn.execute("SELECT COUNT(*) FROM target_ports").fetchone()[0]
 
     print("PurrSh3ll terminal history DB stats")
     print(f"  Commands : {n_cmd}")
-    print(f"  Sessions : {n_ses}")
     print(f"  Findings : {n_find}")
     print(f"  Tags     : {n_tags}")
     print(f"  Targets  : {n_tgt}")
@@ -160,7 +143,7 @@ def cmd_stats(conn):
         for r in top_tags:
             print(f"    {r['tag']:20} {r['c']}")
 
-    exit_ok = conn.execute("SELECT COUNT(*) FROM commands WHERE exit_code = 0").fetchone()[0]
+    exit_ok  = conn.execute("SELECT COUNT(*) FROM commands WHERE exit_code = 0").fetchone()[0]
     exit_err = conn.execute("SELECT COUNT(*) FROM commands WHERE exit_code != 0 AND exit_code IS NOT NULL").fetchone()[0]
     print(f"\n  Exit 0   : {exit_ok}")
     print(f"  Exit !=0 : {exit_err}")
@@ -175,7 +158,6 @@ def cmd_show(conn, cmd_id):
         "SELECT tag FROM command_tags WHERE command_id = ? ORDER BY tag", (cmd_id,)
     ).fetchall()]
     print(f"ID        : {row['id']}")
-    print(f"Session   : {row['session_id']}")
     print(f"Terminal  : {row['terminal']}")
     print(f"Time      : {_ts(row['ts'])} → {_ts(row['ts_end'])}  ({row['duration_ms']} ms)")
     print(f"Exit code : {row['exit_code']}")
@@ -186,101 +168,56 @@ def cmd_show(conn, cmd_id):
         print(f"Output ({row['output_size']} bytes):\n{row['output']}")
 
 
-def cmd_all(conn, session_id):
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM commands" +
-        (" WHERE session_id = ?" if session_id is not None else ""),
-        (session_id,) if session_id is not None else ()
-    ).fetchone()[0]
-
-    it = conn.execute(
-        "SELECT * FROM commands" +
-        (" WHERE session_id = ?" if session_id is not None else "") +
-        " ORDER BY ts ASC",
-        (session_id,) if session_id is not None else ()
-    )
-    print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND  ({rows} total)")
-    print("-" * 100)
-    for r in it:
-        ec = r['exit_code']
-        ec_str = str(ec) if ec is not None else '?'
-        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {ec_str:>4}  "
-              f"{(r['terminal'] or ''):12}  {_trunc(r['cmd'], 60)}")
-
-
-def cmd_clear(conn, db_path, session_id, yes):
-    if session_id is not None:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM commands WHERE session_id = ?", (session_id,)
-        ).fetchone()[0]
-        target = f"session {session_id} ({count} commands)"
-    else:
-        count = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
-        target = f"ALL history ({count} commands, all sessions, findings, targets)"
-
+def cmd_clear(conn, yes):
+    count = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
     if not yes:
-        print(f"This will permanently delete {target}.")
+        print(f"This will permanently delete ALL history ({count} commands, findings, targets).")
         answer = input("Type 'yes' to confirm: ").strip().lower()
         if answer != "yes":
             print("Aborted.")
             return
-
-    conn.execute("PRAGMA foreign_keys = ON")
-    if session_id is not None:
-        conn.execute("DELETE FROM commands WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM findings WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM targets WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        conn.commit()
-        print(f"Deleted session {session_id} and its data.")
-    else:
-        conn.executescript("""
-            PRAGMA foreign_keys = ON;
-            DELETE FROM command_tags;
-            DELETE FROM findings;
-            DELETE FROM target_ports;
-            DELETE FROM targets;
-            DELETE FROM commands;
-            DELETE FROM sessions;
-            DELETE FROM sqlite_sequence;
-        """)
-        conn.commit()
-        print(f"History cleared ({count} commands deleted). ID counter reset to 1.")
+    conn.executescript("""
+        PRAGMA foreign_keys = ON;
+        DELETE FROM command_tags;
+        DELETE FROM findings;
+        DELETE FROM target_ports;
+        DELETE FROM targets;
+        DELETE FROM commands;
+        DELETE FROM sqlite_sequence;
+    """)
+    conn.commit()
+    print(f"History cleared ({count} commands deleted). ID counter reset to 1.")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Query PurrSh3ll terminal history DB")
     ap.add_argument("--db", default=DEFAULT_DB, help="Path to terminal_history.db")
     ap.add_argument("-n", type=int, default=20, help="Number of results (default 20)")
-    ap.add_argument("-s", "--sessions", action="store_true", help="List sessions")
-    ap.add_argument("--session", type=int, default=None, metavar="ID", help="Filter by session ID")
     ap.add_argument("-q", "--search", metavar="PATTERN", help="Search commands and output")
+    ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history")
     ap.add_argument("--findings", action="store_true", help="Show findings")
     ap.add_argument("--stats", action="store_true", help="Show DB statistics")
-    ap.add_argument("--show", type=int, metavar="ID", help="Show full details of a command by ID")
-    ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history (all commands)")
-    ap.add_argument("--clear", action="store_true", help="Delete history (all or --session ID)")
-    ap.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt for --clear")
+    ap.add_argument("--show", type=int, metavar="ID", help="Show full details of command by ID")
+    ap.add_argument("--clear", action="store_true", help="Delete entire history")
+    ap.add_argument("-y", "--yes", action="store_true", help="Skip confirmation for --clear")
     args = ap.parse_args()
 
     conn = _connect(args.db)
 
     if args.clear:
-        cmd_clear(conn, args.db, args.session, args.yes)
-    elif args.sessions:
-        cmd_sessions(conn)
+        cmd_clear(conn, args.yes)
     elif args.show_all:
-        cmd_all(conn, args.session)
+        cmd_all(conn)
     elif args.search:
         cmd_search(conn, args.search, args.n)
     elif args.findings:
-        cmd_findings(conn, args.session)
+        cmd_findings(conn)
     elif args.stats:
         cmd_stats(conn)
     elif args.show is not None:
         cmd_show(conn, args.show)
     else:
-        cmd_list(conn, args.n, args.session)
+        cmd_list(conn, args.n)
 
     conn.close()
 
