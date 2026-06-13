@@ -630,7 +630,7 @@ def build_menu(main_window):
         _saved_skills = llama_cfg.get("skills_set", "")
         if _saved_skills in _skills:
             settings_skills_combo.setCurrentText(_saved_skills)
-        form_llm.addRow("Skills & agents:", settings_skills_combo)
+        form_llm.addRow("Skills & Agents:", settings_skills_combo)
 
         _goals_dir = os.path.join(c.base_path, "appdata", "agent_modes", "goals")
         _goals = []
