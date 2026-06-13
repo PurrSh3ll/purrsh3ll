@@ -10,17 +10,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- **Agent modes**: renamed `ctf_mode` → `ctf` and `pentest_mode` → `pentest`; added `ctf_skills` and `pentest_skills` — lightweight CLAUDE.md files optimised for use with Claude Code skills and subagents; route each engagement phase to available `.claude/skills/` and `.claude/agents/` instead of inline cheat-sheets
-- **Terminal history awareness**: all four agent CLAUDE.md files (`ctf`, `pentest`, `ctf_skills`, `pentest_skills`) now instruct the agent to read `./terminal_history.jsonl` before any task — gives the agent visibility into what the user has already executed in PurrSh3ll terminals; replaces the standalone `terminal-history-reader` skill
-
-### Removed
-
-- **default skills folder**: removed `appdata/agent_modes/skills/default/` and its `terminal-history-reader` SKILL.md — terminal history awareness is now a behavioural instruction baked directly into each agent CLAUDE.md file
-
----
-
-### Added
-
 - **Image viewer**: new file loader for images — supports PNG, JPG, GIF, BMP, WEBP, TIFF, SVG, ICO and other Qt-native formats; animated GIF/WEBP via QMovie; zoom toolbar (Fit / 1:1 / +/− / Ctrl+Scroll); Info dialog with EXIF metadata (exiftool) and MD5/SHA256 integrity hashes; static GIF/WEBP use SmoothTransformation for quality zoom; SVG rendered via QSvgRenderer, TIFF via Pillow fallback
 - **Skills & agents**: added 5 MIT-licensed cybersecurity skill sets to the dropdown — `secskills` (16 skills + 6 subagents), `cybersecurity-claude-skills` (4 skills), `communitytools` (38 skills with reference docs), `claude-code-owasp` (OWASP Top 10:2025 + ASVS 5.0), `pentest-ai-agents` (36 specialised subagents)
 - **Agent Configuration / AI Settings**: "Skills set" label renamed to "Skills & agents" — reflects that a set can contain both Claude Code skills (`.claude/skills/`) and subagents (`.claude/agents/`)
@@ -35,6 +24,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Startup**: third-party library noise suppressed on stdout/stderr (onnxruntime, chromadb, fastembed, HuggingFace, PIL)
 - **uninstall.sh**: interactive uninstaller added — whiptail checklist to selectively remove venv, shortcuts, shell entries, user data, Docker images, Ollama models and app folder
 - **requirements.txt**: added with full list of Python dependencies for reference
+- **Agent modes**: renamed `ctf_mode` → `ctf` and `pentest_mode` → `pentest`; added `ctf_skills` and `pentest_skills` — lightweight CLAUDE.md files optimised for use with Claude Code skills and subagents; route each engagement phase to available `.claude/skills/` and `.claude/agents/` instead of inline cheat-sheets
+- **Terminal history awareness**: all four agent CLAUDE.md files (`ctf`, `pentest`, `ctf_skills`, `pentest_skills`) now instruct the agent to read `./terminal_history.jsonl` before any task — gives the agent visibility into what the user has already executed in PurrSh3ll terminals
+
+### Removed
+
+- **default skills folder**: removed `appdata/agent_modes/skills/default/` and its `terminal-history-reader` SKILL.md — terminal history awareness is now a behavioural instruction baked directly into each agent CLAUDE.md file
 
 ---
 
