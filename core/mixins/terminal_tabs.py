@@ -38,6 +38,12 @@ def _force_term_repaint(term):
             pass
 
 
+_PURRSH_TOOLS = frozenset({
+    "psfix", "psnext", "psreport", "psrag", "pshistory",
+    "pshelp", "pstldr", "psai", "pscmd", "psopen",
+})
+
+
 class TerminalTabsMixin:
     def _get_term_db(self):
         """Return a shared TerminalHistoryDB instance, initialised lazily."""
@@ -129,20 +135,22 @@ class TerminalTabsMixin:
                                 pass
                         except Exception:
                             logger.error("Failed to write terminal history to %s", log_path, exc_info=True)
-                        try:
-                            _db = self._get_term_db()
-                            if _db is not None:
-                                _db.insert_command(
-                                    ts=entry["ts"],
-                                    ts_end=entry["ts_end"],
-                                    terminal=entry["terminal"],
-                                    cmd=entry["cmd"],
-                                    exit_code=entry["exit_code"],
-                                    output=entry["output"],
-                                    cwd=_state.get("cwd") or None,
-                                )
-                        except Exception:
-                            logger.error("Failed to write terminal history to DB", exc_info=True)
+                        _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
+                        if _cmd_name not in _PURRSH_TOOLS:
+                            try:
+                                _db = self._get_term_db()
+                                if _db is not None:
+                                    _db.insert_command(
+                                        ts=entry["ts"],
+                                        ts_end=entry["ts_end"],
+                                        terminal=entry["terminal"],
+                                        cmd=entry["cmd"],
+                                        exit_code=entry["exit_code"],
+                                        output=entry["output"],
+                                        cwd=_state.get("cwd") or None,
+                                    )
+                            except Exception:
+                                logger.error("Failed to write terminal history to DB", exc_info=True)
                     # Show or hide error overlay
                     _w = _wrapper_ref[0]
                     if _w is not None:
@@ -1153,20 +1161,22 @@ class TerminalTabsMixin:
                                 pass
                         except Exception:
                             pass
-                        try:
-                            _db = self._get_term_db()
-                            if _db is not None:
-                                _db.insert_command(
-                                    ts=entry["ts"],
-                                    ts_end=entry["ts_end"],
-                                    terminal=entry["terminal"],
-                                    cmd=entry["cmd"],
-                                    exit_code=entry["exit_code"],
-                                    output=entry["output"],
-                                    cwd=_state.get("cwd") or None,
-                                )
-                        except Exception:
-                            logger.error("Failed to write split terminal history to DB", exc_info=True)
+                        _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
+                        if _cmd_name not in _PURRSH_TOOLS:
+                            try:
+                                _db = self._get_term_db()
+                                if _db is not None:
+                                    _db.insert_command(
+                                        ts=entry["ts"],
+                                        ts_end=entry["ts_end"],
+                                        terminal=entry["terminal"],
+                                        cmd=entry["cmd"],
+                                        exit_code=entry["exit_code"],
+                                        output=entry["output"],
+                                        cwd=_state.get("cwd") or None,
+                                    )
+                            except Exception:
+                                logger.error("Failed to write split terminal history to DB", exc_info=True)
             if _state["cmd"] is not None:
                 clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
                 clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
