@@ -36,6 +36,19 @@ Always `view` the SKILL.md before creating any file.
 
 ---
 
+## Terminal History
+
+PurrSh3ll logs all terminal commands to `./terminal_history.jsonl` in the working directory.
+Format per line: `{"ts": unix, "terminal": "terminal_1", "cmd": "...", "exit_code": 0, "output": "..."}`
+
+Before any task, read recent activity to understand what the user has already done:
+```bash
+tail -n 50 terminal_history.jsonl
+```
+Use this to avoid repeating completed scans, build on found credentials, and understand the current state of the engagement. Note: interactive sessions (msfconsole, vim, running servers) appear only after they exit.
+
+---
+
 ## Phase 1 — Initial Enumeration
 
 ```bash
