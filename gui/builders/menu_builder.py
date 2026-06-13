@@ -632,7 +632,7 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills & agents:", settings_skills_combo)
 
-        _goals_dir = os.path.join(_base_dir, "appdata", "agent_modes", "goals")
+        _goals_dir = os.path.join(c.base_path, "appdata", "agent_modes", "goals")
         _goals = []
         try:
             if os.path.isdir(_goals_dir):
