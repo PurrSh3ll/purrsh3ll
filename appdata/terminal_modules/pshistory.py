@@ -242,9 +242,10 @@ def cmd_clear(conn, db_path, session_id, yes):
             DELETE FROM targets;
             DELETE FROM commands;
             DELETE FROM sessions;
+            DELETE FROM sqlite_sequence;
         """)
         conn.commit()
-        print(f"History cleared ({count} commands deleted).")
+        print(f"History cleared ({count} commands deleted). ID counter reset to 1.")
 
 
 def main():
