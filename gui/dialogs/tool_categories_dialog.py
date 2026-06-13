@@ -13,7 +13,8 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QDialogButtonBox, QCheckBox, QScrollArea, QWidget,
-    QFrame, QSplitter, QMessageBox,
+    QFrame, QSplitter, QMessageBox, QTableWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView,
 )
 
 
@@ -89,16 +90,26 @@ class ToolCategoriesDialog(QDialog):
         left_layout.addWidget(self._cat_list)
         splitter.addWidget(left)
 
-        # right — tools
+        # right — tools table
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(4, 0, 0, 0)
         right_layout.setSpacing(4)
         self._tools_header = QLabel("Tools")
         right_layout.addWidget(self._tools_header)
-        self._tool_list = QListWidget()
-        self._tool_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        right_layout.addWidget(self._tool_list)
+
+        self._tool_table = QTableWidget(0, 2)
+        self._tool_table.setHorizontalHeaderLabels(["Tool", "Categories"])
+        self._tool_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._tool_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._tool_table.verticalHeader().setVisible(False)
+        self._tool_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._tool_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._tool_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._tool_table.setShowGrid(False)
+        self._tool_table.setAlternatingRowColors(True)
+        self._tool_table.doubleClicked.connect(self._on_edit)
+        right_layout.addWidget(self._tool_table)
         splitter.addWidget(right)
 
         splitter.setStretchFactor(0, 0)
@@ -153,35 +164,24 @@ class ToolCategoriesDialog(QDialog):
         tools = self._data.get("tools", {})
         cats  = self._data.get("categories", {})
 
-        self._tool_list.clear()
-        shown = 0
+        self._tool_table.setRowCount(0)
         for tool_name in sorted(tools.keys()):
             tags = tools[tool_name]
-            # category filter
             if selected_cat and selected_cat not in tags:
                 continue
-            # search filter
             if query and query not in tool_name.lower():
                 continue
             labels = [cats.get(t, t) for t in tags]
-            item = QListWidgetItem(f"  {tool_name}")
-            item.setData(Qt.ItemDataRole.UserRole, tool_name)
-            item.setToolTip(", ".join(labels))
-            # dim secondary info
-            item.setForeground(Qt.GlobalColor.white)
-            self._tool_list.addItem(item)
+            row = self._tool_table.rowCount()
+            self._tool_table.insertRow(row)
+            name_item = QTableWidgetItem(tool_name)
+            name_item.setData(Qt.ItemDataRole.UserRole, tool_name)
+            cats_item = QTableWidgetItem(", ".join(labels))
+            cats_item.setData(Qt.ItemDataRole.UserRole, tool_name)
+            self._tool_table.setItem(row, 0, name_item)
+            self._tool_table.setItem(row, 1, cats_item)
 
-            # sub-label row (category badges)
-            badge_item = QListWidgetItem(f"      {', '.join(labels)}")
-            badge_item.setData(Qt.ItemDataRole.UserRole, None)  # not selectable
-            badge_item.setFlags(Qt.ItemFlag.NoItemFlags)
-            badge_item.setForeground(Qt.GlobalColor.gray)
-            font = badge_item.font()
-            font.setPointSize(font.pointSize() - 1)
-            badge_item.setFont(font)
-            self._tool_list.addItem(badge_item)
-            shown += 1
-
+        shown = self._tool_table.rowCount()
         cat_label = cats.get(selected_cat, "All") if selected_cat else "All"
         self._tools_header.setText(f"Tools — {cat_label}")
         self._count_label.setText(f"{shown} tool(s)")
@@ -232,11 +232,11 @@ class ToolCategoriesDialog(QDialog):
             self._refresh_tools()
 
     def _on_remove(self):
-        items = [i for i in self._tool_list.selectedItems()
-                 if i.data(Qt.ItemDataRole.UserRole)]
-        if not items:
+        rows = self._tool_table.selectionModel().selectedRows()
+        if not rows:
             return
-        names = [i.data(Qt.ItemDataRole.UserRole) for i in items]
+        names = [self._tool_table.item(r.row(), 0).data(Qt.ItemDataRole.UserRole)
+                 for r in rows]
         msg = QMessageBox(self)
         msg.setWindowTitle("Remove tools")
         msg.setText(f"Remove {len(names)} tool(s)?\n\n" + "\n".join(names))
@@ -255,10 +255,11 @@ class ToolCategoriesDialog(QDialog):
         self._refresh_tools()
 
     def _selected_tool(self) -> str:
-        item = self._tool_list.currentItem()
-        if not item:
+        row = self._tool_table.currentRow()
+        if row < 0:
             return ""
-        return item.data(Qt.ItemDataRole.UserRole) or ""
+        item = self._tool_table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else ""
 
 
 # ---------------------------------------------------------------------------
