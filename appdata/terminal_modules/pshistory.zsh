@@ -7,12 +7,16 @@ pshistory — query PurrSh3ll terminal history SQLite database
 Usage:
   pshistory                    show last 20 commands
   pshistory -n 50              show last 50 commands
+  pshistory --all              show full history (all commands)
   pshistory -s                 list sessions
   pshistory --session 3        show commands in session 3
   pshistory -q nmap            search commands/output for 'nmap'
   pshistory --findings         show all findings
   pshistory --stats            show DB statistics
   pshistory --show 42          show full output of command id=42
+  pshistory --clear            delete entire history (asks for confirmation)
+  pshistory --clear --session 3  delete only session 3
+  pshistory --clear -y         delete without confirmation prompt
   pshistory --db /path/to.db   use a custom DB path
 EOF
         return 0

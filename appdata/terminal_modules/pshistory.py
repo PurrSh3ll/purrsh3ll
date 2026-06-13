@@ -186,6 +186,67 @@ def cmd_show(conn, cmd_id):
         print(f"Output ({row['output_size']} bytes):\n{row['output']}")
 
 
+def cmd_all(conn, session_id):
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM commands" +
+        (" WHERE session_id = ?" if session_id is not None else ""),
+        (session_id,) if session_id is not None else ()
+    ).fetchone()[0]
+
+    it = conn.execute(
+        "SELECT * FROM commands" +
+        (" WHERE session_id = ?" if session_id is not None else "") +
+        " ORDER BY ts ASC",
+        (session_id,) if session_id is not None else ()
+    )
+    print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND  ({rows} total)")
+    print("-" * 100)
+    for r in it:
+        ec = r['exit_code']
+        ec_str = str(ec) if ec is not None else '?'
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {ec_str:>4}  "
+              f"{(r['terminal'] or ''):12}  {_trunc(r['cmd'], 60)}")
+
+
+def cmd_clear(conn, db_path, session_id, yes):
+    if session_id is not None:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM commands WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+        target = f"session {session_id} ({count} commands)"
+    else:
+        count = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+        target = f"ALL history ({count} commands, all sessions, findings, targets)"
+
+    if not yes:
+        print(f"This will permanently delete {target}.")
+        answer = input("Type 'yes' to confirm: ").strip().lower()
+        if answer != "yes":
+            print("Aborted.")
+            return
+
+    conn.execute("PRAGMA foreign_keys = ON")
+    if session_id is not None:
+        conn.execute("DELETE FROM commands WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM findings WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM targets WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+        print(f"Deleted session {session_id} and its data.")
+    else:
+        conn.executescript("""
+            PRAGMA foreign_keys = ON;
+            DELETE FROM command_tags;
+            DELETE FROM findings;
+            DELETE FROM target_ports;
+            DELETE FROM targets;
+            DELETE FROM commands;
+            DELETE FROM sessions;
+        """)
+        conn.commit()
+        print(f"History cleared ({count} commands deleted).")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Query PurrSh3ll terminal history DB")
     ap.add_argument("--db", default=DEFAULT_DB, help="Path to terminal_history.db")
@@ -196,12 +257,19 @@ def main():
     ap.add_argument("--findings", action="store_true", help="Show findings")
     ap.add_argument("--stats", action="store_true", help="Show DB statistics")
     ap.add_argument("--show", type=int, metavar="ID", help="Show full details of a command by ID")
+    ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history (all commands)")
+    ap.add_argument("--clear", action="store_true", help="Delete history (all or --session ID)")
+    ap.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt for --clear")
     args = ap.parse_args()
 
     conn = _connect(args.db)
 
-    if args.sessions:
+    if args.clear:
+        cmd_clear(conn, args.db, args.session, args.yes)
+    elif args.sessions:
         cmd_sessions(conn)
+    elif args.show_all:
+        cmd_all(conn, args.session)
     elif args.search:
         cmd_search(conn, args.search, args.n)
     elif args.findings:
