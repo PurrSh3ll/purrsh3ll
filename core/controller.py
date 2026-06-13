@@ -731,7 +731,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     def open_tool_categories(self):
         from gui.dialogs.tool_categories_dialog import ToolCategoriesDialog
         dlg = ToolCategoriesDialog(self.base_path, parent=self.get_widget("main_window"))
-        dlg.setStyleSheet(self.__class__.dialog_stylesheet + self.__class__.table_stylesheet)
+        dlg.setStyleSheet(self.__class__.dialog_stylesheet + self.__class__.table_stylesheet + self.__class__.scroll_stylesheet)
         dlg.show()
         dlg.raise_()
 

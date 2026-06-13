@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QListWidget, QListWidgetItem, QLineEdit, QComboBox,
     QDialogButtonBox, QCheckBox, QScrollArea, QWidget,
-    QFrame, QSplitter, QMessageBox, QTableWidget, QTableWidgetItem,
+    QFrame, QMessageBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView,
 )
 
@@ -32,6 +32,7 @@ class ToolCategoriesDialog(QDialog):
         super().__init__(parent)
         self.base_path = base_path
         self._json_path = os.path.join(base_path, "appdata", "tool_categories.json")
+        self._default_path = os.path.join(base_path, "appdata", "tool_categories_default.json")
         self._data = self._load()
 
         self.setWindowTitle("Tool Categories")
@@ -75,25 +76,26 @@ class ToolCategoriesDialog(QDialog):
         search_row.addWidget(self._search)
         root.addLayout(search_row)
 
-        # ── splitter: categories | tools ─────────────────────────────────
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # ── two-panel row: categories | tools ────────────────────────────
+        panels = QHBoxLayout()
+        panels.setSpacing(8)
 
         # left — categories
-        left = QWidget()
-        left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(0, 0, 4, 0)
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(4)
         left_layout.addWidget(QLabel("Category"))
         self._cat_list = QListWidget()
-        self._cat_list.setFixedWidth(180)
+        self._cat_list.setFixedWidth(190)
+        self._cat_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._cat_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._cat_list.currentRowChanged.connect(self._refresh_tools)
         left_layout.addWidget(self._cat_list)
-        splitter.addWidget(left)
+        panels.addLayout(left_layout)
 
         # right — tools table
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(4, 0, 0, 0)
+        right_layout = QVBoxLayout()
+        right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(4)
         self._tools_header = QLabel("Tools")
         right_layout.addWidget(self._tools_header)
@@ -110,33 +112,30 @@ class ToolCategoriesDialog(QDialog):
         self._tool_table.setAlternatingRowColors(True)
         self._tool_table.doubleClicked.connect(self._on_edit)
         right_layout.addWidget(self._tool_table)
-        splitter.addWidget(right)
+        panels.addLayout(right_layout, stretch=1)
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter, stretch=1)
+        root.addLayout(panels, stretch=1)
 
         # ── count label ───────────────────────────────────────────────────
-        self._count_label = QLabel("")
-        self._count_label.setStyleSheet("color: #888; font-size: 11px;")
-        root.addWidget(self._count_label)
-
         # ── action buttons ────────────────────────────────────────────────
         btn_row = QHBoxLayout()
-        btn_add    = QPushButton("+ Add Tool")
-        btn_edit   = QPushButton("Edit")
-        btn_remove = QPushButton("− Remove")
-        btn_close  = QPushButton("Close")
+        btn_add     = QPushButton("+ Add Tool")
+        btn_edit    = QPushButton("Edit")
+        btn_remove  = QPushButton("− Remove")
+        btn_reset   = QPushButton("Reset to Defaults")
+        btn_close   = QPushButton("Close")
 
         btn_add.clicked.connect(self._on_add)
         btn_edit.clicked.connect(self._on_edit)
         btn_remove.clicked.connect(self._on_remove)
+        btn_reset.clicked.connect(self._on_reset)
         btn_close.clicked.connect(self.accept)
 
         btn_row.addWidget(btn_add)
         btn_row.addWidget(btn_edit)
         btn_row.addWidget(btn_remove)
         btn_row.addStretch()
+        btn_row.addWidget(btn_reset)
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
 
@@ -146,7 +145,8 @@ class ToolCategoriesDialog(QDialog):
         self._cat_list.clear()
         cats = self._data.get("categories", {})
 
-        all_item = QListWidgetItem("All")
+        total = len(self._data.get("tools", {}))
+        all_item = QListWidgetItem(f"All  ({total})")
         all_item.setData(Qt.ItemDataRole.UserRole, None)
         self._cat_list.addItem(all_item)
 
@@ -155,6 +155,16 @@ class ToolCategoriesDialog(QDialog):
             item = QListWidgetItem(f"{label}  ({count})")
             item.setData(Qt.ItemDataRole.UserRole, key)
             self._cat_list.addItem(item)
+
+        self._fit_cat_list_height()
+
+    def _fit_cat_list_height(self):
+        n = self._cat_list.count()
+        if n == 0:
+            return
+        row_h = self._cat_list.sizeHintForRow(0)
+        frame = self._cat_list.frameWidth() * 2
+        self._cat_list.setMinimumHeight(n * row_h + frame)
 
     def _refresh_tools(self):
         cat_item = self._cat_list.currentItem()
@@ -181,12 +191,35 @@ class ToolCategoriesDialog(QDialog):
             self._tool_table.setItem(row, 0, name_item)
             self._tool_table.setItem(row, 1, cats_item)
 
-        shown = self._tool_table.rowCount()
         cat_label = cats.get(selected_cat, "All") if selected_cat else "All"
         self._tools_header.setText(f"Tools — {cat_label}")
-        self._count_label.setText(f"{shown} tool(s)")
 
     # ── actions ────────────────────────────────────────────────────────────
+
+    def _on_reset(self):
+        try:
+            with open(self._default_path, "r", encoding="utf-8") as f:
+                import json as _json
+                default_data = _json.load(f)
+        except Exception:
+            QMessageBox.critical(self, "Reset Failed", "Default file not found or unreadable.")
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Reset to Defaults")
+        msg.setText("This will restore all tool categories to the built-in defaults.\nAll custom changes will be lost. Continue?")
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        try:
+            msg.setStyleSheet(self.styleSheet())
+        except Exception:
+            pass
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+        self._data = default_data
+        self._save()
+        self._populate_categories()
+        self._cat_list.setCurrentRow(0)
+        self._refresh_tools()
 
     def _on_add(self):
         dlg = _ToolEditDialog(

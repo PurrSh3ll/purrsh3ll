@@ -59,6 +59,18 @@ class TerminalTabsMixin:
                 self._terminal_history_db = None
         return self._terminal_history_db
 
+    def _get_auto_tagger(self):
+        """Return a shared AutoTagger instance, initialised lazily."""
+        if not hasattr(self, "_auto_tagger"):
+            try:
+                from core.db.auto_tagger import AutoTagger
+                json_path = os.path.join(self.base_path, "appdata", "tool_categories.json")
+                self._auto_tagger = AutoTagger(json_path)
+            except Exception:
+                logger.error("Failed to initialise AutoTagger", exc_info=True)
+                self._auto_tagger = None
+        return self._auto_tagger
+
     def _on_terminal_received(self, data: str):
         for m in _PSOPEN_RE.finditer(data):
             try:
@@ -140,7 +152,7 @@ class TerminalTabsMixin:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
-                                    _db.insert_command(
+                                    _cid = _db.insert_command(
                                         ts=entry["ts"],
                                         ts_end=entry["ts_end"],
                                         terminal=entry["terminal"],
@@ -149,6 +161,11 @@ class TerminalTabsMixin:
                                         output=entry["output"],
                                         cwd=_state.get("cwd") or None,
                                     )
+                                    _tagger = self._get_auto_tagger()
+                                    if _tagger is not None and _cid:
+                                        _tags = _tagger.get_tags(entry["cmd"])
+                                        if _tags:
+                                            _db.add_tags(_cid, _tags)
                             except Exception:
                                 logger.error("Failed to write terminal history to DB", exc_info=True)
                     # Show or hide error overlay
@@ -1166,7 +1183,7 @@ class TerminalTabsMixin:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
-                                    _db.insert_command(
+                                    _cid = _db.insert_command(
                                         ts=entry["ts"],
                                         ts_end=entry["ts_end"],
                                         terminal=entry["terminal"],
@@ -1175,6 +1192,11 @@ class TerminalTabsMixin:
                                         output=entry["output"],
                                         cwd=_state.get("cwd") or None,
                                     )
+                                    _tagger = self._get_auto_tagger()
+                                    if _tagger is not None and _cid:
+                                        _tags = _tagger.get_tags(entry["cmd"])
+                                        if _tags:
+                                            _db.add_tags(_cid, _tags)
                             except Exception:
                                 logger.error("Failed to write split terminal history to DB", exc_info=True)
             if _state["cmd"] is not None:

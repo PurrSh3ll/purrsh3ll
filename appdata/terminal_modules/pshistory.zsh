@@ -9,6 +9,10 @@ Usage:
   pshistory -n 50              show last 50 commands
   pshistory --all              show full history (all commands)
   pshistory -q nmap            search commands/output for 'nmap'
+  pshistory -t recon           show commands tagged as 'recon'
+  pshistory -t web -n 50       show last 50 web commands
+  pshistory -t exploit --all   show all exploitation commands
+  pshistory --categories       list all available categories (tag + label + DB count)
   pshistory --findings         show all findings
   pshistory --stats            show DB statistics
   pshistory --show 42          show full output of command id=42

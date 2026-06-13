@@ -7,6 +7,10 @@ Usage:
   pshistory -n 50              show last 50 commands
   pshistory --all              show full history (all commands)
   pshistory -q nmap            search commands/output for 'nmap'
+  pshistory -t recon           show commands tagged as 'recon'
+  pshistory -t recon -n 50     show last 50 recon commands
+  pshistory -t exploit --all   show all exploitation commands
+  pshistory --categories       list all available categories (from tool_categories.json)
   pshistory --findings         show all findings
   pshistory --stats            show DB statistics
   pshistory --show 42          show full output of command id=42
@@ -107,6 +111,74 @@ def cmd_search(conn, pattern, n):
                 print(f"{'':>6}  {'':19}        ↳ {_trunc(line, 70)}")
 
 
+def cmd_category(conn, cat, n, show_all):
+    if show_all:
+        rows = conn.execute(
+            """
+            SELECT c.* FROM commands c
+            JOIN command_tags t ON t.command_id = c.id
+            WHERE t.tag = ?
+            ORDER BY c.ts ASC
+            """,
+            (cat,)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT c.* FROM commands c
+            JOIN command_tags t ON t.command_id = c.id
+            WHERE t.tag = ?
+            ORDER BY c.ts DESC LIMIT ?
+            """,
+            (cat, n)
+        ).fetchall()
+        rows = list(reversed(rows))
+    if not rows:
+        print(f"No commands tagged '{cat}'.")
+        return
+    print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND  ({len(rows)} in '{cat}')")
+    print("-" * 100)
+    for r in rows:
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {_ec(r):>4}  "
+              f"{(r['terminal'] or ''):12}  {_trunc(r['cmd'], 60)}")
+
+
+def cmd_categories(db_path):
+    json_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "tool_categories.json"
+    )
+    try:
+        import json
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cats = data.get("categories", {})
+    except Exception:
+        print(f"[pshistory] Could not read tool_categories.json: {json_path}", file=sys.stderr)
+        return
+
+    # also get DB counts per tag if DB exists
+    counts = {}
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT tag, COUNT(*) AS c FROM command_tags GROUP BY tag"
+            ).fetchall()
+            counts = {r["tag"]: r["c"] for r in rows}
+            conn.close()
+        except Exception:
+            pass
+
+    print(f"{'TAG':12}  {'LABEL':28}  IN DB")
+    print("-" * 50)
+    for key, label in cats.items():
+        c = counts.get(key, 0)
+        count_str = str(c) if c else "-"
+        print(f"{key:12}  {label:28}  {count_str}")
+
+
 def cmd_findings(conn):
     rows = conn.execute(
         "SELECT * FROM findings ORDER BY ts DESC LIMIT 200"
@@ -195,6 +267,8 @@ def main():
     ap.add_argument("-n", type=int, default=20, help="Number of results (default 20)")
     ap.add_argument("-q", "--search", metavar="PATTERN", help="Search commands and output")
     ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history")
+    ap.add_argument("-t", "--tag", metavar="TAG", help="Show commands tagged with category (e.g. recon, web, exploit)")
+    ap.add_argument("--categories", action="store_true", help="List all available categories from tool_categories.json")
     ap.add_argument("--findings", action="store_true", help="Show findings")
     ap.add_argument("--stats", action="store_true", help="Show DB statistics")
     ap.add_argument("--show", type=int, metavar="ID", help="Show full details of command by ID")
@@ -206,6 +280,12 @@ def main():
 
     if args.clear:
         cmd_clear(conn, args.yes)
+    elif args.categories:
+        conn.close()
+        cmd_categories(args.db)
+        return
+    elif args.tag:
+        cmd_category(conn, args.tag, args.n, args.show_all)
     elif args.show_all:
         cmd_all(conn)
     elif args.search:
