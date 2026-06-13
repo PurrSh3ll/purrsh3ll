@@ -475,6 +475,39 @@ class TerminalTabsMixin:
         skills_row.addWidget(_btn_del_skills)
         dlg_layout.addLayout(skills_row)
 
+        _goals_dir = os.path.join(self.base_path, "appdata", "agent_modes", "goals")
+        _goals = []
+        try:
+            if os.path.isdir(_goals_dir):
+                _goals = sorted(f for f in os.listdir(_goals_dir) if f.endswith(".md"))
+        except Exception:
+            pass
+        _goal_combo = QComboBox(dlg)
+        _goal_combo.addItem("none")
+        _goal_combo.addItems(_goals)
+        _saved_goal = _cfg.get("goal", "")
+        if _saved_goal in _goals:
+            _goal_combo.setCurrentText(_saved_goal)
+        try:
+            _goal_combo.setStyleSheet(self.__class__.combo_stylesheet)
+            _gv = QListView()
+            _gv.setStyleSheet(self.__class__.combo_view_stylesheet)
+            _goal_combo.setView(_gv)
+        except Exception:
+            pass
+        _btn_add_goal = QPushButton("+", dlg)
+        _btn_add_goal.setFixedWidth(24)
+        _btn_add_goal.setToolTip("Import goal file")
+        _btn_del_goal = QPushButton("−", dlg)
+        _btn_del_goal.setFixedWidth(24)
+        _btn_del_goal.setToolTip("Delete selected goal")
+        goal_row = QHBoxLayout()
+        goal_row.addWidget(QLabel("Goal:"))
+        goal_row.addWidget(_goal_combo)
+        goal_row.addWidget(_btn_add_goal)
+        goal_row.addWidget(_btn_del_goal)
+        dlg_layout.addLayout(goal_row)
+
         def _save_combos():
             try:
                 cfg = {}
@@ -483,6 +516,7 @@ class TerminalTabsMixin:
                         cfg = json.load(f) or {}
                 cfg.setdefault("llama", {})["agent_role"] = _agent_role_combo.currentText()
                 cfg["llama"]["skills_set"] = _skills_combo.currentText()
+                cfg["llama"]["goal"] = _goal_combo.currentText()
                 with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception as ex:
@@ -493,7 +527,10 @@ class TerminalTabsMixin:
             settings_skills = self.widgets.get("settings_skills_combo")
             if settings_skills:
                 settings_skills.setCurrentText(_skills_combo.currentText())
-            self.apply_agent_files(_agent_role_combo.currentText(), _skills_combo.currentText())
+            settings_goal = self.widgets.get("settings_goal_combo")
+            if settings_goal:
+                settings_goal.setCurrentText(_goal_combo.currentText())
+            self.apply_agent_files(_agent_role_combo.currentText(), _skills_combo.currentText(), _goal_combo.currentText())
 
         _agent_role_combo.currentIndexChanged.connect(_save_combos)
         _skills_combo.currentIndexChanged.connect(_save_combos)
@@ -555,6 +592,21 @@ class TerminalTabsMixin:
 
         def _sync_settings_skills_remove(name):
             sc = self.widgets.get("settings_skills_combo")
+            if sc:
+                idx = sc.findText(name)
+                if idx != -1:
+                    sc.removeItem(idx)
+                sc.setCurrentText("none")
+
+        def _sync_settings_goal_add(name):
+            sc = self.widgets.get("settings_goal_combo")
+            if sc and sc.findText(name) == -1:
+                sc.addItem(name)
+            if sc:
+                sc.setCurrentText(name)
+
+        def _sync_settings_goal_remove(name):
+            sc = self.widgets.get("settings_goal_combo")
             if sc:
                 idx = sc.findText(name)
                 if idx != -1:
@@ -651,10 +703,56 @@ class TerminalTabsMixin:
             _skills_combo.setCurrentText("none")
             _sync_settings_skills_remove(name)
 
+        def _on_add_goal():
+            src, _ = QFileDialog.getOpenFileName(dlg, "Select goal file", "", "Markdown files (*.md);;All files (*)")
+            if not src:
+                return
+            os.makedirs(_goals_dir, exist_ok=True)
+            dest = os.path.join(_goals_dir, os.path.basename(src))
+            try:
+                shutil.copy2(src, dest)
+            except Exception:
+                return
+            name = os.path.basename(src)
+            if _goal_combo.findText(name) == -1:
+                _goal_combo.addItem(name)
+            _goal_combo.setCurrentText(name)
+            _sync_settings_goal_add(name)
+
+        def _on_del_goal():
+            name = _goal_combo.currentText()
+            if not name or name == "none":
+                return
+            confirm = QMessageBox(dlg)
+            confirm.setWindowTitle("Confirm deletion")
+            confirm.setText(f"Delete goal <b>{name}</b>?<br>This will remove the file permanently.")
+            confirm.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+            confirm.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            try:
+                confirm.setStyleSheet(self.__class__.dialog_stylesheet)
+            except Exception:
+                pass
+            if confirm.exec() != QMessageBox.StandardButton.Yes:
+                return
+            path = os.path.join(_goals_dir, name)
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except Exception:
+                return
+            idx = _goal_combo.findText(name)
+            if idx != -1:
+                _goal_combo.removeItem(idx)
+            _goal_combo.setCurrentText("none")
+            _sync_settings_goal_remove(name)
+
+        _goal_combo.currentIndexChanged.connect(_save_combos)
         _btn_add_role.clicked.connect(_on_add_agent_role)
         _btn_del_role.clicked.connect(_on_del_agent_role)
         _btn_add_skills.clicked.connect(_on_add_skills_set)
         _btn_del_skills.clicked.connect(_on_del_skills_set)
+        _btn_add_goal.clicked.connect(_on_add_goal)
+        _btn_del_goal.clicked.connect(_on_del_goal)
         _logs_cmd_btn.clicked.connect(_on_edit_logs_cmd)
         dlg.exec()
 

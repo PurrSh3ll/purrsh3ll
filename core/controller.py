@@ -636,7 +636,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
 
-    def apply_agent_files(self, agent_role: str, skills_set: str):
+    def apply_agent_files(self, agent_role: str, skills_set: str, goal: str = ""):
         import shutil
         logs_dir = os.path.join(self.base_path, "appdata", "logs")
         os.makedirs(logs_dir, exist_ok=True)
@@ -656,6 +656,22 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                     shutil.copy2(src_claude, dst_claude)
                 except Exception as ex:
                     logger.warning("Failed to copy agent CLAUDE.md from %s", src_claude, exc_info=True)
+
+        dst_goal = os.path.join(logs_dir, "goal.md")
+        if os.path.exists(dst_goal):
+            try:
+                os.remove(dst_goal)
+            except Exception:
+                pass
+        if goal and goal != "none":
+            src_goal = os.path.join(
+                self.base_path, "appdata", "agent_modes", "goals", goal
+            )
+            if os.path.isfile(src_goal):
+                try:
+                    shutil.copy2(src_goal, dst_goal)
+                except Exception:
+                    logger.warning("Failed to copy goal from %s", src_goal, exc_info=True)
 
         dst_skills_root = os.path.join(logs_dir, ".claude", "skills")
         dst_agents_root = os.path.join(logs_dir, ".claude", "agents")

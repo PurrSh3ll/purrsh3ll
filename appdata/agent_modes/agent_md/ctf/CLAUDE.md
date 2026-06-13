@@ -36,6 +36,12 @@ Always `view` the SKILL.md before creating any file.
 
 ---
 
+## Goal
+
+If `goal.md` exists in the working directory, read it before taking any action — it defines the target, the information to gather from the user, and the stop condition for this session.
+
+---
+
 ## Terminal History
 
 PurrSh3ll logs all terminal commands to `./terminal_history.jsonl` in the working directory.

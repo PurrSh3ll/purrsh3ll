@@ -53,6 +53,12 @@ export DOMAIN=<target_domain>   # if applicable
 
 ---
 
+## Goal
+
+If `goal.md` exists in the working directory, read it before taking any action — it defines the target, the information to gather from the user, and the stop condition for this session.
+
+---
+
 ## Terminal History
 
 PurrSh3ll logs all executed commands to `./terminal_history.jsonl`.

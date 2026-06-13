@@ -632,6 +632,21 @@ def build_menu(main_window):
             settings_skills_combo.setCurrentText(_saved_skills)
         form_llm.addRow("Skills & agents:", settings_skills_combo)
 
+        _goals_dir = os.path.join(_base_dir, "appdata", "agent_modes", "goals")
+        _goals = []
+        try:
+            if os.path.isdir(_goals_dir):
+                _goals = sorted(f for f in os.listdir(_goals_dir) if f.endswith(".md"))
+        except Exception:
+            pass
+        settings_goal_combo = QComboBox(grp_llm)
+        settings_goal_combo.addItem("none")
+        settings_goal_combo.addItems(_goals)
+        _saved_goal = llama_cfg.get("goal", "")
+        if _saved_goal in _goals:
+            settings_goal_combo.setCurrentText(_saved_goal)
+        form_llm.addRow("Goal:", settings_goal_combo)
+
         clear_chat_history_checkbox = QCheckBox("Clear pschat history on exit", grp_llm)
         clear_chat_history_checkbox.setChecked(bool(llama_cfg.get("clear_chat_history_on_exit", False)))
         form_llm.addRow(clear_chat_history_checkbox)
@@ -1869,12 +1884,17 @@ def build_menu(main_window):
         def _on_settings_agent_role_changed(idx):
             val = settings_agent_role_combo.currentText()
             _save_llama_key("agent_role", val)
-            c.apply_agent_files(val, settings_skills_combo.currentText())
+            c.apply_agent_files(val, settings_skills_combo.currentText(), settings_goal_combo.currentText())
 
         def _on_settings_skills_changed(idx):
             val = settings_skills_combo.currentText()
             _save_llama_key("skills_set", val)
-            c.apply_agent_files(settings_agent_role_combo.currentText(), val)
+            c.apply_agent_files(settings_agent_role_combo.currentText(), val, settings_goal_combo.currentText())
+
+        def _on_settings_goal_changed(idx):
+            val = settings_goal_combo.currentText()
+            _save_llama_key("goal", val)
+            c.apply_agent_files(settings_agent_role_combo.currentText(), settings_skills_combo.currentText(), val)
 
         rag_model_combo.currentIndexChanged.connect(_on_rag_model_changed)
         rag_radio_braindump.toggled.connect(_on_rag_braindump_toggled)
@@ -1887,6 +1907,7 @@ def build_menu(main_window):
         rag_delete_btn.clicked.connect(_on_rag_delete_db)
         settings_agent_role_combo.currentIndexChanged.connect(_on_settings_agent_role_changed)
         settings_skills_combo.currentIndexChanged.connect(_on_settings_skills_changed)
+        settings_goal_combo.currentIndexChanged.connect(_on_settings_goal_changed)
 
         # ── API Providers group ───────────────────────────────────────────────
         import threading
@@ -2991,6 +3012,7 @@ def build_menu(main_window):
             c.register_widget("ai_settings_logs_terminal_edit", logs_terminal_edit)
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
+            c.register_widget("settings_goal_combo",            settings_goal_combo)
             c.register_widget("ai_settings_rag_model_combo",    rag_model_combo)
             c.register_widget("ai_settings_rag_rerank_combo",   rag_rerank_combo)
             c.register_widget("ai_settings_memory_list",        memory_list)
