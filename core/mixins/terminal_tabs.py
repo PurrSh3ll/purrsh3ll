@@ -39,6 +39,20 @@ def _force_term_repaint(term):
 
 
 class TerminalTabsMixin:
+    def _get_term_db(self):
+        """Return a shared TerminalHistoryDB instance, initialised lazily."""
+        if not hasattr(self, "_terminal_history_db"):
+            try:
+                from core.db.terminal_history_db import TerminalHistoryDB
+                db_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.db")
+                _db = TerminalHistoryDB(db_path)
+                _db.init()
+                self._terminal_history_db = _db
+            except Exception:
+                logger.error("Failed to initialise terminal history DB", exc_info=True)
+                self._terminal_history_db = None
+        return self._terminal_history_db
+
     def _on_terminal_received(self, data: str):
         for m in _PSOPEN_RE.finditer(data):
             try:
@@ -115,6 +129,20 @@ class TerminalTabsMixin:
                                 pass
                         except Exception:
                             logger.error("Failed to write terminal history to %s", log_path, exc_info=True)
+                        try:
+                            _db = self._get_term_db()
+                            if _db is not None:
+                                _db.insert_command(
+                                    ts=entry["ts"],
+                                    ts_end=entry["ts_end"],
+                                    terminal=entry["terminal"],
+                                    cmd=entry["cmd"],
+                                    exit_code=entry["exit_code"],
+                                    output=entry["output"],
+                                    cwd=_state.get("cwd") or None,
+                                )
+                        except Exception:
+                            logger.error("Failed to write terminal history to DB", exc_info=True)
                     # Show or hide error overlay
                     _w = _wrapper_ref[0]
                     if _w is not None:
@@ -1125,6 +1153,20 @@ class TerminalTabsMixin:
                                 pass
                         except Exception:
                             pass
+                        try:
+                            _db = self._get_term_db()
+                            if _db is not None:
+                                _db.insert_command(
+                                    ts=entry["ts"],
+                                    ts_end=entry["ts_end"],
+                                    terminal=entry["terminal"],
+                                    cmd=entry["cmd"],
+                                    exit_code=entry["exit_code"],
+                                    output=entry["output"],
+                                    cwd=_state.get("cwd") or None,
+                                )
+                        except Exception:
+                            logger.error("Failed to write split terminal history to DB", exc_info=True)
             if _state["cmd"] is not None:
                 clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
                 clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
