@@ -6,7 +6,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased]
+## [Unreleased] — v1.2.0
+
+### Added
+
+- **Agent modes**: renamed `ctf_mode` → `ctf` and `pentest_mode` → `pentest`; added `ctf_skills` and `pentest_skills` — lightweight CLAUDE.md files optimised for use with Claude Code skills and subagents; route each engagement phase to available `.claude/skills/` and `.claude/agents/` instead of inline cheat-sheets
+- **Terminal history awareness**: all four agent CLAUDE.md files (`ctf`, `pentest`, `ctf_skills`, `pentest_skills`) now instruct the agent to read `./terminal_history.jsonl` before any task — gives the agent visibility into what the user has already executed in PurrSh3ll terminals; replaces the standalone `terminal-history-reader` skill
+
+### Removed
+
+- **default skills folder**: removed `appdata/agent_modes/skills/default/` and its `terminal-history-reader` SKILL.md — terminal history awareness is now a behavioural instruction baked directly into each agent CLAUDE.md file
+
+---
 
 ### Added
 
