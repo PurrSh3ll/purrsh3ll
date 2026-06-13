@@ -26,10 +26,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **requirements.txt**: added with full list of Python dependencies for reference
 - **Agent modes**: renamed `ctf_mode` → `ctf` and `pentest_mode` → `pentest`; added `ctf_skills` and `pentest_skills` — lightweight CLAUDE.md files optimised for use with Claude Code skills and subagents; route each engagement phase to available `.claude/skills/` and `.claude/agents/` instead of inline cheat-sheets
 - **Terminal history awareness**: all four agent CLAUDE.md files (`ctf`, `pentest`, `ctf_skills`, `pentest_skills`) now instruct the agent to read `./terminal_history.jsonl` before any task — gives the agent visibility into what the user has already executed in PurrSh3ll terminals
+- **Goal file**: new "Goal" dropdown in Agent Configuration dialog and AI Settings → Settings; two built-in goal files (`ctf.md`, `pentest.md`) — each instructs the agent to collect required info from the user before acting and defines a stop condition for the session; the selected goal file is deployed alongside `CLAUDE.md` to the logs directory when an agent role is applied
+- **SQLite terminal history database**: new `core/db/terminal_history_db.py` module with `TerminalHistoryDB` class — schema covers `commands` (ts, ts_end, duration_ms, terminal, cmd, exit_code, output, output_size, cwd), `command_tags` (many-to-many phase/finding tags), `findings` (port, credential, hash, flag, CVE, user, host), `targets`, `target_ports`; all commands now written to `appdata/logs/terminal_history.db` in parallel with JSONL; JSONL mechanism unchanged
+- **pshistory**: new CLI tool (`appdata/terminal_modules/pshistory`) for querying the SQLite history database — `pshistory` (last 20 commands), `-n N` (last N), `--all` (full chronological history), `-q PATTERN` (search cmd and output), `--findings`, `--stats`, `--show ID` (full output of one command), `--clear` (delete all with confirmation), `--clear -y` (skip confirmation); IDs reset to 1 after `--clear`
+- **PurrSh3ll tools excluded from SQLite history**: commands whose first word is `psfix`, `psnext`, `psreport`, `psrag`, `pshistory`, `pshelp`, `pstldr`, `psai`, `pscmd` or `psopen` are not written to the SQLite DB — keeps the DB clean for real engagement commands; JSONL is unaffected
+
+### Fixed
+
+- **psrag**: `Knowledge base is empty` error when only terminal snippets existed — empty check in `psrag_query.py` only queried the `rag_kb` ChromaDB collection; now also checks the `memory` collection before exiting with an error
+- **Agent Configuration / AI Settings labels**: "agent role:" → "Agent role:", "Skills & agents:" capitalized consistently across the Agent Configuration dialog and AI Settings panel
+- **pshistory**: exit code `0` shown as `?` — `exit_code or '?'` treated `0` as falsy; fixed to `str(ec) if ec is not None else '?'`
+- **pshistory `--clear`**: AUTOINCREMENT counter not reset after clearing history — added `DELETE FROM sqlite_sequence` so IDs start from 1 after a clear
 
 ### Removed
 
 - **default skills folder**: removed `appdata/agent_modes/skills/default/` and its `terminal-history-reader` SKILL.md — terminal history awareness is now a behavioural instruction baked directly into each agent CLAUDE.md file
+- **Skills Usage sections**: removed `## Skills Usage` sections from `ctf/CLAUDE.md` and `pentest/CLAUDE.md` — referenced `/mnt/skills/` paths that do not apply to PurrSh3ll; skill routing belongs in `ctf_skills` and `pentest_skills`
 
 ---
 
