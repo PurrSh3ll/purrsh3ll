@@ -77,8 +77,12 @@ def build_menu(main_window):
     command_palette_action = QAction("Command Palette", main_window)
     command_palette_action.setShortcut("Ctrl+P")
     edit_menu.addAction(command_palette_action)
+    edit_menu.addSeparator()
+    tool_categories_action = QAction("Tool Categories", main_window)
+    edit_menu.addAction(tool_categories_action)
     c.register_widget("edit_menu", edit_menu)
     c.register_widget("command_palette_action", command_palette_action)
+    c.register_widget("tool_categories_action", tool_categories_action)
 
     view_menu = menu_bar.addMenu("View")
     change_theme_menu = view_menu.addMenu("Change Theme")

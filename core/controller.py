@@ -728,6 +728,13 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                         except Exception:
                             logger.warning("Failed to copy skill '%s'", entry_name, exc_info=True)
 
+    def open_tool_categories(self):
+        from gui.dialogs.tool_categories_dialog import ToolCategoriesDialog
+        dlg = ToolCategoriesDialog(self.base_path, parent=self.get_widget("main_window"))
+        dlg.setStyleSheet(self.__class__.dialog_stylesheet)
+        dlg.show()
+        dlg.raise_()
+
     def open_command_palette(self):
         if not hasattr(self, '_command_palette') or self._command_palette is None:
             from gui.dialogs.command_palette import CommandPalette

@@ -48,6 +48,7 @@ class MainWindow(QMainWindow):
 
     def _connect_menu(self):
         self.c.get_widget("command_palette_action").triggered.connect(self.c.open_command_palette)
+        self.c.get_widget("tool_categories_action").triggered.connect(self.c.open_tool_categories)
         self.c.get_widget("open_file_action").triggered.connect(self._on_open_file)
         self.c.get_widget("exit_action").triggered.connect(self.close)
         self.c.get_widget("settings_action").triggered.connect(self.c.open_settings)
