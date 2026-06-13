@@ -70,7 +70,9 @@ def cmd_list(conn, n, session_id):
     print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  {'TERMINAL':12}  COMMAND")
     print("-" * 100)
     for r in rows:
-        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {str(r['exit_code'] or '?'):>4}  "
+        ec = r['exit_code']
+        ec_str = str(ec) if ec is not None else '?'
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {ec_str:>4}  "
               f"{(r['terminal'] or ''):12}  {_trunc(r['cmd'], 60)}")
 
 
@@ -103,7 +105,9 @@ def cmd_search(conn, pattern, n):
     print(f"{'ID':>6}  {'TIME':19}  {'EXIT':>4}  COMMAND")
     print("-" * 100)
     for r in rows:
-        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {str(r['exit_code'] or '?'):>4}  "
+        ec = r['exit_code']
+        ec_str = str(ec) if ec is not None else '?'
+        print(f"{r['id']:>6}  {_ts(r['ts']):19}  {ec_str:>4}  "
               f"{_trunc(r['cmd'], 60)}")
         if r['output']:
             for line in (r['output'] or "").split("\n"):
