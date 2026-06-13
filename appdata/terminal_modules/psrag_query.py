@@ -176,8 +176,14 @@ def _search(base_dir: str, query_vec: list, top_n: int) -> list:
 
     count = col.count()
     if count == 0:
-        _err("Knowledge base is empty. Add files and run Refresh index.")
-        sys.exit(1)
+        mem_count = 0
+        try:
+            mem_count = client.get_collection("memory").count()
+        except Exception:
+            pass
+        if mem_count == 0:
+            _err("Knowledge base is empty. Add files and run Refresh index.")
+            sys.exit(1)
 
     results = col.query(
         query_embeddings=[query_vec],
