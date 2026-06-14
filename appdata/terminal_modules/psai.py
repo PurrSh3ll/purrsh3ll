@@ -348,52 +348,14 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     }
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
-    collected        = []
-    _in_thinking     = [False]
-    _spin_idx        = [0]
-    _thought_buf     = [""]    # buffer for partial <thought>/<thought> tag bytes
-    _in_thought_tag  = [False] # True while inside <thought>…</thought> in content stream
+    collected = []
+    _in_thinking = [False]
+    _spin_idx    = [0]
     import time as _time
     _t_start     = _time.time()
     _t_first     = [None]
     _compl_tok   = [0]
     _prompt_tok  = [0]
-
-    def _split_thought(text: str):
-        """Extract <thought>…</thought> blocks from a content chunk.
-
-        Returns (thinking_text, normal_text). Buffers partial tags across chunks
-        so a tag split over multiple SSE frames is handled correctly.
-        """
-        buf          = _thought_buf[0] + (text or "")
-        think_parts  = []
-        normal_parts = []
-        while buf:
-            if _in_thought_tag[0]:
-                end = buf.find("</thought>")
-                if end >= 0:
-                    think_parts.append(buf[:end])
-                    _in_thought_tag[0] = False
-                    buf = buf[end + 10:]        # len("</thought>") == 10
-                else:
-                    safe = max(0, len(buf) - 9) # keep up to 9 chars; may start </thought>
-                    think_parts.append(buf[:safe])
-                    _thought_buf[0] = buf[safe:]
-                    return "".join(think_parts), "".join(normal_parts)
-            else:
-                start = buf.find("<thought>")
-                if start >= 0:
-                    normal_parts.append(buf[:start])
-                    _in_thought_tag[0] = True
-                    buf = buf[start + 9:]       # len("<thought>") == 9
-                else:
-                    safe = max(0, len(buf) - 8) # keep up to 8 chars; may start <thought>
-                    normal_parts.append(buf[:safe])
-                    _thought_buf[0] = buf[safe:]
-                    return "".join(think_parts), "".join(normal_parts)
-        _thought_buf[0] = ""
-        return "".join(think_parts), "".join(normal_parts)
-
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -414,11 +376,8 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     if not d.get("choices"):
                         continue
                     delta    = d["choices"][0]["delta"]
-                    thinking = delta.get("reasoning", "") or ""
-                    content  = delta.get("content",   "") or ""
-                    # Fallback: extract <thought>…</thought> from content stream (e.g. Gemini)
-                    if not thinking and (content or _thought_buf[0] or _in_thought_tag[0]):
-                        thinking, content = _split_thought(content)
+                    thinking = delta.get("reasoning", "")
+                    content  = delta.get("content", "")
                     if thinking and not hide_thinking:
                         if not _in_thinking[0]:
                             sys.stdout.write("\033[90m")
