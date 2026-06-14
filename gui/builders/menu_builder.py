@@ -792,8 +792,8 @@ def build_menu(main_window):
         def _update_term_history_hint():
             recent = term_history_spin.value()
             broad  = broad_history_spin.value()
-            broad_str = f"  +  {broad} commands only" if broad > 0 else "  +  extended: disabled"
-            term_history_hint.setText(f"{recent} commands + {recent} outputs{broad_str}")
+            broad_str = f"  +  {broad} inputs with exit codes only" if broad > 0 else "  +  extended: disabled"
+            term_history_hint.setText(f"{recent} inputs + {recent} outputs{broad_str}")
 
         _update_term_history_hint()
 
