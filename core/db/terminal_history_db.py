@@ -320,20 +320,27 @@ class TerminalHistoryDB:
         notes: Optional[str] = None,
     ) -> int:
         with self._cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO targets (ip, hostname, os_guess, notes)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(ip) DO UPDATE SET
-                    hostname = COALESCE(excluded.hostname, hostname),
-                    os_guess = COALESCE(excluded.os_guess, os_guess),
-                    notes    = COALESCE(excluded.notes, notes)
-                """,
-                (ip, hostname, os_guess, notes),
-            )
             cur.execute("SELECT id FROM targets WHERE ip = ?", (ip,))
             row = cur.fetchone()
-            return row["id"] if row else cur.lastrowid  # type: ignore[return-value]
+            if row:
+                tid = row["id"]
+                cur.execute(
+                    """
+                    UPDATE targets SET
+                        hostname = COALESCE(?, hostname),
+                        os_guess = COALESCE(?, os_guess),
+                        notes    = COALESCE(?, notes)
+                    WHERE id = ?
+                    """,
+                    (hostname, os_guess, notes, tid),
+                )
+                return tid
+            else:
+                cur.execute(
+                    "INSERT INTO targets (ip, hostname, os_guess, notes) VALUES (?, ?, ?, ?)",
+                    (ip, hostname, os_guess, notes),
+                )
+                return cur.lastrowid  # type: ignore[return-value]
 
     def upsert_port(
         self,
@@ -347,18 +354,34 @@ class TerminalHistoryDB:
     ) -> int:
         with self._cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO target_ports (target_id, port, protocol, state, service, version, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(target_id, port, protocol) DO UPDATE SET
-                    state   = excluded.state,
-                    service = COALESCE(excluded.service, service),
-                    version = COALESCE(excluded.version, version),
-                    notes   = COALESCE(excluded.notes, notes)
-                """,
-                (target_id, port, protocol, state, service, version, notes),
+                "SELECT id FROM target_ports WHERE target_id = ? AND port = ? AND protocol = ?",
+                (target_id, port, protocol),
             )
-            return cur.lastrowid  # type: ignore[return-value]
+            row = cur.fetchone()
+            if row:
+                pid = row["id"]
+                cur.execute(
+                    """
+                    UPDATE target_ports SET
+                        state   = ?,
+                        service = COALESCE(?, service),
+                        version = COALESCE(?, version),
+                        notes   = COALESCE(?, notes)
+                    WHERE id = ?
+                    """,
+                    (state, service, version, notes, pid),
+                )
+                return pid
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO target_ports
+                        (target_id, port, protocol, state, service, version, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (target_id, port, protocol, state, service, version, notes),
+                )
+                return cur.lastrowid  # type: ignore[return-value]
 
     def get_targets(self) -> List[sqlite3.Row]:
         with self._cursor() as cur:
