@@ -71,6 +71,17 @@ class TerminalTabsMixin:
                 self._auto_tagger = None
         return self._auto_tagger
 
+    def _get_output_parser(self):
+        """Return a shared OutputParser instance, initialised lazily."""
+        if not hasattr(self, "_output_parser"):
+            try:
+                from core.db.output_parser import OutputParser
+                self._output_parser = OutputParser()
+            except Exception:
+                logger.error("Failed to initialise OutputParser", exc_info=True)
+                self._output_parser = None
+        return self._output_parser
+
     def _on_terminal_received(self, data: str):
         for m in _PSOPEN_RE.finditer(data):
             try:
@@ -166,6 +177,17 @@ class TerminalTabsMixin:
                                         _tags = _tagger.get_tags(entry["cmd"])
                                         if _tags:
                                             _db.add_tags(_cid, _tags)
+                                    _parser = self._get_output_parser()
+                                    if _parser is not None and _cid:
+                                        try:
+                                            _parser.process(
+                                                db=_db, cmd_id=_cid,
+                                                cmd=entry["cmd"],
+                                                output=entry["output"],
+                                                tags=_tags if _tagger else [],
+                                            )
+                                        except Exception:
+                                            logger.error("OutputParser failed (terminal)", exc_info=True)
                             except Exception:
                                 logger.error("Failed to write terminal history to DB", exc_info=True)
                     # Show or hide error overlay
@@ -1197,6 +1219,17 @@ class TerminalTabsMixin:
                                         _tags = _tagger.get_tags(entry["cmd"])
                                         if _tags:
                                             _db.add_tags(_cid, _tags)
+                                    _parser = self._get_output_parser()
+                                    if _parser is not None and _cid:
+                                        try:
+                                            _parser.process(
+                                                db=_db, cmd_id=_cid,
+                                                cmd=entry["cmd"],
+                                                output=entry["output"],
+                                                tags=_tags if _tagger else [],
+                                            )
+                                        except Exception:
+                                            logger.error("OutputParser failed (split)", exc_info=True)
                             except Exception:
                                 logger.error("Failed to write split terminal history to DB", exc_info=True)
             if _state["cmd"] is not None:
