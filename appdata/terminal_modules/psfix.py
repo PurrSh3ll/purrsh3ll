@@ -36,31 +36,57 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     return None
 
 
-def _load_recent_history(base_dir: str, limit: int = 40) -> str:
-    """Load last N terminal history entries as formatted string (oldest → newest)."""
+def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0) -> str:
+    """Load terminal history as formatted string (oldest → newest).
+
+    limit       — recent entries sent with full output (400 chars)
+    broad_limit — older entries sent with cmd + exit code only (no output);
+                  fetched as OFFSET limit, so they never overlap with recent
+    """
     conn = _db_connect(base_dir)
     if conn is None:
         return ""
     try:
-        rows = conn.execute(
+        recent_rows = conn.execute(
             "SELECT cmd, exit_code, output FROM commands ORDER BY ts DESC LIMIT ?",
             (limit,),
         ).fetchall()
+        broad_rows = []
+        if broad_limit > 0:
+            broad_rows = conn.execute(
+                "SELECT cmd, exit_code FROM commands ORDER BY ts DESC LIMIT ? OFFSET ?",
+                (broad_limit, limit),
+            ).fetchall()
     except Exception:
         return ""
     finally:
         conn.close()
 
     parts = []
-    for row in reversed(rows):
-        ec  = row["exit_code"] if row["exit_code"] is not None else 0
-        cmd = row["cmd"] or ""
-        out = (row["output"] or "")[:400]
-        status = f"exit {ec}" if ec != 0 else "ok"
-        part = f"$ {cmd} [{status}]"
-        if out:
-            part += f"\n{out}"
-        parts.append(part)
+
+    # Extended history (oldest context, commands only)
+    if broad_rows:
+        parts.append("Extended history (commands only):")
+        for row in reversed(broad_rows):
+            ec     = row["exit_code"] if row["exit_code"] is not None else 0
+            cmd    = row["cmd"] or ""
+            status = f"exit {ec}" if ec != 0 else "ok"
+            parts.append(f"$ {cmd} [{status}]")
+        parts.append("")  # blank separator
+
+    # Recent history (with output)
+    if recent_rows:
+        parts.append("Recent history (with output):")
+        for row in reversed(recent_rows):
+            ec     = row["exit_code"] if row["exit_code"] is not None else 0
+            cmd    = row["cmd"] or ""
+            out    = (row["output"] or "")[:400]
+            status = f"exit {ec}" if ec != 0 else "ok"
+            part   = f"$ {cmd} [{status}]"
+            if out:
+                part += f"\n{out}"
+            parts.append(part)
+
     return "\n".join(parts)
 
 
@@ -189,7 +215,11 @@ def main():
     if args.analyze:
         cwd = (args.cwd or "").strip()
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        history_text = _load_recent_history(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
+        history_text = _load_recent_history(
+            base_dir,
+            limit=_ai._TERMINAL_HIST_LIMIT,
+            broad_limit=_ai._TERMINAL_HIST_BROAD_LIMIT,
+        )
 
         prompt = f"System: {sys_info}\n"
         if cwd:

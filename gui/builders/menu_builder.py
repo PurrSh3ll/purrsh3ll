@@ -793,6 +793,44 @@ def build_menu(main_window):
 
         term_history_spin.valueChanged.connect(_on_term_history_changed)
 
+        broad_history_spin = QSpinBox(grp_pstools)
+        broad_history_spin.setRange(0, 9999)
+        broad_history_spin.setSingleStep(10)
+        broad_history_spin.setValue(int(llama_cfg.get("terminal_history_broad_limit", 120)))
+        broad_history_spin.setMinimumWidth(80)
+
+        broad_history_reset_btn = QPushButton("Default", grp_pstools)
+        broad_history_reset_btn.setFixedWidth(60)
+        broad_history_reset_btn.clicked.connect(lambda: broad_history_spin.setValue(120))
+
+        broad_history_row = QHBoxLayout()
+        broad_history_row.addWidget(broad_history_spin)
+        broad_history_row.addWidget(broad_history_reset_btn)
+        broad_history_row.addStretch(1)
+
+        broad_history_hint = QLabel()
+        broad_history_hint.setStyleSheet("color: gray; font-size: 11px;")
+
+        def _update_broad_history_hint(value):
+            if value == 0:
+                broad_history_hint.setText("disabled")
+            else:
+                broad_history_hint.setText(f"{value} commands + exit codes only (no output)")
+
+        _update_broad_history_hint(broad_history_spin.value())
+
+        broad_history_col = QVBoxLayout()
+        broad_history_col.setSpacing(2)
+        broad_history_col.addLayout(broad_history_row)
+        broad_history_col.addWidget(broad_history_hint)
+        form_pstools.addRow("Extended history (--analyze):", broad_history_col)
+
+        def _on_broad_history_changed(value):
+            _save_llama_key("terminal_history_broad_limit", value)
+            _update_broad_history_hint(value)
+
+        broad_history_spin.valueChanged.connect(_on_broad_history_changed)
+
         # ── RAG group ─────────────────────────────────────────────────────────
         grp_rag = QGroupBox("RAG")
         grp_rag_layout = QVBoxLayout(grp_rag)
