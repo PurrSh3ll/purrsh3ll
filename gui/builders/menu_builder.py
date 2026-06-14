@@ -206,6 +206,18 @@ def build_menu(main_window):
         start_row.addWidget(y_spin)
         form_window.addRow("Start position:", start_row)
 
+        fullwindow_checkbox = QCheckBox("Full window", grp_window)
+        _fw_default = False
+        try:
+            if "window" in data:
+                _fw_default = bool(data["window"].get("maximized", False))
+            else:
+                _fw_default = bool(getattr(c, "window_maximized", False))
+        except Exception:
+            pass
+        fullwindow_checkbox.setChecked(_fw_default)
+        form_window.addRow(fullwindow_checkbox)
+
         # ── Behavior group ────────────────────────────────────────────────────
         grp_behavior = QGroupBox("Behavior")
         form_behavior = QFormLayout(grp_behavior)
@@ -348,10 +360,29 @@ def build_menu(main_window):
             except Exception:
                 pass
 
+        def _on_fullwindow_changed(state):
+            checked = fullwindow_checkbox.isChecked()
+            c.window_maximized = checked
+            if checked:
+                main_window.showMaximized()
+            else:
+                main_window.showNormal()
+            if not os.path.exists(c.config_path):
+                return
+            try:
+                with open(c.config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                cfg.setdefault("window", {})["maximized"] = checked
+                with open(c.config_path, "w", encoding="utf-8") as f:
+                    json.dump(cfg, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
         width_spin.valueChanged.connect(lambda _: _save_window_settings())
         height_spin.valueChanged.connect(lambda _: _save_window_settings())
         x_spin.valueChanged.connect(lambda _: _save_window_settings())
         y_spin.valueChanged.connect(lambda _: _save_window_settings())
+        fullwindow_checkbox.stateChanged.connect(_on_fullwindow_changed)
         lw_checkbox.stateChanged.connect(_on_lw_changed)
         save_sys_checkbox.stateChanged.connect(_on_save_sys_changed)
         delete_logs_checkbox.stateChanged.connect(_on_delete_logs_changed)

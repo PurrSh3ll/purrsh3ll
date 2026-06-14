@@ -76,6 +76,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.venv_script = os.path.join(self.base_path, "appdata", "venv_list.sh")
             self.start_x, self.start_y = 100, 100
             self.width, self.height = 800, 600
+            self.window_maximized = False
             self.lightweight_web_browser = True
             self.web_browser_3d_info = True
             self.game_3d_info = True
@@ -101,6 +102,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
 
                     self.width, self.height = win_cfg.get("resolution", [self.width, self.height])
                     self.start_x, self.start_y = win_cfg.get("start_screen", [self.start_x, self.start_y])
+                    self.window_maximized = bool(win_cfg.get("maximized", False))
                     self.lightweight_web_browser = performance.get("lightweight_web_browser", True)
                     self.save_system_vars = behavior.get("save_sys_vars_at_close", True)
                     self.delete_logs_at_close = behavior.get("delete_logs_at_close", True)

@@ -36,6 +36,8 @@ class MainWindow(QMainWindow):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.setInterval(30)
         self._resize_timer.timeout.connect(self._on_resize_settled)
+        if getattr(self.c, "window_maximized", False):
+            self.showMaximized()
 
     def _build_ui(self):
         create_main_widget(self)
