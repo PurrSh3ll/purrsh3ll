@@ -235,15 +235,18 @@ def build_menu(main_window):
         disable_history_checkbox.setChecked(getattr(c, "terminal_history_disabled", False))
         form_behavior.addRow(disable_history_checkbox)
 
-        _HISTORY_MAX_DEFAULT = 5000
+        _HISTORY_MAX_DEFAULT = 10000
         _history_max_saved = getattr(c, "terminal_history_max_entries", _HISTORY_MAX_DEFAULT)
         history_max_spin = QSpinBox(grp_behavior)
         history_max_spin.setRange(100, 100000)
         history_max_spin.setValue(int(_history_max_saved))
+        history_max_set_btn = QPushButton("Set", grp_behavior)
+        history_max_set_btn.setFixedWidth(48)
         history_max_reset_btn = QPushButton("Default", grp_behavior)
         history_max_reset_btn.setFixedWidth(60)
         history_max_row = QHBoxLayout()
         history_max_row.addWidget(history_max_spin)
+        history_max_row.addWidget(history_max_set_btn)
         history_max_row.addWidget(history_max_reset_btn)
         form_behavior.addRow("Max history entries:", history_max_row)
 
@@ -280,9 +283,32 @@ def build_menu(main_window):
             c.terminal_history_disabled = disable_history_checkbox.isChecked()
             _save_behavior_key("terminal_history_disabled", c.terminal_history_disabled)
 
-        def _on_history_max_changed(value):
-            c.terminal_history_max_entries = value
-            _save_behavior_key("terminal_history_max_entries", value)
+        def _on_history_max_set():
+            from PyQt6.QtWidgets import QMessageBox
+            new_val = history_max_spin.value()
+            current = getattr(c, "terminal_history_max_entries", _HISTORY_MAX_DEFAULT)
+            msg = QMessageBox(dlg)
+            msg.setWindowTitle("Change history limit")
+            msg.setText(
+                f"Set max history entries to <b>{new_val}</b>?<br><br>"
+                "Commands exceeding the limit will be deleted oldest-first.<br>"
+                "This cannot be undone."
+            )
+            msg.setStandardButtons(
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel
+            )
+            msg.setDefaultButton(QMessageBox.StandardButton.Cancel)
+            if msg.exec() != QMessageBox.StandardButton.Ok:
+                history_max_spin.setValue(current)
+                return
+            c.terminal_history_max_entries = new_val
+            _save_behavior_key("terminal_history_max_entries", new_val)
+            try:
+                db = c._get_term_db() if hasattr(c, "_get_term_db") else getattr(c, "_terminal_history_db", None)
+                if db is not None:
+                    db.trim_to_limit(new_val)
+            except Exception:
+                pass
 
         def _on_history_max_reset():
             history_max_spin.setValue(_HISTORY_MAX_DEFAULT)
@@ -331,7 +357,7 @@ def build_menu(main_window):
         delete_notes_checkbox.stateChanged.connect(_on_delete_notes_changed)
         restore_session_checkbox.stateChanged.connect(_on_restore_session_changed)
         disable_history_checkbox.stateChanged.connect(_on_disable_history_changed)
-        history_max_spin.valueChanged.connect(_on_history_max_changed)
+        history_max_set_btn.clicked.connect(_on_history_max_set)
         history_max_reset_btn.clicked.connect(_on_history_max_reset)
 
         # ── Register widgets ──────────────────────────────────────────────────

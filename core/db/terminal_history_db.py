@@ -396,6 +396,25 @@ class TerminalHistoryDB:
             )
             return cur.fetchall()
 
+    def trim_to_limit(self, max_entries: int) -> int:
+        """Delete oldest commands so at most max_entries remain. Returns number deleted."""
+        with self._cursor() as cur:
+            total = cur.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+            to_delete = total - max_entries
+            if to_delete <= 0:
+                return 0
+            cur.execute(
+                """
+                DELETE FROM commands WHERE id IN (
+                    SELECT id FROM commands ORDER BY ts ASC LIMIT ?
+                )
+                """,
+                (to_delete,),
+            )
+            cur.execute("DELETE FROM command_tags WHERE command_id NOT IN (SELECT id FROM commands)")
+            self._conn.commit()
+            return to_delete
+
     # ── convenience ────────────────────────────────────────────────────────
 
     def export_jsonl(self, limit: int = 0) -> List[dict]:
