@@ -1,49 +1,61 @@
 #!/usr/bin/env python3
 """
 psfix.py — AI-powered terminal error explainer/fixer for PurrSh3ll.
-Reads the last command entry from terminal_history.jsonl and sends it to AI.
+Reads the last command entry from terminal_history.db and sends it to AI.
 """
 
-import json
 import os
 import platform
+import sqlite3
 import sys
 
 
+def _db_connect(base_dir: str) -> sqlite3.Connection | None:
+    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.db")
+    if not os.path.exists(path):
+        return None
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 
 def _last_terminal_entry(base_dir: str) -> dict | None:
-    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
+    conn = _db_connect(base_dir)
+    if conn is None:
+        return None
     try:
-        with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
-        if lines:
-            return json.loads(lines[-1])
+        row = conn.execute(
+            "SELECT cmd, exit_code, output FROM commands ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return {"cmd": row["cmd"], "exit_code": row["exit_code"], "output": row["output"] or ""}
     except Exception:
         pass
+    finally:
+        conn.close()
     return None
 
 
 def _load_recent_history(base_dir: str, limit: int = 40) -> str:
     """Load last N terminal history entries as formatted string (oldest → newest)."""
-    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
+    conn = _db_connect(base_dir)
+    if conn is None:
+        return ""
     try:
-        with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
+        rows = conn.execute(
+            "SELECT cmd, exit_code, output FROM commands ORDER BY ts DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     except Exception:
         return ""
-
-    entries = []
-    for l in lines:
-        try:
-            entries.append(json.loads(l))
-        except Exception:
-            pass
+    finally:
+        conn.close()
 
     parts = []
-    for entry in entries[-limit:]:
-        ec  = entry.get("exit_code", 0)
-        cmd = entry.get("cmd", "")
-        out = entry.get("output", "")[:400]
+    for row in reversed(rows):
+        ec  = row["exit_code"] if row["exit_code"] is not None else 0
+        cmd = row["cmd"] or ""
+        out = (row["output"] or "")[:400]
         status = f"exit {ec}" if ec != 0 else "ok"
         part = f"$ {cmd} [{status}]"
         if out:
@@ -128,7 +140,7 @@ def main():
             "  psfix -e, --explain        Explain why the last command failed\n"
             "  psfix -a, --analyze        Deep analysis with terminal history and cwd context\n"
             "  psfix -p, --profile        Use a specific saved profile\n\n"
-            "psfix reads the last entry from terminal history automatically.\n"
+            "psfix reads the last entry from terminal_history.db automatically.\n"
         )
         sys.exit(0)
 
