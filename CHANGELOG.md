@@ -50,6 +50,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Hide thinking — Google/Gemini models**: "Hide thinking output" checkbox in Behavior now works correctly for Gemini models in all ps* tools (`psfix`, `psnext`, `psreport`, `psview`) — `hide_thinking` was not being read from the profile or passed to `_run_llm`, so thinking always appeared in gray regardless of the checkbox state; fixed by reading `hide_thinking` from the active profile and forwarding it on every `_run_llm` call in all four tools
 - **upsert_target / upsert_port**: `sqlite3.OperationalError: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint` on databases created before the sessions era was removed — replaced `ON CONFLICT(col) DO UPDATE` syntax with explicit SELECT + INSERT/UPDATE pattern that works with any schema version; targets and ports were silently not being saved
 - **psrag**: `Knowledge base is empty` error when only terminal snippets existed — empty check in `psrag_query.py` only queried the `rag_kb` ChromaDB collection; now also checks the `memory` collection before exiting with an error
 - **Agent Configuration / AI Settings labels**: "agent role:" → "Agent role:", "Skills & agents:" capitalized consistently across the Agent Configuration dialog and AI Settings panel

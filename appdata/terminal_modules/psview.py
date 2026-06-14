@@ -210,6 +210,7 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking    = bool(profile.get("hide_thinking", False))
 
     # ── Load image ─────────────────────────────────────────────────────────────
     image_path = args.image
@@ -254,11 +255,11 @@ def main():
         _real_stdout = sys.stdout
         sys.stdout   = sys.stderr
         try:
-            analysis = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+            analysis = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
         finally:
             sys.stdout = _real_stdout
     else:
-        analysis = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+        analysis = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
 
     if not analysis:
         _ai._err("No response from model.")

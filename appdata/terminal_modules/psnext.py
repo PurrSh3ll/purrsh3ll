@@ -133,6 +133,7 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking    = bool(profile.get("hide_thinking", False))
 
     history, count = _load_history(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
     if not history:
@@ -187,7 +188,7 @@ def main():
     _real_stdout = sys.stdout
     sys.stdout   = sys.stderr
     try:
-        response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
+        response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
     finally:
         sys.stdout = _real_stdout
 
