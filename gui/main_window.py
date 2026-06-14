@@ -341,7 +341,13 @@ class MainWindow(QMainWindow):
             try:
                 if os.path.exists(log_path):
                     os.remove(log_path)
-            except Exception as e:
+            except Exception:
+                pass
+            try:
+                db = getattr(self.c, "_terminal_history_db", None)
+                if db is not None:
+                    db.clear()
+            except Exception:
                 pass
 
         if getattr(self.c, "delete_notes_at_close", False):

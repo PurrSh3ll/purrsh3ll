@@ -415,6 +415,19 @@ class TerminalHistoryDB:
             self._conn.commit()
             return to_delete
 
+    def clear(self) -> None:
+        """Delete all history data (commands, tags, findings, targets, ports)."""
+        with self._cursor() as cur:
+            cur.executescript("""
+                PRAGMA foreign_keys = ON;
+                DELETE FROM command_tags;
+                DELETE FROM findings;
+                DELETE FROM target_ports;
+                DELETE FROM targets;
+                DELETE FROM commands;
+            """)
+        self._conn.commit()
+
     # ── convenience ────────────────────────────────────────────────────────
 
     def export_jsonl(self, limit: int = 0) -> List[dict]:
