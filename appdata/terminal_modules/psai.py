@@ -81,7 +81,7 @@ _DEFAULT_URLS = {
 }
 
 _MAX_HISTORY               = 40  # max messages kept in chat session (20 turns); overridden by config
-_TERMINAL_HIST_LIMIT       = 40  # max terminal history entries (with output) for psfix/psnext/psreport; overridden by config
+_TERMINAL_HIST_LIMIT       = 8   # max terminal history entries (with output) for psfix/psnext/psreport; overridden by config
 _TERMINAL_HIST_BROAD_LIMIT = 120 # max extended history entries (cmd + exit code only) for psfix --analyze; overridden by config
 
 
@@ -135,7 +135,7 @@ def _load_config(base_dir: str) -> dict:
     _SHOW_STATS           = bool(_llama.get("psai_show_stats",          True))
     _SHOW_QUERYING        = bool(_llama.get("psai_show_querying",        True))
     _MAX_HISTORY          = int(_llama.get("chat_max_history",           20)) * 2
-    _TERMINAL_HIST_LIMIT       = int(_llama.get("terminal_history_limit",       40))
+    _TERMINAL_HIST_LIMIT       = int(_llama.get("terminal_history_limit",       8))
     _TERMINAL_HIST_BROAD_LIMIT = int(_llama.get("terminal_history_broad_limit", 120))
     return cfg
 

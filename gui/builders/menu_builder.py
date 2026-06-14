@@ -761,12 +761,12 @@ def build_menu(main_window):
         term_history_spin = QSpinBox(grp_pstools)
         term_history_spin.setRange(1, 999)
         term_history_spin.setSingleStep(1)
-        term_history_spin.setValue(int(llama_cfg.get("terminal_history_limit", 40)))
+        term_history_spin.setValue(int(llama_cfg.get("terminal_history_limit", 8)))
         term_history_spin.setMinimumWidth(80)
 
         term_history_reset_btn = QPushButton("Default", grp_pstools)
         term_history_reset_btn.setFixedWidth(60)
-        term_history_reset_btn.clicked.connect(lambda: term_history_spin.setValue(40))
+        term_history_reset_btn.clicked.connect(lambda: term_history_spin.setValue(8))
 
         term_history_row = QHBoxLayout()
         term_history_row.addWidget(term_history_spin)
