@@ -36,9 +36,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Tool Categories editor**: new dialog under Edit → Tool Categories — browse, add, edit and remove tool→category mappings stored in `appdata/tool_categories.json`; two-panel layout (category list left, tools table right); category filter, search bar, count in "All (N)" header; changes saved immediately; table colors match active theme
 - **Tool Categories — Reset to Defaults**: "Reset to Defaults" button restores all tool and category mappings from `appdata/tool_categories_default.json` (built-in snapshot) with a confirmation dialog
 - **Tool Categories — 249 tools, 19 categories**: shipped with a comprehensive default database covering recon (48), scan (22), web (27), smb (13), ftp (3), ssh (7), ldap (4), ad (31), exploit (11), privesc (10), lateral (17), crack (16), shell (10), network (28), cloud (5), forensics (11), re (8), wifi (22), other (8)
+- **Output parser**: new `core/db/output_parser.py` — automatically extracts findings, targets and open ports from terminal output after every command; Priority 1 global patterns (zero false-positive): CVE IDs, NTLM hashes, Kerberos TGS/AS-REP tickets, CTF flags (HTB/THM/picoCTF/DUCTF/…), credentials from Hydra/Medusa/ncrack, kerbrute users and passwords, rpcclient user enumeration; Priority 2 tool-specific parsers: nmap/masscan/rustscan (hosts + open ports), netexec/nxc/crackmapexec (SMB hosts, credentials), nuclei (CVEs, vulnerabilities), feroxbuster/gobuster/ffuf (HTTP findings), nikto (findings), arp-scan (targets); results written to `findings`, `targets`, `target_ports` tables
+- **pshistory `--targets`**: show all discovered targets with IP, hostname, OS guess and open port count
+- **pshistory `--ports [IP]`**: show all open ports across all targets, or filtered to a specific IP
+- **pshistory `--findings`**: show all auto-extracted findings (CVEs, credentials, hashes, flags, users, hosts)
+- **pshistory help sections**: help text reorganized into four sections — BROWSING, SEARCH & FILTER, RECON DATA, MISC
+- **DB output limit**: terminal command output stored in SQLite capped at 100 KB per entry — oversized outputs get a `[... output truncated at 100 KB ...]` notice appended; OutputParser always receives the full raw output before truncation so no findings are lost
+- **History limit — Set button**: new "Set" button next to Max history entries in File → Settings; clicking shows a confirmation dialog warning about data loss, then saves the new limit and trims the DB oldest-first; "Default" button (resets to 10 000) also triggers the same confirmation flow
+- **History limit — default raised**: default max history entries changed from 5 000 to 10 000
+- **Clear terminal history on exit**: checkbox in File → Settings now also clears `terminal_history.db` (all commands, tags, findings, targets, ports) in addition to the existing `.jsonl` file removal
+- **TerminalHistoryDB.trim_to_limit(n)**: new method — deletes the oldest commands (and orphaned tags) to enforce a maximum entry count; used by the Set button in Settings
+- **TerminalHistoryDB.clear()**: new method — deletes all history data from the DB; used by "Clear terminal history on exit"
 
 ### Fixed
 
+- **upsert_target / upsert_port**: `sqlite3.OperationalError: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint` on databases created before the sessions era was removed — replaced `ON CONFLICT(col) DO UPDATE` syntax with explicit SELECT + INSERT/UPDATE pattern that works with any schema version; targets and ports were silently not being saved
 - **psrag**: `Knowledge base is empty` error when only terminal snippets existed — empty check in `psrag_query.py` only queried the `rag_kb` ChromaDB collection; now also checks the `memory` collection before exiting with an error
 - **Agent Configuration / AI Settings labels**: "agent role:" → "Agent role:", "Skills & agents:" capitalized consistently across the Agent Configuration dialog and AI Settings panel
 - **pshistory**: exit code `0` shown as `?` — `exit_code or '?'` treated `0` as falsy; fixed to `str(ec) if ec is not None else '?'`
@@ -48,6 +60,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **default skills folder**: removed `appdata/agent_modes/skills/default/` and its `terminal-history-reader` SKILL.md — terminal history awareness is now a behavioural instruction baked directly into each agent CLAUDE.md file
 - **Skills Usage sections**: removed `## Skills Usage` sections from `ctf/CLAUDE.md` and `pentest/CLAUDE.md` — referenced `/mnt/skills/` paths that do not apply to PurrSh3ll; skill routing belongs in `ctf_skills` and `pentest_skills`
+- **pshistory `--db`**: removed `--db /path/to.db` flag — DB path is always fixed to `appdata/logs/terminal_history.db`; reduces CLI surface
 
 ---
 
