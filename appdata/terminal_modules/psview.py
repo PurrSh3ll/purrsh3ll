@@ -2,7 +2,7 @@
 """
 psview.py — AI-powered screenshot / image analyzer for PurrSh3ll.
 Sends an image to the active vision-capable AI profile, streams analysis,
-and saves a synthetic entry to terminal_history.jsonl so psnext / psreport
+and saves a synthetic entry to terminal_history.db so psnext / psreport
 can incorporate the findings.
 
 Optional --next flag: after analysis runs a psnext-style prompt and asks
@@ -10,9 +10,9 @@ whether to paste the best suggested command at the zsh prompt.
 """
 
 import base64
-import json
 import os
 import platform
+import sqlite3
 import sys
 import time
 
@@ -58,45 +58,54 @@ def _build_messages(b64: str, media_type: str, question: str, provider: str) -> 
     ]}]
 
 
+def _db_connect(base_dir: str) -> sqlite3.Connection | None:
+    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.db")
+    if not os.path.exists(path):
+        return None
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _save_to_history(base_dir: str, filename: str, analysis: str, cwd: str):
-    """Append a synthetic psscreenshot entry to terminal_history.jsonl."""
-    entry = {
-        "cmd":       f"[psscreenshot: {filename}]",
-        "output":    analysis[:800],
-        "exit_code": 0,
-        "ts":        int(time.time()),
-        "cwd":       cwd,
-    }
-    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
+    """Insert a synthetic psscreenshot entry into terminal_history.db."""
+    conn = _db_connect(base_dir)
+    if conn is None:
+        return  # history write failure is non-fatal
+    ts = int(time.time())
     try:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as e:
-        pass  # history write failure is non-fatal
+        conn.execute(
+            "INSERT INTO commands (ts, ts_end, terminal, cmd, exit_code, output, cwd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ts, ts, "psview", f"[psscreenshot: {filename}]", 0, analysis[:800], cwd or None),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
 
 
 def _load_history_for_next(base_dir: str) -> tuple[str, int]:
     """Load last 40 terminal history entries (including the just-saved screenshot entry)."""
-    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
+    conn = _db_connect(base_dir)
+    if conn is None:
+        return "", 0
     try:
-        with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
+        rows = conn.execute(
+            "SELECT cmd, exit_code, output, cwd FROM commands ORDER BY ts DESC LIMIT 40"
+        ).fetchall()
     except Exception:
         return "", 0
-
-    entries = []
-    for l in lines:
-        try:
-            entries.append(json.loads(l))
-        except Exception:
-            pass
+    finally:
+        conn.close()
 
     parts = []
-    for entry in entries[-40:]:
-        ec     = entry.get("exit_code", 0)
-        cmd    = entry.get("cmd", "")
-        out    = entry.get("output", "")[:600]
-        cwd    = entry.get("cwd", "")
+    for row in reversed(rows):
+        ec     = row["exit_code"] if row["exit_code"] is not None else 0
+        cmd    = row["cmd"] or ""
+        out    = (row["output"] or "")[:600]
+        cwd    = row["cwd"] or ""
         status = f"exit {ec}" if ec != 0 else "ok"
         part   = f"$ {cmd} [{status}]"
         if cwd:
