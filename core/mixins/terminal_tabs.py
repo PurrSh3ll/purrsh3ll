@@ -43,6 +43,17 @@ _PURRSH_TOOLS = frozenset({
     "pshelp", "pstldr", "psai", "pscmd", "psopen",
 })
 
+_MAX_OUTPUT_BYTES = 100_000  # 100 KB per command output stored in DB
+
+
+def _trim_output(output: str) -> str:
+    """Trim output to _MAX_OUTPUT_BYTES, appending a notice if truncated."""
+    encoded = output.encode("utf-8", errors="replace")
+    if len(encoded) <= _MAX_OUTPUT_BYTES:
+        return output
+    trimmed = encoded[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
+    return trimmed + "\n[... output truncated at 100 KB ...]"
+
 
 class TerminalTabsMixin:
     def _get_term_db(self):
@@ -163,13 +174,14 @@ class TerminalTabsMixin:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
+                                    _raw_output = entry["output"]
                                     _cid = _db.insert_command(
                                         ts=entry["ts"],
                                         ts_end=entry["ts_end"],
                                         terminal=entry["terminal"],
                                         cmd=entry["cmd"],
                                         exit_code=entry["exit_code"],
-                                        output=entry["output"],
+                                        output=_trim_output(_raw_output),
                                         cwd=_state.get("cwd") or None,
                                     )
                                     _tagger = self._get_auto_tagger()
@@ -183,7 +195,7 @@ class TerminalTabsMixin:
                                             _parser.process(
                                                 db=_db, cmd_id=_cid,
                                                 cmd=entry["cmd"],
-                                                output=entry["output"],
+                                                output=_raw_output,
                                                 tags=_tags if _tagger else [],
                                             )
                                         except Exception:
@@ -1205,13 +1217,14 @@ class TerminalTabsMixin:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
+                                    _raw_output = entry["output"]
                                     _cid = _db.insert_command(
                                         ts=entry["ts"],
                                         ts_end=entry["ts_end"],
                                         terminal=entry["terminal"],
                                         cmd=entry["cmd"],
                                         exit_code=entry["exit_code"],
-                                        output=entry["output"],
+                                        output=_trim_output(_raw_output),
                                         cwd=_state.get("cwd") or None,
                                     )
                                     _tagger = self._get_auto_tagger()
@@ -1225,7 +1238,7 @@ class TerminalTabsMixin:
                                             _parser.process(
                                                 db=_db, cmd_id=_cid,
                                                 cmd=entry["cmd"],
-                                                output=entry["output"],
+                                                output=_raw_output,
                                                 tags=_tags if _tagger else [],
                                             )
                                         except Exception:
