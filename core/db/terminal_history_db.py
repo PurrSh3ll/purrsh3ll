@@ -417,16 +417,17 @@ class TerminalHistoryDB:
 
     def clear(self) -> None:
         """Delete all history data (commands, tags, findings, targets, ports)."""
-        with self._cursor() as cur:
-            cur.executescript("""
-                PRAGMA foreign_keys = ON;
-                DELETE FROM command_tags;
-                DELETE FROM findings;
-                DELETE FROM target_ports;
-                DELETE FROM targets;
-                DELETE FROM commands;
-            """)
-        self._conn.commit()
+        conn = self.connect()
+        conn.executescript("""
+            PRAGMA foreign_keys = ON;
+            DELETE FROM command_tags;
+            DELETE FROM findings;
+            DELETE FROM target_ports;
+            DELETE FROM targets;
+            DELETE FROM commands;
+            DELETE FROM sqlite_sequence;
+        """)
+        conn.commit()
 
     # ── convenience ────────────────────────────────────────────────────────
 

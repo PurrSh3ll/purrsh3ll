@@ -344,7 +344,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             try:
-                db = getattr(self.c, "_terminal_history_db", None)
+                db = self.c._get_term_db() if hasattr(self.c, "_get_term_db") else None
                 if db is not None:
                     db.clear()
             except Exception:
