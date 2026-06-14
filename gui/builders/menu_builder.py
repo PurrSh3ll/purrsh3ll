@@ -737,10 +737,24 @@ def build_menu(main_window):
         chat_history_row.addWidget(chat_history_spin)
         chat_history_row.addWidget(chat_history_reset_btn)
         chat_history_row.addStretch(1)
-        form_pstools.addRow("Max pschat turns:", chat_history_row)
+
+        chat_history_hint = QLabel()
+        chat_history_hint.setStyleSheet("color: gray; font-size: 11px;")
+
+        def _update_chat_history_hint(value):
+            chat_history_hint.setText(f"{value} prompts + {value} responses")
+
+        _update_chat_history_hint(chat_history_spin.value())
+
+        chat_history_col = QVBoxLayout()
+        chat_history_col.setSpacing(2)
+        chat_history_col.addLayout(chat_history_row)
+        chat_history_col.addWidget(chat_history_hint)
+        form_pstools.addRow("Max pschat turns:", chat_history_col)
 
         def _on_chat_history_changed(value):
             _save_llama_key("chat_max_history", value)
+            _update_chat_history_hint(value)
 
         chat_history_spin.valueChanged.connect(_on_chat_history_changed)
 
