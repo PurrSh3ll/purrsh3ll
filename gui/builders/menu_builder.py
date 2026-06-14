@@ -768,31 +768,6 @@ def build_menu(main_window):
         term_history_reset_btn.setFixedWidth(60)
         term_history_reset_btn.clicked.connect(lambda: term_history_spin.setValue(8))
 
-        term_history_row = QHBoxLayout()
-        term_history_row.addWidget(term_history_spin)
-        term_history_row.addWidget(term_history_reset_btn)
-        term_history_row.addStretch(1)
-
-        term_history_hint = QLabel()
-        term_history_hint.setStyleSheet("color: gray; font-size: 11px;")
-
-        def _update_term_history_hint(value):
-            term_history_hint.setText(f"{value} commands + {value} outputs")
-
-        _update_term_history_hint(term_history_spin.value())
-
-        term_history_col = QVBoxLayout()
-        term_history_col.setSpacing(2)
-        term_history_col.addLayout(term_history_row)
-        term_history_col.addWidget(term_history_hint)
-        form_pstools.addRow("Max terminal turns:", term_history_col)
-
-        def _on_term_history_changed(value):
-            _save_llama_key("terminal_history_limit", value)
-            _update_term_history_hint(value)
-
-        term_history_spin.valueChanged.connect(_on_term_history_changed)
-
         broad_history_spin = QSpinBox(grp_pstools)
         broad_history_spin.setRange(0, 9999)
         broad_history_spin.setSingleStep(10)
@@ -803,32 +778,40 @@ def build_menu(main_window):
         broad_history_reset_btn.setFixedWidth(60)
         broad_history_reset_btn.clicked.connect(lambda: broad_history_spin.setValue(120))
 
-        broad_history_row = QHBoxLayout()
-        broad_history_row.addWidget(broad_history_spin)
-        broad_history_row.addWidget(broad_history_reset_btn)
-        broad_history_row.addStretch(1)
+        term_history_row = QHBoxLayout()
+        term_history_row.addWidget(term_history_spin)
+        term_history_row.addWidget(term_history_reset_btn)
+        term_history_row.addSpacing(12)
+        term_history_row.addWidget(broad_history_spin)
+        term_history_row.addWidget(broad_history_reset_btn)
+        term_history_row.addStretch(1)
 
-        broad_history_hint = QLabel()
-        broad_history_hint.setStyleSheet("color: gray; font-size: 11px;")
+        term_history_hint = QLabel()
+        term_history_hint.setStyleSheet("color: gray; font-size: 11px;")
 
-        def _update_broad_history_hint(value):
-            if value == 0:
-                broad_history_hint.setText("disabled")
-            else:
-                broad_history_hint.setText(f"{value} commands + exit codes only (no output)")
+        def _update_term_history_hint():
+            recent = term_history_spin.value()
+            broad  = broad_history_spin.value()
+            broad_str = f"  +  {broad} commands only" if broad > 0 else "  +  extended: disabled"
+            term_history_hint.setText(f"{recent} commands + {recent} outputs{broad_str}")
 
-        _update_broad_history_hint(broad_history_spin.value())
+        _update_term_history_hint()
 
-        broad_history_col = QVBoxLayout()
-        broad_history_col.setSpacing(2)
-        broad_history_col.addLayout(broad_history_row)
-        broad_history_col.addWidget(broad_history_hint)
-        form_pstools.addRow("Extended history (--analyze):", broad_history_col)
+        term_history_col = QVBoxLayout()
+        term_history_col.setSpacing(2)
+        term_history_col.addLayout(term_history_row)
+        term_history_col.addWidget(term_history_hint)
+        form_pstools.addRow("Max terminal turns:", term_history_col)
+
+        def _on_term_history_changed(value):
+            _save_llama_key("terminal_history_limit", value)
+            _update_term_history_hint()
 
         def _on_broad_history_changed(value):
             _save_llama_key("terminal_history_broad_limit", value)
-            _update_broad_history_hint(value)
+            _update_term_history_hint()
 
+        term_history_spin.valueChanged.connect(_on_term_history_changed)
         broad_history_spin.valueChanged.connect(_on_broad_history_changed)
 
         # ── RAG group ─────────────────────────────────────────────────────────
