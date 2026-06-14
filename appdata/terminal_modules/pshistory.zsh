@@ -13,6 +13,9 @@ Usage:
   pshistory -t web -n 50       show last 50 web commands
   pshistory -t exploit --all   show all exploitation commands
   pshistory --categories       list all available categories (tag + label + DB count)
+  pshistory --targets          show all discovered targets (IPs / hostnames)
+  pshistory --ports            show all open ports (all targets)
+  pshistory --ports 10.10.10.1 show open ports for a specific target
   pshistory --findings         show all findings
   pshistory --stats            show DB statistics
   pshistory --show 42          show full output of command id=42

@@ -11,6 +11,9 @@ Usage:
   pshistory -t recon -n 50     show last 50 recon commands
   pshistory -t exploit --all   show all exploitation commands
   pshistory --categories       list all available categories (from tool_categories.json)
+  pshistory --targets          show all discovered targets (IPs / hostnames)
+  pshistory --ports            show all open ports (all targets)
+  pshistory --ports 10.10.10.1 show open ports for a specific target
   pshistory --findings         show all findings
   pshistory --stats            show DB statistics
   pshistory --show 42          show full output of command id=42
@@ -179,6 +182,52 @@ def cmd_categories(db_path):
         print(f"{key:12}  {label:28}  {count_str}")
 
 
+def cmd_targets(conn):
+    rows = conn.execute("SELECT * FROM targets ORDER BY ip").fetchall()
+    if not rows:
+        print("No targets found.")
+        return
+    print(f"{'ID':>4}  {'IP':16}  {'HOSTNAME':24}  {'OS':28}  NOTES")
+    print("-" * 100)
+    for r in rows:
+        port_count = conn.execute(
+            "SELECT COUNT(*) FROM target_ports WHERE target_id = ?", (r['id'],)
+        ).fetchone()[0]
+        notes = (r['notes'] or '')
+        print(f"{r['id']:>4}  {(r['ip'] or ''):16}  {(r['hostname'] or ''):24}  "
+              f"{(r['os_guess'] or ''):28}  {_trunc(notes, 20)}  [{port_count} port(s)]")
+
+
+def cmd_ports(conn, ip=None):
+    if ip:
+        tgt = conn.execute("SELECT * FROM targets WHERE ip = ?", (ip,)).fetchone()
+        if not tgt:
+            print(f"Target '{ip}' not found.")
+            return
+        rows = conn.execute(
+            "SELECT p.*, t.ip, t.hostname FROM target_ports p "
+            "JOIN targets t ON t.id = p.target_id "
+            "WHERE p.target_id = ? ORDER BY p.port",
+            (tgt['id'],)
+        ).fetchall()
+        print(f"Ports for {ip}  ({tgt['hostname'] or '-'}):")
+    else:
+        rows = conn.execute(
+            "SELECT p.*, t.ip, t.hostname FROM target_ports p "
+            "JOIN targets t ON t.id = p.target_id "
+            "ORDER BY t.ip, p.port"
+        ).fetchall()
+    if not rows:
+        print("No ports found.")
+        return
+    print(f"{'IP':16}  {'PORT':>5}  {'PROTO':5}  {'STATE':8}  {'SERVICE':16}  VERSION")
+    print("-" * 100)
+    for r in rows:
+        print(f"{(r['ip'] or ''):16}  {r['port']:>5}  {(r['protocol'] or ''):5}  "
+              f"{(r['state'] or ''):8}  {(r['service'] or ''):16}  "
+              f"{_trunc(r['version'] or '', 30)}")
+
+
 def cmd_findings(conn):
     rows = conn.execute(
         "SELECT * FROM findings ORDER BY ts DESC LIMIT 200"
@@ -269,6 +318,9 @@ def main():
     ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history")
     ap.add_argument("-t", "--tag", metavar="TAG", help="Show commands tagged with category (e.g. recon, web, exploit)")
     ap.add_argument("--categories", action="store_true", help="List all available categories from tool_categories.json")
+    ap.add_argument("--targets", action="store_true", help="Show all discovered targets")
+    ap.add_argument("--ports", nargs="?", const="", metavar="IP",
+                    help="Show open ports (all targets, or specific IP)")
     ap.add_argument("--findings", action="store_true", help="Show findings")
     ap.add_argument("--stats", action="store_true", help="Show DB statistics")
     ap.add_argument("--show", type=int, metavar="ID", help="Show full details of command by ID")
@@ -290,6 +342,10 @@ def main():
         cmd_all(conn)
     elif args.search:
         cmd_search(conn, args.search, args.n)
+    elif args.targets:
+        cmd_targets(conn)
+    elif args.ports is not None:
+        cmd_ports(conn, args.ports or None)
     elif args.findings:
         cmd_findings(conn)
     elif args.stats:
