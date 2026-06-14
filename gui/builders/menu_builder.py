@@ -312,6 +312,7 @@ def build_menu(main_window):
 
         def _on_history_max_reset():
             history_max_spin.setValue(_HISTORY_MAX_DEFAULT)
+            _on_history_max_set()
 
         def _save_window_settings():
             w = width_spin.value()
