@@ -348,14 +348,63 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     }
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
 
-    collected = []
-    _in_thinking = [False]
-    _spin_idx    = [0]
+    collected        = []
+    _in_thinking     = [False]
+    _spin_idx        = [0]
+    _thought_buf     = [""]    # partial tag buffer for <thought>/<thought> detection
+    _in_thought_tag  = [False] # True while inside <thought>…</thought> in content stream
     import time as _time
     _t_start     = _time.time()
     _t_first     = [None]
     _compl_tok   = [0]
     _prompt_tok  = [0]
+
+    _OPEN_TAG  = "<thought>"
+    _CLOSE_TAG = "</thought>"
+
+    def _tag_prefix_len(s: str, tag: str) -> int:
+        """Return length of longest suffix of s that is a prefix of tag (0 if none)."""
+        max_check = min(len(s), len(tag) - 1)
+        for i in range(max_check, 0, -1):
+            if s.endswith(tag[:i]):
+                return i
+        return 0
+
+    def _split_thought(text: str):
+        """Extract <thought>…</thought> from a content chunk.
+        Only buffers trailing chars that are an actual prefix of a tag —
+        so normal tokens flush immediately with zero latency.
+        Returns (thinking_text, normal_text).
+        """
+        buf          = _thought_buf[0] + (text or "")
+        think_parts  = []
+        normal_parts = []
+        while buf:
+            if _in_thought_tag[0]:
+                end = buf.find(_CLOSE_TAG)
+                if end >= 0:
+                    think_parts.append(buf[:end])
+                    _in_thought_tag[0] = False
+                    buf = buf[end + len(_CLOSE_TAG):]
+                else:
+                    hold = _tag_prefix_len(buf, _CLOSE_TAG)
+                    think_parts.append(buf[:len(buf) - hold])
+                    _thought_buf[0] = buf[len(buf) - hold:]
+                    return "".join(think_parts), "".join(normal_parts)
+            else:
+                start = buf.find(_OPEN_TAG)
+                if start >= 0:
+                    normal_parts.append(buf[:start])
+                    _in_thought_tag[0] = True
+                    buf = buf[start + len(_OPEN_TAG):]
+                else:
+                    hold = _tag_prefix_len(buf, _OPEN_TAG)
+                    normal_parts.append(buf[:len(buf) - hold])
+                    _thought_buf[0] = buf[len(buf) - hold:]
+                    return "".join(think_parts), "".join(normal_parts)
+        _thought_buf[0] = ""
+        return "".join(think_parts), "".join(normal_parts)
+
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -376,8 +425,11 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     if not d.get("choices"):
                         continue
                     delta    = d["choices"][0]["delta"]
-                    thinking = delta.get("reasoning", "")
-                    content  = delta.get("content", "")
+                    thinking = delta.get("reasoning", "") or ""
+                    content  = delta.get("content",   "") or ""
+                    # Fallback: extract <thought>…</thought> from content stream (e.g. Gemini)
+                    if not thinking and (content or _thought_buf[0] or _in_thought_tag[0]):
+                        thinking, content = _split_thought(content)
                     if thinking and not hide_thinking:
                         if not _in_thinking[0]:
                             sys.stdout.write("\033[90m")
@@ -406,6 +458,18 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                         collected.append(content)
                 except Exception:
                     pass
+        # Flush any remaining partial-tag buffer as normal content
+        if _thought_buf[0]:
+            leftover = _thought_buf[0]
+            _thought_buf[0] = ""
+            if _in_thinking[0]:
+                if not hide_thinking:
+                    sys.stdout.write(leftover)
+                    sys.stdout.flush()
+            else:
+                sys.stdout.write(leftover)
+                sys.stdout.flush()
+                collected.append(leftover)
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
         elif _in_thinking[0]:
