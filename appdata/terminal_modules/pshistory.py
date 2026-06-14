@@ -25,7 +25,6 @@ MISC
   pshistory --stats            show DB statistics
   pshistory --clear            delete entire history (asks for confirmation)
   pshistory --clear -y         delete without confirmation
-  pshistory --db /path/to.db   use a custom DB path
 """
 
 import argparse
@@ -318,7 +317,6 @@ def cmd_clear(conn, yes):
 
 def main():
     ap = argparse.ArgumentParser(description="Query PurrSh3ll terminal history DB")
-    ap.add_argument("--db", default=DEFAULT_DB, help="Path to terminal_history.db")
     ap.add_argument("-n", type=int, default=20, help="Number of results (default 20)")
     ap.add_argument("-q", "--search", metavar="PATTERN", help="Search commands and output")
     ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history")
@@ -334,13 +332,13 @@ def main():
     ap.add_argument("-y", "--yes", action="store_true", help="Skip confirmation for --clear")
     args = ap.parse_args()
 
-    conn = _connect(args.db)
+    conn = _connect(DEFAULT_DB)
 
     if args.clear:
         cmd_clear(conn, args.yes)
     elif args.categories:
         conn.close()
-        cmd_categories(args.db)
+        cmd_categories(DEFAULT_DB)
         return
     elif args.tag:
         cmd_category(conn, args.tag, args.n, args.show_all)

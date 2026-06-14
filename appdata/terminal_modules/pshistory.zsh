@@ -27,7 +27,6 @@ MISC
   pshistory --stats            show DB statistics
   pshistory --clear            delete entire history (asks for confirmation)
   pshistory --clear -y         delete without confirmation prompt
-  pshistory --db /path/to.db   use a custom DB path
 EOF
         return 0
     fi
