@@ -758,10 +758,24 @@ def build_menu(main_window):
         term_history_row.addWidget(term_history_spin)
         term_history_row.addWidget(term_history_reset_btn)
         term_history_row.addStretch(1)
-        form_pstools.addRow("Max terminal turns:", term_history_row)
+
+        term_history_hint = QLabel()
+        term_history_hint.setStyleSheet("color: gray; font-size: 11px;")
+
+        def _update_term_history_hint(value):
+            term_history_hint.setText(f"{value} commands + {value} outputs")
+
+        _update_term_history_hint(term_history_spin.value())
+
+        term_history_col = QVBoxLayout()
+        term_history_col.setSpacing(2)
+        term_history_col.addLayout(term_history_row)
+        term_history_col.addWidget(term_history_hint)
+        form_pstools.addRow("Max terminal turns:", term_history_col)
 
         def _on_term_history_changed(value):
             _save_llama_key("terminal_history_limit", value)
+            _update_term_history_hint(value)
 
         term_history_spin.valueChanged.connect(_on_term_history_changed)
 
