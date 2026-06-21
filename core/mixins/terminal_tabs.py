@@ -44,15 +44,25 @@ _PURRSH_TOOLS = frozenset({
 })
 
 _MAX_OUTPUT_BYTES = 100_000  # 100 KB per command output stored in DB
+_HEAD_BYTES       =  60_000  # first 60 KB kept
+_TAIL_BYTES       =  40_000  # last 40 KB kept
 
 
 def _trim_output(output: str) -> str:
-    """Trim output to _MAX_OUTPUT_BYTES, appending a notice if truncated."""
+    """Trim output to _MAX_OUTPUT_BYTES using head+tail strategy.
+
+    Keeps the first 60 KB (tool banner, config, early results) and the last
+    40 KB (summary, errors, final findings) with an omission notice between
+    them.  This ensures LLMs always see both the context of what was run and
+    the final result, regardless of output size.
+    """
     encoded = output.encode("utf-8", errors="replace")
     if len(encoded) <= _MAX_OUTPUT_BYTES:
         return output
-    trimmed = encoded[:_MAX_OUTPUT_BYTES].decode("utf-8", errors="replace")
-    return trimmed + "\n[... output truncated at 100 KB ...]"
+    omitted = len(encoded) - _HEAD_BYTES - _TAIL_BYTES
+    head = encoded[:_HEAD_BYTES].decode("utf-8", errors="replace")
+    tail = encoded[-_TAIL_BYTES:].decode("utf-8", errors="replace")
+    return head + f"\n[... {omitted:,} bytes omitted ...]\n" + tail
 
 
 class TerminalTabsMixin:
