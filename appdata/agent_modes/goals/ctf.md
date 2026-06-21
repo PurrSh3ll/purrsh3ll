@@ -14,7 +14,14 @@ If the user has already provided this information in the prompt, skip directly t
 
 Find and capture all flags: `user.txt` and `root.txt` (or platform equivalent).
 Read flag contents and display them to the user immediately when found.
-Save a brief writeup to `writeup_<machine>.md` upon completion.
+Upon completion, generate a writeup using:
+
+```bash
+psreport
+```
+
+This reads the terminal history database and produces a structured session report.
+Save the generated writeup to `writeup_<machine>.md`.
 
 ## Stop condition
 

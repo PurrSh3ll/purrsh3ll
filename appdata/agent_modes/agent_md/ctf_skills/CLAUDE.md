@@ -28,6 +28,7 @@ Invoke a subagent for specialized work (recon, web, AD, forensics, crypto) rathe
 3. **Don't repeat failed commands** — if something failed, change the approach.
 4. **Save findings immediately** — flags, credentials, hashes, usernames.
 5. **When stuck**: re-enumerate a different service, search the exact version for CVEs, check GTFOBins / HackTricks.
+6. **Writeup** — after capturing all flags, generate a writeup using `psreport`. This reads the terminal history database and produces an AI-generated session report. Save it with: `psreport > writeup_<machine>.md`
 
 ---
 
@@ -56,6 +57,8 @@ export DOMAIN=<target_domain>   # if applicable
 ## Goal
 
 If `goal.md` exists in the working directory, read it before taking any action — it defines the target, the information to gather from the user, and the stop condition for this session.
+
+If `goal.md` does not exist, ask the user for: target IP/hostname, platform (HTB/THM/other), and VPN status. At the end of the session (all flags captured), always run `psreport` to generate the writeup regardless of whether `goal.md` was present.
 
 ---
 
