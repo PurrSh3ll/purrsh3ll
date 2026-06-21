@@ -1,5 +1,5 @@
 import logging
-import os, re, ast, sys, json, random, shutil, subprocess, threading, time, tempfile
+import os, re, ast, sys, json, random, shutil, subprocess, threading, time, tempfile, resource, signal
 from collections import deque
 
 logger = logging.getLogger(__name__)
@@ -10,6 +10,309 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 
 from pyfiglet import Figlet
+
+# ── Help extraction helpers ────────────────────────────────────────────────────
+
+_STDLIB_ARG_TYPES = frozenset({'int', 'float', 'str', 'bool', 'complex', 'bytes', 'open'})
+_VALID_ACTIONS    = frozenset({
+    'store', 'store_true', 'store_false', 'store_const',
+    'append', 'append_const', 'count', 'extend',
+})
+_PARSER_CTOR_NAMES = frozenset({'ArgumentParser', 'OptionParser'})
+
+
+def _help_ast_node_repr(node, const_map):
+    """Convert an AST node to a safe Python repr string.
+    Returns (repr_str, is_safe). is_safe=False means skip this kwarg in the mini-script."""
+    if isinstance(node, ast.Constant):
+        return repr(node.value), True
+    if isinstance(node, ast.Name):
+        if node.id in ('True', 'False', 'None'):
+            return node.id, True
+        if node.id in _STDLIB_ARG_TYPES:
+            return node.id, True
+        if node.id in const_map:
+            return repr(const_map[node.id]), True
+        return None, False
+    if isinstance(node, ast.Attribute):
+        # Allow argparse.RawDescriptionHelpFormatter etc.
+        if isinstance(node.value, ast.Name) and node.value.id == 'argparse':
+            return f"argparse.{node.attr}", True
+        return None, False
+    if isinstance(node, (ast.List, ast.Tuple)):
+        parts = []
+        for elt in node.elts:
+            r, safe = _help_ast_node_repr(elt, const_map)
+            if not safe:
+                return None, False
+            parts.append(r)
+        if isinstance(node, ast.List):
+            return f"[{', '.join(parts)}]", True
+        return f"({', '.join(parts)},)", True
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        if isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, (int, float)):
+            return repr(-node.operand.value), True
+    return None, False
+
+
+def _help_extract_argparse(tree, const_map):
+    """
+    Walk the AST and extract ArgumentParser/OptionParser instantiation kwargs
+    and all add_argument/add_option calls.
+    Returns (parser_list, calls_list) or (None, None) if nothing found.
+
+    parser_list: list of dicts — one per parser variable found:
+        {'_var': 'parser', 'description': "'ARP Spoofer'", ...}
+    calls_list: list of dicts:
+        {'parser_var': 'parser', 'flags': ["'-t'", "'--target'"], 'kwargs': {'help': "'Target IP'", ...}}
+    """
+
+    def _is_parser_ctor(call_node):
+        f = call_node.func
+        if isinstance(f, ast.Attribute):
+            return f.attr in _PARSER_CTOR_NAMES
+        if isinstance(f, ast.Name):
+            return f.id in _PARSER_CTOR_NAMES
+        return False
+
+    # Step 1: collect parser variable names → their init Call nodes
+    parser_vars = {}   # var_name → Call node
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            if isinstance(node.value, ast.Call) and _is_parser_ctor(node.value):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        parser_vars[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign):
+            if node.value and isinstance(node.value, ast.Call) and _is_parser_ctor(node.value):
+                if isinstance(node.target, ast.Name):
+                    parser_vars[node.target.id] = node.value
+
+    if not parser_vars:
+        return None, None
+
+    # Step 2: extract safe init kwargs per parser
+    _PARSER_SAFE_KW = {'description', 'epilog', 'prog', 'add_help', 'prefix_chars', 'formatter_class'}
+    parser_list = []
+    for var_name, call_node in parser_vars.items():
+        entry = {'_var': var_name}
+        for kw in call_node.keywords:
+            if kw.arg in _PARSER_SAFE_KW:
+                r, safe = _help_ast_node_repr(kw.value, const_map)
+                if safe:
+                    entry[kw.arg] = r
+        parser_list.append(entry)
+
+    # Step 3: collect add_argument / add_option calls for known parser vars
+    calls_list = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Expr):
+            continue
+        call = node.value
+        if not isinstance(call, ast.Call):
+            continue
+        if not isinstance(call.func, ast.Attribute):
+            continue
+        if call.func.attr not in ('add_argument', 'add_option'):
+            continue
+        if not isinstance(call.func.value, ast.Name):
+            continue
+        src_var = call.func.value.id
+        if src_var not in parser_vars:
+            continue
+
+        # Positional args (flag strings: "-t", "--target")
+        flags = []
+        for arg in call.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                flags.append(repr(arg.value))
+
+        # Keyword args — only include those that are safe
+        safe_kw = {}
+        for kw in call.keywords:
+            if kw.arg is None:
+                continue  # **kwargs spread — skip
+            val = kw.value
+
+            if kw.arg in ('help', 'dest', 'metavar'):
+                r, ok = _help_ast_node_repr(val, const_map)
+                if ok:
+                    safe_kw[kw.arg] = r
+
+            elif kw.arg in ('required', 'default', 'nargs', 'const'):
+                r, ok = _help_ast_node_repr(val, const_map)
+                if ok:
+                    safe_kw[kw.arg] = r
+
+            elif kw.arg == 'type':
+                # Only allow stdlib built-ins (int, float, str, bool, …)
+                if isinstance(val, ast.Name) and val.id in _STDLIB_ARG_TYPES:
+                    safe_kw['type'] = val.id
+
+            elif kw.arg == 'action':
+                # Only allow known string literals; skip custom Action classes
+                if isinstance(val, ast.Constant) and val.value in _VALID_ACTIONS:
+                    safe_kw['action'] = repr(val.value)
+
+            elif kw.arg == 'choices':
+                r, ok = _help_ast_node_repr(val, const_map)
+                if ok:
+                    safe_kw['choices'] = r
+
+        calls_list.append({'parser_var': src_var, 'flags': flags, 'kwargs': safe_kw})
+
+    return parser_list, calls_list
+
+
+def _help_build_mini_script(parser_list, calls_list, script_path):
+    """Generate a minimal stdlib-only argparse script string for `python3 -c`."""
+    prog = os.path.basename(script_path)
+
+    # Map original variable names to safe internal names _p0, _p1, …
+    var_map = {}
+    for i, entry in enumerate(parser_list):
+        var_map[entry['_var']] = f"_p{i}"
+
+    lines = ["import argparse"]
+    for i, entry in enumerate(parser_list):
+        safe_var = f"_p{i}"
+        kw_parts = []
+        if 'prog' not in entry:
+            kw_parts.append(f"prog={repr(prog)}")
+        for k, v in entry.items():
+            if k == '_var':
+                continue
+            kw_parts.append(f"{k}={v}")
+        lines.append(f"{safe_var} = argparse.ArgumentParser({', '.join(kw_parts)})")
+
+    for info in calls_list:
+        safe_var = var_map.get(info['parser_var'], '_p0')
+        parts = list(info['flags'])
+        for k, v in info['kwargs'].items():
+            parts.append(f"{k}={v}")
+        lines.append(f"{safe_var}.add_argument({', '.join(parts)})")
+
+    for i in range(len(parser_list)):
+        if i > 0:
+            lines.append("print()")
+        lines.append(f"_p{i}.print_help()")
+
+    return "\n".join(lines)
+
+
+def _help_run_mini_script(mini_script, timeout):
+    """Run the stdlib-only mini-script with `python3 -c`.
+    Returns (stdout_str, error_str). Exactly one of them is non-None."""
+    python_exec = shutil.which("python3") or shutil.which("python") or "python3"
+    try:
+        proc = subprocess.Popen(
+            [python_exec, "-c", mini_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return None, "Mini-script timed out."
+        stdout = (stdout or "").strip()
+        stderr = (stderr or "").strip()
+        if stdout:
+            return stdout, None
+        return None, stderr or "No output from mini-script."
+    except Exception as e:
+        return None, str(e)
+
+
+def _help_run_subprocess(path, timeout):
+    """
+    Layer 2: Shebang-aware subprocess with real environment.
+    No -E flag, no --map-root-user, RLIMIT_NOFILE=512.
+    Returns (stdout_str, error_str).
+    """
+    # Read shebang from first line
+    python_exec = None
+    try:
+        with open(path, "rb") as f:
+            first_line = f.readline(256).decode("utf-8", errors="replace").strip()
+        if first_line.startswith("#!"):
+            candidate = first_line[2:].strip().split()[0]
+            if "python" in candidate and os.path.isfile(candidate):
+                python_exec = candidate
+    except Exception:
+        pass
+    if not python_exec:
+        python_exec = shutil.which("python3") or shutil.which("python") or "python3"
+
+    # Inherit full real environment so PYTHONPATH / venv site-packages are available
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    def _preexec():
+        os.setsid()
+        for limit, val in [
+            (resource.RLIMIT_CPU,   (5, 5)),
+            (resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024)),
+            (resource.RLIMIT_CORE,  (0, 0)),
+            (resource.RLIMIT_NOFILE, (512, 512)),
+        ]:
+            try:
+                resource.setrlimit(limit, val)
+            except Exception:
+                pass
+
+    help_output = ""
+    help_error  = ""
+
+    for flag in ("--help", "-h"):
+        proc = None
+        try:
+            with tempfile.TemporaryDirectory(prefix="help_sb_") as tmpcwd:
+                proc = subprocess.Popen(
+                    [python_exec, path, flag],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=tmpcwd,
+                    env=env,
+                    preexec_fn=_preexec,
+                    text=True,
+                )
+                try:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        proc.kill()
+                    proc.communicate()
+                    return None, "Process timed out."
+                stdout = (stdout or "").strip()
+                stderr = (stderr or "").strip()
+                if stdout:
+                    help_output = stdout
+                    break
+                if stderr:
+                    help_error = stderr
+                    break
+        except Exception as e:
+            help_error = str(e)
+            break
+        finally:
+            if proc and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+
+    if help_output:
+        return help_output, None
+    return None, help_error or "No help output could be retrieved."
+
 
 class ContentMixin:
     def update_mtime(self, mtime):
@@ -553,150 +856,51 @@ class ContentMixin:
             self.help_text = NO_HELP
             return
 
-        if not used:
-            self.help_text = NO_HELP
+        # ── Build module info header ──────────────────────────────────────────
+        mod_info = f"{used[0]} module used" if len(used) == 1 else f"{', '.join(used)} modules used"
+        header   = f"[+] Help documentation found ({mod_info}):"
+
+        # ── Layer 1: AST Surgery — argparse / optparse only ───────────────────
+        # Extracts parser calls from the AST and runs a stdlib-only mini-script.
+        # No external imports are needed — scapy, requests, etc. never run.
+        if "argparse" in used or "optparse" in used:
+            parser_list, calls_list = _help_extract_argparse(tree, const_map)
+            if parser_list and calls_list is not None:
+                mini = _help_build_mini_script(parser_list, calls_list, self.path)
+                output, err = _help_run_mini_script(mini, timeout_seconds)
+                if output:
+                    self.help_text = header + "\n\n" + output
+                    return
+
+        # ── Layer 2: Shebang-aware subprocess (click / typer / fallback) ──────
+        # Reads the script's shebang to find the correct Python interpreter,
+        # inherits the real environment (venv, PYTHONPATH, HOME) so external
+        # packages like scapy are resolvable. No -E flag, no --map-root-user.
+        output, err = _help_run_subprocess(self.path, timeout_seconds)
+        if output:
+            self.help_text = header + "\n\n" + output
             return
 
-        if len(used) == 1:
-            mod_info = f"{used[0]} module used"
-        else:
-            mod_info = f"{', '.join(used)} modules used"
-        header = f"[+] Help documentation found ({mod_info}):"
-
-        def _preexec_limits():
-            os.setsid()
-            try:
-                resource.setrlimit(resource.RLIMIT_CPU, (2, 2))
-            except Exception:
-                pass
-            try:
-                resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
-            except Exception:
-                pass
-            try:
-                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-            except Exception:
-                pass
-            try:
-                resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-            except Exception:
-                pass
-
-        python_exec = shutil.which("python") or shutil.which("python3") or "python"
-
-        unshare_path = shutil.which("unshare")
-        use_unshare = False
-        unshare_cmd = []
-        if unshare_path:
-            unshare_cmd = [
-                unshare_path,
-                "--net",
-                "--pid",
-                "--mount",
-                "--fork",
-                "--map-root-user",
-                "--mount-proc"
-            ]
-            use_unshare = True
-
-        help_output = ""
-        help_error = ""
-
-        for flag in ("--help", "-h"):
-
-            with tempfile.TemporaryDirectory(prefix="help_sandbox_") as tmpcwd:
-                env = {
-                    "PYTHONIOENCODING": "utf-8",
-                    "PATH": "/usr/bin:/bin",
-                }
-
-                if use_unshare:
-                    cmd = unshare_cmd + [python_exec, "-E", self.path, flag]
-                else:
-                    cmd = [python_exec, "-E", self.path, flag]
-
-                proc = None
-                try:
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        cwd=tmpcwd,
-                        env=env,
-                        preexec_fn=_preexec_limits,
-                        text=True
-                    )
-
-                    try:
-                        stdout, stderr = proc.communicate(timeout=timeout_seconds)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-                        try:
-                            stdout, stderr = proc.communicate(timeout=1)
-                        except Exception:
-                            stdout, stderr = ("", "Process timed out and was killed.")
-                        help_error = "Process timed out and was killed."
-                        break
-
-                    stdout = (stdout or "").strip()
-                    stderr = (stderr or "").strip()
-
-                    if stdout:
-                        help_output = stdout
-                        break
-                    if stderr:
-                        help_error = stderr
-                        break
-
-                except Exception as e:
-                    help_error = str(e)
-                    if proc and proc.poll() is None:
-                        try:
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-                    break
-                finally:
-                    if proc and proc.poll() is None:
-                        try:
-                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        except Exception:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-
-        if help_output:
-            self.help_text = header + "\n\n" + help_output
-            return
-
-        if help_error:
-            lines = help_error.splitlines()
+        # ── Layer 3: Error display ────────────────────────────────────────────
+        if err:
+            err_lines = err.splitlines()
             cleaned = []
-            for line in lines:
-                if line.strip().startswith("Traceback (most recent call last):"):
+            in_tb = False
+            for line in err_lines:
+                stripped = line.strip()
+                if stripped.startswith("Traceback (most recent call last):"):
+                    in_tb = True
                     continue
-                if re.match(r'\s*File ".*", line \d+(, in .*)?', line):
+                if in_tb and re.match(r'\s*File ".*", line \d+', line):
                     continue
-                if "Traceback" in line and line.strip().startswith("Traceback"):
-                    continue
+                in_tb = False
                 cleaned.append(line)
-            cleaned_error = "\n".join(cleaned).strip()
-            if not cleaned_error:
-                cleaned_error = "An error occurred but specific message could not be retrieved."
+            cleaned_err = "\n".join(cleaned).strip()
+            if not cleaned_err:
+                cleaned_err = "An error occurred but no specific message could be retrieved."
+            self.help_text = header + "\n\nAn error occurred while trying to retrieve help:\n" + cleaned_err
         else:
-            cleaned_error = "No help output could be retrieved."
-
-        self.help_text = header + "\n\nAn error occurred while trying to retrieve help:\n" + cleaned_error
+            self.help_text = header + "\n\nNo help output could be retrieved."
 
     def update_notes(self):
 
