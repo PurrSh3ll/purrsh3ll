@@ -86,34 +86,14 @@ def _save_to_history(base_dir: str, filename: str, analysis: str, cwd: str):
         conn.close()
 
 
-def _load_history_for_next(base_dir: str) -> tuple[str, int]:
-    """Load last 40 terminal history entries (including the just-saved screenshot entry)."""
-    conn = _db_connect(base_dir)
-    if conn is None:
-        return "", 0
-    try:
-        rows = conn.execute(
-            "SELECT cmd, exit_code, output, cwd FROM commands ORDER BY ts DESC LIMIT 40"
-        ).fetchall()
-    except Exception:
-        return "", 0
-    finally:
-        conn.close()
-
-    parts = []
-    for row in reversed(rows):
-        ec     = row["exit_code"] if row["exit_code"] is not None else 0
-        cmd    = row["cmd"] or ""
-        out    = (row["output"] or "")[:600]
-        cwd    = row["cwd"] or ""
-        status = f"exit {ec}" if ec != 0 else "ok"
-        part   = f"$ {cmd} [{status}]"
-        if cwd:
-            part += f"  # cwd: {cwd}"
-        if out:
-            part += f"\n{out}"
-        parts.append(part)
-    return "\n".join(parts), len(parts)
+def _build_next_context(base_dir: str, limit: int) -> tuple[str, bool]:
+    """Build psnext-style 3-layer structured context from SQLite (deduplicated)."""
+    import sys as _sys
+    _dir = os.path.dirname(__file__)
+    if _dir not in _sys.path:
+        _sys.path.insert(0, _dir)
+    import psnext as _psnext
+    return _psnext._build_prompt_context(base_dir, None, limit)
 
 
 def _clean_command(text: str) -> str:
@@ -279,23 +259,24 @@ def main():
     if not args.next:
         sys.exit(0)
 
-    # ── --next: psnext-style analysis using updated history ────────────────────
-    history, count = _load_history_for_next(base_dir)
-    if not history:
+    # ── --next: psnext-style 3-layer structured analysis ──────────────────────
+    context, has_data = _build_next_context(base_dir, _ai._TERMINAL_HIST_LIMIT)
+    if not has_data:
         sys.exit(0)
 
     sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
     prompt   = f"System: {sys_info}\n"
     if cwd:
         prompt += f"Working directory: {cwd}\n"
-    prompt += f"\nRecent terminal session ({count} commands, including screenshot analysis):\n{history}\n"
+    prompt += f"\n{context}\n"
     prompt += (
-        "\nYou are an expert penetration tester. Based on the terminal history above "
-        "(including the screenshot analysis):\n"
-        "1. Briefly summarize what has been discovered or accomplished so far.\n"
-        "2. Identify gaps — what has NOT been checked yet that could be relevant.\n"
+        "\n[TASK]\n"
+        "You are an expert penetration tester (screenshot analysis included above).\n"
+        "Based on the intelligence summary and recent session above:\n"
+        "1. Briefly summarize what has been discovered and where things stand.\n"
+        "2. Identify the most important gaps or opportunities not yet exploited.\n"
         "3. Suggest 3-5 concrete next steps with the exact commands to run, ordered by priority.\n"
-        "Be specific, practical, and focused on the attack surface visible in the history.\n"
+        "Be specific, practical, and reference the actual IPs, credentials and services visible above.\n"
         "At the very end, on a new line, write ONLY the single most important command to run next "
         "— no prefix, no explanation, no backticks, just the raw command."
     )
@@ -306,7 +287,7 @@ def main():
     _real_stdout = sys.stdout
     sys.stdout   = sys.stderr
     try:
-        next_response = _ai._run_llm(provider, model, next_messages, url, api_key, disable_thinking, custom_params)
+        next_response = _ai._run_llm(provider, model, next_messages, url, api_key, disable_thinking, custom_params, hide_thinking)
     finally:
         sys.stdout = _real_stdout
 

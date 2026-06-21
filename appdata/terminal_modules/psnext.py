@@ -222,15 +222,22 @@ def _build_prompt_context(base_dir: str, target_filter: str | None, recent_limit
                 section.append("  NOT YET: " + " · ".join(missing))
             parts.append("\n".join(section))
 
-        # ── Layer 3: Recent commands ──────────────────────────────────────────
-        recent = conn.execute(
-            "SELECT cmd, exit_code, output, cwd FROM commands ORDER BY ts DESC LIMIT ?",
-            (recent_limit,),
+        # ── Layer 3: Recent commands (deduplicated) ───────────────────────────
+        # Fetch more than needed so deduplication doesn't shrink the window below limit.
+        recent_raw = conn.execute(
+            "SELECT cmd, exit_code, output, cwd, ts FROM commands ORDER BY ts DESC LIMIT ?",
+            (recent_limit * 4,),
         ).fetchall()
+
+        seen_cmds: dict[str, object] = {}
+        for r in recent_raw:
+            if r["cmd"] not in seen_cmds:
+                seen_cmds[r["cmd"]] = r
+        recent = list(reversed(list(seen_cmds.values())))[-recent_limit:]
 
         if recent:
             section = [f"[RECENT SESSION — last {len(recent)} commands]"]
-            for r in reversed(recent):
+            for r in recent:
                 ec     = r["exit_code"]
                 status = f"exit {ec}" if ec not in (0, None) else "ok"
                 line   = f"$ {r['cmd']} [{status}]"

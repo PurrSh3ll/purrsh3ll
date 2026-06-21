@@ -276,6 +276,15 @@ def _load_entries_sqlite(
                     relevant.append(r)
             rows = relevant
 
+        # Deduplicate: keep only the most recent execution of each unique command.
+        # Preserves chronological order after deduplication.
+        seen: dict[str, sqlite3.Row] = {}
+        for r in rows:
+            cmd = r["cmd"]
+            if cmd not in seen or r["ts"] > seen[cmd]["ts"]:
+                seen[cmd] = r
+        rows = sorted(seen.values(), key=lambda r: r["ts"])
+
         if limit:
             rows = rows[-limit:]
 
