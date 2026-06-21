@@ -1,0 +1,173 @@
+2026-06-12 06:29:55 DEBUG    chromadb.config — Starting component System
+2026-06-12 06:29:55 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 07:47:04 DEBUG    chromadb.config — Starting component System
+2026-06-12 07:47:04 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 07:47:28 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 07:47:28 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 07:47:28 DEBUG    keyring.backend — Loading Windows
+2026-06-12 07:47:28 DEBUG    keyring.backend — Loading chainer
+2026-06-12 07:47:28 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 07:47:28 DEBUG    keyring.backend — Loading macOS
+2026-06-12 12:52:14 DEBUG    chromadb.config — Starting component System
+2026-06-12 12:52:14 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 12:56:58 DEBUG    chromadb.config — Starting component System
+2026-06-12 12:56:58 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 13:10:14 DEBUG    chromadb.config — Starting component System
+2026-06-12 13:10:14 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 13:11:11 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 13:11:11 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 13:11:11 DEBUG    keyring.backend — Loading Windows
+2026-06-12 13:11:11 DEBUG    keyring.backend — Loading chainer
+2026-06-12 13:11:11 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 13:11:11 DEBUG    keyring.backend — Loading macOS
+2026-06-12 13:38:33 DEBUG    chromadb.config — Starting component System
+2026-06-12 13:38:33 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 13:45:01 DEBUG    chromadb.config — Starting component System
+2026-06-12 13:45:01 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 13:45:40 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 13:45:40 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 13:45:40 DEBUG    keyring.backend — Loading Windows
+2026-06-12 13:45:40 DEBUG    keyring.backend — Loading chainer
+2026-06-12 13:45:40 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 13:45:40 DEBUG    keyring.backend — Loading macOS
+2026-06-12 14:31:43 DEBUG    chromadb.config — Starting component System
+2026-06-12 14:31:43 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 14:39:58 DEBUG    chromadb.config — Starting component System
+2026-06-12 14:39:58 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 14:43:52 DEBUG    chromadb.config — Starting component System
+2026-06-12 14:43:52 DEBUG    chromadb.config — Starting component Posthog
+2026-06-12 15:25:09 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 15:25:09 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 15:25:09 DEBUG    keyring.backend — Loading Windows
+2026-06-12 15:25:09 DEBUG    keyring.backend — Loading chainer
+2026-06-12 15:25:09 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 15:25:09 DEBUG    keyring.backend — Loading macOS
+2026-06-12 15:36:17 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 15:36:17 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 15:36:17 DEBUG    keyring.backend — Loading Windows
+2026-06-12 15:36:17 DEBUG    keyring.backend — Loading chainer
+2026-06-12 15:36:17 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 15:36:17 DEBUG    keyring.backend — Loading macOS
+2026-06-12 15:39:25 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 15:39:25 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 15:39:25 DEBUG    keyring.backend — Loading Windows
+2026-06-12 15:39:25 DEBUG    keyring.backend — Loading chainer
+2026-06-12 15:39:25 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 15:39:25 DEBUG    keyring.backend — Loading macOS
+2026-06-12 15:41:48 DEBUG    keyring.backend — Loading KWallet
+2026-06-12 15:41:48 DEBUG    keyring.backend — Loading SecretService
+2026-06-12 15:41:48 DEBUG    keyring.backend — Loading Windows
+2026-06-12 15:41:48 DEBUG    keyring.backend — Loading chainer
+2026-06-12 15:41:48 DEBUG    keyring.backend — Loading libsecret
+2026-06-12 15:41:48 DEBUG    keyring.backend — Loading macOS
+2026-06-13 14:12:52 DEBUG    keyring.backend — Loading KWallet
+2026-06-13 14:12:52 DEBUG    keyring.backend — Loading SecretService
+2026-06-13 14:12:53 DEBUG    keyring.backend — Loading Windows
+2026-06-13 14:12:53 DEBUG    keyring.backend — Loading chainer
+2026-06-13 14:12:53 DEBUG    keyring.backend — Loading libsecret
+2026-06-13 14:12:53 DEBUG    keyring.backend — Loading macOS
+2026-06-14 06:05:08 ERROR    core.mixins.terminal_tabs — OutputParser failed (terminal)
+Traceback (most recent call last):
+  File "/home/kali/PycharmProjects/App_beta/core/mixins/terminal_tabs.py", line 183, in _on_log
+    _parser.process(
+    ~~~~~~~~~~~~~~~^
+        db=_db, cmd_id=_cid,
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        tags=_tags if _tagger else [],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/kali/PycharmProjects/App_beta/core/db/output_parser.py", line 285, in process
+    getattr(self, method_name)(db, cmd_id, cmd, clean, seen)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/PycharmProjects/App_beta/core/db/output_parser.py", line 484, in _parse_nmap
+    db.upsert_target(ip=ip, hostname=hostname)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/PycharmProjects/App_beta/core/db/terminal_history_db.py", line 323, in upsert_target
+    cur.execute(
+    ~~~~~~~~~~~^
+        """
+        ^^^
+    ...<7 lines>...
+        (ip, hostname, os_guess, notes),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint
+2026-06-14 06:09:10 ERROR    core.mixins.terminal_tabs — OutputParser failed (terminal)
+Traceback (most recent call last):
+  File "/home/kali/PycharmProjects/App_beta/core/mixins/terminal_tabs.py", line 183, in _on_log
+    _parser.process(
+    ~~~~~~~~~~~~~~~^
+        db=_db, cmd_id=_cid,
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        tags=_tags if _tagger else [],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/kali/PycharmProjects/App_beta/core/db/output_parser.py", line 285, in process
+    getattr(self, method_name)(db, cmd_id, cmd, clean, seen)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/PycharmProjects/App_beta/core/db/output_parser.py", line 484, in _parse_nmap
+    db.upsert_target(ip=ip, hostname=hostname)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/PycharmProjects/App_beta/core/db/terminal_history_db.py", line 323, in upsert_target
+    cur.execute(
+    ~~~~~~~~~~~^
+        """
+        ^^^
+    ...<7 lines>...
+        (ip, hostname, os_guess, notes),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint
+2026-06-14 06:11:44 ERROR    core.mixins.terminal_tabs — OutputParser failed (terminal)
+Traceback (most recent call last):
+  File "/home/kali/PycharmProjects/App_beta/core/mixins/terminal_tabs.py", line 183, in _on_log
+    _parser.process(
+    ~~~~~~~~~~~~~~~^
+        db=_db, cmd_id=_cid,
+        ^^^^^^^^^^^^^^^^^^^^
+    ...<2 lines>...
+        tags=_tags if _tagger else [],
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/home/kali/PycharmProjects/App_beta/core/db/output_parser.py", line 285, in process
+    getattr(self, method_name)(db, cmd_id, cmd, clean, seen)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/PycharmProjects/App_beta/core/db/output_parser.py", line 484, in _parse_nmap
+    db.upsert_target(ip=ip, hostname=hostname)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kali/PycharmProjects/App_beta/core/db/terminal_history_db.py", line 323, in upsert_target
+    cur.execute(
+    ~~~~~~~~~~~^
+        """
+        ^^^
+    ...<7 lines>...
+        (ip, hostname, os_guess, notes),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: ON CONFLICT clause does not match any PRIMARY KEY or UNIQUE constraint
+2026-06-14 12:45:14 DEBUG    keyring.backend — Loading KWallet
+2026-06-14 12:45:14 DEBUG    keyring.backend — Loading SecretService
+2026-06-14 12:45:14 DEBUG    keyring.backend — Loading Windows
+2026-06-14 12:45:14 DEBUG    keyring.backend — Loading chainer
+2026-06-14 12:45:14 DEBUG    keyring.backend — Loading libsecret
+2026-06-14 12:45:14 DEBUG    keyring.backend — Loading macOS
+2026-06-14 13:19:03 DEBUG    keyring.backend — Loading KWallet
+2026-06-14 13:19:03 DEBUG    keyring.backend — Loading SecretService
+2026-06-14 13:19:03 DEBUG    keyring.backend — Loading Windows
+2026-06-14 13:19:03 DEBUG    keyring.backend — Loading chainer
+2026-06-14 13:19:03 DEBUG    keyring.backend — Loading libsecret
+2026-06-14 13:19:03 DEBUG    keyring.backend — Loading macOS
+2026-06-14 13:27:51 DEBUG    keyring.backend — Loading KWallet
+2026-06-14 13:27:51 DEBUG    keyring.backend — Loading SecretService
+2026-06-14 13:27:51 DEBUG    keyring.backend — Loading Windows
+2026-06-14 13:27:51 DEBUG    keyring.backend — Loading chainer
+2026-06-14 13:27:51 DEBUG    keyring.backend — Loading libsecret
+2026-06-14 13:27:51 DEBUG    keyring.backend — Loading macOS

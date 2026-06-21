@@ -163,22 +163,6 @@ class TerminalTabsMixin:
                     _state["cmd"] = None
                     _state["output"] = []
                     if not getattr(self, "terminal_history_disabled", False):
-                        log_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.jsonl")
-                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                        try:
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                            _max = getattr(self, "terminal_history_max_entries", 5000)
-                            try:
-                                with open(log_path, "r", encoding="utf-8") as f:
-                                    lines = f.readlines()
-                                if len(lines) > _max:
-                                    with open(log_path, "w", encoding="utf-8") as f:
-                                        f.writelines(lines[-_max:])
-                            except Exception:
-                                pass
-                        except Exception:
-                            logger.error("Failed to write terminal history to %s", log_path, exc_info=True)
                         _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
                         if _cmd_name not in _PURRSH_TOOLS:
                             try:
@@ -1206,22 +1190,6 @@ class TerminalTabsMixin:
                     _state["cmd"] = None
                     _state["output"] = []
                     if not getattr(self, "terminal_history_disabled", False):
-                        log_path = os.path.join(self.base_path, "appdata", "logs", "terminal_history.jsonl")
-                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                        try:
-                            with open(log_path, "a", encoding="utf-8") as f:
-                                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                            _max = getattr(self, "terminal_history_max_entries", 5000)
-                            try:
-                                with open(log_path, "r", encoding="utf-8") as f:
-                                    lines = f.readlines()
-                                if len(lines) > _max:
-                                    with open(log_path, "w", encoding="utf-8") as f:
-                                        f.writelines(lines[-_max:])
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
                         _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
                         if _cmd_name not in _PURRSH_TOOLS:
                             try:

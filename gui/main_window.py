@@ -339,12 +339,6 @@ class MainWindow(QMainWindow):
                 self.c.sudo_password = None
 
         if getattr(self.c, "delete_logs_at_close", True):
-            log_path = os.path.join(self.c.base_path, "appdata", "logs", "terminal_history.jsonl")
-            try:
-                if os.path.exists(log_path):
-                    os.remove(log_path)
-            except Exception:
-                pass
             try:
                 db = self.c._get_term_db() if hasattr(self.c, "_get_term_db") else None
                 if db is not None:

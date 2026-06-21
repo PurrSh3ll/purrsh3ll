@@ -23,7 +23,7 @@ Invoke a subagent for specialized work (recon, web, AD, forensics, crypto) rathe
 
 ## Core Workflow
 
-1. **Read terminal history** — check `./terminal_history.jsonl` before starting. Understand what has already been run and what was found.
+1. **Read terminal history** — run `pshistory -n 30` and `pshistory --findings` before starting. Understand what has already been run and what was found.
 2. **Enumerate first, exploit second** — never guess; confirm before acting.
 3. **Don't repeat failed commands** — if something failed, change the approach.
 4. **Save findings immediately** — flags, credentials, hashes, usernames.
@@ -61,8 +61,15 @@ If `goal.md` exists in the working directory, read it before taking any action �
 
 ## Terminal History
 
-PurrSh3ll logs all executed commands to `./terminal_history.jsonl`.
-Format: `{"timestamp": "...", "command": "...", "output": "...", "exit_code": 0}`
+PurrSh3ll records all terminal commands in a SQLite database. Query it with `pshistory`:
+
+```bash
+pshistory -n 30              # last 30 commands with output
+pshistory --targets          # discovered targets and open ports
+pshistory --findings         # credentials, hashes, CVEs, flags, users
+pshistory -t recon           # recon-phase commands only
+pshistory -q <keyword>       # search commands and outputs
+```
 
 - `exit_code 0` = confirmed success
 - `exit_code != 0` = failed — diagnose before retrying

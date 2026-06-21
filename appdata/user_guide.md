@@ -62,7 +62,7 @@ PurrSh3ll uses a real terminal emulator (QTermWidget / zsh). Multiple tabs are s
 - **Rename a tab** by double-clicking the tab label
 - Adjust terminal font size with `Ctrl + Mouse Scroll`
 
-**Full session recording** — every terminal session is recorded automatically to `appdata/logs/terminal_history.jsonl`. This includes executed commands and their output, giving AI tools like `psfix`, `psnext`, and `psreport` complete context of everything that happened in the terminal.
+**Full session recording** — every terminal session is recorded automatically to `appdata/logs/terminal_history.db` (SQLite). This includes executed commands, outputs, exit codes, timestamps, phase tags (recon, scan, exploit…) and auto-extracted findings (credentials, hashes, CVEs, flags). Use `pshistory` to browse the database, and AI tools like `psfix`, `psnext`, and `psreport` use it automatically for context.
 
 ---
 

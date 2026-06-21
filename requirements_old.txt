@@ -1,0 +1,6 @@
+pyfiglet==1.0.4
+PyQt6==6.10.2
+pyqt6_sip==13.10.2
+QtPy==2.4.3
+qtpyterminal==0.1
+watchdog==6.0.0

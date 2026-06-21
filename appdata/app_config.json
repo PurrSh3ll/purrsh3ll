@@ -8,7 +8,8 @@
       100,
       100
     ],
-    "fullscreen": false
+    "fullscreen": false,
+    "maximized": false
   },
   "performance": {
     "lightweight_web_browser": false
@@ -22,7 +23,7 @@
     "delete_logs_at_close": true,
     "delete_notes_at_close": false,
     "restore_session_at_start": true,
-    "terminal_history_max_entries": 5000,
+    "terminal_history_max_entries": 10000,
     "terminal_history_disabled": false
   },
   "llama": {
@@ -30,7 +31,10 @@
     "logs_terminal_cmd": "claude --dangerously-skip-permissions",
     "agent_role": "none",
     "skills_set": "default",
-    "clear_chat_history_on_exit": true
+    "clear_chat_history_on_exit": true,
+    "terminal_history_limit": 8,
+    "chat_max_history": 20,
+    "terminal_history_broad_limit": 120
   },
   "rag": {
     "knowledge_base": "braindump",
