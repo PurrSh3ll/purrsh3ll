@@ -63,6 +63,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Removed
 
+- **terminal_history.jsonl — fully removed**: dual-write to JSONL eliminated from `terminal_tabs.py`; `main_window.py` no longer deletes the JSONL file on exit (only SQLite DB is cleared); `terminal_history.jsonl` file deleted; SQLite (`terminal_history.db`) is now the sole storage backend for terminal history
+- **terminal-history-reader SKILL.md**: deleted from both `claude-code-pentest` and `awesome-claude-skills-security` skill sets — no longer applicable without JSONL
+- **Agent CLAUDE.md files — jsonl references removed**: all four agent modes (`pentest`, `ctf`, `ctf_skills`, `pentest_skills`) updated — `tail terminal_history.jsonl` instructions replaced with `pshistory` commands (`pshistory -n 30`, `--targets`, `--findings`, `-t <phase>`, `-q <keyword>`, `--stats`); `user_guide.md` updated to reflect SQLite storage
 - **default skills folder**: removed `appdata/agent_modes/skills/default/` and its `terminal-history-reader` SKILL.md — terminal history awareness is now a behavioural instruction baked directly into each agent CLAUDE.md file
 - **Skills Usage sections**: removed `## Skills Usage` sections from `ctf/CLAUDE.md` and `pentest/CLAUDE.md` — referenced `/mnt/skills/` paths that do not apply to PurrSh3ll; skill routing belongs in `ctf_skills` and `pentest_skills`
 - **pshistory `--db`**: removed `--db /path/to.db` flag — DB path is always fixed to `appdata/logs/terminal_history.db`; reduces CLI surface
