@@ -1,30 +1,32 @@
 #!/usr/bin/env python3
 """
 psreport.py — AI-powered pentest report generator for PurrSh3ll.
-Filters terminal_history.jsonl for security-relevant entries and generates
-a structured Markdown/HTML report saved to appmodules/Cyb3rCollector/reports/.
+Reads terminal_history.db (SQLite) — tagged commands via tool_categories.json
+(282 tools, 19 categories) plus fallback keyword filter — and generates a
+structured Markdown/HTML report saved to appmodules/Cyb3rCollector/reports/.
 
 Modes:
-  default  — smart-filter history, single LLM call (fast, ~12k tokens)
-  --deep   — Map-Reduce: chunk full history, extract findings per chunk,
-             combine into report (thorough, N+1 LLM calls)
+  default  — intel header + smart-filtered history, single LLM call (fast)
+  --deep   — intel header + full history with tag annotations, single LLM call
 """
 
 import io
-import json
 import os
 import platform
+import sqlite3
 import sys
 from datetime import datetime
 
-_OUTPUT_PER_ENTRY = 800   # max output chars per history entry
-_HISTORY_LIMIT    = 40    # default; overridden at runtime from config via _ai._TERMINAL_HIST_LIMIT
+_OUTPUT_PER_ENTRY = 800   # max output chars per history entry in prompt
 
-# ── Pentest tool keywords ──────────────────────────────────────────────────────
+# ── Fallback filter for commands not in tool_categories.json ──────────────────
+
+_SKIP_EXACT    = {"ls", "ll", "la", "l", "pwd", "clear", "cls", "history",
+                  "exit", "logout", "man", "help"}
+_SKIP_PREFIXES = ("echo ", "printf ", "cat --help", "man ", "less ", "more ")
+
 _TOOL_PATTERNS = {
-    # psview synthetic screenshot entries — always captured
     "psscreenshot",
-    # Network scanning
     "nmap", "masscan", "rustscan", "unicornscan", "zmap", "arp-scan",
     "gobuster", "dirbuster", "dirb", "nikto", "wfuzz", "ffuf",
     "feroxbuster", "sqlmap", "nuclei", "whatweb", "wafw00f", "wpscan",
@@ -62,15 +64,11 @@ _OUTPUT_KEYWORDS = {
     "token", "session", "cookie", "secret", "key",
 }
 
-_SKIP_EXACT    = {"ls", "ll", "la", "l", "pwd", "clear", "cls", "history", "exit", "logout", "man", "help"}
-_SKIP_PREFIXES = ("echo ", "printf ", "cat --help", "man ", "less ", "more ")
 
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _is_pentest_relevant(cmd: str, output: str, exit_code: int) -> bool:
+def _is_pentest_relevant(cmd: str, output: str, exit_code) -> bool:
+    """Fallback filter for commands not tagged by auto_tagger."""
     cmd_l = cmd.lower().strip()
-    out_l = output.lower()
+    out_l = (output or "").lower()
     if cmd_l in _SKIP_EXACT:
         return False
     if cmd_l.startswith(_SKIP_PREFIXES):
@@ -78,7 +76,7 @@ def _is_pentest_relevant(cmd: str, output: str, exit_code: int) -> bool:
     for pattern in _TOOL_PATTERNS:
         if pattern in cmd_l:
             return True
-    if exit_code != 0:
+    if exit_code not in (0, None):
         return True
     for kw in _OUTPUT_KEYWORDS:
         if kw in out_l:
@@ -86,14 +84,218 @@ def _is_pentest_relevant(cmd: str, output: str, exit_code: int) -> bool:
     return False
 
 
-def _format_entry(entry: dict) -> str:
-    ec     = entry.get("exit_code", 0)
-    cmd    = entry.get("cmd", "")
-    out    = entry.get("output", "")[:_OUTPUT_PER_ENTRY]
-    cwd    = entry.get("cwd", "")
-    ts     = entry.get("ts", 0)
-    status = f"exit {ec}" if ec != 0 else "ok"
-    part   = f"$ {cmd} [{status}]"
+# ── SQLite helpers ─────────────────────────────────────────────────────────────
+
+def _db_connect(base_dir: str) -> sqlite3.Connection | None:
+    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.db")
+    if not os.path.exists(path):
+        return None
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> str:
+    """Build [ATTACK SURFACE] + [FINDINGS] + [PHASE COVERAGE] from SQLite."""
+    parts = []
+
+    # ── Attack surface ─────────────────────────────────────────────────────────
+    if target_filter:
+        rows = conn.execute(
+            """
+            SELECT t.ip, t.hostname, t.os_guess,
+                   tp.port, tp.protocol, tp.service, tp.version
+            FROM targets t
+            LEFT JOIN target_ports tp ON tp.target_id = t.id
+            WHERE t.ip = ? OR t.hostname = ?
+            ORDER BY tp.port
+            """,
+            (target_filter, target_filter),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT t.ip, t.hostname, t.os_guess,
+                   tp.port, tp.protocol, tp.service, tp.version
+            FROM targets t
+            LEFT JOIN target_ports tp ON tp.target_id = t.id
+            ORDER BY t.ip, tp.port
+            """
+        ).fetchall()
+
+    targets: dict[str, dict] = {}
+    for r in rows:
+        ip = r["ip"]
+        if ip not in targets:
+            targets[ip] = {"hostname": r["hostname"], "os_guess": r["os_guess"], "ports": []}
+        if r["port"] is not None:
+            targets[ip]["ports"].append(r)
+
+    if targets:
+        section = ["[ATTACK SURFACE]"]
+        for ip, info in targets.items():
+            header = ip
+            meta = []
+            if info["hostname"]:
+                meta.append(info["hostname"])
+            if info["os_guess"]:
+                meta.append(info["os_guess"])
+            if meta:
+                header += f"  ({' · '.join(meta)})"
+            section.append(header)
+            for p in info["ports"]:
+                line = f"  {p['port']}/{p['protocol']}"
+                if p["service"]:
+                    line += f"   {p['service']}"
+                if p["version"]:
+                    line += f"  {p['version'][:60]}"
+                section.append(line)
+        parts.append("\n".join(section))
+
+    # ── Findings ───────────────────────────────────────────────────────────────
+    finding_sections = []
+
+    creds = conn.execute(
+        "SELECT DISTINCT value, target, service FROM findings "
+        "WHERE finding_type = 'credential' ORDER BY target, value"
+    ).fetchall()
+    if creds:
+        lines = ["Credentials:"]
+        for r in creds:
+            line = f"  • {r['value']}"
+            meta = [x for x in (r["target"], r["service"]) if x]
+            if meta:
+                line += f"  ({', '.join(meta)})"
+            lines.append(line)
+        finding_sections.append("\n".join(lines))
+
+    users = conn.execute(
+        "SELECT DISTINCT value FROM findings WHERE finding_type = 'user' ORDER BY value"
+    ).fetchall()
+    if users:
+        finding_sections.append("Users:\n  " + ", ".join(r["value"] for r in users))
+
+    hashes = conn.execute(
+        "SELECT DISTINCT value, target FROM findings WHERE finding_type = 'hash' ORDER BY target, value"
+    ).fetchall()
+    if hashes:
+        lines = ["Hashes:"]
+        for r in hashes:
+            line = f"  • {r['value']}"
+            if r["target"]:
+                line += f"  ({r['target']})"
+            lines.append(line)
+        finding_sections.append("\n".join(lines))
+
+    flags = conn.execute(
+        "SELECT DISTINCT value FROM findings WHERE finding_type = 'flag' ORDER BY value"
+    ).fetchall()
+    if flags:
+        finding_sections.append("Flags:\n  " + ", ".join(r["value"] for r in flags))
+
+    cves = conn.execute(
+        "SELECT DISTINCT value FROM findings WHERE finding_type = 'cve' ORDER BY value"
+    ).fetchall()
+    if cves:
+        finding_sections.append("CVEs:\n  " + ", ".join(r["value"] for r in cves))
+
+    if finding_sections:
+        parts.append("[FINDINGS]\n" + "\n".join(finding_sections))
+
+    # ── Phase coverage ─────────────────────────────────────────────────────────
+    all_phases = [
+        "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
+        "exploit", "privesc", "lateral", "crack", "shell",
+        "network", "cloud", "forensics", "re", "wifi", "other",
+    ]
+    phase_rows = conn.execute(
+        """
+        SELECT ct.tag, COUNT(*) AS cnt, MAX(c.cmd) AS last_cmd
+        FROM command_tags ct
+        JOIN commands c ON c.id = ct.command_id
+        WHERE ct.tag IN ({})
+        GROUP BY ct.tag
+        ORDER BY cnt DESC
+        """.format(",".join("?" * len(all_phases))),
+        all_phases,
+    ).fetchall()
+
+    used = {r["tag"] for r in phase_rows}
+    missing = [p for p in all_phases if p not in used]
+
+    if phase_rows or missing:
+        section = ["[PHASE COVERAGE]"]
+        for r in phase_rows:
+            last = (r["last_cmd"] or "")[:80]
+            section.append(f"  {r['tag']:<12} ({r['cnt']:>3} cmds)  last: {last}")
+        if missing:
+            section.append("  NOT YET: " + " · ".join(missing))
+        parts.append("\n".join(section))
+
+    return "\n\n".join(parts)
+
+
+def _load_entries_sqlite(
+    base_dir: str,
+    full: bool = False,
+    limit: int | None = None,
+) -> tuple[list[sqlite3.Row], int]:
+    """
+    Load pentest-relevant commands from SQLite.
+
+    Filtering strategy (unless --full):
+      1. Commands tagged by auto_tagger (282 tools, 19 categories) → always included
+      2. Untagged commands → fallback _is_pentest_relevant() filter
+
+    Returns (rows_chronological, total_commands_in_db).
+    """
+    conn = _db_connect(base_dir)
+    if conn is None:
+        return [], 0
+
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+
+        rows = conn.execute(
+            """
+            SELECT c.id, c.ts, c.cmd, c.exit_code, c.output, c.cwd,
+                   GROUP_CONCAT(ct.tag, ', ') AS tags
+            FROM commands c
+            LEFT JOIN command_tags ct ON ct.command_id = c.id
+            GROUP BY c.id
+            ORDER BY c.ts ASC
+            """
+        ).fetchall()
+
+        if not full:
+            relevant = []
+            for r in rows:
+                if r["tags"]:
+                    relevant.append(r)
+                elif _is_pentest_relevant(r["cmd"], r["output"] or "", r["exit_code"]):
+                    relevant.append(r)
+            rows = relevant
+
+        if limit:
+            rows = rows[-limit:]
+
+        return rows, total
+    finally:
+        conn.close()
+
+
+def _format_entry(row: sqlite3.Row) -> str:
+    ec     = row["exit_code"]
+    cmd    = row["cmd"] or ""
+    out    = (row["output"] or "").strip()[:_OUTPUT_PER_ENTRY]
+    cwd    = row["cwd"] or ""
+    ts     = row["ts"] or 0
+    tags   = row["tags"] or ""
+    status = f"exit {ec}" if ec not in (0, None) else "ok"
+
+    part = f"$ {cmd} [{status}]"
+    if tags:
+        part += f"  [{tags}]"
     if cwd:
         part += f"  # cwd: {cwd}"
     if ts:
@@ -106,34 +308,8 @@ def _format_entry(entry: dict) -> str:
     return part
 
 
-def _load_entries(base_dir: str, full: bool) -> tuple[list[dict], int]:
-    """Load all history entries (optionally filtered). Returns (entries, total_raw)."""
-    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.jsonl")
-    try:
-        with open(path, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
-    except Exception:
-        return [], 0
-
-    entries = []
-    for l in lines:
-        try:
-            entries.append(json.loads(l))
-        except Exception:
-            pass
-
-    total = len(entries)
-    if not full:
-        entries = [e for e in entries
-                   if _is_pentest_relevant(e.get("cmd", ""), e.get("output", ""), e.get("exit_code", 0))]
-    return entries, total
-
-
-
-
 def _run_silent(fn):
-    """Call fn() with stdout suppressed, return its result."""
-    buf = io.StringIO()
+    buf  = io.StringIO()
     real = sys.stdout
     sys.stdout = buf
     try:
@@ -229,7 +405,7 @@ def main():
                         help="Stream report to terminal while saving (default: save only)")
     parser.add_argument("-f", "--format",  default="md", choices=["md", "html"])
     parser.add_argument("-d", "--deep",    action="store_true",
-                        help="Map-Reduce mode: chunk entire history for thorough analysis")
+                        help="Deep mode: full history with tag annotations, single LLM call")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
@@ -242,7 +418,7 @@ def main():
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
             "  psreport                                    Generate report from filtered history\n"
-            "  psreport -d, --deep                         Map-Reduce: thorough, chunks full history\n"
+            "  psreport -d, --deep                         Deep: full annotated history, single call\n"
             "  psreport --full                             Include full history without smart filter\n"
             "  psreport -v, --verbose                      Stream report to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
@@ -277,7 +453,7 @@ def main():
 
     now    = datetime.now()
     fmt    = args.format
-    target = (args.target or "").strip() or "Unknown"
+    target = (args.target or "").strip() or None
     title  = (args.title  or "").strip() or "Penetration Test Report"
     cwd    = (args.cwd    or "").strip()
 
@@ -288,20 +464,30 @@ def main():
             lambda: _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
         )
 
-    sys_info   = f"{platform.system()} {platform.release()} ({platform.machine()})"
-    template   = _report_template_html(title, target, now) if fmt == "html" else _report_template_md(title, target, now)
-    fmt_name   = "HTML" if fmt == "html" else "Markdown"
+    sys_info  = f"{platform.system()} {platform.release()} ({platform.machine()})"
+    fmt_name  = "HTML" if fmt == "html" else "Markdown"
+    template  = _report_template_html(title, target or "Unknown", now) if fmt == "html" \
+                else _report_template_md(title, target or "Unknown", now)
+
+    # ── Build intel header from SQLite structured tables ──────────────────────
+    conn_for_header = _db_connect(base_dir)
+    intel_header = ""
+    if conn_for_header:
+        try:
+            intel_header = _build_intel_header(conn_for_header, target)
+        finally:
+            conn_for_header.close()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # DEEP MODE — full history, single call
+    # DEEP MODE — full/filtered history with tag annotations
     # ══════════════════════════════════════════════════════════════════════════
     if args.deep:
-        entries, total_raw = _load_entries(base_dir, args.full)
-        if not entries:
+        entries, total_raw = _load_entries_sqlite(base_dir, full=args.full)
+        if not entries and not intel_header:
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)
 
-        mode_label = "full" if args.full else "filtered"
+        mode_label = "full" if args.full else "filtered (tagged + keyword)"
         sys.stderr.write(
             f"\nDeep mode:\n"
             f"  Entries: {len(entries)}/{total_raw} ({mode_label})\n\n"
@@ -317,58 +503,62 @@ def main():
             sys.exit(0)
 
         history = "\n".join(_format_entry(e) for e in entries)
-        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\nTarget: {target}\n"
+        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
+        prompt += f"Target: {target or 'Unknown'}\n"
         if cwd:
             prompt += f"Working directory: {cwd}\n"
-        prompt += f"\nFull terminal session history ({len(entries)} entries):\n{history}\n"
+        if intel_header:
+            prompt += f"\n{intel_header}\n"
+        if history:
+            prompt += f"\n[TERMINAL HISTORY — {len(entries)} entries]\n{history}\n"
         prompt += (
             f"\nYou are an expert penetration tester writing a professional report. "
-            f"Based solely on the terminal history above, generate a complete {fmt_name} report "
-            f"using exactly this template. Fill each section with concrete data extracted "
-            f"from the history. Mark sections as '[No data found]' if no evidence. "
-            f"Do not invent findings.\n\n{template}"
+            f"Based on the intelligence summary and terminal history above, generate "
+            f"a complete {fmt_name} report using exactly this template. Fill each "
+            f"section with concrete data. Mark sections as '[No data found]' if no "
+            f"evidence. Do not invent findings.\n\n{template}"
         )
 
-        if _ai._SHOW_QUERYING:
-            _ai._info(f"Querying {model} via {provider}…\n")
-        _ai._info("Generating report...\n")
-        messages = [{"role": "user", "content": prompt}]
-        response = _llm(messages, verbose=args.verbose)
-
     # ══════════════════════════════════════════════════════════════════════════
-    # STANDARD MODE — last 40 entries, single call
+    # STANDARD MODE — last N pentest-relevant entries
     # ══════════════════════════════════════════════════════════════════════════
     else:
-        entries, total = _load_entries(base_dir, args.full)
-        if not entries:
+        entries, total = _load_entries_sqlite(
+            base_dir, full=args.full, limit=_ai._TERMINAL_HIST_LIMIT
+        )
+        if not entries and not intel_header:
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)
 
-        recent     = entries[-_ai._TERMINAL_HIST_LIMIT:]
-        history    = "\n".join(_format_entry(e) for e in recent)
-        loaded     = len(recent)
-        mode_label = "full" if args.full else "filtered"
+        mode_label = "full" if args.full else "filtered (tagged + keyword)"
+        loaded = len(entries)
         _ai._info(f"Loaded {loaded}/{total} history entries ({mode_label}).\n")
 
-        prompt = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\nTarget: {target}\n"
+        history = "\n".join(_format_entry(e) for e in entries)
+        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
+        prompt += f"Target: {target or 'Unknown'}\n"
         if cwd:
             prompt += f"Working directory: {cwd}\n"
-        prompt += f"\nTerminal session history ({loaded} entries):\n{history}\n"
+        if intel_header:
+            prompt += f"\n{intel_header}\n"
+        if history:
+            prompt += f"\n[TERMINAL HISTORY — last {loaded} entries]\n{history}\n"
         prompt += (
             f"\nYou are an expert penetration tester writing a professional report. "
-            f"Based solely on the terminal history above, generate a complete {fmt_name} report "
-            f"using exactly this template. Fill each section with concrete data extracted "
-            f"from the history. Mark sections as '[No data found]' if no evidence. "
-            f"Do not invent findings.\n\n{template}"
+            f"Based on the intelligence summary and terminal history above, generate "
+            f"a complete {fmt_name} report using exactly this template. Fill each "
+            f"section with concrete data. Mark sections as '[No data found]' if no "
+            f"evidence. Do not invent findings.\n\n{template}"
         )
 
-        if _ai._SHOW_QUERYING:
-            _ai._info(f"Querying {model} via {provider}…\n")
-        _ai._info("Generating report...\n")
-        messages = [{"role": "user", "content": prompt}]
-        response = _llm(messages, verbose=args.verbose)
+    # ── LLM call ──────────────────────────────────────────────────────────────
+    if _ai._SHOW_QUERYING:
+        _ai._info(f"Querying {model} via {provider}…\n")
+    _ai._info("Generating report...\n")
+    messages  = [{"role": "user", "content": prompt}]
+    response  = _llm(messages, verbose=args.verbose)
 
-    # ── Save to file ───────────────────────────────────────────────────────────
+    # ── Save to file ──────────────────────────────────────────────────────────
     if not response:
         _ai._err("No response from model.")
         sys.exit(1)
