@@ -13,6 +13,7 @@ Modes:
 import io
 import os
 import platform
+import re
 import sqlite3
 import sys
 from datetime import datetime
@@ -400,6 +401,159 @@ def _report_template_html(title: str, target: str, now: datetime) -> str:
 </html>"""
 
 
+# ── Notes mode helpers ────────────────────────────────────────────────────────
+
+_STOP_WORDS = {
+    "the", "and", "for", "with", "from", "that", "this", "was", "are", "has",
+    "have", "had", "been", "using", "used", "via", "port", "into", "onto",
+    "then", "when", "also", "able", "after", "found", "show", "shows",
+    "there", "their", "where", "which", "will", "would", "could", "should",
+    "running", "access", "target",
+}
+
+
+def _extract_tokens(text: str) -> list[str]:
+    """Extract meaningful search tokens from text (marker content or notes).
+    Preserves IPs, CVEs, hashes as atomic units; splits rest into words."""
+    tokens: list[str] = []
+    # Atomic: IPs (with optional CIDR)
+    tokens += re.findall(r'\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d+)?\b', text)
+    # Atomic: CVE IDs
+    tokens += re.findall(r'CVE-\d{4}-\d+', text, re.IGNORECASE)
+    # Atomic: hex hashes (md5/sha1/sha256)
+    tokens += re.findall(r'\b[a-f0-9]{32}\b|\b[a-f0-9]{40}\b|\b[a-f0-9]{64}\b',
+                         text, re.IGNORECASE)
+    # Words: split on non-alphanumeric (keep hyphens/underscores inside words)
+    for w in re.split(r'[^a-zA-Z0-9_\-]+', text):
+        w = w.strip('-_').lower()
+        if len(w) > 3 and w not in _STOP_WORDS:
+            tokens.append(w)
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for t in tokens:
+        tl = t.lower()
+        if tl not in seen:
+            seen.add(tl)
+            result.append(t)
+    return result
+
+
+def _snapshot_history(conn: sqlite3.Connection) -> list[dict]:
+    """Snapshot all pentest-relevant commands at report-generation time.
+    Returns list of plain dicts (immune to connection lifecycle)."""
+    rows = conn.execute(
+        """
+        SELECT c.id, c.ts, c.cmd, c.exit_code, c.output, c.cwd,
+               GROUP_CONCAT(ct.tag, ', ') AS tags
+        FROM commands c
+        LEFT JOIN command_tags ct ON ct.command_id = c.id
+        GROUP BY c.id
+        ORDER BY c.ts ASC
+        """
+    ).fetchall()
+    result = []
+    for r in rows:
+        if r["tags"] or _is_pentest_relevant(r["cmd"], r["output"] or "", r["exit_code"]):
+            result.append(dict(r))
+    return result
+
+
+def _search_evidence(snapshot: list[dict], query: str,
+                     max_results: int = 3) -> list[dict]:
+    """OR-score snapshot rows against query tokens, return top matches."""
+    tokens = _extract_tokens(query)
+    if not tokens:
+        return []
+    scored = []
+    for row in snapshot:
+        haystack = ((row["cmd"] or "") + " " + (row["output"] or "")).lower()
+        score = sum(1 for t in tokens if t.lower() in haystack)
+        if score > 0:
+            scored.append((score, row["ts"] or 0, row))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [r for _, _, r in scored[:max_results]]
+
+
+def _format_evidence_block(rows: list[dict]) -> str:
+    """Format matched snapshot rows as a fenced markdown blockquote."""
+    if not rows:
+        return "> *\\[No terminal evidence found\\]*\n"
+    parts = []
+    for row in rows:
+        ts_str = ""
+        if row.get("ts"):
+            try:
+                ts_str = f" *({datetime.fromtimestamp(row['ts']).strftime('%Y-%m-%d %H:%M:%S')})*"
+            except Exception:
+                pass
+        ec     = row.get("exit_code")
+        status = f"exit {ec}" if ec not in (0, None) else "ok"
+        tags   = f"  [{row['tags']}]" if row.get("tags") else ""
+        out    = (row.get("output") or "").strip()
+        # cap output: 25 lines or 600 chars
+        out_lines = out.splitlines()[:25]
+        out = "\n".join(out_lines)
+        if len(out) > 600:
+            out = out[:600] + "\n...truncated..."
+
+        block  = f"> **Terminal Evidence**{ts_str}\n"
+        block += f"> ```\n"
+        block += f"> $ {row['cmd']} [{status}]{tags}\n"
+        if out:
+            for line in out.splitlines():
+                block += f"> {line}\n"
+        block += "> ```"
+        parts.append(block)
+    return "\n>\n".join(parts) + "\n"
+
+
+def _resolve_placeholders(text: str, snapshot: list[dict]) -> str:
+    """Replace <!-- PSEVIDENCE: ... --> markers with real terminal evidence."""
+    pattern = re.compile(r'<!--\s*PSEVIDENCE:\s*(.*?)\s*-->', re.IGNORECASE | re.DOTALL)
+
+    def _replace(m: re.Match) -> str:
+        query = m.group(1).strip()
+        rows  = _search_evidence(snapshot, query)
+        return _format_evidence_block(rows)
+
+    return pattern.sub(_replace, text)
+
+
+def _build_snapshot_summary(snapshot: list[dict]) -> str:
+    """Build a short summary of snapshot for the LLM prompt."""
+    if not snapshot:
+        return ""
+    from collections import Counter
+    phase_counts: Counter = Counter()
+    for row in snapshot:
+        if row.get("tags"):
+            for tag in row["tags"].split(", "):
+                tag = tag.strip()
+                if tag:
+                    phase_counts[tag] += 1
+    ts_vals = [r["ts"] for r in snapshot if r.get("ts")]
+    time_range = ""
+    if ts_vals:
+        try:
+            t0 = datetime.fromtimestamp(min(ts_vals)).strftime("%Y-%m-%d %H:%M")
+            t1 = datetime.fromtimestamp(max(ts_vals)).strftime("%Y-%m-%d %H:%M")
+            time_range = f"\nTime range: {t0} → {t1}"
+        except Exception:
+            pass
+    phase_str = ""
+    if phase_counts:
+        phase_str = "\nPhases: " + ", ".join(
+            f"{tag} ({cnt})" for tag, cnt in phase_counts.most_common(10)
+        )
+    return (
+        f"[TERMINAL SNAPSHOT]\n"
+        f"Commands captured: {len(snapshot)}{time_range}{phase_str}\n"
+        f"Insert <!-- PSEVIDENCE: <search terms> --> markers where terminal "
+        f"evidence supports a claim."
+    )
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -408,6 +562,9 @@ def main():
     parser = argparse.ArgumentParser(prog="psreport", add_help=False)
     parser.add_argument("-t", "--target",  default=None, metavar="TARGET")
     parser.add_argument("-T", "--title",   default=None, metavar="TITLE")
+    parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
+                        help="Path to pentester notes file — AI generates report enriched "
+                             "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
     parser.add_argument("--full",          action="store_true",
                         help="Include full history without smart filtering")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -427,6 +584,7 @@ def main():
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
             "  psreport                                    Generate report from filtered history\n"
+            "  psreport -n, --notes notes.txt              Notes-mode: report from your notes + terminal evidence\n"
             "  psreport -d, --deep                         Deep: full annotated history, single call\n"
             "  psreport --full                             Include full history without smart filter\n"
             "  psreport -v, --verbose                      Stream report to terminal while saving\n"
@@ -486,6 +644,119 @@ def main():
             intel_header = _build_intel_header(conn_for_header, target)
         finally:
             conn_for_header.close()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # NOTES MODE — report from pentester notes + placeholder evidence injection
+    # ══════════════════════════════════════════════════════════════════════════
+    if args.notes:
+        notes_path = os.path.expanduser(args.notes)
+        if not os.path.isfile(notes_path):
+            _ai._err(f"Notes file not found: {notes_path}")
+            sys.exit(1)
+        try:
+            with open(notes_path, encoding="utf-8", errors="replace") as _nf:
+                notes_text = _nf.read().strip()
+        except Exception as e:
+            _ai._err(f"Cannot read notes file: {e}")
+            sys.exit(1)
+        if not notes_text:
+            _ai._err("Notes file is empty.")
+            sys.exit(1)
+
+        # Snapshot terminal history at this exact moment
+        conn_snap = _db_connect(base_dir)
+        snapshot: list[dict] = []
+        if conn_snap:
+            try:
+                snapshot = _snapshot_history(conn_snap)
+            finally:
+                conn_snap.close()
+
+        # Intel header (attack surface, findings, phases)
+        conn_hdr = _db_connect(base_dir)
+        intel_header = ""
+        if conn_hdr:
+            try:
+                intel_header = _build_intel_header(conn_hdr, target)
+            finally:
+                conn_hdr.close()
+
+        snap_summary = _build_snapshot_summary(snapshot)
+
+        _ai._info(
+            f"Notes mode: {os.path.basename(notes_path)}  "
+            f"({len(snapshot)} terminal entries in snapshot)\n"
+        )
+
+        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
+        prompt += f"Target: {target or 'Unknown'}\n"
+        if cwd:
+            prompt += f"Working directory: {cwd}\n"
+        prompt += f"\n[PENTESTER NOTES]\n{notes_text}\n"
+        if intel_header:
+            prompt += f"\n{intel_header}\n"
+        if snap_summary:
+            prompt += f"\n{snap_summary}\n"
+        prompt += f"""
+[INSTRUCTIONS]
+You are an expert penetration tester writing a professional report.
+The pentester's notes above are your PRIMARY source of truth.
+The intelligence summary provides structured data to complement the notes.
+
+For every specific finding, exploitation step, or discovered asset that you
+write about in the report, insert a placeholder marker on its own line
+immediately after the relevant sentence:
+
+    <!-- PSEVIDENCE: <specific search terms> -->
+
+The application will replace these markers with the actual terminal command
+and its output from the session database, including timestamp.
+Use precise, specific terms — IP addresses, tool names, CVE IDs, service
+names, port numbers, hash values, usernames.
+
+Good marker examples:
+    <!-- PSEVIDENCE: nmap 192.168.1.10 port 445 smb -->
+    <!-- PSEVIDENCE: hydra brute force ssh admin password -->
+    <!-- PSEVIDENCE: ms17-010 eternalblue meterpreter shell -->
+    <!-- PSEVIDENCE: linpeas suid privesc root -->
+    <!-- PSEVIDENCE: sqlmap database dump credentials -->
+
+Aim for 2–4 markers per major finding. Do not invent terminal outputs.
+If you write about something that likely has no terminal evidence
+(e.g. manual browser testing), omit the marker.
+
+Generate the complete {fmt_name} report below using exactly this template:
+
+{template}"""
+
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
+        _ai._info("Generating report from notes...\n")
+        messages = [{"role": "user", "content": prompt}]
+        response = _llm(messages, verbose=args.verbose)
+
+        if not response:
+            _ai._err("No response from model.")
+            sys.exit(1)
+
+        # Resolve <!-- PSEVIDENCE: ... --> placeholders with real terminal data
+        _ai._info("Injecting terminal evidence...\n")
+        resolved = _resolve_placeholders(response, snapshot)
+        injected = response.count("<!-- PSEVIDENCE:") - resolved.count("<!-- PSEVIDENCE:")
+        _ai._info(f"Evidence injected: {injected} placeholder(s) resolved.\n")
+
+        reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        filename    = f"report_{now.strftime('%Y-%m-%d_%H-%M')}.{fmt}"
+        report_path = os.path.join(reports_dir, filename)
+        try:
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(resolved)
+            _ai._info(f"Report saved: {os.path.relpath(report_path, base_dir)}\n")
+        except Exception as e:
+            _ai._err(f"Failed to save report: {e}")
+            sys.exit(1)
+        sys.exit(0)
 
     # ══════════════════════════════════════════════════════════════════════════
     # DEEP MODE — full/filtered history with tag annotations
