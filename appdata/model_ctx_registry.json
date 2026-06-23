@@ -1,8 +1,58 @@
 {
   "_source": "liteLLM model_prices_and_context_window.json",
   "_note": "max_input_tokens per model. null default = unknown.",
+  "_tools_note": "tools_default: provider-level default for function/tool calling (true=supported, false=not supported, null=model-dependent). no_tools: model names that do NOT support function calling despite provider default. tools_note: additional per-provider context.",
   "openai": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "babbage-002",
+      "davinci-002",
+      "gpt-3.5-turbo-instruct",
+      "gpt-3.5-turbo-instruct-0914",
+      "gpt-4-0314",
+      "gpt-4o-mini-realtime-preview",
+      "gpt-4o-mini-realtime-preview-2024-12-17",
+      "gpt-4o-realtime-preview",
+      "gpt-4o-realtime-preview-2024-12-17",
+      "gpt-4o-realtime-preview-2025-06-03",
+      "gpt-realtime",
+      "gpt-realtime-1.5",
+      "gpt-realtime-2",
+      "gpt-realtime-mini",
+      "gpt-realtime-2025-08-28",
+      "gpt-realtime-mini-2025-10-06",
+      "gpt-realtime-mini-2025-12-15",
+      "gpt-4o-mini-search-preview",
+      "gpt-4o-mini-search-preview-2025-03-11",
+      "gpt-4o-search-preview",
+      "gpt-4o-search-preview-2025-03-11",
+      "gpt-4o-transcribe",
+      "gpt-4o-mini-transcribe",
+      "gpt-4o-mini-transcribe-2025-03-20",
+      "gpt-4o-mini-transcribe-2025-12-15",
+      "gpt-4o-transcribe-diarize",
+      "text-embedding-004",
+      "text-embedding-005",
+      "text-embedding-3-large",
+      "text-embedding-3-small",
+      "text-embedding-ada-002",
+      "text-embedding-ada-002-v2",
+      "text-embedding-large-exp-03-07",
+      "text-embedding-preview-0409",
+      "text-multilingual-embedding-002",
+      "text-unicorn",
+      "text-unicorn@001",
+      "text-moderation-007",
+      "text-moderation-latest",
+      "text-moderation-stable",
+      "o3-deep-research",
+      "o3-deep-research-2025-06-26",
+      "o4-mini-deep-research",
+      "o4-mini-deep-research-2025-06-26",
+      "gpt-5-search-api",
+      "gpt-5-search-api-2025-10-14"
+    ],
     "models": {
       "babbage-002": 16384,
       "chatgpt-4o-latest": 128000,
@@ -138,6 +188,7 @@
   },
   "anthropic": {
     "default": 200000,
+    "tools_default": true,
     "models": {
       "claude-haiku-4-5-20251001": 200000,
       "claude-haiku-4-5": 200000,
@@ -166,6 +217,13 @@
   },
   "groq": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "gemma-7b-it",
+      "meta-llama/llama-guard-4-12b",
+      "openai/gpt-oss-safeguard-20b",
+      "playai-tts"
+    ],
     "models": {
       "llama-3.1-8b-instant": 128000,
       "llama-3.3-70b-versatile": 128000,
@@ -183,6 +241,11 @@
   },
   "openrouter": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "mancer/weaver",
+      "undi95/remm-slerp-l2-13b"
+    ],
     "models": {
       "anthropic/claude-3-haiku": 200000,
       "anthropic/claude-3.5-sonnet": 200000,
@@ -289,6 +352,32 @@
   },
   "gemini": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "gemini-embedding-001",
+      "gemini-embedding-2-preview",
+      "gemini-embedding-2",
+      "gemini-live-2.5-flash-preview-native-audio-09-2025",
+      "gemini-robotics-er-1.5-preview",
+      "gemini-2.5-flash-image",
+      "gemini-2.0-flash-exp-image-generation",
+      "gemini-3-pro-image-preview",
+      "gemini-3.1-flash-image-preview",
+      "gemini-2.5-pro-preview-tts",
+      "gemini-2.5-flash-native-audio-latest",
+      "gemini-2.5-flash-native-audio-preview-09-2025",
+      "gemini-2.5-flash-native-audio-preview-12-2025",
+      "gemini-3.1-flash-live-preview",
+      "deep-research-pro-preview-12-2025",
+      "lyria-3-clip-preview",
+      "lyria-3-pro-preview",
+      "veo-2.0-generate-001",
+      "veo-3.1-fast-generate-preview",
+      "veo-3.1-generate-preview",
+      "veo-3.1-lite-generate-preview",
+      "veo-3.1-fast-generate-001",
+      "veo-3.1-generate-001"
+    ],
     "models": {
       "gemini-live-2.5-flash-preview-native-audio-09-2025": 1048576,
       "gemini-robotics-er-1.5-preview": 1048576,
@@ -348,6 +437,15 @@
   },
   "mistral": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "codestral-mamba-latest",
+      "open-codestral-mamba",
+      "mistral-embed",
+      "codestral-embed",
+      "codestral-embed-2505",
+      "mistral-tiny"
+    ],
     "models": {
       "codestral-2405": 32000,
       "codestral-2508": 256000,
@@ -404,6 +502,11 @@
   },
   "together_ai": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "baai/bge-base-en-v1.5",
+      "BAAI/bge-base-en-v1.5"
+    ],
     "models": {
       "baai/bge-base-en-v1.5": 512,
       "BAAI/bge-base-en-v1.5": 512,
@@ -430,10 +533,16 @@
   "ollama": {
     "default": 4096,
     "user_override": null,
-    "note": "Context window estimated from system RAM at runtime"
+    "note": "Context window estimated from system RAM at runtime",
+    "tools_default": null,
+    "tools_note": "Tool calling depends on the loaded model. Confirmed support: llama3.1, llama3.2, llama3.3, qwen2.5 (14B+ recommended for production), qwen3, mistral-small3.x, devstral, command-r, command-r-plus. No native support or unreliable: gemma3, mistral-nemo, codestral."
   },
   "huggingface": {
     "default": null,
+    "tools_default": true,
+    "no_tools": [
+      "deepseek-ai/DeepSeek-Prover-V2"
+    ],
     "models": {
       "Qwen/Qwen3-0.6B": 32768,
       "Qwen/Qwen3-1.7B": 32768,
