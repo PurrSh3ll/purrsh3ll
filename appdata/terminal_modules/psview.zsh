@@ -38,6 +38,7 @@ EOF
         local _cmd
         _cmd=$("$_py" "$_script" --base-dir "$_base" --cwd "$PWD" "$@" 2>/dev/tty)
         if [[ -n "$_cmd" ]]; then
+            echo "  → $_cmd" >/dev/tty
             echo -n "Paste command? [y/n] " >/dev/tty
             read -r _reply </dev/tty
             if [[ "$_reply" == [yY] ]]; then
