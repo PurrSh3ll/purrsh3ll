@@ -145,6 +145,8 @@ def main():
                         help="Optional question about the image")
     parser.add_argument("-N", "--next", action="store_true",
                         help="After analysis, run psnext-style next-step suggestion (uses full history)")
+    parser.add_argument("-c", "--cmd",  action="store_true",
+                        help="Output only the best command based on the image, no analysis text")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
@@ -158,6 +160,7 @@ def main():
             "Usage:\n"
             "  psview <image>                          Analyze image with default pentest prompt\n"
             "  psview <image> \"<question>\"             Ask a specific question about the image\n"
+            "  psview <image> -c, --cmd                Output only the best command (no analysis)\n"
             "  psview <image> -N, --next               Analyze and suggest next steps (full history)\n"
             "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
@@ -188,6 +191,22 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
+    use_tools        = _ai._tools_enabled(profile, base_dir)
+
+    _CMD_TOOL = {
+        "name":        "suggest_command",
+        "description": "Return the single most important shell command to run based on the image analysis",
+        "parameters": {
+            "type":       "object",
+            "properties": {
+                "command": {
+                    "type":        "string",
+                    "description": "The shell command to run, ready to execute as-is",
+                }
+            },
+            "required": ["command"],
+        },
+    }
 
     # ── Load image ─────────────────────────────────────────────────────────────
     image_path = args.image
@@ -209,7 +228,43 @@ def main():
     if not question:
         question = _DEFAULT_QUESTION
 
-    messages = _build_messages(b64, media_type, question, provider)
+    # For --cmd text path: append command instruction to prompt
+    cmd_question = question
+    if args.cmd and not use_tools:
+        cmd_question = (
+            question + "\n\n"
+            "At the very end, on a new line, write ONLY the single most important command "
+            "to run based solely on what you see in this image — "
+            "no prefix, no explanation, no backticks, just the raw command."
+        )
+
+    messages = _build_messages(b64, media_type, cmd_question, provider)
+
+    # ── --cmd mode: command only, no analysis output ───────────────────────────
+    if args.cmd:
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
+        _ai._info(f"Analyzing {filename}...\n")
+        if use_tools:
+            cmd = _ai._run_llm_tool_call(provider, model, messages, _CMD_TOOL, url, api_key)
+            if cmd:
+                print(cmd)
+        else:
+            import io as _io
+            _real_stdout = sys.stdout
+            _real_stderr = sys.stderr
+            sys.stdout   = _io.StringIO()
+            sys.stderr   = _io.StringIO()
+            try:
+                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            finally:
+                sys.stdout = _real_stdout
+                sys.stderr = _real_stderr
+            if response:
+                cmd = _clean_command(response)
+                if cmd:
+                    print(cmd)
+        sys.exit(0)
 
     # ── Stream analysis ────────────────────────────────────────────────────────
     if _ai._SHOW_QUERYING:
