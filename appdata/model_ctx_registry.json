@@ -5,6 +5,7 @@
   "openai": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "babbage-002",
       "davinci-002",
@@ -189,6 +190,7 @@
   "anthropic": {
     "default": 200000,
     "tools_default": true,
+    "tools_user_override": null,
     "models": {
       "claude-haiku-4-5-20251001": 200000,
       "claude-haiku-4-5": 200000,
@@ -218,6 +220,7 @@
   "groq": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "gemma-7b-it",
       "meta-llama/llama-guard-4-12b",
@@ -242,6 +245,7 @@
   "openrouter": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "mancer/weaver",
       "undi95/remm-slerp-l2-13b"
@@ -353,6 +357,7 @@
   "gemini": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "gemini-embedding-001",
       "gemini-embedding-2-preview",
@@ -438,6 +443,7 @@
   "mistral": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "codestral-mamba-latest",
       "open-codestral-mamba",
@@ -503,6 +509,7 @@
   "together_ai": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "baai/bge-base-en-v1.5",
       "BAAI/bge-base-en-v1.5"
@@ -535,11 +542,13 @@
     "user_override": null,
     "note": "Context window estimated from system RAM at runtime",
     "tools_default": null,
+    "tools_user_override": null,
     "tools_note": "Tool calling depends on the loaded model. Confirmed support: llama3.1, llama3.2, llama3.3, qwen2.5 (14B+ recommended for production), qwen3, mistral-small3.x, devstral, command-r, command-r-plus. No native support or unreliable: gemma3, mistral-nemo, codestral."
   },
   "huggingface": {
     "default": null,
     "tools_default": true,
+    "tools_user_override": null,
     "no_tools": [
       "deepseek-ai/DeepSeek-Prover-V2"
     ],
