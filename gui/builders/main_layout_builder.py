@@ -596,8 +596,8 @@ def build_main_layout(main_window):
     def create_voice_button():
         import os as _os
         central_widget = c.widgets["central_widget"]
-        btn = QPushButton("🎙", central_widget)
-        btn.setFixedSize(26, 22)
+        btn = QPushButton("🎧", central_widget)
+        btn.setFixedSize(72, 22)
         btn.setToolTip("Voice mode — wake word + speech-to-command")
         btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setCheckable(True)
@@ -724,26 +724,32 @@ def build_main_layout(main_window):
         cancel_btn.clicked.connect(_on_cancel)
 
         def _set_idle_style():
+            btn.setText("🎧")
             btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
             btn.setToolTip("Voice mode — wake word + speech-to-command")
 
         def _on_state_changed(state: str):
             if state == "idle":
+                btn.setText("wake")
                 btn.setStyleSheet(_STYLE_ON)
                 btn.setToolTip("Listening for wake word… (click to stop)")
             elif state == "listening":
+                btn.setText("listening")
                 btn.setStyleSheet(_STYLE_LISTENING)
                 btn.setToolTip("Recording speech…")
             elif state == "processing":
+                btn.setText("processing")
                 btn.setStyleSheet(_STYLE_PROCESSING)
                 btn.setToolTip("Generating command…")
             elif state == "confirming":
+                btn.setText("listening")
                 btn.setStyleSheet(_STYLE_LISTENING)
                 btn.setToolTip("Say 'Accept' or 'Cancel'…")
             elif state.startswith("error:"):
                 msg_text = state[6:]
                 import logging as _log
                 _log.getLogger(__name__).error("VoiceThread error: %s", msg_text)
+                btn.setText("🎧")
                 btn.setStyleSheet(c.widgets.get("_voice_off_style", _STYLE_OFF))
                 btn.setToolTip(f"Voice error: {msg_text}")
                 btn.blockSignals(True)
@@ -844,6 +850,7 @@ def build_main_layout(main_window):
 
             result = dlg.exec()
             if result == QDialog.DialogCode.Accepted:
+                btn.setText("wake")
                 btn.setStyleSheet(_STYLE_ON)
                 btn.setToolTip("Listening for wake word… (click to stop)")
                 _start_thread()
