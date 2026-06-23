@@ -270,6 +270,8 @@ def main():
                         help="Enrich prompt with knowledge base context")
     parser.add_argument("-n", "--top-n",  type=int, default=5, metavar="N", dest="top_n",
                         help="Number of RAG chunks (default: 5, used with --rag)")
+    parser.add_argument("-c", "--cmd",    action="store_true",
+                        help="Output only the best command, no analysis (used internally by zsh)")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
@@ -280,6 +282,7 @@ def main():
             "psnext — AI pentest next-step advisor\n\n"
             "Usage:\n"
             "  psnext                               Suggest next steps based on terminal history\n"
+            "  psnext -c, --cmd                     Output only the best command (no analysis)\n"
             "  psnext -t, --target 192.168.1.0/24  Include target context\n"
             "  psnext -r, --rag                    Enrich with knowledge base context\n"
             "  psnext -r --rag -n 8                Use 8 RAG chunks\n"
@@ -308,6 +311,22 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
+    use_tools        = _ai._tools_enabled(profile, base_dir)
+
+    _NEXT_TOOL = {
+        "name":        "suggest_command",
+        "description": "Return the single most important shell command to run next in the pentest",
+        "parameters": {
+            "type":       "object",
+            "properties": {
+                "command": {
+                    "type":        "string",
+                    "description": "The shell command to run next, ready to execute as-is",
+                }
+            },
+            "required": ["command"],
+        },
+    }
 
     target = (args.target or "").strip() or None
     cwd    = (args.cwd or "").strip()
@@ -342,38 +361,79 @@ def main():
     prompt += context
     if rag_context:
         prompt += f"\n\n{rag_context}"
-    prompt += (
-        "\n\n[TASK]\n"
-        "You are an expert penetration tester"
-        + (" working on a pentest engagement." if not rag_context else " working on a pentest engagement (knowledge base context provided above).")
-        + "\n"
-        "Based on the intelligence summary and recent session above:\n"
-        "1. Briefly summarize what has been discovered and where things stand.\n"
-        "2. Identify the most important gaps or opportunities not yet exploited.\n"
-        "3. Suggest 3-5 concrete next steps with the exact commands to run, ordered by priority.\n"
-        "Be specific, practical, and reference the actual IPs, credentials and services visible above.\n"
-        "At the very end, on a new line, write ONLY the single most important command to run next "
-        "— no prefix, no explanation, no backticks, just the raw command."
-    )
+
+    if args.cmd and use_tools:
+        prompt += (
+            "\n\n[TASK]\n"
+            "You are an expert penetration tester"
+            + (" working on a pentest engagement." if not rag_context else " working on a pentest engagement (knowledge base context provided above).")
+            + "\n"
+            "Based on the intelligence summary and recent session above, "
+            "call suggest_command with the single most important shell command to run next."
+        )
+    elif args.cmd:
+        prompt += (
+            "\n\n[TASK]\n"
+            "You are an expert penetration tester"
+            + (" working on a pentest engagement." if not rag_context else " working on a pentest engagement (knowledge base context provided above).")
+            + "\n"
+            "Based on the intelligence summary and recent session above, "
+            "output ONLY the single most important shell command to run next "
+            "— no prefix, no explanation, no backticks, just the raw command."
+        )
+    else:
+        prompt += (
+            "\n\n[TASK]\n"
+            "You are an expert penetration tester"
+            + (" working on a pentest engagement." if not rag_context else " working on a pentest engagement (knowledge base context provided above).")
+            + "\n"
+            "Based on the intelligence summary and recent session above:\n"
+            "1. Briefly summarize what has been discovered and where things stand.\n"
+            "2. Identify the most important gaps or opportunities not yet exploited.\n"
+            "3. Suggest 3-5 concrete next steps with the exact commands to run, ordered by priority.\n"
+            "Be specific, practical, and reference the actual IPs, credentials and services visible above.\n"
+            "At the very end, on a new line, write ONLY the single most important command to run next "
+            "— no prefix, no explanation, no backticks, just the raw command."
+        )
 
     if _ai._SHOW_QUERYING:
         _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info("Analyzing terminal history for next pentest steps...\n")
     messages = [{"role": "user", "content": prompt}]
 
-    # Stream analysis to stderr (visible via 2>/dev/tty),
-    # print the best command to stdout (captured by zsh $())
-    _real_stdout = sys.stdout
-    sys.stdout   = sys.stderr
-    try:
-        response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
-    finally:
-        sys.stdout = _real_stdout
-
-    if response:
-        cmd = _clean_command(response)
+    if args.cmd and use_tools:
+        # FC path: single structured call, no analysis streamed
+        cmd = _ai._run_llm_tool_call(provider, model, messages, _NEXT_TOOL, url, api_key)
         if cmd:
             print(cmd)
+    elif args.cmd:
+        # Text path: suppress streaming, extract command from response
+        import io as _io
+        _real_stdout = sys.stdout
+        _real_stderr = sys.stderr
+        sys.stdout   = _io.StringIO()
+        sys.stderr   = _io.StringIO()
+        try:
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+        finally:
+            sys.stdout = _real_stdout
+            sys.stderr = _real_stderr
+        if response:
+            cmd = _clean_command(response)
+            if cmd:
+                print(cmd)
+    else:
+        # Default: stream analysis to stderr, command to stdout
+        _real_stdout = sys.stdout
+        sys.stdout   = sys.stderr
+        try:
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+        finally:
+            sys.stdout = _real_stdout
+        if response:
+            cmd = _clean_command(response)
+            if cmd:
+                print(cmd)
 
 
 if __name__ == "__main__":

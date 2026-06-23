@@ -145,8 +145,6 @@ def main():
                         help="Optional question about the image")
     parser.add_argument("-N", "--next", action="store_true",
                         help="After analysis, run psnext-style next-step suggestion (uses full history)")
-    parser.add_argument("-c", "--cmd",  action="store_true",
-                        help="After analysis, ask y/n to paste the best command (image only, no history)")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
@@ -160,7 +158,6 @@ def main():
             "Usage:\n"
             "  psview <image>                          Analyze image with default pentest prompt\n"
             "  psview <image> \"<question>\"             Ask a specific question about the image\n"
-            "  psview <image> -c, --cmd                Analyze and paste best command (image only)\n"
             "  psview <image> -N, --next               Analyze and suggest next steps (full history)\n"
             "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
@@ -212,26 +209,15 @@ def main():
     if not question:
         question = _DEFAULT_QUESTION
 
-    # For --cmd: append instruction to write the command on the last line
-    cmd_question = question
-    if args.cmd:
-        cmd_question = (
-            question + "\n\n"
-            "At the very end, on a new line, write ONLY the single most important command "
-            "to run based solely on what you see in this image — "
-            "no prefix, no explanation, no backticks, just the raw command."
-        )
-
-    messages = _build_messages(b64, media_type, cmd_question, provider)
+    messages = _build_messages(b64, media_type, question, provider)
 
     # ── Stream analysis ────────────────────────────────────────────────────────
     if _ai._SHOW_QUERYING:
         _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info(f"Analyzing {filename}...\n")
 
-    stream_to_stderr = args.next or args.cmd
-    if stream_to_stderr:
-        # Stream to stderr (visible via 2>/dev/tty), capture response for further processing
+    if args.next:
+        # Stream to stderr (visible via 2>/dev/tty), capture response for --next processing
         _real_stdout = sys.stdout
         sys.stdout   = sys.stderr
         try:
@@ -248,13 +234,6 @@ def main():
     # ── Save synthetic history entry ───────────────────────────────────────────
     _save_to_history(base_dir, filename, analysis, cwd)
     _ai._info(f"\nSaved to terminal history as [psscreenshot: {filename}]\n")
-
-    # ── --cmd: paste best command based on image only ──────────────────────────
-    if args.cmd:
-        cmd = _clean_command(analysis)
-        if cmd:
-            print(cmd)
-        sys.exit(0)
 
     if not args.next:
         sys.exit(0)

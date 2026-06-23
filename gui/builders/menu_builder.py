@@ -2526,27 +2526,31 @@ def build_menu(main_window):
             if not isinstance(meta, dict):
                 meta = {"url": meta}
             return {
-                "name":             name_item.text() if name_item else "",
-                "provider":         providers_table.item(row, 1).text() if providers_table.item(row, 1) else "",
-                "model":            providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
-                "url":              meta.get("url", ""),
-                "disable_thinking": meta.get("disable_thinking", False),
-                "hide_thinking":    meta.get("hide_thinking", False),
-                "fast_answers":     meta.get("fast_answers", False),
-                "custom_params":    meta.get("custom_params", ""),
-                "custom_system":    meta.get("custom_system", ""),
+                "name":               name_item.text() if name_item else "",
+                "provider":           providers_table.item(row, 1).text() if providers_table.item(row, 1) else "",
+                "model":              providers_table.item(row, 2).text() if providers_table.item(row, 2) else "",
+                "url":                meta.get("url", ""),
+                "disable_thinking":   meta.get("disable_thinking", False),
+                "hide_thinking":      meta.get("hide_thinking", False),
+                "fast_answers":       meta.get("fast_answers", False),
+                "custom_params":      meta.get("custom_params", ""),
+                "custom_system":      meta.get("custom_system", ""),
+                "context_tokens":     meta.get("context_tokens", 0),
+                "tools_user_override": meta.get("tools_user_override"),
             }
 
         def _set_row_meta(row, profile):
             name_item = providers_table.item(row, 0)
             if name_item:
                 name_item.setData(Qt.ItemDataRole.UserRole, {
-                    "url":              profile.get("url", ""),
-                    "disable_thinking": bool(profile.get("disable_thinking", False)),
-                    "hide_thinking":    bool(profile.get("hide_thinking", False)),
-                    "fast_answers":     bool(profile.get("fast_answers", False)),
-                    "custom_params":    profile.get("custom_params", ""),
-                    "custom_system":    profile.get("custom_system", ""),
+                    "url":               profile.get("url", ""),
+                    "disable_thinking":  bool(profile.get("disable_thinking", False)),
+                    "hide_thinking":     bool(profile.get("hide_thinking", False)),
+                    "fast_answers":      bool(profile.get("fast_answers", False)),
+                    "custom_params":     profile.get("custom_params", ""),
+                    "custom_system":     profile.get("custom_system", ""),
+                    "context_tokens":    int(profile.get("context_tokens", 0)),
+                    "tools_user_override": profile.get("tools_user_override"),
                 })
 
         def _insert_table_row(row_idx, profile):
@@ -2645,6 +2649,42 @@ def build_menu(main_window):
                 if model_lc.startswith(key.lower()):
                     return val
             return section.get("default")
+
+        def _lookup_tools_support(profile):
+            """Return (effective_default: bool|None, tools_user_override: bool|None).
+            effective_default: True/False = detected, None = unknown/model-dependent.
+            """
+            try:
+                _reg_path = os.path.join(
+                    getattr(c, "base_path", _base_dir_prov), "appdata", "model_ctx_registry.json"
+                )
+                with open(_reg_path, encoding="utf-8") as _f:
+                    _reg = json.load(_f)
+            except Exception:
+                return None, None
+            provider = profile.get("provider", "").lower()
+            model    = profile.get("model", "")
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            if ":" in model:
+                model = model.split(":")[0]
+            section = _reg.get(provider, {})
+            if not section:
+                return None, None
+            tools_default = section.get("tools_default")       # True, False, or None
+            no_tools      = section.get("no_tools", [])
+            in_no_tools   = model in no_tools or model.lower() in [m.lower() for m in no_tools]
+            if tools_default is None:
+                eff = None
+            elif in_no_tools:
+                eff = False
+            else:
+                eff = tools_default
+            user_ov = section.get("tools_user_override")       # read provider-level stored override
+            # Profile-level override takes priority over provider-level registry value
+            profile_ov = profile.get("tools_user_override")    # True, False, or None/missing
+            final_ov = profile_ov if profile_ov is not None else user_ov
+            return eff, final_ov
 
         def _on_behavior(row):
             profile = _table_row_to_dict(row)
@@ -2784,6 +2824,37 @@ def build_menu(main_window):
             cb_ctx_override.toggled.connect(_on_ctx_override_toggled)
             bform.addWidget(ctx_override_widget)
 
+            # --- Function calling checkbox ---
+            _tools_eff_default, _tools_saved_override = _lookup_tools_support(profile)
+            if _tools_eff_default is True:
+                _tools_default_label = "default: yes"
+            else:
+                _tools_default_label = "default: no"
+            _tools_checked = _tools_saved_override if _tools_saved_override is not None else (_tools_eff_default or False)
+            _tools_override_val = [_tools_saved_override]
+
+            _fc_row = QHBoxLayout()
+            cb_tools = QCheckBox(f"Function calling  ({_tools_default_label})")
+            cb_tools.setChecked(bool(_tools_checked))
+            tools_default_btn = QPushButton("Default")
+            tools_default_btn.setFixedWidth(62)
+            tools_default_btn.setToolTip("Reset to auto-detected default")
+
+            def _on_tools_default():
+                _tools_override_val[0] = None
+                cb_tools.setChecked(bool(_tools_eff_default) if _tools_eff_default is not None else False)
+
+            def _on_tools_toggled(checked):
+                _tools_override_val[0] = checked
+
+            tools_default_btn.clicked.connect(_on_tools_default)
+            cb_tools.toggled.connect(_on_tools_toggled)
+            _fc_row.addWidget(cb_tools)
+            _fc_row.addStretch(1)
+            _fc_row.addWidget(tools_default_btn)
+            bform.addLayout(_fc_row)
+            # --- end Function calling ---
+
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
             is_ollama    = profile.get("provider", "") == "ollama"
@@ -2901,7 +2972,8 @@ def build_menu(main_window):
             bbtn_cancel.clicked.connect(bdlg.reject)
             if bdlg.exec() != QDialog.DialogCode.Accepted:
                 return
-            profile["context_tokens"]   = sb_ctx.value() if cb_ctx_override.isChecked() else 0
+            profile["context_tokens"]      = sb_ctx.value() if cb_ctx_override.isChecked() else 0
+            profile["tools_user_override"] = _tools_override_val[0]
             profile["disable_thinking"] = cb_think.isChecked()
             profile["hide_thinking"]    = cb_hide_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()

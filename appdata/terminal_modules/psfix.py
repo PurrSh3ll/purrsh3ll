@@ -211,6 +211,23 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
+    use_tools        = _ai._tools_enabled(profile, base_dir)
+
+    # Tool definition reused across all modes
+    _FIX_TOOL = {
+        "name":        "fix_command",
+        "description": "Return the single corrected shell command that fixes the error",
+        "parameters": {
+            "type":       "object",
+            "properties": {
+                "command": {
+                    "type":        "string",
+                    "description": "The corrected shell command, ready to execute as-is",
+                }
+            },
+            "required": ["command"],
+        },
+    }
 
     # ── Analyze mode ──────────────────────────────────────────────────────────
     if args.analyze:
@@ -230,33 +247,47 @@ def main():
             prompt += f"Output:\n{output}\n"
         if history_text:
             prompt += f"\nRecent terminal session history:\n{history_text}\n"
-        prompt += (
-            "\nBased on the system info, working directory, and terminal history, "
-            "provide a deep analysis of why this command failed. "
-            "Consider the full context — previous commands, environment, permissions — "
-            "and suggest the most accurate fix. Be specific and practical.\n"
-            "At the very end, on a new line, write ONLY the corrected command "
-            "with no prefix, no explanation, no backticks — just the raw command."
-        )
+        if use_tools:
+            prompt += (
+                "\nBased on the system info, working directory, and terminal history, "
+                "provide a deep analysis of why this command failed. "
+                "Consider the full context — previous commands, environment, permissions — "
+                "and suggest the most accurate fix. Be specific and practical. "
+                "Then call fix_command with the corrected command."
+            )
+        else:
+            prompt += (
+                "\nBased on the system info, working directory, and terminal history, "
+                "provide a deep analysis of why this command failed. "
+                "Consider the full context — previous commands, environment, permissions — "
+                "and suggest the most accurate fix. Be specific and practical.\n"
+                "At the very end, on a new line, write ONLY the corrected command "
+                "with no prefix, no explanation, no backticks — just the raw command."
+            )
         if _ai._SHOW_QUERYING:
             _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Analyzing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
-        # Stream analysis to stderr (visible in terminal via 2>/dev/tty),
-        # then print only the fix command to stdout (captured by zsh $())
-        import io as _io
-        _real_stdout = sys.stdout
-        sys.stdout   = sys.stderr
-        try:
-            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
-        finally:
-            sys.stdout = _real_stdout
-
-        if response:
-            fix = _clean_command(response)
+        if use_tools:
+            fix = _ai._run_llm_tool_call(provider, model, messages, _FIX_TOOL, url, api_key)
             if fix:
                 print(fix)
+        else:
+            # Stream analysis to stderr (visible in terminal via 2>/dev/tty),
+            # then print only the fix command to stdout (captured by zsh $())
+            import io as _io
+            _real_stdout = sys.stdout
+            sys.stdout   = sys.stderr
+            try:
+                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            finally:
+                sys.stdout = _real_stdout
+
+            if response:
+                fix = _clean_command(response)
+                if fix:
+                    print(fix)
 
     # ── Explain mode ──────────────────────────────────────────────────────────
     elif args.explain:
@@ -264,30 +295,42 @@ def main():
         prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
-        prompt += (
-            "\nExplain concisely why this command failed and what the error means. "
-            "Be direct and practical.\n"
-            "At the very end, on a new line, write ONLY the corrected command "
-            "with no prefix, no explanation, no backticks — just the raw command."
-        )
+        if use_tools:
+            prompt += (
+                "\nExplain concisely why this command failed and what the error means. "
+                "Be direct and practical. "
+                "Then call fix_command with the corrected command."
+            )
+        else:
+            prompt += (
+                "\nExplain concisely why this command failed and what the error means. "
+                "Be direct and practical.\n"
+                "At the very end, on a new line, write ONLY the corrected command "
+                "with no prefix, no explanation, no backticks — just the raw command."
+            )
         if _ai._SHOW_QUERYING:
             _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Explaining: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
-        # Stream explanation to stderr (visible via 2>/dev/tty),
-        # then print only the fix command to stdout (captured by zsh $())
-        _real_stdout = sys.stdout
-        sys.stdout   = sys.stderr
-        try:
-            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
-        finally:
-            sys.stdout = _real_stdout
-
-        if response:
-            fix = _clean_command(response)
+        if use_tools:
+            fix = _ai._run_llm_tool_call(provider, model, messages, _FIX_TOOL, url, api_key)
             if fix:
                 print(fix)
+        else:
+            # Stream explanation to stderr (visible via 2>/dev/tty),
+            # then print only the fix command to stdout (captured by zsh $())
+            _real_stdout = sys.stdout
+            sys.stdout   = sys.stderr
+            try:
+                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            finally:
+                sys.stdout = _real_stdout
+
+            if response:
+                fix = _clean_command(response)
+                if fix:
+                    print(fix)
 
     # ── Fix mode ──────────────────────────────────────────────────────────────
     else:
@@ -295,16 +338,28 @@ def main():
         prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
-        prompt += (
-            "\nReturn ONLY the corrected shell command. "
-            "No explanation, no markdown, no backticks — just the raw command on a single line."
-        )
+        if use_tools:
+            prompt += "\nCall fix_command with the corrected shell command."
+        else:
+            prompt += (
+                "\nReturn ONLY the corrected shell command. "
+                "No explanation, no markdown, no backticks — just the raw command on a single line."
+            )
         if _ai._SHOW_QUERYING:
             _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Fixing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
-        if args.paste_mode:
+        if use_tools:
+            fix = _ai._run_llm_tool_call(provider, model, messages, _FIX_TOOL, url, api_key)
+            if fix:
+                print(fix)
+            else:
+                # Fallback to text path if tool call fails
+                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+                if response:
+                    print(_clean_command(response))
+        elif args.paste_mode:
             import io
             _buf = io.StringIO()
             _real_stdout = sys.stdout

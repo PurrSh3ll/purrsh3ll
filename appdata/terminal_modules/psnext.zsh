@@ -6,6 +6,7 @@ psnext — AI pentest next-step advisor
 
 Usage:
   psnext                               Suggest next steps based on terminal history
+  psnext -c, --cmd                     Output only the best command (no analysis)
   psnext -t, --target <host/network>  Include target context in analysis
   psnext -r, --rag                    Enrich with knowledge base context
   psnext -r --rag -n 8                Use 8 RAG chunks

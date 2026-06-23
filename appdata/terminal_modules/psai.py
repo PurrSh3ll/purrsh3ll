@@ -710,6 +710,183 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
     return _stream_openai_compat(model, messages, url, api_key, provider, custom_params, hide_thinking)
 
 
+# ── Function calling helpers ───────────────────────────────────────────────────
+
+def _tools_enabled(profile: dict, base_dir: str) -> bool:
+    """Return True if function calling should be used for this profile.
+
+    Priority:
+      1. profile["tools_user_override"]  — explicit user choice (True/False)
+      2. model_ctx_registry.json         — provider-level default + no_tools list
+      3. False (safe default)
+    """
+    override = profile.get("tools_user_override")
+    if override is not None:
+        return bool(override)
+
+    try:
+        reg_path = os.path.join(base_dir, "appdata", "model_ctx_registry.json")
+        with open(reg_path, encoding="utf-8") as f:
+            reg = json.load(f)
+    except Exception:
+        return False
+
+    provider = profile.get("provider", "").lower()
+    model    = profile.get("model", "")
+    # Normalise: strip "models/" prefix (Gemini), strip ":variant" suffix (OpenRouter)
+    if model.lower().startswith("models/"):
+        model = model[7:]
+    if ":" in model:
+        model = model.split(":")[0]
+
+    section = reg.get(provider, {})
+    if not section:
+        return False
+
+    tools_default = section.get("tools_default")
+    if tools_default is None:      # unknown (e.g. Ollama)
+        return False
+    no_tools = section.get("no_tools", [])
+    no_tools_lower = [m.lower() for m in no_tools]
+    if model.lower() in no_tools_lower:
+        return False
+    return bool(tools_default)
+
+
+def _run_llm_tool_call(provider: str, model: str, messages: list,
+                       tool_def: dict, url: str, api_key: str) -> str | None:
+    """Call the model with a single forced tool and return the value of the first
+    string argument.  Returns None on any error (caller falls back to text path).
+
+    tool_def must be an OpenAI-style function dict:
+        {"name": "...", "description": "...", "parameters": {"type": "object", ...}}
+    """
+    import time as _time
+
+    if provider == "anthropic":
+        return _call_anthropic_tool(model, messages, tool_def, url, api_key)
+
+    # Ollama: ensure /v1 suffix for OpenAI-compat endpoint
+    if provider == "ollama":
+        base = url.rstrip("/")
+        if not base.endswith("/v1"):
+            base += "/v1"
+        url = base
+
+    return _call_openai_compat_tool(model, messages, tool_def, url, api_key)
+
+
+def _call_openai_compat_tool(model: str, messages: list, tool_def: dict,
+                              base_url: str, api_key: str) -> str | None:
+    """OpenAI-compatible /chat/completions with tool_choice forced."""
+    import time as _time
+    endpoint = base_url.rstrip("/") + "/chat/completions"
+    body = {
+        "model":    model,
+        "messages": list(messages),
+        "tools":    [{"type": "function", "function": tool_def}],
+        "tool_choice": {"type": "function", "function": {"name": tool_def["name"]}},
+        "stream":   False,
+    }
+    headers = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent":    "Mozilla/5.0",
+    }
+    req = urllib.request.Request(
+        endpoint, data=json.dumps(body).encode(), headers=headers, method="POST"
+    )
+    t0 = _time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        _err(f"Tool call failed: {e}")
+        return None
+
+    try:
+        args_str = data["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+        args     = json.loads(args_str)
+        # Return value of first required string key, or first key
+        required = tool_def.get("parameters", {}).get("required", [])
+        key      = required[0] if required else next(iter(args))
+        result   = args.get(key, "")
+        if _SHOW_STATS:
+            usage = data.get("usage", {})
+            in_t  = usage.get("prompt_tokens",     0)
+            out_t = usage.get("completion_tokens",  0)
+            _print_stats(out_t, _time.time() - t0, 0, in_t)
+        return result if result else None
+    except Exception as e:
+        _err(f"Tool call parse error: {e}")
+        return None
+
+
+def _call_anthropic_tool(model: str, messages: list, tool_def: dict,
+                         base_url: str, api_key: str) -> str | None:
+    """Anthropic /v1/messages with tool_choice forced."""
+    import time as _time
+    endpoint = (base_url.rstrip("/") if base_url else "https://api.anthropic.com") + "/v1/messages"
+
+    system_parts = [m["content"] for m in messages if m["role"] == "system"]
+    user_msgs    = [m for m in messages if m["role"] != "system"]
+
+    # Anthropic uses input_schema instead of parameters
+    anthropic_tool = {
+        "name":         tool_def["name"],
+        "description":  tool_def.get("description", ""),
+        "input_schema": tool_def.get("parameters", {"type": "object", "properties": {}}),
+    }
+    body = {
+        "model":       model,
+        "max_tokens":  256,
+        "messages":    user_msgs,
+        "tools":       [anthropic_tool],
+        "tool_choice": {"type": "tool", "name": tool_def["name"]},
+    }
+    if system_parts:
+        body["system"] = "\n\n".join(system_parts)
+
+    headers = {
+        "Content-Type":      "application/json",
+        "x-api-key":         api_key,
+        "anthropic-version": "2023-06-01",
+        "User-Agent":        "Mozilla/5.0",
+    }
+    req = urllib.request.Request(
+        endpoint, data=json.dumps(body).encode(), headers=headers, method="POST"
+    )
+    t0 = _time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        _err(f"Tool call failed: {e}")
+        return None
+
+    try:
+        for block in data.get("content", []):
+            if block.get("type") == "tool_use":
+                inp    = block.get("input", {})
+                required = tool_def.get("parameters", {}).get("required", [])
+                key    = required[0] if required else next(iter(inp))
+                result = inp.get(key, "")
+                if _SHOW_STATS:
+                    usage = data.get("usage", {})
+                    _print_stats(
+                        usage.get("output_tokens", 0),
+                        _time.time() - t0,
+                        0,
+                        usage.get("input_tokens", 0),
+                    )
+                return result if result else None
+        _err("Tool call: no tool_use block in response")
+        return None
+    except Exception as e:
+        _err(f"Tool call parse error: {e}")
+        return None
+
+
 # ── Chat session ──────────────────────────────────────────────────────────────
 
 def _session_path(base_dir: str, profile_name: str = "") -> str:
