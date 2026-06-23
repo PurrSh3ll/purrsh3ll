@@ -460,7 +460,7 @@ def _snapshot_history(conn: sqlite3.Connection) -> list[dict]:
 
 
 def _search_evidence(snapshot: list[dict], query: str,
-                     max_results: int = 3) -> list[dict]:
+                     max_results: int = 3, min_score: int = 1) -> list[dict]:
     """OR-score snapshot rows against query tokens, return top matches."""
     tokens = _extract_tokens(query)
     if not tokens:
@@ -469,7 +469,7 @@ def _search_evidence(snapshot: list[dict], query: str,
     for row in snapshot:
         haystack = ((row["cmd"] or "") + " " + (row["output"] or "")).lower()
         score = sum(1 for t in tokens if t.lower() in haystack)
-        if score > 0:
+        if score >= min_score:
             scored.append((score, row["ts"] or 0, row))
     scored.sort(key=lambda x: (-x[0], x[1]))
     return [r for _, _, r in scored[:max_results]]
@@ -509,13 +509,24 @@ def _format_evidence_block(rows: list[dict]) -> str:
 
 
 def _resolve_placeholders(text: str, snapshot: list[dict]) -> str:
-    """Replace <!-- PSEVIDENCE: ... --> markers with real terminal evidence."""
-    pattern = re.compile(r'<!--\s*PSEVIDENCE:\s*(.*?)\s*-->', re.IGNORECASE | re.DOTALL)
+    """Replace <!-- PSEVIDENCE: ... --> markers with real terminal evidence.
+
+    Each unique command row is injected at most once across the whole report
+    (deduplication by row id) to prevent the same evidence block from
+    appearing in every section.  Requires at least 2 matching tokens so that
+    single-word queries do not pull in unrelated commands.
+    """
+    pattern  = re.compile(r'<!--\s*PSEVIDENCE:\s*(.*?)\s*-->', re.IGNORECASE | re.DOTALL)
+    used_ids: set[int] = set()
 
     def _replace(m: re.Match) -> str:
-        query = m.group(1).strip()
-        rows  = _search_evidence(snapshot, query)
-        return _format_evidence_block(rows)
+        query    = m.group(1).strip()
+        rows     = _search_evidence(snapshot, query, max_results=2, min_score=2)
+        new_rows = [r for r in rows if r["id"] not in used_ids]
+        if not new_rows:
+            return ""
+        used_ids.update(r["id"] for r in new_rows)
+        return "\n\n" + _format_evidence_block(new_rows)
 
     return pattern.sub(_replace, text)
 
