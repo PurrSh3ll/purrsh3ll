@@ -5,13 +5,15 @@ Sends an image to the active vision-capable AI profile, streams analysis,
 and saves a synthetic entry to terminal_history.db so psnext / psreport
 can incorporate the findings.
 
-Optional --next flag: after analysis runs a psnext-style prompt and asks
-whether to paste the best suggested command at the zsh prompt.
+The model is asked to append "Findings = true/false" at the end of its
+response. The app parses this marker, tags the history entry accordingly
+(tags: "screenshot" always, "findings" when true), and strips the marker
+before saving the clean analysis text.
 """
 
 import base64
 import os
-import platform
+import re
 import sqlite3
 import sys
 import time
@@ -30,8 +32,40 @@ _DEFAULT_QUESTION = (
     "IP addresses, hostnames, open ports, services and versions, "
     "vulnerabilities, error messages, credentials, hashes, URLs, "
     "tool output, and any other findings. "
-    "Be specific — extract exact values, not just descriptions."
+    "Be specific — extract exact values, not just descriptions.\n\n"
+    "At the very end of your response, on a new line, write exactly one of:\n"
+    "Findings = true   (if you identified any specific security-relevant data)\n"
+    "Findings = false  (if nothing notable was found)"
 )
+
+# Matches: "Findings = true", "findings=True", "FINDINGS : yes", "findings=1", etc.
+_FINDINGS_PATTERN = re.compile(
+    r'^findings\s*[=:]\s*(true|yes|1)\s*$',
+    re.IGNORECASE,
+)
+# Matches any findings marker line (true OR false) for stripping
+_FINDINGS_ANY = re.compile(
+    r'^findings\s*[=:]\s*(true|yes|1|false|no|0)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _parse_findings_marker(text: str) -> tuple[bool, str]:
+    """
+    Search the last 3 lines for a Findings marker.
+    Returns (found: bool, cleaned_text: str) where cleaned_text has the
+    marker line removed so it does not appear in saved output or terminal.
+    """
+    lines = text.rstrip().splitlines()
+    tail  = lines[-3:] if len(lines) >= 3 else lines
+
+    found = any(
+        _FINDINGS_PATTERN.match(line.strip().rstrip('.,;: '))
+        for line in tail
+    )
+    # Strip the marker line(s) from output
+    clean = [l for l in lines if not _FINDINGS_ANY.match(l.strip().rstrip('.,;: '))]
+    return found, '\n'.join(clean).rstrip()
 
 
 def _read_image(path: str) -> tuple[str, str]:
@@ -67,33 +101,36 @@ def _db_connect(base_dir: str) -> sqlite3.Connection | None:
     return conn
 
 
-def _save_to_history(base_dir: str, filename: str, analysis: str, cwd: str):
+def _save_to_history(base_dir: str, filename: str, analysis: str,
+                     cwd: str, has_findings: bool):
     """Insert a synthetic psscreenshot entry into terminal_history.db."""
     conn = _db_connect(base_dir)
     if conn is None:
-        return  # history write failure is non-fatal
+        return
     ts = int(time.time())
     try:
-        conn.execute(
+        cur = conn.execute(
             "INSERT INTO commands (ts, ts_end, terminal, cmd, exit_code, output, cwd) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ts, ts, "psview", f"[psscreenshot: {filename}]", 0, analysis[:800], cwd or None),
+            (ts, ts, "psview", f"[psscreenshot: {filename}]", 0, analysis, cwd or None),
         )
+        cmd_id = cur.lastrowid
+        # Always tag as "screenshot"
+        conn.execute(
+            "INSERT INTO command_tags (command_id, tag) VALUES (?, ?)",
+            (cmd_id, "screenshot"),
+        )
+        # Tag as "findings" only when model confirmed something was found
+        if has_findings:
+            conn.execute(
+                "INSERT INTO command_tags (command_id, tag) VALUES (?, ?)",
+                (cmd_id, "findings"),
+            )
         conn.commit()
     except Exception:
         pass
     finally:
         conn.close()
-
-
-def _build_next_context(base_dir: str, limit: int) -> tuple[str, bool]:
-    """Build psnext-style 3-layer structured context from SQLite (deduplicated)."""
-    import sys as _sys
-    _dir = os.path.dirname(__file__)
-    if _dir not in _sys.path:
-        _sys.path.insert(0, _dir)
-    import psnext as _psnext
-    return _psnext._build_prompt_context(base_dir, None, limit)
 
 
 def _clean_command(text: str) -> str:
@@ -143,8 +180,6 @@ def main():
                         help="Path to image file (PNG, JPG, JPEG, WebP, GIF)")
     parser.add_argument("question", nargs="*",
                         help="Optional question about the image")
-    parser.add_argument("-N", "--next", action="store_true",
-                        help="After analysis, run psnext-style next-step suggestion (uses full history)")
     parser.add_argument("-c", "--cmd",  action="store_true",
                         help="Output only the best command based on the image, no analysis text")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
@@ -161,11 +196,11 @@ def main():
             "  psview <image>                          Analyze image with default pentest prompt\n"
             "  psview <image> \"<question>\"             Ask a specific question about the image\n"
             "  psview <image> -c, --cmd                Output only the best command (no analysis)\n"
-            "  psview <image> -N, --next               Analyze and suggest next steps (full history)\n"
             "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
             "The analysis is saved to terminal history so psnext/psreport can use it.\n"
+            "If the model detects security-relevant findings, the entry is tagged 'findings'.\n"
         )
         sys.exit(0)
 
@@ -228,7 +263,7 @@ def main():
     if not question:
         question = _DEFAULT_QUESTION
 
-    # For --cmd text path: append command instruction to prompt
+    # For --cmd text path: append command instruction (no Findings marker needed)
     cmd_question = question
     if args.cmd and not use_tools:
         cmd_question = (
@@ -256,7 +291,8 @@ def main():
             sys.stdout   = _io.StringIO()
             sys.stderr   = _io.StringIO()
             try:
-                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+                response = _ai._run_llm(provider, model, messages, url, api_key,
+                                        disable_thinking, custom_params, hide_thinking)
             finally:
                 sys.stdout = _real_stdout
                 sys.stderr = _real_stderr
@@ -271,64 +307,20 @@ def main():
         _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info(f"Analyzing {filename}...\n")
 
-    if args.next:
-        # Stream to stderr (visible via 2>/dev/tty), capture response for --next processing
-        _real_stdout = sys.stdout
-        sys.stdout   = sys.stderr
-        try:
-            analysis = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
-        finally:
-            sys.stdout = _real_stdout
-    else:
-        analysis = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+    analysis = _ai._run_llm(provider, model, messages, url, api_key,
+                            disable_thinking, custom_params, hide_thinking)
 
     if not analysis:
         _ai._err("No response from model.")
         sys.exit(1)
 
-    # ── Save synthetic history entry ───────────────────────────────────────────
-    _save_to_history(base_dir, filename, analysis, cwd)
-    _ai._info(f"\nSaved to terminal history as [psscreenshot: {filename}]\n")
+    # ── Parse and strip Findings marker ───────────────────────────────────────
+    has_findings, clean_analysis = _parse_findings_marker(analysis)
 
-    if not args.next:
-        sys.exit(0)
-
-    # ── --next: psnext-style 3-layer structured analysis ──────────────────────
-    context, has_data = _build_next_context(base_dir, _ai._TERMINAL_HIST_LIMIT)
-    if not has_data:
-        sys.exit(0)
-
-    sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-    prompt   = f"System: {sys_info}\n"
-    if cwd:
-        prompt += f"Working directory: {cwd}\n"
-    prompt += f"\n{context}\n"
-    prompt += (
-        "\n[TASK]\n"
-        "You are an expert penetration tester (screenshot analysis included above).\n"
-        "Based on the intelligence summary and recent session above:\n"
-        "1. Briefly summarize what has been discovered and where things stand.\n"
-        "2. Identify the most important gaps or opportunities not yet exploited.\n"
-        "3. Suggest 3-5 concrete next steps with the exact commands to run, ordered by priority.\n"
-        "Be specific, practical, and reference the actual IPs, credentials and services visible above.\n"
-        "At the very end, on a new line, write ONLY the single most important command to run next "
-        "— no prefix, no explanation, no backticks, just the raw command."
-    )
-
-    _ai._info("Analyzing next steps...\n")
-    next_messages = [{"role": "user", "content": prompt}]
-
-    _real_stdout = sys.stdout
-    sys.stdout   = sys.stderr
-    try:
-        next_response = _ai._run_llm(provider, model, next_messages, url, api_key, disable_thinking, custom_params, hide_thinking)
-    finally:
-        sys.stdout = _real_stdout
-
-    if next_response:
-        cmd = _clean_command(next_response)
-        if cmd:
-            print(cmd)
+    # ── Save full clean analysis to history ────────────────────────────────────
+    _save_to_history(base_dir, filename, clean_analysis, cwd, has_findings)
+    findings_note = " [findings tagged]" if has_findings else ""
+    _ai._info(f"\nSaved to terminal history as [psscreenshot: {filename}]{findings_note}\n")
 
 
 if __name__ == "__main__":
