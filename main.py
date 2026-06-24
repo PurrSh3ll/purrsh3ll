@@ -29,9 +29,10 @@ os.environ["TOKENIZERS_PARALLELISM"]    = "false"  # silences HuggingFace fork w
 warnings.filterwarnings("ignore")  # suppress DeprecationWarning / UserWarning from libs
 
 from gui.main_window import MainWindow
-from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle
+from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle, QMessageBox
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import QLockFile
 from core.app_logger import setup_logging
 
 _BASE_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +53,12 @@ class _SlowTooltipStyle(QProxyStyle):
 def main():
     app = QApplication(sys.argv)
     app.setStyle(_SlowTooltipStyle(app.style()))
+
+    lock = QLockFile(os.path.join(_BASE_PATH, "appdata", "logs", "app.lock"))
+    if not lock.tryLock(100):
+        QMessageBox.warning(None, "PurrSh3ll", "PurrSh3ll is already running.")
+        sys.exit(1)
+
     app._warmup_view = QWebEngineView()
     app._warmup_view.hide()
 
