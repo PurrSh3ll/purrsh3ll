@@ -318,6 +318,49 @@ def _format_entry(row: sqlite3.Row) -> str:
     return part
 
 
+def _confirm_send(prompt: str, n_entries: int, total: int,
+                  mode_label: str, profile: dict, base_dir: str) -> bool:
+    """Print token estimate + context fit, ask Continue? [y/n], return True if confirmed."""
+    import math as _math
+    est_tokens = len(prompt) // 4
+    ctx_window = _ai._get_ctx_window(profile, base_dir)
+
+    lines = [
+        f"\n  Entries : {n_entries}/{total} ({mode_label})",
+        f"  Prompt  : ~{est_tokens:,} tokens  ({len(prompt):,} chars)",
+    ]
+    if ctx_window:
+        if est_tokens <= ctx_window:
+            pct = int(est_tokens / ctx_window * 100)
+            lines.append(f"  Context : {ctx_window:,} tokens — fits ({pct}% used)")
+        else:
+            chunks = _math.ceil(est_tokens / ctx_window)
+            lines.append(
+                f"  Context : {ctx_window:,} tokens — \033[33mEXCEEDS by "
+                f"{est_tokens - ctx_window:,} tokens ({chunks}x context)\033[0m"
+            )
+            lines.append(
+                f"  \033[33mWarning : prompt may be truncated or refused by the model.\033[0m"
+            )
+            lines.append(
+                f"  \033[33m          Use --compress (coming soon) to reduce prompt size.\033[0m"
+            )
+    else:
+        lines.append(f"  Context : unknown (model not in registry)")
+
+    lines.append(f"\nContinue? [y/n] ")
+    sys.stderr.write("\n".join(lines))
+    sys.stderr.flush()
+    try:
+        reply = sys.stdin.readline().strip()
+    except Exception:
+        reply = ""
+    if reply.lower() != "y":
+        sys.stderr.write("Aborted.\n")
+        return False
+    return True
+
+
 def _run_silent(fn):
     buf  = io.StringIO()
     real = sys.stdout
@@ -796,49 +839,8 @@ Generate the complete {fmt_name} report below using exactly this template:
             f"evidence. Do not invent findings.\n\n{template}"
         )
 
-        # Token estimate and context window check
-        import math as _math
-        est_tokens = len(prompt) // 4
-        ctx_window = _ai._get_ctx_window(profile, base_dir)
         mode_label = "full" if args.full else "filtered (tagged + keyword)"
-
-        confirm_lines = [
-            f"\nDeep mode:",
-            f"  Entries : {len(entries)}/{total_raw} ({mode_label})",
-            f"  Prompt  : ~{est_tokens:,} tokens  ({len(prompt):,} chars)",
-        ]
-        if ctx_window:
-            chunks = _math.ceil(est_tokens / ctx_window)
-            fits   = est_tokens <= ctx_window
-            ctx_str = f"{ctx_window:,}"
-            if fits:
-                pct = int(est_tokens / ctx_window * 100)
-                confirm_lines.append(
-                    f"  Context : {ctx_str} tokens — fits ({pct}% used)"
-                )
-            else:
-                confirm_lines.append(
-                    f"  Context : {ctx_str} tokens — \033[33mEXCEEDS by {est_tokens - ctx_window:,} tokens"
-                    f" ({chunks}x context)\033[0m"
-                )
-                confirm_lines.append(
-                    f"  \033[33mWarning : prompt may be truncated or refused by the model.\033[0m"
-                )
-                confirm_lines.append(
-                    f"  \033[33m          Use --compress (coming soon) to reduce prompt size.\033[0m"
-                )
-        else:
-            confirm_lines.append(f"  Context : unknown (model not in registry)")
-
-        confirm_lines.append(f"\nContinue? [y/n] ")
-        sys.stderr.write("\n".join(confirm_lines))
-        sys.stderr.flush()
-        try:
-            reply = sys.stdin.readline().strip()
-        except Exception:
-            reply = ""
-        if reply.lower() != "y":
-            sys.stderr.write("Aborted.\n")
+        if not _confirm_send(prompt, len(entries), total_raw, mode_label, profile, base_dir):
             sys.exit(0)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -853,8 +855,6 @@ Generate the complete {fmt_name} report below using exactly this template:
             sys.exit(1)
 
         mode_label = "full" if args.full else "filtered (tagged + keyword)"
-        loaded = len(entries)
-        _ai._info(f"Loaded {loaded}/{total} history entries ({mode_label}).\n")
 
         history = "\n".join(_format_entry(e) for e in entries)
         prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
@@ -864,7 +864,7 @@ Generate the complete {fmt_name} report below using exactly this template:
         if intel_header:
             prompt += f"\n{intel_header}\n"
         if history:
-            prompt += f"\n[TERMINAL HISTORY — last {loaded} entries]\n{history}\n"
+            prompt += f"\n[TERMINAL HISTORY — last {len(entries)} entries]\n{history}\n"
         prompt += (
             f"\nYou are an expert penetration tester writing a professional report. "
             f"Based on the intelligence summary and terminal history above, generate "
@@ -872,6 +872,8 @@ Generate the complete {fmt_name} report below using exactly this template:
             f"section with concrete data. Mark sections as '[No data found]' if no "
             f"evidence. Do not invent findings.\n\n{template}"
         )
+        if not _confirm_send(prompt, len(entries), total, mode_label, profile, base_dir):
+            sys.exit(0)
 
     # ── LLM call ──────────────────────────────────────────────────────────────
     if _ai._SHOW_QUERYING:
