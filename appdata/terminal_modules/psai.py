@@ -115,6 +115,48 @@ def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
     sys.stderr.flush()
 
 
+# ── Context window helper ─────────────────────────────────────────────────────
+
+def _get_ctx_window(profile: dict, base_dir: str) -> int | None:
+    """Return input context window (tokens) for the given profile.
+
+    Priority:
+      1. profile["context_tokens"]  — explicit user override
+      2. model_ctx_registry.json    — provider → models dict (exact, then prefix match)
+      3. provider default
+    Returns None if unknown.
+    """
+    try:
+        override = int(profile.get("context_tokens") or 0)
+        if override > 0:
+            return override
+        reg_path = os.path.join(base_dir, "appdata", "model_ctx_registry.json")
+        with open(reg_path, encoding="utf-8") as f:
+            reg = json.load(f)
+        provider = profile.get("provider", "").lower()
+        model    = profile.get("model", "")
+        if model.lower().startswith("models/"):
+            model = model[7:]
+        if ":" in model:
+            model = model.split(":")[0]
+        model_lc = model.lower()
+        section  = reg.get(provider, {})
+        if not section:
+            return None
+        models = section.get("models", {})
+        # Exact match (case-insensitive)
+        for key, val in models.items():
+            if model_lc == key.lower():
+                return val
+        # Prefix match
+        for key, val in models.items():
+            if model_lc.startswith(key.lower()):
+                return val
+        return section.get("default")
+    except Exception:
+        return None
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def _load_config(base_dir: str) -> dict:

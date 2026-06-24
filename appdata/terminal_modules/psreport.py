@@ -778,21 +778,7 @@ Generate the complete {fmt_name} report below using exactly this template:
             _ai._err("No relevant history found — run some pentest commands first.")
             sys.exit(1)
 
-        mode_label = "full" if args.full else "filtered (tagged + keyword)"
-        sys.stderr.write(
-            f"\nDeep mode:\n"
-            f"  Entries: {len(entries)}/{total_raw} ({mode_label})\n\n"
-            f"Continue? [y/n] "
-        )
-        sys.stderr.flush()
-        try:
-            reply = sys.stdin.readline().strip()
-        except Exception:
-            reply = ""
-        if reply.lower() != "y":
-            sys.stderr.write("Aborted.\n")
-            sys.exit(0)
-
+        # Build prompt first so we can estimate tokens before confirm
         history = "\n".join(_format_entry(e) for e in entries)
         prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
         prompt += f"Target: {target or 'Unknown'}\n"
@@ -809,6 +795,51 @@ Generate the complete {fmt_name} report below using exactly this template:
             f"section with concrete data. Mark sections as '[No data found]' if no "
             f"evidence. Do not invent findings.\n\n{template}"
         )
+
+        # Token estimate and context window check
+        import math as _math
+        est_tokens = len(prompt) // 4
+        ctx_window = _ai._get_ctx_window(profile, base_dir)
+        mode_label = "full" if args.full else "filtered (tagged + keyword)"
+
+        confirm_lines = [
+            f"\nDeep mode:",
+            f"  Entries : {len(entries)}/{total_raw} ({mode_label})",
+            f"  Prompt  : ~{est_tokens:,} tokens  ({len(prompt):,} chars)",
+        ]
+        if ctx_window:
+            chunks = _math.ceil(est_tokens / ctx_window)
+            fits   = est_tokens <= ctx_window
+            ctx_str = f"{ctx_window:,}"
+            if fits:
+                pct = int(est_tokens / ctx_window * 100)
+                confirm_lines.append(
+                    f"  Context : {ctx_str} tokens — fits ({pct}% used)"
+                )
+            else:
+                confirm_lines.append(
+                    f"  Context : {ctx_str} tokens — \033[33mEXCEEDS by {est_tokens - ctx_window:,} tokens"
+                    f" ({chunks}x context)\033[0m"
+                )
+                confirm_lines.append(
+                    f"  \033[33mWarning : prompt may be truncated or refused by the model.\033[0m"
+                )
+                confirm_lines.append(
+                    f"  \033[33m          Use --compress (coming soon) to reduce prompt size.\033[0m"
+                )
+        else:
+            confirm_lines.append(f"  Context : unknown (model not in registry)")
+
+        confirm_lines.append(f"\nContinue? [y/n] ")
+        sys.stderr.write("\n".join(confirm_lines))
+        sys.stderr.flush()
+        try:
+            reply = sys.stdin.readline().strip()
+        except Exception:
+            reply = ""
+        if reply.lower() != "y":
+            sys.stderr.write("Aborted.\n")
+            sys.exit(0)
 
     # ══════════════════════════════════════════════════════════════════════════
     # STANDARD MODE — last N pentest-relevant entries
