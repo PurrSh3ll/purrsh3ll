@@ -64,6 +64,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **model_ctx_registry.json**: added `tools_default` (bool) and `no_tools` (list of model patterns) fields per provider section — controls whether function calling is available for a given model by default
 - **Voice button**: emoji changed to 🎧; width changed to 72 px; displays dynamic text based on `VoiceThread` state — `wake` (red) when idle/listening for wake word, `listening` (green) when recording, `processing` (blue) when sending to model, `🎧` (grey) on error
 - **psreport — evidence deduplication**: `_resolve_placeholders` tracks injected row ids across the whole report; each terminal command appears at most once, preventing the same evidence block from repeating in every section; requires `min_score=2` (at least 2 matching tokens) to filter noise
+- **Single-instance protection**: `main.py` uses `QLockFile` to prevent running two instances simultaneously — second launch shows a warning dialog and exits immediately; stale locks from crashes are auto-cleared by Qt
+- **HTML game support**: `.game` file loader now detects HTML games by inspecting the first 512 bytes for `<!doctype html` or `<html`; HTML games open in the system default browser via `webbrowser.open(file://...)`; Python games continue to run via `QProcess` as before
+- **Game launcher — redesigned layout**: centered launch screen with ASCII title (figlet `ansi_shadow`), type badge (`HTML` / `Python`), last-run timestamp, status indicator (● dot changes colour: grey=ready, green=running, red=error), `▶ Run Game` / `■ Stop` / `↺ Restart` buttons (Stop and Restart shown only while running), collapsible logs panel (stdout + stderr via `QProcess` signals), last-run saved to `app_config.json`
+- **psview — full analysis saved**: removed 800-character truncation; full model output now stored in `terminal_history.db`
+- **psview — Findings marker**: model is prompted to append `Findings = true` or `Findings = false` on the last line; marker is detected (regex, case-insensitive, handles `=`/`:` and `true/yes/1/false/no/0`), stripped from saved output, and used to decide tagging — entry tagged `screenshot` only when `Findings = true`; images with no findings are saved untagged
+- **psview — removed `--next` flag**: `psview --next` removed; use `psnext` directly for next-command suggestions
+- **pshistory `--categories` — screenshot category**: `screenshot` category added to `tool_categories.json` with label `"Screenshot with findings"` — visible in `pshistory --categories` output; entries tagged automatically by `psview` when the model reports findings
 
 ### Fixed
 
