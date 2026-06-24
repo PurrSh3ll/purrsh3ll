@@ -18,7 +18,9 @@
     "forensics": "Forensics / DFIR",
     "re": "Reverse Engineering",
     "wifi": "WiFi / Wireless",
-    "other": "Other"
+    "other": "Other",
+    "screenshot": "Screenshot analysis",
+    "findings": "Security findings"
   },
   "tools": {
     "nmap": [
