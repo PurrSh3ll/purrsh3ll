@@ -115,16 +115,11 @@ def _save_to_history(base_dir: str, filename: str, analysis: str,
             (ts, ts, "psview", f"[psscreenshot: {filename}]", 0, analysis, cwd or None),
         )
         cmd_id = cur.lastrowid
-        # Always tag as "screenshot"
-        conn.execute(
-            "INSERT INTO command_tags (command_id, tag) VALUES (?, ?)",
-            (cmd_id, "screenshot"),
-        )
-        # Tag as "findings" only when model confirmed something was found
+        # Tag as "screenshot" only when model confirmed security-relevant findings
         if has_findings:
             conn.execute(
                 "INSERT INTO command_tags (command_id, tag) VALUES (?, ?)",
-                (cmd_id, "findings"),
+                (cmd_id, "screenshot"),
             )
         conn.commit()
     except Exception:

@@ -19,8 +19,7 @@
     "re": "Reverse Engineering",
     "wifi": "WiFi / Wireless",
     "other": "Other",
-    "screenshot": "Screenshot analysis",
-    "findings": "Security findings"
+    "screenshot": "Screenshot with findings"
   },
   "tools": {
     "nmap": [
