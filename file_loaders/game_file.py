@@ -1,6 +1,7 @@
 
 import os
 import sys
+import webbrowser
 from PyQt6.QtWidgets import (
     QScrollArea, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
     QSizePolicy, QTextEdit, QPushButton, QFrame
@@ -8,6 +9,16 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont, QCursor
 from PyQt6.QtCore import Qt, QProcess
 from PyQt6.QtCore import QProcessEnvironment
+
+
+def _is_html_game(path: str) -> bool:
+    """Return True if the .game file starts with an HTML doctype or <html> tag."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(512).lstrip().lower()
+        return head.startswith(b"<!doctype html") or head.startswith(b"<html")
+    except Exception:
+        return False
 
 from pyfiglet import Figlet
 
@@ -107,7 +118,8 @@ class Game_file:
         logs_scroll.setWidget(logs_container)
         logs_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        launch_button = QPushButton("Run game", outer)
+        html_game = _is_html_game(path)
+        launch_button = QPushButton("Open in browser" if html_game else "Run game", outer)
         wrapper = QWidget(outer)
         w_layout = QHBoxLayout(wrapper)
         w_layout.setContentsMargins(0, 0, 0, 0)
@@ -133,20 +145,23 @@ class Game_file:
         process.finished.connect(on_game_finished)
 
         def launch_game():
-            if process.state() != QProcess.ProcessState.NotRunning:
-                info_edit.append("\nGame is already running")
-                return
-
             if not os.path.exists(path):
                 info_edit.append("\nFile not found: " + path)
                 return
 
-            env = QProcessEnvironment.systemEnvironment()
+            if html_game:
+                webbrowser.open(f"file://{os.path.abspath(path)}")
+                info_edit.append("\nOpened in system browser.")
+                return
 
+            if process.state() != QProcess.ProcessState.NotRunning:
+                info_edit.append("\nGame is already running")
+                return
+
+            env = QProcessEnvironment.systemEnvironment()
             env.insert("SDL_RENDER_DRIVER", "software")
             env.insert("SDL_RENDER_VSYNC", "0")
             env.insert("SDL_HINT_RENDER_BATCHING", "0")
-
             process.setProcessEnvironment(env)
 
             process.start(sys.executable, [path])
