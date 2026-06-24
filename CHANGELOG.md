@@ -71,6 +71,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **psview — Findings marker**: model is prompted to append `Findings = true` or `Findings = false` on the last line; marker is detected (regex, case-insensitive, handles `=`/`:` and `true/yes/1/false/no/0`), stripped from saved output, and used to decide tagging — entry tagged `screenshot` only when `Findings = true`; images with no findings are saved untagged
 - **psview — removed `--next` flag**: `psview --next` removed; use `psnext` directly for next-command suggestions
 - **pshistory `--categories` — screenshot category**: `screenshot` category added to `tool_categories.json` with label `"Screenshot with findings"` — visible in `pshistory --categories` output; entries tagged automatically by `psview` when the model reports findings
+- **psreport `--deep` — token estimate before confirm**: prompt is now built before the `Continue? [y/n]` prompt so the user sees estimated token count (`~chars/4`), model context window (from `context_tokens` profile override or `model_ctx_registry.json`), percentage used if prompt fits, or an EXCEEDS warning with how many chunks the prompt would require; hints to use `--compress` when prompt exceeds context; added `_get_ctx_window(profile, base_dir)` helper to `psai.py`
 
 ### Fixed
 
