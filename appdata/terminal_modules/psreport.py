@@ -1256,8 +1256,8 @@ def main():
     parser = argparse.ArgumentParser(prog="psreport", add_help=False)
     parser.add_argument("-t", "--target",  default=None, metavar="TARGET")
     parser.add_argument("-T", "--title",   default=None, metavar="TITLE")
-    parser.add_argument("-l", "--light",   action="store_true",
-                        help="Light mode: limit history to last 40 commands (faster, smaller prompt)")
+    parser.add_argument("-L", "--limit",   default=None, type=int, metavar="N",
+                        help="Limit history to last N commands (e.g. -L 40); works with all modes")
     parser.add_argument("-C", "--chunked", action="store_true",
                         help="Chunked mode: extract per-phase then synthesize — for large histories "
                              "or small context models (Ollama 8K-32K)")
@@ -1282,7 +1282,7 @@ def main():
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
             "  psreport                                    Generate report from full filtered history\n"
-            "  psreport -l, --light                        Light mode: limit history to last 40 commands\n"
+            "  psreport -L, --limit N                      Limit history to last N commands (works with all modes)\n"
             "  psreport -C, --chunked                      Chunked: extract per-phase + synthesize (8K-32K models)\n"
             "  psreport -N, --nano                         Nano: section-by-section generation (4K context models)\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
@@ -1463,7 +1463,7 @@ Generate the complete {fmt_name} report below using exactly this template:
     # ══════════════════════════════════════════════════════════════════════════
     # STANDARD MODE — intel header + commands (no output) + evidence injection
     # ══════════════════════════════════════════════════════════════════════════
-    hist_limit = _ai._TERMINAL_HIST_LIMIT if args.light else None
+    hist_limit = args.limit  # None = no cap (full filtered history)
     entries, total = _load_entries_sqlite(base_dir, limit=hist_limit)
     if not entries and not intel_header:
         _ai._err("No relevant history found — run some pentest commands first.")
@@ -1629,7 +1629,7 @@ Generate the complete {fmt_name} report below using exactly this template:
     if intel_header:
         prompt  += f"\n{intel_header}\n"
     if commands:
-        cmds_label = f"last {len(entries)} of {total}" if args.light else f"all {len(entries)} filtered"
+        cmds_label = f"last {len(entries)} of {total}" if args.limit else f"all {len(entries)} filtered"
         prompt  += f"\n[COMMANDS EXECUTED — {cmds_label}]\n{commands}\n"
     if snap_summary:
         prompt  += f"\n{snap_summary}\n"
@@ -1667,7 +1667,7 @@ Generate the complete {fmt_name} report below using exactly this template:
 
 {template}"""
 
-    mode_label = f"light — last {_ai._TERMINAL_HIST_LIMIT}" if args.light else "full filtered history"
+    mode_label = f"last {args.limit}" if args.limit else "full filtered history"
     ctx_window_std = _ai._get_ctx_window(profile, base_dir)
     if not _confirm_send(prompt, len(entries), total, mode_label, ctx_window_std):
         sys.exit(0)
