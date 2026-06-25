@@ -18,7 +18,8 @@ import sqlite3
 import sys
 from datetime import datetime
 
-_OUTPUT_PER_ENTRY = 800   # max output chars per history entry in prompt
+_OUTPUT_HEAD = 250   # chars from start of output (banner, context)
+_OUTPUT_TAIL = 550   # chars from end of output (results, findings)
 
 # ── Fallback filter for commands not in tool_categories.json ──────────────────
 
@@ -297,22 +298,14 @@ def _load_entries_sqlite(
 def _format_entry(row: sqlite3.Row) -> str:
     ec     = row["exit_code"]
     cmd    = row["cmd"] or ""
-    out    = (row["output"] or "").strip()[:_OUTPUT_PER_ENTRY]
-    cwd    = row["cwd"] or ""
-    ts     = row["ts"] or 0
-    tags   = row["tags"] or ""
+    out    = (row["output"] or "").strip()
     status = f"exit {ec}" if ec not in (0, None) else "ok"
 
+    if len(out) > _OUTPUT_HEAD + _OUTPUT_TAIL:
+        omitted = len(out) - _OUTPUT_HEAD - _OUTPUT_TAIL
+        out = out[:_OUTPUT_HEAD] + f"\n[...{omitted} chars omitted...]\n" + out[-_OUTPUT_TAIL:]
+
     part = f"$ {cmd} [{status}]"
-    if tags:
-        part += f"  [{tags}]"
-    if cwd:
-        part += f"  # cwd: {cwd}"
-    if ts:
-        try:
-            part += f"  @ {datetime.fromtimestamp(ts).strftime('%H:%M:%S')}"
-        except Exception:
-            pass
     if out:
         part += f"\n{out}"
     return part
