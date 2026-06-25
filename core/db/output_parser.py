@@ -234,6 +234,92 @@ _RE_ARPSCAN = re.compile(
     re.MULTILINE,
 )
 
+# netexec / nxc — Pwn3d! indicator (local admin confirmed)
+_RE_NXC_PWND = re.compile(r'\(Pwn3d!\)', re.IGNORECASE)
+
+# john the ripper — cracked password line
+# password123      (admin)
+# password123      (admin:0)   ← --format=NT style
+_RE_JOHN_CRACKED = re.compile(
+    r'^(.+?)\s{2,}\(([^:)]+)(?::\d+)?\)\s*$',
+    re.MULTILINE,
+)
+_JOHN_SKIP_PREFIXES = (
+    'Using ', 'Loaded ', 'Warning:', 'Press ', 'Session ', 'Proceeding',
+    'No password', 'Remaining', 'guesses:', 'Will run',
+)
+
+# hashcat — cracked hash:plaintext (end-of-session output or --show)
+_RE_HASHCAT_CRACKED = re.compile(
+    r'^([0-9a-fA-F]{32,64}):(.+)$',
+    re.MULTILINE,
+)
+
+# enum4linux — share enumeration table
+#         print$          Disk      Printer Drivers
+_RE_ENUM4LINUX_SHARE = re.compile(
+    r'^\s{2,}(\w[\w$]*)\s{2,}(Disk|IPC|Printer)\s*(.*?)$',
+    re.MULTILINE,
+)
+
+# smbmap — target header
+# [+] IP: 10.10.10.5:445  Name: dc01.htb.local
+_RE_SMBMAP_HOST = re.compile(
+    r'\[\+\]\s+IP:\s*([\d.]+):\d+\s+Name:\s*(\S+)',
+    re.MULTILINE,
+)
+
+# smbmap — share with accessible permissions (tab-indented rows)
+#	data	READ, WRITE
+#	print$	READ ONLY	Printer Drivers
+_RE_SMBMAP_SHARE = re.compile(
+    r'^\t(\w[\w$]+)\s+(READ ONLY|READ,\s*WRITE|WRITE ONLY|READ)\s*(.*?)$',
+    re.MULTILINE,
+)
+
+# sqlmap — injectable parameter
+# [INFO] GET parameter 'id' is vulnerable
+# [INFO] parameter 'id' appears to be 'boolean-based blind' injectable
+_RE_SQLMAP_VULN = re.compile(
+    r"parameter ['\"]?(\w+)['\"]? (?:appears to be|is) (?:dynamic and )?(?:injectable|vulnerable)",
+    re.IGNORECASE,
+)
+# sqlmap — detected DBMS
+# [INFO] the back-end DBMS is MySQL
+_RE_SQLMAP_DBMS = re.compile(
+    r'back-end DBMS is ([A-Za-z][A-Za-z0-9 ]{2,20})',
+    re.IGNORECASE,
+)
+
+# evil-winrm — active shell prompt
+# *Evil-WinRM* PS C:\Users\Administrator\Documents>
+_RE_EVILWINRM = re.compile(
+    r'\*Evil-WinRM\*\s+PS\s+([A-Za-z]:\\[^\s>]*)',
+    re.MULTILINE,
+)
+
+# wpscan — outdated / insecure WordPress version
+# [+] WordPress version 5.7.2 identified (Insecure, released on 2021-04-01).
+_RE_WPSCAN_WP_VER = re.compile(
+    r'\[\+\]\s+WordPress version ([\d.]+) identified \(Insecure',
+    re.IGNORECASE,
+)
+# wpscan — plugin / theme vulnerability title
+#  | [!] Title: Vulnerable Plugin <= 1.5 - SQL Injection
+_RE_WPSCAN_PLUGIN_VULN = re.compile(
+    r'\[!\]\s+Title:\s+(.+)$',
+    re.MULTILINE,
+)
+# wpscan — "User(s) Identified:" section, then [+] username lines
+_RE_WPSCAN_USERS_HDR = re.compile(
+    r'User\(s\) Identified:(.*?)(?=\n\s*\[(?:i\]|\+\]|!\])|\Z)',
+    re.DOTALL | re.IGNORECASE,
+)
+_RE_WPSCAN_USER_LINE = re.compile(
+    r'^\s*\[\+\]\s+([\w.\-]+)\s*$',
+    re.MULTILINE,
+)
+
 # Interesting HTTP statuses for web path findings
 _WEB_INTERESTING = {200, 201, 204, 301, 302, 303, 307, 308, 401, 403, 405, 500}
 
@@ -251,6 +337,14 @@ _TOOL_PARSERS = {
     'ffuf':          '_parse_ffuf',
     'nikto':         '_parse_nikto',
     'arp-scan':      '_parse_arpscan',
+    'john':          '_parse_john',
+    'hashcat':       '_parse_hashcat',
+    'enum4linux':    '_parse_enum4linux',
+    'enum4linux-ng': '_parse_enum4linux',
+    'smbmap':        '_parse_smbmap',
+    'sqlmap':        '_parse_sqlmap',
+    'evil-winrm':    '_parse_evilwinrm',
+    'wpscan':        '_parse_wpscan',
 }
 
 
@@ -569,16 +663,20 @@ class OutputParser:
             if not _valid_ip(ip):
                 continue
             upn = f'{domain}\\{user}'
+            pwn3d = bool(_RE_NXC_PWND.search(m.group(0)))
+            notes = f'nxc auth success  {domain}\\{user}'
+            if pwn3d:
+                notes += '  (Pwn3d! — local admin)'
             if ('cred', ip, upn) not in seen:
                 seen.add(('cred', ip, upn))
                 db.add_finding(
                     finding_type='credential',
-                    value=f'{upn}:{pwd}',
+                    value=f'{upn}:{pwd}' + (' (Pwn3d!)' if pwn3d else ''),
                     command_id=cmd_id,
                     target=ip,
                     confidence=0.95,
                     raw_line=m.group(0),
-                    notes=f'nxc auth success  {domain}\\{user}',
+                    notes=notes,
                 )
 
         # SAM/NTDS hash dump lines
@@ -700,3 +798,176 @@ class OutputParser:
             if ('target', ip) not in seen:
                 seen.add(('target', ip))
                 db.upsert_target(ip=ip, notes=f'MAC:{mac}  vendor:{vendor}')
+
+    def _parse_john(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        for m in _RE_JOHN_CRACKED.finditer(output):
+            plaintext = m.group(1).strip()
+            user_hint = m.group(2).strip()
+            if any(plaintext.startswith(p) for p in _JOHN_SKIP_PREFIXES):
+                continue
+            key = ('cred_cracked', user_hint, plaintext)
+            if key not in seen:
+                seen.add(key)
+                db.add_finding(
+                    finding_type='credential',
+                    value=f'{user_hint}:{plaintext}',
+                    command_id=cmd_id,
+                    confidence=0.9,
+                    raw_line=m.group(0),
+                    notes=f'john cracked  user:{user_hint}  plain:{plaintext}',
+                )
+
+    def _parse_hashcat(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        # Only parse when a crack actually completed or --show was used
+        if 'Cracked' not in output and '--show' not in cmd:
+            return
+        for m in _RE_HASHCAT_CRACKED.finditer(output):
+            hash_val = m.group(1)
+            plaintext = m.group(2).strip()
+            if not plaintext or len(plaintext) > 128:
+                continue
+            key = ('hash_cracked', hash_val[:20], plaintext)
+            if key not in seen:
+                seen.add(key)
+                db.add_finding(
+                    finding_type='credential',
+                    value=f'{hash_val}:{plaintext}',
+                    command_id=cmd_id,
+                    confidence=0.9,
+                    raw_line=m.group(0),
+                    notes=f'hashcat cracked  plain:{plaintext}',
+                )
+
+    def _parse_enum4linux(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        # Users already handled by Priority-1 _RE_RPCCLIENT_USER
+        # Shares
+        for m in _RE_ENUM4LINUX_SHARE.finditer(output):
+            share      = m.group(1)
+            share_type = m.group(2)
+            comment    = m.group(3).strip()
+            key = ('share', share)
+            if key not in seen:
+                seen.add(key)
+                db.add_finding(
+                    finding_type='service',
+                    value=f'\\\\<host>\\{share}',
+                    command_id=cmd_id,
+                    confidence=0.85,
+                    raw_line=m.group(0),
+                    notes=f'enum4linux share  type:{share_type}'
+                          + (f'  comment:{comment}' if comment else ''),
+                )
+
+    def _parse_smbmap(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        current_ip: Optional[str] = None
+        mh = _RE_SMBMAP_HOST.search(output)
+        if mh and _valid_ip(mh.group(1)):
+            current_ip = mh.group(1)
+
+        for m in _RE_SMBMAP_SHARE.finditer(output):
+            share = m.group(1).strip()
+            perms = m.group(2).replace(' ', '').upper()   # READONLY / READ,WRITE / etc
+            comment = m.group(3).strip()
+            key = ('share', share, current_ip)
+            if key not in seen:
+                seen.add(key)
+                val = f'\\\\{current_ip}\\{share}' if current_ip else f'\\\\<host>\\{share}'
+                db.add_finding(
+                    finding_type='service',
+                    value=val,
+                    command_id=cmd_id,
+                    target=current_ip,
+                    confidence=0.9,
+                    raw_line=m.group(0),
+                    notes=f'smbmap  {perms}' + (f'  comment:{comment}' if comment else ''),
+                )
+
+    def _parse_sqlmap(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        dbms_m = _RE_SQLMAP_DBMS.search(output)
+        dbms   = dbms_m.group(1).strip() if dbms_m else 'unknown'
+
+        for m in _RE_SQLMAP_VULN.finditer(output):
+            param = m.group(1)
+            key   = ('sqli', param)
+            if key not in seen:
+                seen.add(key)
+                db.add_finding(
+                    finding_type='service',
+                    value=f'SQLi: param={param} dbms={dbms}',
+                    command_id=cmd_id,
+                    confidence=0.95,
+                    raw_line=_get_line(output, m.start()),
+                    notes=f'sqlmap SQL injection  param:{param}  dbms:{dbms}',
+                )
+
+    def _parse_evilwinrm(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        m = _RE_EVILWINRM.search(output)
+        if not m:
+            return
+        cwd = m.group(1)
+        if ('evilwinrm', cwd) in seen:
+            return
+        seen.add(('evilwinrm', cwd))
+
+        user_m = re.search(r'-u\s+(\S+)', cmd, re.IGNORECASE)
+        ip_m   = re.search(r'-i\s+([\d.]+)', cmd, re.IGNORECASE)
+        user   = user_m.group(1) if user_m else 'unknown'
+        ip     = ip_m.group(1) if ip_m else None
+
+        db.add_finding(
+            finding_type='credential',
+            value=f'{user}@{ip or "?"}  [WinRM shell]',
+            command_id=cmd_id,
+            target=ip,
+            service='winrm',
+            confidence=0.95,
+            raw_line=m.group(0),
+            notes=f'evil-winrm shell  user:{user}  cwd:{cwd}',
+        )
+
+    def _parse_wpscan(self, db, cmd_id: int, cmd: str, output: str, seen: set) -> None:
+        # Insecure WordPress version
+        vm = _RE_WPSCAN_WP_VER.search(output)
+        if vm:
+            ver = vm.group(1)
+            if ('wp_version', ver) not in seen:
+                seen.add(('wp_version', ver))
+                db.add_finding(
+                    finding_type='service',
+                    value=f'WordPress {ver} (Insecure)',
+                    command_id=cmd_id,
+                    confidence=0.95,
+                    raw_line=vm.group(0),
+                    notes='wpscan outdated WordPress version',
+                )
+
+        # Users within "User(s) Identified:" section
+        sec = _RE_WPSCAN_USERS_HDR.search(output)
+        if sec:
+            for um in _RE_WPSCAN_USER_LINE.finditer(sec.group(1)):
+                username = um.group(1)
+                if ('user', username) not in seen:
+                    seen.add(('user', username))
+                    db.add_finding(
+                        finding_type='user',
+                        value=username,
+                        command_id=cmd_id,
+                        confidence=0.9,
+                        raw_line=um.group(0),
+                        notes='wpscan WordPress user enumeration',
+                    )
+
+        # Plugin / theme vulnerability titles
+        for m in _RE_WPSCAN_PLUGIN_VULN.finditer(output):
+            title = m.group(1).strip()
+            if ('wp_vuln', title) not in seen:
+                seen.add(('wp_vuln', title))
+                cve_m = _RE_CVE.search(title)
+                db.add_finding(
+                    finding_type='cve' if cve_m else 'service',
+                    value=cve_m.group(0) if cve_m else f'WP vuln: {title[:120]}',
+                    command_id=cmd_id,
+                    confidence=0.9,
+                    raw_line=m.group(0),
+                    notes=f'wpscan plugin vuln: {title[:120]}',
+                )
