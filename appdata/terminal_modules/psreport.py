@@ -709,13 +709,7 @@ def _build_snapshot_summary(snapshot: list[dict]) -> str:
 
 # ── Chunked mode helpers ───────────────────────────────────────────────────────
 
-def _extract_phase_summary(phase: str, entries, intel_brief: str,
-                            llm_fn, sys_info: str) -> dict:
-    """
-    One silent LLM call for a single phase — returns structured JSON dict.
-    Extraction prompt is intentionally minimal: JSON only, no explanation.
-    Falls back to a safe skeleton on parse errors so the pipeline never aborts.
-    """
+def _build_extraction_prompt(phase: str, entries, intel_brief: str, sys_info: str) -> str:
     commands = "\n".join(_format_entry(e) for e in entries)
     prompt = (
         f"System: {sys_info}\n"
@@ -740,15 +734,17 @@ Use the exact [ID] numbers shown before each command in "command_ids".
   "key_actions": [],
   "command_ids": []
 }}"""
+    return prompt
 
-    raw = llm_fn([{"role": "user", "content": prompt}])
+
+def _parse_extraction_json(raw: str, phase: str, entries) -> dict:
+    """Parse LLM extraction response, returning safe fallback on error."""
     try:
         text = (raw or "").strip()
         text = re.sub(r'^```[a-zA-Z]*\n?', '', text)
         text = re.sub(r'\n?```$', '', text.rstrip())
         return json.loads(text)
     except Exception:
-        # Preserve cmd_ids so placeholder resolution still works
         return {
             "phase": phase,
             "hosts_touched": [],
@@ -759,6 +755,92 @@ Use the exact [ID] numbers shown before each command in "command_ids".
             "key_actions": [f"[extraction parse error — {phase}]"],
             "command_ids": [e["id"] for e in entries],
         }
+
+
+def _merge_phase_summaries(phase: str, summaries: list[dict]) -> dict:
+    """Merge N partial extraction JSONs into one, deduplicating list items."""
+    merged: dict = {
+        "phase": phase,
+        "hosts_touched": [],
+        "services_found": [],
+        "vulnerabilities": [],
+        "credentials": [],
+        "flags": [],
+        "key_actions": [],
+        "command_ids": [],
+    }
+    seen: set[str] = set()
+    seen_ids: set = set()
+    for s in summaries:
+        for key in ("hosts_touched", "services_found", "credentials", "flags", "key_actions"):
+            for item in s.get(key, []):
+                k = json.dumps(item, sort_keys=True)
+                if k not in seen:
+                    seen.add(k)
+                    merged[key].append(item)
+        for vuln in s.get("vulnerabilities", []):
+            k = json.dumps(vuln, sort_keys=True)
+            if k not in seen:
+                seen.add(k)
+                merged["vulnerabilities"].append(vuln)
+        for cmd_id in s.get("command_ids", []):
+            if cmd_id not in seen_ids:
+                seen_ids.add(cmd_id)
+                merged["command_ids"].append(cmd_id)
+    return merged
+
+
+def _extract_phase_summary(phase: str, entries, intel_brief: str,
+                            llm_fn, sys_info: str,
+                            ctx_window: int | None = None) -> dict:
+    """
+    Extraction call(s) for a single phase.
+    Auto-splits into sub-chunks when prompt would exceed 75% of ctx_window.
+    Falls back to a safe JSON skeleton on parse errors.
+    """
+    prompt = _build_extraction_prompt(phase, entries, intel_brief, sys_info)
+    safe_tokens = int((ctx_window or 0) * 0.75)
+
+    if ctx_window and len(prompt) // 4 > safe_tokens and len(entries) > 1:
+        # Calculate per-entry budget
+        commands_text = "\n".join(_format_entry(e) for e in entries)
+        overhead_chars = len(prompt) - len(commands_text)
+        budget_chars   = max(500, safe_tokens * 4 - overhead_chars)
+
+        # Build sub-chunks by accumulating entries until budget is reached
+        chunks: list[list] = []
+        current: list      = []
+        current_chars      = 0
+        for entry in entries:
+            line = _format_entry(entry) + "\n"
+            if current_chars + len(line) > budget_chars and current:
+                chunks.append(current)
+                current       = [entry]
+                current_chars = len(line)
+            else:
+                current.append(entry)
+                current_chars += len(line)
+        if current:
+            chunks.append(current)
+
+        sys.stderr.write(f"\n    → auto-split: {len(chunks)} sub-chunk(s)\n")
+        sys.stderr.flush()
+
+        partials: list[dict] = []
+        for j, chunk in enumerate(chunks, 1):
+            sys.stderr.write(f"      [{j}/{len(chunks)}] {len(chunk)} cmds... ")
+            sys.stderr.flush()
+            raw = llm_fn([{"role": "user", "content":
+                            _build_extraction_prompt(phase, chunk, intel_brief, sys_info)}])
+            partials.append(_parse_extraction_json(raw, phase, chunk))
+            sys.stderr.write("done\n")
+            sys.stderr.flush()
+
+        return _merge_phase_summaries(phase, partials)
+
+    # Single call (fits in context)
+    raw = llm_fn([{"role": "user", "content": prompt}])
+    return _parse_extraction_json(raw, phase, entries)
 
 
 def _run_chunked(
@@ -774,6 +856,7 @@ def _run_chunked(
     fmt_name: str,
     template: str,
     verbose: bool,
+    ctx_window: int | None = None,
 ) -> str | None:
     """
     --chunked report generation.
@@ -812,7 +895,8 @@ def _run_chunked(
         )
         sys.stderr.flush()
 
-        summary = _extract_phase_summary(phase, phase_entries, intel_brief, llm_fn, sys_info)
+        summary = _extract_phase_summary(phase, phase_entries, intel_brief, llm_fn, sys_info,
+                                          ctx_window=ctx_window)
         phase_summaries.append(summary)
 
         tags = []
@@ -1103,12 +1187,19 @@ Generate the complete {fmt_name} report below using exactly this template:
     # ══════════════════════════════════════════════════════════════════════════
     if args.chunked:
         # Pre-flight: show plan and ask for confirmation
-        phase_groups_preview = _group_entries_by_phase(entries)
-        n_preview = len(phase_groups_preview)
+        ctx_window_ch     = _ai._get_ctx_window(profile, base_dir)
+        phase_groups_prev = _group_entries_by_phase(entries)
+        n_prev            = len(phase_groups_prev)
+        ctx_line = (
+            f"  Context  : {ctx_window_ch:,} tokens — extraction auto-splits when phase >75%\n"
+            if ctx_window_ch else
+            "  Context  : unknown (model not in registry) — no auto-split\n"
+        )
         sys.stderr.write(
             f"\n  Entries  : {len(entries)}/{total} (full filtered history)\n"
-            f"  Phases   : {', '.join(p for p, _ in phase_groups_preview)}\n"
-            f"  API calls: {n_preview} extraction + 1 synthesis = {n_preview + 1} total\n"
+            f"  Phases   : {', '.join(p for p, _ in phase_groups_prev)}\n"
+            f"  API calls: {n_prev} extraction + 1 synthesis = {n_prev + 1} total (min)\n"
+            + ctx_line +
             f"\nContinue? [y/n] "
         )
         sys.stderr.flush()
@@ -1136,6 +1227,7 @@ Generate the complete {fmt_name} report below using exactly this template:
             fmt_name=fmt_name,
             template=template,
             verbose=args.verbose,
+            ctx_window=ctx_window_ch,
         )
         if not response:
             _ai._err("No response from model.")
