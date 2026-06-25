@@ -72,6 +72,42 @@ _PHASES_ORDER = [
     "network", "cloud", "forensics", "re", "wifi", "other",
 ]
 
+# Section definitions for --nano mode: (key, title, preferred_phases, instruction)
+# Executive Summary is LAST in generation order (sees all other sections), but
+# placed FIRST in the assembled report (standard pentest format).
+_NANO_SECTIONS = [
+    ("scope", "Scope & Methodology",
+     ["recon", "scan", "network", "cloud"],
+     "Describe the engagement scope: what was tested, tools and techniques used, "
+     "phases covered. Keep concise."),
+    ("assets", "Discovered Assets",
+     ["recon", "scan", "network"],
+     "List all discovered hosts, open ports, services and version strings found "
+     "during enumeration. Insert <!-- PSEVIDENCE: cmd:ID --> for key scans."),
+    ("vulnerabilities", "Vulnerabilities & Findings",
+     ["exploit", "web", "smb", "ssh", "ldap", "ad", "ftp", "wifi", "re"],
+     "List each vulnerability with: name, severity (Critical/High/Medium/Low/Info), "
+     "and brief evidence. Insert <!-- PSEVIDENCE: cmd:ID --> after each finding."),
+    ("credentials", "Credentials & Sensitive Data",
+     ["crack", "exploit", "lateral", "shell"],
+     "List all credentials, password hashes, tokens, and keys discovered. "
+     "Include source context. Insert <!-- PSEVIDENCE: cmd:ID --> as appropriate."),
+    ("timeline", "Timeline of Key Actions",
+     [],
+     "Chronological list of the most significant commands and their outcomes. "
+     "Focus on pivots, escalations, and key discoveries. "
+     "Insert <!-- PSEVIDENCE: cmd:ID --> for major steps."),
+    ("recommendations", "Recommendations",
+     [],
+     "Concrete remediation steps for each finding from the Vulnerabilities section, "
+     "ordered by severity. Be specific and actionable."),
+    ("executive_summary", "Executive Summary",
+     [],
+     "Write a 2-3 paragraph executive summary covering: (1) what was tested and scope, "
+     "(2) key findings and severity, (3) overall risk posture and immediate priorities. "
+     "Reference the sections already written above for consistency."),
+]
+
 
 def _group_entries_by_phase(entries) -> list[tuple[str, list]]:
     """Group entries by primary phase tag. Returns [(phase, entries)] in _PHASES_ORDER."""
@@ -953,6 +989,265 @@ Generate the complete {fmt_name} report using exactly this template:
     return llm_fn([{"role": "user", "content": prompt}], verbose=verbose)
 
 
+# ── Nano mode helpers ──────────────────────────────────────────────────────────
+
+def _build_section_prompt(
+    key: str,
+    sec_title: str,
+    instruction: str,
+    phase_summaries: list[dict],
+    preferred_phases: list[str],
+    intel_brief: str,
+    sys_info: str,
+    target: str | None,
+    now,
+    fmt_name: str,
+    carry_context: str,
+) -> str:
+    """Build a compact per-section prompt sized for 4K context models (~800 tokens)."""
+    # Select relevant phase summaries; fall back to all if none match
+    if preferred_phases:
+        relevant = [s for s in phase_summaries if s.get("phase") in preferred_phases]
+        if not relevant:
+            relevant = phase_summaries
+    else:
+        relevant = phase_summaries
+
+    # Compact JSON — no indent, shorter keys stripped to save tokens
+    summaries_compact = json.dumps(relevant, separators=(",", ":"))
+    # Cap phase data to ~1200 chars so we stay within 4K budget
+    if len(summaries_compact) > 1200:
+        summaries_compact = summaries_compact[:1200] + "...}"
+
+    prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d')}\n"
+    prompt += f"Target: {target or 'Unknown'}\n\n"
+    if intel_brief:
+        prompt += f"[INTEL]\n{intel_brief}\n\n"
+    prompt += f"[PHASE DATA]\n{summaries_compact}\n\n"
+    if carry_context:
+        prompt += f"[PREVIOUS SECTIONS — for coherence]\n{carry_context}\n\n"
+    prompt += (
+        f"[TASK]\nWrite ONLY the '{sec_title}' section for a professional {fmt_name} "
+        f"pentest report.\n{instruction}\n"
+        f"Use <!-- PSEVIDENCE: cmd:ID --> placeholders where applicable "
+        f"(IDs come from 'command_ids' in [PHASE DATA]).\n"
+        f"Output section content only — no report title, no other sections, no preamble.\n"
+    )
+    return prompt
+
+
+def _assemble_md_nano(sections: dict[str, str], title: str,
+                      target: str | None, now) -> str:
+    """Assemble section outputs into a complete Markdown report."""
+    lines = [
+        f"# {title}",
+        f"**Date:** {now.strftime('%Y-%m-%d')}",
+        f"**Target:** {target or 'Unknown'}",
+        "**Tester:** [to be filled]",
+        "**Status:** Draft — requires review",
+        "",
+        "---",
+        "",
+    ]
+    # Executive Summary first in the final report (generated last but placed first)
+    ordered = [
+        ("executive_summary", "Executive Summary"),
+        ("scope",             "Scope & Methodology"),
+        ("assets",            "Discovered Assets"),
+        ("vulnerabilities",   "Vulnerabilities & Findings"),
+        ("credentials",       "Credentials & Sensitive Data"),
+        ("timeline",          "Timeline of Key Actions"),
+        ("recommendations",   "Recommendations"),
+    ]
+    for key, header in ordered:
+        content = sections.get(key, "").strip()
+        lines.append(f"## {header}")
+        lines.append(content if content else "[No data generated for this section]")
+        lines.append("")
+    lines.append("---")
+    lines.append("*Report generated by psreport --nano — verify and complete before delivery.*")
+    return "\n".join(lines)
+
+
+def _assemble_html_nano(sections: dict[str, str], title: str,
+                        target: str | None, now) -> str:
+    """Assemble section outputs into a complete HTML report."""
+    import html as _html
+
+    ordered = [
+        ("executive_summary", "Executive Summary"),
+        ("scope",             "Scope &amp; Methodology"),
+        ("assets",            "Discovered Assets"),
+        ("vulnerabilities",   "Vulnerabilities &amp; Findings"),
+        ("credentials",       "Credentials &amp; Sensitive Data"),
+        ("timeline",          "Timeline of Key Actions"),
+        ("recommendations",   "Recommendations"),
+    ]
+    body = ""
+    for key, header in ordered:
+        content = sections.get(key, "").strip()
+        content_html = (_html.escape(content)
+                        .replace("\n\n", "</p><p>")
+                        .replace("\n", "<br>\n"))
+        body += f"<h2>{header}</h2>\n<p>{content_html or '[No data generated]'}</p>\n"
+
+    return (
+        f"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+        f"<meta charset=\"UTF-8\">\n<title>{_html.escape(title)}</title>\n"
+        f"<style>\n"
+        f"  body {{ font-family: Arial, sans-serif; max-width: 960px; margin: 40px auto; color: #222; }}\n"
+        f"  h1 {{ color: #c0392b; }} h2 {{ color: #2c3e50; border-bottom: 1px solid #ccc; padding-bottom: 4px; }}\n"
+        f"  .meta {{ color: #555; margin-bottom: 24px; }}\n"
+        f"  code {{ background: #eee; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }}\n"
+        f"  pre {{ background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; overflow-x: auto; }}\n"
+        f"  footer {{ color: #999; font-size: 0.85em; margin-top: 40px; }}\n"
+        f"</style>\n</head>\n<body>\n"
+        f"<h1>{_html.escape(title)}</h1>\n"
+        f"<div class=\"meta\">\n"
+        f"  <strong>Date:</strong> {now.strftime('%Y-%m-%d')}<br>\n"
+        f"  <strong>Target:</strong> {_html.escape(target or 'Unknown')}<br>\n"
+        f"  <strong>Tester:</strong> [to be filled]<br>\n"
+        f"  <strong>Status:</strong> Draft — requires review\n"
+        f"</div>\n{body}\n"
+        f"<footer>Report generated by psreport --nano — verify and complete before delivery.</footer>\n"
+        f"</body>\n</html>"
+    )
+
+
+def _run_nano(
+    intel_header: str,
+    snapshot: list[dict],
+    entries,
+    total: int,
+    llm_fn,
+    sys_info: str,
+    now,
+    target: str | None,
+    cwd: str,
+    fmt_name: str,
+    fmt: str,
+    report_title: str,
+    verbose: bool,
+    ctx_window: int | None = None,
+) -> str | None:
+    """
+    --nano report generation (section-by-section, for 4K context models).
+
+    Phase 1 — Extraction (one call per active phase, same as --chunked):
+        commands → structured JSON {vulns, creds, flags, command_ids}
+
+    Phase 2 — Section-by-section generation:
+        Each section gets: intel_brief + relevant phase JSON + carry-forward context
+        from the last 2 generated sections (~400 chars each) for coherence.
+        Executive Summary is generated LAST with all previous sections as context.
+
+    Phase 3 — App-side assembly + evidence injection:
+        Sections are joined into the final report without a synthesis call.
+        _resolve_placeholders() runs on the assembled output.
+
+    Target prompt size per section: ~600-1000 tokens → fits 4K model with
+    ~1000-1500 tokens of output budget.
+    """
+    phase_groups = _group_entries_by_phase(entries)
+    if not phase_groups:
+        return None
+
+    n_phases    = len(phase_groups)
+    intel_brief = (intel_header or "")[:600]
+
+    sys.stderr.write(
+        f"\n  Nano mode: {n_phases} phase(s) → {len(_NANO_SECTIONS)} sections\n"
+        f"  Phases: {', '.join(p for p, _ in phase_groups)}\n\n"
+    )
+    sys.stderr.flush()
+
+    # ── Phase 1: Extraction (identical to --chunked phase 1) ─────────────────
+    phase_summaries: list[dict] = []
+    for i, (phase, phase_entries) in enumerate(phase_groups, 1):
+        sys.stderr.write(
+            f"  [{i}/{n_phases}] Extracting '{phase}' ({len(phase_entries)} cmds)... "
+        )
+        sys.stderr.flush()
+
+        summary = _extract_phase_summary(
+            phase, phase_entries, intel_brief, llm_fn, sys_info, ctx_window=ctx_window
+        )
+        phase_summaries.append(summary)
+
+        tags = []
+        if summary.get("vulnerabilities"):
+            tags.append(f"{len(summary['vulnerabilities'])} vuln(s)")
+        if summary.get("credentials"):
+            tags.append(f"{len(summary['credentials'])} cred(s)")
+        if summary.get("flags"):
+            tags.append(f"{len(summary['flags'])} flag(s)")
+        sys.stderr.write("done" + (f"  [{', '.join(tags)}]" if tags else "") + "\n")
+        sys.stderr.flush()
+
+    # ── Phase 2: Section-by-section generation ────────────────────────────────
+    n_sections   = len(_NANO_SECTIONS)
+    generated: dict[str, str] = {}
+    carry_context = ""  # rolling context from last 2 sections
+
+    sys.stderr.write(f"\n  Generating {n_sections} report sections...\n")
+    sys.stderr.flush()
+
+    for idx, (key, sec_title, preferred_phases, instruction) in enumerate(_NANO_SECTIONS, 1):
+        n_call = n_phases + idx
+        n_total = n_phases + n_sections
+        sys.stderr.write(f"  [{n_call}/{n_total}] '{sec_title}'... ")
+        sys.stderr.flush()
+
+        # Executive Summary gets all previous sections for full coherence
+        if key == "executive_summary":
+            all_prev = []
+            for (k, t, _, _) in _NANO_SECTIONS[:-1]:
+                txt = generated.get(k, "").strip()
+                if txt:
+                    all_prev.append(f"=== {t} ===\n{txt[:500]}")
+            carry_ctx = "\n\n".join(all_prev)[:2000]
+        else:
+            carry_ctx = carry_context
+
+        prompt = _build_section_prompt(
+            key=key,
+            sec_title=sec_title,
+            instruction=instruction,
+            phase_summaries=phase_summaries,
+            preferred_phases=preferred_phases,
+            intel_brief=intel_brief,
+            sys_info=sys_info,
+            target=target,
+            now=now,
+            fmt_name=fmt_name,
+            carry_context=carry_ctx,
+        )
+
+        messages      = [{"role": "user", "content": prompt}]
+        section_text  = llm_fn(messages, verbose=False)
+        generated[key] = (section_text or "").strip()
+
+        # Update rolling carry context (last 2 sections, ~400 chars each)
+        if key != "executive_summary":
+            recent: list[str] = []
+            for (k, t, _, _) in _NANO_SECTIONS:
+                if k in generated and k != "executive_summary":
+                    recent.append(f"=== {t} ===\n{generated[k][:400]}")
+            carry_context = "\n\n".join(recent[-2:])
+
+        words = len((section_text or "").split())
+        sys.stderr.write(f"done  ({words} words)\n")
+        sys.stderr.flush()
+
+    # ── Phase 3: Assemble ─────────────────────────────────────────────────────
+    sys.stderr.write("\n  Assembling report...\n")
+    sys.stderr.flush()
+
+    if fmt == "html":
+        return _assemble_html_nano(generated, report_title, target, now)
+    return _assemble_md_nano(generated, report_title, target, now)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -966,6 +1261,9 @@ def main():
     parser.add_argument("-C", "--chunked", action="store_true",
                         help="Chunked mode: extract per-phase then synthesize — for large histories "
                              "or small context models (Ollama 8K-32K)")
+    parser.add_argument("-N", "--nano",    action="store_true",
+                        help="Nano mode: section-by-section generation with carry-forward coherence — "
+                             "for very small context models (4K tokens)")
     parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
@@ -985,7 +1283,8 @@ def main():
             "Usage:\n"
             "  psreport                                    Generate report from full filtered history\n"
             "  psreport -l, --light                        Light mode: limit history to last 40 commands\n"
-            "  psreport -C, --chunked                      Chunked: extract per-phase + synthesize (small context models)\n"
+            "  psreport -C, --chunked                      Chunked: extract per-phase + synthesize (8K-32K models)\n"
+            "  psreport -N, --nano                         Nano: section-by-section generation (4K context models)\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
             "  psreport -v, --verbose                      Stream synthesis to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
@@ -1228,6 +1527,77 @@ Generate the complete {fmt_name} report below using exactly this template:
             template=template,
             verbose=args.verbose,
             ctx_window=ctx_window_ch,
+        )
+        if not response:
+            _ai._err("No response from model.")
+            sys.exit(1)
+
+        _ai._info("Injecting terminal evidence...\n")
+        resolved = _resolve_placeholders(response, snapshot)
+        injected = response.count("<!-- PSEVIDENCE:") - resolved.count("<!-- PSEVIDENCE:")
+        _ai._info(f"Evidence injected: {injected} placeholder(s) resolved.\n")
+
+        reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        filename    = f"report_{now.strftime('%Y-%m-%d_%H-%M')}.{fmt}"
+        report_path = os.path.join(reports_dir, filename)
+        try:
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(resolved)
+            _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
+        except Exception as e:
+            _ai._err(f"Failed to save report: {e}")
+            sys.exit(1)
+        sys.exit(0)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # NANO MODE — section-by-section generation for 4K context models
+    # ══════════════════════════════════════════════════════════════════════════
+    if args.nano:
+        ctx_window_nano   = _ai._get_ctx_window(profile, base_dir)
+        phase_groups_prev = _group_entries_by_phase(entries)
+        n_prev            = len(phase_groups_prev)
+        n_sections        = len(_NANO_SECTIONS)
+        ctx_line = (
+            f"  Context  : {ctx_window_nano:,} tokens per call — designed for 4K models\n"
+            if ctx_window_nano else
+            "  Context  : unknown (model not in registry)\n"
+        )
+        sys.stderr.write(
+            f"\n  Entries  : {len(entries)}/{total} (full filtered history)\n"
+            f"  Phases   : {', '.join(p for p, _ in phase_groups_prev)}\n"
+            f"  API calls: {n_prev} extraction + {n_sections} sections = "
+            f"{n_prev + n_sections} total (min)\n"
+            + ctx_line +
+            f"\nContinue? [y/n] "
+        )
+        sys.stderr.flush()
+        try:
+            _reply = sys.stdin.readline().strip()
+        except Exception:
+            _reply = ""
+        if _reply.lower() != "y":
+            sys.stderr.write("Aborted.\n")
+            sys.exit(0)
+
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
+
+        response = _run_nano(
+            intel_header=intel_header,
+            snapshot=snapshot,
+            entries=entries,
+            total=total,
+            llm_fn=_llm,
+            sys_info=sys_info,
+            now=now,
+            target=target,
+            cwd=cwd,
+            fmt_name=fmt_name,
+            fmt=fmt,
+            report_title=title,
+            verbose=args.verbose,
+            ctx_window=ctx_window_nano,
         )
         if not response:
             _ai._err("No response from model.")
