@@ -37,12 +37,14 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     return None
 
 
-def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0) -> str:
+def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0,
+                         recent_output_cap: int = 400) -> str:
     """Load terminal history as formatted string (oldest → newest).
 
-    limit       — recent entries sent with full output (400 chars)
-    broad_limit — older entries sent with cmd + exit code only (no output);
-                  fetched as OFFSET limit, so they never overlap with recent
+    limit             — recent entries sent with output (capped at recent_output_cap chars)
+    broad_limit       — older entries sent with cmd + exit code only (no output);
+                        fetched as OFFSET limit, so they never overlap with recent
+    recent_output_cap — max chars of output per recent entry (default 400)
     """
     conn = _db_connect(base_dir)
     if conn is None:
@@ -81,7 +83,7 @@ def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0) -
         for row in reversed(recent_rows):
             ec     = row["exit_code"] if row["exit_code"] is not None else 0
             cmd    = row["cmd"] or ""
-            out    = (row["output"] or "")[:400]
+            out    = (row["output"] or "")[:recent_output_cap]
             status = f"exit {ec}" if ec != 0 else "ok"
             part   = f"$ {cmd} [{status}]"
             if out:
@@ -145,6 +147,9 @@ def main():
                         help="Explain why the command failed")
     parser.add_argument("-a", "--analyze", action="store_true",
                         help="Deep analysis using terminal history and working directory")
+    parser.add_argument("--fit", action="store_true",
+                        help="Used with -a: auto-fit history to model context window (fill-down: "
+                             "50%% failed output / 30%% recent / remaining broad)")
     parser.add_argument("--paste-mode", action="store_true",
                         help="Suppress streaming; print only clean command to stdout (used internally)")
     parser.add_argument("--base-dir",   default=None, metavar="DIR")
@@ -166,6 +171,7 @@ def main():
             "  psfix                      Paste the corrected command at the prompt\n"
             "  psfix -e, --explain        Explain why the last command failed\n"
             "  psfix -a, --analyze        Deep analysis with terminal history and cwd context\n"
+            "  psfix -a --fit             Analyze: auto-fit history to model ctx window (fill-down)\n"
             "  psfix -p, --profile        Use a specific saved profile\n\n"
             "psfix reads the last entry from terminal_history.db automatically.\n"
         )
@@ -234,11 +240,54 @@ def main():
     if args.analyze:
         cwd = (args.cwd or "").strip()
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
-        history_text = _load_recent_history(
-            base_dir,
-            limit=_ai._TERMINAL_HIST_LIMIT,
-            broad_limit=_ai._TERMINAL_HIST_BROAD_LIMIT,
-        )
+
+        if args.fit:
+            # Fill-down: allocate 75% of ctx_window across 3 areas by priority.
+            # Fixed overhead (system info + cmd header + instructions): ~200 tokens.
+            # Area 1 — failed cmd output : up to 50% of data budget
+            # Area 2 — recent with output: up to 30% of data budget
+            # Area 3 — broad cmd only    : remaining (fill-down from Areas 1+2 surplus)
+            ctx_window  = _ai._get_ctx_window(profile, base_dir)
+            if ctx_window:
+                data_budget   = int(ctx_window * 0.75) - 200   # tokens available for data
+                area1_budget  = int(data_budget * 0.50)        # tokens for failed output
+                area2_budget  = int(data_budget * 0.30)        # tokens for recent history
+                # Trim failed cmd output to Area 1 budget
+                output        = output[:area1_budget * 4]
+                area1_actual  = len(output) // 4               # tokens actually used
+                # Per-entry output cap for recent history
+                recent_limit      = _ai._TERMINAL_HIST_LIMIT
+                recent_output_cap = max(50, (area2_budget * 4) // max(1, recent_limit))
+                # Area 3 gets everything left after Areas 1+2 (fill-down surplus included)
+                area3_budget  = data_budget - area1_actual - area2_budget
+                broad_limit   = max(0, area3_budget // 15)     # ~15 tokens per broad entry
+                sys.stderr.write(
+                    f"  [--fit] ctx={ctx_window//1000}K  "
+                    f"output≤{area1_budget}t  "
+                    f"recent≤{area2_budget}t ({recent_output_cap}c/entry)  "
+                    f"broad≤{broad_limit} cmds\n"
+                )
+                sys.stderr.flush()
+            else:
+                # ctx_window unknown — fall back to defaults
+                recent_limit      = _ai._TERMINAL_HIST_LIMIT
+                recent_output_cap = 400
+                broad_limit       = _ai._TERMINAL_HIST_BROAD_LIMIT
+                sys.stderr.write("  [--fit] ctx unknown — using defaults\n")
+                sys.stderr.flush()
+
+            history_text = _load_recent_history(
+                base_dir,
+                limit=recent_limit,
+                broad_limit=broad_limit,
+                recent_output_cap=recent_output_cap,
+            )
+        else:
+            history_text = _load_recent_history(
+                base_dir,
+                limit=_ai._TERMINAL_HIST_LIMIT,
+                broad_limit=_ai._TERMINAL_HIST_BROAD_LIMIT,
+            )
 
         prompt = f"System: {sys_info}\n"
         if cwd:
