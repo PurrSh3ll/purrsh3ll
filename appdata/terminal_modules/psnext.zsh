@@ -10,6 +10,7 @@ Usage:
   psnext -t, --target <host/network>  Include target context in analysis
   psnext -r, --rag                    Enrich with knowledge base context
   psnext -r --rag -n 8                Use 8 RAG chunks
+  psnext --fit                        Auto-fit recent session to model ctx window
   psnext -p, --profile NAME           Use a specific saved profile
 
 psnext reads the terminal session history and uses AI to summarize what

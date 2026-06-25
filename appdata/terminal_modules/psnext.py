@@ -69,10 +69,17 @@ def _db_connect(base_dir: str) -> sqlite3.Connection | None:
     return conn
 
 
-def _build_prompt_context(base_dir: str, target_filter: str | None, recent_limit: int) -> tuple[str, bool]:
+def _build_prompt_context(base_dir: str, target_filter: str | None, recent_limit: int,
+                          ctx_window: int | None = None) -> tuple[str, bool]:
     """
     Build the structured 3-layer prompt context from SQLite.
     Returns (context_string, has_any_data).
+
+    ctx_window: when set, recent session output cap is computed dynamically so
+    the full prompt fits within 75% of the context window.  Structured layers
+    (attack surface, findings, phase coverage) are built first; their actual
+    token count is measured, then the remaining budget is divided evenly across
+    recent_limit entries to determine per-entry output_cap.
     """
     conn = _db_connect(base_dir)
     if conn is None:
@@ -224,6 +231,18 @@ def _build_prompt_context(base_dir: str, target_filter: str | None, recent_limit
             parts.append("\n".join(section))
 
         # ── Layer 3: Recent commands (deduplicated) ───────────────────────────
+        # Compute per-entry output cap: static default or dynamic from ctx_window.
+        if ctx_window:
+            # Measure tokens used by structured layers so far.
+            structured_tokens = len("\n\n".join(parts)) // 4
+            # Budget: 75% of ctx_window minus fixed overhead (system info + task ~200t)
+            # and what structured data already consumed.
+            remaining_tokens  = max(200, int(ctx_window * 0.75) - 200 - structured_tokens)
+            # Divide remaining budget evenly across recent entries (chars = tokens * 4).
+            output_cap = max(50, (remaining_tokens * 4) // max(1, recent_limit))
+        else:
+            output_cap = _OUTPUT_CAP
+
         # Fetch more than needed so deduplication doesn't shrink the window below limit.
         recent_raw = conn.execute(
             "SELECT cmd, exit_code, output, cwd, ts FROM commands ORDER BY ts DESC LIMIT ?",
@@ -246,8 +265,8 @@ def _build_prompt_context(base_dir: str, target_filter: str | None, recent_limit
                     line += f"  # cwd: {r['cwd']}"
                 out = (r["output"] or "").strip()
                 if out:
-                    if len(out) > _OUTPUT_CAP:
-                        out = out[:_OUTPUT_CAP] + f"\n...output truncated ({len(r['output'])} chars)..."
+                    if len(out) > output_cap:
+                        out = out[:output_cap] + f"\n...output truncated ({len(r['output'])} chars)..."
                     line += f"\n{out}"
                 section.append(line)
             parts.append("\n".join(section))
@@ -273,6 +292,9 @@ def main():
                         help="Number of RAG chunks (default: 5, used with --rag)")
     parser.add_argument("-c", "--cmd",    action="store_true",
                         help="Output only the best command, no analysis (used internally by zsh)")
+    parser.add_argument("--fit",          action="store_true",
+                        help="Auto-fit recent session to model ctx window — scales per-entry "
+                             "output cap so the full prompt stays within 75%% of ctx_window")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
     parser.add_argument("-h", "--help", action="store_true")
@@ -287,6 +309,7 @@ def main():
             "  psnext -t, --target 192.168.1.0/24  Include target context\n"
             "  psnext -r, --rag                    Enrich with knowledge base context\n"
             "  psnext -r --rag -n 8                Use 8 RAG chunks\n"
+            "  psnext --fit                        Auto-fit recent session to model ctx window\n"
             "  psnext -p, --profile <name>         Use a specific saved profile\n"
         )
         sys.exit(0)
@@ -332,7 +355,20 @@ def main():
     target = (args.target or "").strip() or None
     cwd    = (args.cwd or "").strip()
 
-    context, has_data = _build_prompt_context(base_dir, target, _ai._TERMINAL_HIST_LIMIT)
+    ctx_window_fit = _ai._get_ctx_window(profile, base_dir) if args.fit else None
+    if args.fit:
+        if ctx_window_fit:
+            sys.stderr.write(
+                f"  [--fit] ctx={ctx_window_fit // 1000}K — "
+                f"recent output cap scaled to fit 75% of context\n"
+            )
+        else:
+            sys.stderr.write("  [--fit] ctx unknown — using default output cap\n")
+        sys.stderr.flush()
+
+    context, has_data = _build_prompt_context(
+        base_dir, target, _ai._TERMINAL_HIST_LIMIT, ctx_window=ctx_window_fit
+    )
     if not has_data:
         _ai._err("No terminal history found — run some commands first.")
         sys.exit(1)
