@@ -18,8 +18,6 @@ import sqlite3
 import sys
 from datetime import datetime
 
-_OUTPUT_HEAD = 250   # chars from start of output (banner, context)
-_OUTPUT_TAIL = 550   # chars from end of output (results, findings)
 
 # ── Fallback filter for commands not in tool_categories.json ──────────────────
 
@@ -239,14 +237,13 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
 
 def _load_entries_sqlite(
     base_dir: str,
-    full: bool = False,
     limit: int | None = None,
 ) -> tuple[list[sqlite3.Row], int]:
     """
     Load pentest-relevant commands from SQLite.
 
-    Filtering strategy (unless --full):
-      1. Commands tagged by auto_tagger (282 tools, 19 categories) → always included
+    Filtering:
+      1. Commands tagged by auto_tagger → always included
       2. Untagged commands → fallback _is_pentest_relevant() filter
 
     Returns (rows_chronological, total_commands_in_db).
@@ -269,17 +266,15 @@ def _load_entries_sqlite(
             """
         ).fetchall()
 
-        if not full:
-            relevant = []
-            for r in rows:
-                if r["tags"]:
-                    relevant.append(r)
-                elif _is_pentest_relevant(r["cmd"], r["output"] or "", r["exit_code"]):
-                    relevant.append(r)
-            rows = relevant
+        relevant = []
+        for r in rows:
+            if r["tags"]:
+                relevant.append(r)
+            elif _is_pentest_relevant(r["cmd"], r["output"] or "", r["exit_code"]):
+                relevant.append(r)
+        rows = relevant
 
         # Deduplicate: keep only the most recent execution of each unique command.
-        # Preserves chronological order after deduplication.
         seen: dict[str, sqlite3.Row] = {}
         for r in rows:
             cmd = r["cmd"]
@@ -298,17 +293,8 @@ def _load_entries_sqlite(
 def _format_entry(row: sqlite3.Row) -> str:
     ec     = row["exit_code"]
     cmd    = row["cmd"] or ""
-    out    = (row["output"] or "").strip()
     status = f"exit {ec}" if ec not in (0, None) else "ok"
-
-    if len(out) > _OUTPUT_HEAD + _OUTPUT_TAIL:
-        omitted = len(out) - _OUTPUT_HEAD - _OUTPUT_TAIL
-        out = out[:_OUTPUT_HEAD] + f"\n[...{omitted} chars omitted...]\n" + out[-_OUTPUT_TAIL:]
-
-    part = f"$ {cmd} [{status}]"
-    if out:
-        part += f"\n{out}"
-    return part
+    return f"$ {cmd} [{status}]"
 
 
 def _confirm_send(prompt: str, n_entries: int, total: int,
@@ -612,13 +598,9 @@ def main():
     parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
-    parser.add_argument("--full",          action="store_true",
-                        help="Include full history without smart filtering")
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="Stream report to terminal while saving (default: save only)")
     parser.add_argument("-f", "--format",  default="md", choices=["md", "html"])
-    parser.add_argument("-d", "--deep",    action="store_true",
-                        help="Deep mode: full history with tag annotations, single LLM call")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
@@ -630,10 +612,8 @@ def main():
         print(
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
-            "  psreport                                    Generate report from filtered history\n"
+            "  psreport                                    Generate report from terminal history\n"
             "  psreport -n, --notes notes.txt              Notes-mode: report from your notes + terminal evidence\n"
-            "  psreport -d, --deep                         Deep: full annotated history, single call\n"
-            "  psreport --full                             Include full history without smart filter\n"
             "  psreport -v, --verbose                      Stream report to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
             "  psreport -t, --target 192.168.1.0/24        Set target in report header\n"
@@ -806,67 +786,31 @@ Generate the complete {fmt_name} report below using exactly this template:
         sys.exit(0)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # DEEP MODE — full/filtered history with tag annotations
+    # STANDARD MODE — intel header + filtered commands (no output)
     # ══════════════════════════════════════════════════════════════════════════
-    if args.deep:
-        entries, total_raw = _load_entries_sqlite(base_dir, full=args.full)
-        if not entries and not intel_header:
-            _ai._err("No relevant history found — run some pentest commands first.")
-            sys.exit(1)
+    entries, total = _load_entries_sqlite(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
+    if not entries and not intel_header:
+        _ai._err("No relevant history found — run some pentest commands first.")
+        sys.exit(1)
 
-        # Build prompt first so we can estimate tokens before confirm
-        history = "\n".join(_format_entry(e) for e in entries)
-        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
-        prompt += f"Target: {target or 'Unknown'}\n"
-        if cwd:
-            prompt += f"Working directory: {cwd}\n"
-        if intel_header:
-            prompt += f"\n{intel_header}\n"
-        if history:
-            prompt += f"\n[TERMINAL HISTORY — {len(entries)} entries]\n{history}\n"
-        prompt += (
-            f"\nYou are an expert penetration tester writing a professional report. "
-            f"Based on the intelligence summary and terminal history above, generate "
-            f"a complete {fmt_name} report using exactly this template. Fill each "
-            f"section with concrete data. Mark sections as '[No data found]' if no "
-            f"evidence. Do not invent findings.\n\n{template}"
-        )
-
-        mode_label = "full" if args.full else "filtered (tagged + keyword)"
-        if not _confirm_send(prompt, len(entries), total_raw, mode_label, profile, base_dir):
-            sys.exit(0)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STANDARD MODE — last N pentest-relevant entries
-    # ══════════════════════════════════════════════════════════════════════════
-    else:
-        entries, total = _load_entries_sqlite(
-            base_dir, full=args.full, limit=_ai._TERMINAL_HIST_LIMIT
-        )
-        if not entries and not intel_header:
-            _ai._err("No relevant history found — run some pentest commands first.")
-            sys.exit(1)
-
-        mode_label = "full" if args.full else "filtered (tagged + keyword)"
-
-        history = "\n".join(_format_entry(e) for e in entries)
-        prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
-        prompt += f"Target: {target or 'Unknown'}\n"
-        if cwd:
-            prompt += f"Working directory: {cwd}\n"
-        if intel_header:
-            prompt += f"\n{intel_header}\n"
-        if history:
-            prompt += f"\n[TERMINAL HISTORY — last {len(entries)} entries]\n{history}\n"
-        prompt += (
-            f"\nYou are an expert penetration tester writing a professional report. "
-            f"Based on the intelligence summary and terminal history above, generate "
-            f"a complete {fmt_name} report using exactly this template. Fill each "
-            f"section with concrete data. Mark sections as '[No data found]' if no "
-            f"evidence. Do not invent findings.\n\n{template}"
-        )
-        if not _confirm_send(prompt, len(entries), total, mode_label, profile, base_dir):
-            sys.exit(0)
+    commands = "\n".join(_format_entry(e) for e in entries)
+    prompt   = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
+    prompt  += f"Target: {target or 'Unknown'}\n"
+    if cwd:
+        prompt += f"Working directory: {cwd}\n"
+    if intel_header:
+        prompt += f"\n{intel_header}\n"
+    if commands:
+        prompt += f"\n[COMMANDS EXECUTED — last {len(entries)} entries]\n{commands}\n"
+    prompt += (
+        f"\nYou are an expert penetration tester writing a professional report. "
+        f"Based on the intelligence summary and commands above, generate "
+        f"a complete {fmt_name} report using exactly this template. Fill each "
+        f"section with concrete data. Mark sections as '[No data found]' if no "
+        f"evidence. Do not invent findings.\n\n{template}"
+    )
+    if not _confirm_send(prompt, len(entries), total, "filtered (tagged + keyword)", profile, base_dir):
+        sys.exit(0)
 
     # ── LLM call ──────────────────────────────────────────────────────────────
     if _ai._SHOW_QUERYING:
