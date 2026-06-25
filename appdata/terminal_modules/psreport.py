@@ -361,7 +361,7 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
 
 def _load_entries_sqlite(
     base_dir: str,
-    limit: int | None = None,
+    limit_per_phase: int | None = None,
 ) -> tuple[list[sqlite3.Row], int]:
     """
     Load pentest-relevant commands from SQLite.
@@ -369,6 +369,11 @@ def _load_entries_sqlite(
     Filtering:
       1. Commands tagged by auto_tagger → always included
       2. Untagged commands → fallback _is_pentest_relevant() filter
+
+    limit_per_phase: when set, keep only the last N commands per primary phase
+    tag (e.g. recon, scan, exploit).  Commands without any phase tag go into
+    the 'other' bucket and are also capped at N.  All selected rows are then
+    re-merged and sorted chronologically.
 
     Returns (rows_chronological, total_commands_in_db).
     """
@@ -410,8 +415,18 @@ def _load_entries_sqlite(
                 seen[cmd] = r
         rows = sorted(seen.values(), key=lambda r: r["ts"])
 
-        if limit:
-            rows = rows[-limit:]
+        if limit_per_phase:
+            # Group by primary phase tag (same logic as _group_entries_by_phase).
+            # Take the last N from each group, then re-merge chronologically.
+            phase_buckets: dict[str, list] = {}
+            for r in rows:
+                tags = [t.strip() for t in (r["tags"] or "").split(",") if t.strip()]
+                primary = next((p for p in _PHASES_ORDER if p in tags), "other")
+                phase_buckets.setdefault(primary, []).append(r)
+            selected = []
+            for bucket in phase_buckets.values():
+                selected.extend(bucket[-limit_per_phase:])
+            rows = sorted(selected, key=lambda r: r["ts"])
 
         return rows, total
     finally:
@@ -1257,7 +1272,8 @@ def main():
     parser.add_argument("-t", "--target",  default=None, metavar="TARGET")
     parser.add_argument("-T", "--title",   default=None, metavar="TITLE")
     parser.add_argument("-L", "--limit",   default=None, type=int, metavar="N",
-                        help="Limit history to last N commands (e.g. -L 40); works with all modes")
+                        help="Keep last N commands per phase category (recon/scan/exploit/…); "
+                             "works with all modes — balances coverage across the whole engagement")
     parser.add_argument("-C", "--chunked", action="store_true",
                         help="Chunked mode: extract per-phase then synthesize — for large histories "
                              "or small context models (Ollama 8K-32K)")
@@ -1282,7 +1298,7 @@ def main():
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
             "  psreport                                    Generate report from full filtered history\n"
-            "  psreport -L, --limit N                      Limit history to last N commands (works with all modes)\n"
+            "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage\n"
             "  psreport -C, --chunked                      Chunked: extract per-phase + synthesize (8K-32K models)\n"
             "  psreport -N, --nano                         Nano: section-by-section generation (4K context models)\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
@@ -1463,8 +1479,7 @@ Generate the complete {fmt_name} report below using exactly this template:
     # ══════════════════════════════════════════════════════════════════════════
     # STANDARD MODE — intel header + commands (no output) + evidence injection
     # ══════════════════════════════════════════════════════════════════════════
-    hist_limit = args.limit  # None = no cap (full filtered history)
-    entries, total = _load_entries_sqlite(base_dir, limit=hist_limit)
+    entries, total = _load_entries_sqlite(base_dir, limit_per_phase=args.limit)
     if not entries and not intel_header:
         _ai._err("No relevant history found — run some pentest commands first.")
         sys.exit(1)
@@ -1629,7 +1644,8 @@ Generate the complete {fmt_name} report below using exactly this template:
     if intel_header:
         prompt  += f"\n{intel_header}\n"
     if commands:
-        cmds_label = f"last {len(entries)} of {total}" if args.limit else f"all {len(entries)} filtered"
+        cmds_label = (f"last {args.limit}/phase → {len(entries)} total"
+                      if args.limit else f"all {len(entries)} filtered")
         prompt  += f"\n[COMMANDS EXECUTED — {cmds_label}]\n{commands}\n"
     if snap_summary:
         prompt  += f"\n{snap_summary}\n"
@@ -1667,7 +1683,7 @@ Generate the complete {fmt_name} report below using exactly this template:
 
 {template}"""
 
-    mode_label = f"last {args.limit}" if args.limit else "full filtered history"
+    mode_label = f"last {args.limit} per phase" if args.limit else "full filtered history"
     ctx_window_std = _ai._get_ctx_window(profile, base_dir)
     if not _confirm_send(prompt, len(entries), total, mode_label, ctx_window_std):
         sys.exit(0)
