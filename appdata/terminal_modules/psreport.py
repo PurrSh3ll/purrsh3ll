@@ -686,6 +686,8 @@ def main():
     parser = argparse.ArgumentParser(prog="psreport", add_help=False)
     parser.add_argument("-t", "--target",  default=None, metavar="TARGET")
     parser.add_argument("-T", "--title",   default=None, metavar="TITLE")
+    parser.add_argument("-l", "--light",   action="store_true",
+                        help="Light mode: limit history to last 40 commands (faster, smaller prompt)")
     parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
@@ -703,11 +705,12 @@ def main():
         print(
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
-            "  psreport                                    Generate report from terminal history\n"
-            "  psreport -n, --notes notes.txt              Notes-mode: report from your notes + terminal evidence\n"
+            "  psreport                                    Generate report from full filtered history\n"
+            "  psreport -l, --light                        Light mode: limit history to last 40 commands\n"
+            "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
             "  psreport -v, --verbose                      Stream report to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
-            "  psreport -t, --target 192.168.1.0/24        Set target in report header\n"
+            "  psreport -t, --target 192.168.1.10          Filter attack surface to a specific host/IP\n"
             "  psreport -T, --title \"Internal Pentest\"      Set custom report title\n"
             "  psreport -p, --profile <name>               Use a specific saved profile\n\n"
             "Report is saved to appmodules/Cyb3rCollector/reports/\n"
@@ -882,7 +885,8 @@ Generate the complete {fmt_name} report below using exactly this template:
     # ══════════════════════════════════════════════════════════════════════════
     # STANDARD MODE — intel header + commands (no output) + evidence injection
     # ══════════════════════════════════════════════════════════════════════════
-    entries, total = _load_entries_sqlite(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
+    hist_limit = _ai._TERMINAL_HIST_LIMIT if args.light else None
+    entries, total = _load_entries_sqlite(base_dir, limit=hist_limit)
     if not entries and not intel_header:
         _ai._err("No relevant history found — run some pentest commands first.")
         sys.exit(1)
@@ -907,7 +911,8 @@ Generate the complete {fmt_name} report below using exactly this template:
     if intel_header:
         prompt  += f"\n{intel_header}\n"
     if commands:
-        prompt  += f"\n[COMMANDS EXECUTED — last {len(entries)} entries]\n{commands}\n"
+        cmds_label = f"last {len(entries)} of {total}" if args.light else f"all {len(entries)} filtered"
+        prompt  += f"\n[COMMANDS EXECUTED — {cmds_label}]\n{commands}\n"
     if snap_summary:
         prompt  += f"\n{snap_summary}\n"
     prompt += f"""
@@ -944,7 +949,8 @@ Generate the complete {fmt_name} report below using exactly this template:
 
 {template}"""
 
-    if not _confirm_send(prompt, len(entries), total, "filtered (tagged + keyword)", profile, base_dir):
+    mode_label = f"light — last {_ai._TERMINAL_HIST_LIMIT}" if args.light else "full filtered history"
+    if not _confirm_send(prompt, len(entries), total, mode_label, profile, base_dir):
         sys.exit(0)
 
     # ── LLM call ──────────────────────────────────────────────────────────────

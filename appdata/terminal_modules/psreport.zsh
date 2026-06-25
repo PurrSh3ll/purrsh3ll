@@ -5,16 +5,15 @@ psreport() {
 psreport — AI-powered pentest report generator
 
 Usage:
-  psreport                                    Generate report, save only (silent)
-  psreport -d, --deep                         Map-Reduce: chunk full history, thorough analysis
+  psreport                                    Generate report from full filtered history
+  psreport -l, --light                        Light mode: limit history to last 40 commands
+  psreport -n, --notes FILE                   Notes mode: report from your notes + terminal evidence
   psreport -v, --verbose                      Stream report to terminal while saving
   psreport -f, --format html                  Generate HTML report (default: md)
-  psreport --full                             Include full history (no smart filter)
-  psreport -t, --target <host/network>        Set target in report header
+  psreport -t, --target <host/ip>             Filter attack surface to a specific host/IP
   psreport -T, --title "<title>"              Set custom report title
   psreport -p, --profile NAME                 Use a specific saved profile
 
---deep prompts for confirmation before sending N+1 requests to the model.
 Report is saved to appmodules/Cyb3rCollector/reports/report_YYYY-MM-DD_HH-MM.{md,html}
 EOF
         return 0
