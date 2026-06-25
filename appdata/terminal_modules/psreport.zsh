@@ -7,7 +7,7 @@ psreport — AI-powered pentest report generator
 Usage:
   psreport                                    Generate report from full filtered history
   psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage
-  psreport -N, --nano                         Nano: section-by-section generation (4K context models)
+  psreport -C, --chunked                      Chunked: section-by-section generation (~4K tokens per call)
   psreport -n, --notes FILE                   Notes mode: report from your notes + terminal evidence
   psreport -v, --verbose                      Stream synthesis to terminal while saving
   psreport -f, --format html                  Generate HTML report (default: md)
