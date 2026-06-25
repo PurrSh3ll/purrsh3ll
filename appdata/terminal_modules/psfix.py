@@ -93,6 +93,16 @@ def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0,
     return "\n".join(parts)
 
 
+def _trim_output_head_tail(output: str, max_chars: int) -> str:
+    """Trim output to max_chars using head (60%) + tail (40%) with omission marker."""
+    if len(output) <= max_chars:
+        return output
+    head = int(max_chars * 0.60)
+    tail = max_chars - head
+    omitted = len(output) - head - tail
+    return output[:head] + f"\n[... {omitted:,} chars omitted ...]\n" + output[-tail:]
+
+
 def _clean_command(text: str) -> str:
     """Extract the corrected shell command from AI response.
     Takes the LAST meaningful line to handle <think> blocks and preamble."""
@@ -171,7 +181,8 @@ def main():
             "  psfix                      Paste the corrected command at the prompt\n"
             "  psfix -e, --explain        Explain why the last command failed\n"
             "  psfix -a, --analyze        Deep analysis with terminal history and cwd context\n"
-            "  psfix -a --fit             Analyze: auto-fit history to model ctx window (fill-down)\n"
+            "  psfix --fit                Auto-fit output to model ctx window (head+tail trim)\n"
+            "  psfix -a --fit             Analyze: auto-fit output + history (fill-down)\n"
             "  psfix -p, --profile        Use a specific saved profile\n\n"
             "psfix reads the last entry from terminal_history.db automatically.\n"
         )
@@ -385,6 +396,21 @@ def main():
     # ── Fix mode ──────────────────────────────────────────────────────────────
     else:
         sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+
+        if args.fit and output:
+            # Fit output to 75% ctx_window minus fixed overhead (~100 tokens).
+            # Uses head (60%) + tail (40%) so model sees both the beginning
+            # (banner, config) and the end (errors, final result) of large outputs.
+            ctx_window = _ai._get_ctx_window(profile, base_dir)
+            if ctx_window:
+                output_budget_chars = max(200, (int(ctx_window * 0.75) - 100) * 4)
+                output = _trim_output_head_tail(output, output_budget_chars)
+                sys.stderr.write(
+                    f"  [--fit] ctx={ctx_window // 1000}K  "
+                    f"output≤{output_budget_chars:,} chars (head+tail)\n"
+                )
+                sys.stderr.flush()
+
         prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"

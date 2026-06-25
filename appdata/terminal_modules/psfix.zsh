@@ -8,7 +8,8 @@ Usage:
   psfix                      Paste the corrected command at the prompt (ready to run)
   psfix -e, --explain        Explain why the last command failed
   psfix -a, --analyze        Deep analysis using terminal history and working directory
-  psfix -a --fit             Analyze: auto-fit history to model ctx window (fill-down)
+  psfix --fit                Auto-fit output to model ctx window (head+tail trim)
+  psfix -a --fit             Analyze: auto-fit output + history to ctx window (fill-down)
   psfix -p, --profile NAME   Use a specific saved profile
 
 psfix reads the last command from terminal history automatically.
