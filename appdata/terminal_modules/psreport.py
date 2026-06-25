@@ -152,12 +152,27 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
                 section.append(line)
         parts.append("\n".join(section))
 
-    # ── Findings ───────────────────────────────────────────────────────────────
+    # ── Findings (with source command link) ────────────────────────────────────
     finding_sections = []
 
+    def _src(r) -> str:
+        """Return '  [cmd_id] $ cmd' annotation if source command is known."""
+        cmd_id = r["cmd_id"] if "cmd_id" in r.keys() else None
+        src    = r["src_cmd"] if "src_cmd" in r.keys() else None
+        if cmd_id and src:
+            return f"\n    from: [cmd:{cmd_id}] $ {src[:100]}"
+        return ""
+
     creds = conn.execute(
-        "SELECT DISTINCT value, target, service FROM findings "
-        "WHERE finding_type = 'credential' ORDER BY target, value"
+        """
+        SELECT f.value, f.target, f.service,
+               f.command_id AS cmd_id,
+               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+        FROM findings f
+        WHERE f.finding_type = 'credential'
+        GROUP BY f.value, f.target, f.service
+        ORDER BY f.target, f.value
+        """
     ).fetchall()
     if creds:
         lines = ["Credentials:"]
@@ -166,17 +181,37 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
             meta = [x for x in (r["target"], r["service"]) if x]
             if meta:
                 line += f"  ({', '.join(meta)})"
+            line += _src(r)
             lines.append(line)
         finding_sections.append("\n".join(lines))
 
     users = conn.execute(
-        "SELECT DISTINCT value FROM findings WHERE finding_type = 'user' ORDER BY value"
+        """
+        SELECT f.value,
+               f.command_id AS cmd_id,
+               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+        FROM findings f
+        WHERE f.finding_type = 'user'
+        GROUP BY f.value
+        ORDER BY f.value
+        """
     ).fetchall()
     if users:
-        finding_sections.append("Users:\n  " + ", ".join(r["value"] for r in users))
+        lines = ["Users:"]
+        for r in users:
+            lines.append(f"  • {r['value']}" + _src(r))
+        finding_sections.append("\n".join(lines))
 
     hashes = conn.execute(
-        "SELECT DISTINCT value, target FROM findings WHERE finding_type = 'hash' ORDER BY target, value"
+        """
+        SELECT f.value, f.target,
+               f.command_id AS cmd_id,
+               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+        FROM findings f
+        WHERE f.finding_type = 'hash'
+        GROUP BY f.value, f.target
+        ORDER BY f.target, f.value
+        """
     ).fetchall()
     if hashes:
         lines = ["Hashes:"]
@@ -184,20 +219,43 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
             line = f"  • {r['value']}"
             if r["target"]:
                 line += f"  ({r['target']})"
+            line += _src(r)
             lines.append(line)
         finding_sections.append("\n".join(lines))
 
     flags = conn.execute(
-        "SELECT DISTINCT value FROM findings WHERE finding_type = 'flag' ORDER BY value"
+        """
+        SELECT f.value,
+               f.command_id AS cmd_id,
+               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+        FROM findings f
+        WHERE f.finding_type = 'flag'
+        GROUP BY f.value
+        ORDER BY f.value
+        """
     ).fetchall()
     if flags:
-        finding_sections.append("Flags:\n  " + ", ".join(r["value"] for r in flags))
+        lines = ["Flags:"]
+        for r in flags:
+            lines.append(f"  • {r['value']}" + _src(r))
+        finding_sections.append("\n".join(lines))
 
     cves = conn.execute(
-        "SELECT DISTINCT value FROM findings WHERE finding_type = 'cve' ORDER BY value"
+        """
+        SELECT f.value,
+               f.command_id AS cmd_id,
+               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+        FROM findings f
+        WHERE f.finding_type = 'cve'
+        GROUP BY f.value
+        ORDER BY f.value
+        """
     ).fetchall()
     if cves:
-        finding_sections.append("CVEs:\n  " + ", ".join(r["value"] for r in cves))
+        lines = ["CVEs:"]
+        for r in cves:
+            lines.append(f"  • {r['value']}" + _src(r))
+        finding_sections.append("\n".join(lines))
 
     if finding_sections:
         parts.append("[FINDINGS]\n" + "\n".join(finding_sections))
@@ -258,7 +316,11 @@ def _load_entries_sqlite(
         rows = conn.execute(
             """
             SELECT c.id, c.ts, c.cmd, c.exit_code, c.output, c.cwd,
-                   GROUP_CONCAT(ct.tag, ', ') AS tags
+                   GROUP_CONCAT(ct.tag, ', ') AS tags,
+                   (SELECT GROUP_CONCAT(sub.fs, ' | ')
+                    FROM (SELECT finding_type || ':' || SUBSTR(value, 1, 60) AS fs
+                          FROM findings WHERE command_id = c.id LIMIT 3) sub
+                   ) AS findings_summary
             FROM commands c
             LEFT JOIN command_tags ct ON ct.command_id = c.id
             GROUP BY c.id
@@ -293,8 +355,16 @@ def _load_entries_sqlite(
 def _format_entry(row: sqlite3.Row) -> str:
     ec     = row["exit_code"]
     cmd    = row["cmd"] or ""
+    cmd_id = row["id"]
     status = f"exit {ec}" if ec not in (0, None) else "ok"
-    return f"$ {cmd} [{status}]"
+    fs = ""
+    try:
+        findings_summary = row["findings_summary"]
+        if findings_summary:
+            fs = f"  → {findings_summary}"
+    except (IndexError, KeyError):
+        pass
+    return f"[{cmd_id}] $ {cmd} [{status}]{fs}"
 
 
 def _confirm_send(prompt: str, n_entries: int, total: int,
@@ -530,19 +600,39 @@ def _format_evidence_block(rows: list[dict]) -> str:
     return "\n>\n".join(parts) + "\n"
 
 
+_RE_CMD_ID = re.compile(r'^cmd:(\d+)$', re.IGNORECASE)
+
+
 def _resolve_placeholders(text: str, snapshot: list[dict]) -> str:
     """Replace <!-- PSEVIDENCE: ... --> markers with real terminal evidence.
 
+    Two resolution modes:
+    - Direct: <!-- PSEVIDENCE: cmd:47 --> → exact lookup by command ID (100% accurate)
+    - Token:  <!-- PSEVIDENCE: nmap 192.168.1.10 smb --> → token-scored search
+
     Each unique command row is injected at most once across the whole report
     (deduplication by row id) to prevent the same evidence block from
-    appearing in every section.  Requires at least 2 matching tokens so that
-    single-word queries do not pull in unrelated commands.
+    appearing in every section.  Token search requires at least 2 matching
+    tokens so that single-word queries do not pull in unrelated commands.
     """
-    pattern  = re.compile(r'<!--\s*PSEVIDENCE:\s*(.*?)\s*-->', re.IGNORECASE | re.DOTALL)
-    used_ids: set[int] = set()
+    pattern         = re.compile(r'<!--\s*PSEVIDENCE:\s*(.*?)\s*-->', re.IGNORECASE | re.DOTALL)
+    used_ids:set[int] = set()
+    snapshot_by_id: dict[int, dict] = {r["id"]: r for r in snapshot}
 
     def _replace(m: re.Match) -> str:
-        query    = m.group(1).strip()
+        query = m.group(1).strip()
+
+        # Direct cmd:ID lookup (pomysł 3)
+        id_match = _RE_CMD_ID.match(query)
+        if id_match:
+            row_id = int(id_match.group(1))
+            row = snapshot_by_id.get(row_id)
+            if row and row_id not in used_ids:
+                used_ids.add(row_id)
+                return "\n\n" + _format_evidence_block([row])
+            return ""
+
+        # Token-based search fallback
         rows     = _search_evidence(snapshot, query, max_results=2, min_score=2)
         new_rows = [r for r in rows if r["id"] not in used_ids]
         if not new_rows:
@@ -582,8 +672,9 @@ def _build_snapshot_summary(snapshot: list[dict]) -> str:
     return (
         f"[TERMINAL SNAPSHOT]\n"
         f"Commands captured: {len(snapshot)}{time_range}{phase_str}\n"
-        f"Insert <!-- PSEVIDENCE: <search terms> --> markers where terminal "
-        f"evidence supports a claim."
+        f"Each command in [COMMANDS EXECUTED] is prefixed with its ID, e.g. [47].\n"
+        f"Insert <!-- PSEVIDENCE: cmd:ID --> for exact evidence lookup (preferred),\n"
+        f"or <!-- PSEVIDENCE: <search terms> --> for keyword-based lookup."
     )
 
 
@@ -732,8 +823,12 @@ The intelligence summary provides structured data to complement the notes.
 
 For every specific finding, exploitation step, or discovered asset that you
 write about in the report, insert a placeholder marker on its own line
-immediately after the relevant sentence:
+immediately after the relevant sentence.
 
+PREFERRED — direct ID reference using [ID] from the findings' source commands:
+    <!-- PSEVIDENCE: cmd:47 -->
+
+FALLBACK — keyword search when no specific command ID is known:
     <!-- PSEVIDENCE: <specific search terms> -->
 
 The application will replace these markers with the actual terminal command
@@ -741,10 +836,9 @@ and its output from the session database, including timestamp.
 Use precise, specific terms — IP addresses, tool names, CVE IDs, service
 names, port numbers, hash values, usernames.
 
-Good marker examples:
+Keyword examples:
     <!-- PSEVIDENCE: nmap 192.168.1.10 port 445 smb -->
     <!-- PSEVIDENCE: hydra brute force ssh admin password -->
-    <!-- PSEVIDENCE: ms17-010 eternalblue meterpreter shell -->
     <!-- PSEVIDENCE: linpeas suid privesc root -->
     <!-- PSEVIDENCE: sqlmap database dump credentials -->
 
@@ -823,19 +917,22 @@ The intelligence summary and command list above are your data sources.
 
 For every specific finding, exploitation step, or discovered asset you write
 about, insert a placeholder marker on its own line immediately after the
-relevant sentence:
+relevant sentence.
 
+PREFERRED — direct ID reference (100% accurate, use the [ID] shown in the command list):
+    <!-- PSEVIDENCE: cmd:47 -->
+
+FALLBACK — keyword search (use when no specific command ID applies):
     <!-- PSEVIDENCE: <specific search terms> -->
 
 The application will replace these markers with the actual terminal command
 and its output from the session database, including timestamp.
-Use precise terms — IP addresses, tool names, CVE IDs, service names,
-port numbers, hash values, usernames.
+When using keyword search, use precise terms — IP addresses, tool names,
+CVE IDs, service names, port numbers, hash values, usernames.
 
-Good marker examples:
+Keyword examples:
     <!-- PSEVIDENCE: nmap 192.168.1.10 port 445 smb -->
     <!-- PSEVIDENCE: hydra brute force ssh admin password -->
-    <!-- PSEVIDENCE: gobuster admin login panel -->
     <!-- PSEVIDENCE: linpeas suid privesc root -->
 
 Aim for 1–3 markers per major finding. Do not invent terminal outputs.
