@@ -908,8 +908,20 @@ def _build_section_prompt(
     now,
     fmt_name: str,
     carry_context: str,
+    ctx_k: int = 4,
 ) -> str:
-    """Build a compact per-section prompt sized for 4K context models (~800 tokens)."""
+    """Build a per-section prompt scaled to ctx_k * 1000 tokens context window.
+
+    Budget (leaving ~45% for model output):
+      intel   : 15% of ctx_k*1000 tokens  → ctx_k * 600  chars
+      summaries: 25% of ctx_k*1000 tokens → ctx_k * 1000 chars
+      carry   : 10% of ctx_k*1000 tokens  → ctx_k * 400  chars
+      fixed overhead (instructions): ~300-500 tokens
+    """
+    intel_cap     = ctx_k * 600
+    summaries_cap = ctx_k * 1000
+    carry_cap     = ctx_k * 400
+
     # Select relevant phase summaries; fall back to all if none match
     if preferred_phases:
         relevant = [s for s in phase_summaries if s.get("phase") in preferred_phases]
@@ -918,11 +930,12 @@ def _build_section_prompt(
     else:
         relevant = phase_summaries
 
-    # Compact JSON — no indent, shorter keys stripped to save tokens
     summaries_compact = json.dumps(relevant, separators=(",", ":"))
-    # Cap phase data to ~1200 chars so we stay within 4K budget
-    if len(summaries_compact) > 1200:
-        summaries_compact = summaries_compact[:1200] + "...}"
+    if len(summaries_compact) > summaries_cap:
+        summaries_compact = summaries_compact[:summaries_cap] + "...}"
+
+    carry_context = carry_context[:carry_cap] if carry_context else ""
+    intel_brief   = intel_brief[:intel_cap]   if intel_brief   else ""
 
     prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d')}\n"
     prompt += f"Target: {target or 'Unknown'}\n\n"
@@ -1034,39 +1047,38 @@ def _run_nano(
     report_title: str,
     verbose: bool,
     ctx_window: int | None = None,
+    ctx_k: int = 4,
 ) -> str | None:
     """
-    --chunked report generation (section-by-section, for small context models).
+    --chunked report generation (section-by-section).
 
-    Phase 1 — Extraction (one call per active phase, same as --chunked):
+    Phase 1 — Extraction (one call per active phase):
         commands → structured JSON {vulns, creds, flags, command_ids}
+        Auto-splits when phase prompt exceeds 75% of ctx_window.
 
-    Phase 2 — Section-by-section generation:
-        Each section gets: intel_brief + relevant phase JSON + carry-forward context
-        from the last 2 generated sections (~400 chars each) for coherence.
+    Phase 2 — Section-by-section generation (scaled to ctx_k):
+        Each section gets: intel_brief + relevant phase JSON + carry-forward context.
+        Caps scale linearly with ctx_k so the prompt fills the available window.
         Executive Summary is generated LAST with all previous sections as context.
 
-    Phase 3 — App-side assembly + evidence injection:
-        Sections are joined into the final report without a synthesis call.
-        _resolve_placeholders() runs on the assembled output.
-
-    Target prompt size per section: ~600-1000 tokens → fits 4K model with
-    ~1000-1500 tokens of output budget.
+    Phase 3 — App-side assembly + evidence injection.
     """
     phase_groups = _group_entries_by_phase(entries)
     if not phase_groups:
         return None
 
     n_phases    = len(phase_groups)
-    intel_brief = (intel_header or "")[:600]
+    # intel_brief cap for extraction calls: same ratio as section prompts
+    intel_brief = (intel_header or "")[:ctx_k * 600]
 
     sys.stderr.write(
-        f"\n  Nano mode: {n_phases} phase(s) → {len(_NANO_SECTIONS)} sections\n"
+        f"\n  Chunked mode: {n_phases} phase(s) → {len(_NANO_SECTIONS)} sections"
+        f"  [{ctx_k}K context per call]\n"
         f"  Phases: {', '.join(p for p, _ in phase_groups)}\n\n"
     )
     sys.stderr.flush()
 
-    # ── Phase 1: Extraction (identical to --chunked phase 1) ─────────────────
+    # ── Phase 1: Extraction ───────────────────────────────────────────────────
     phase_summaries: list[dict] = []
     for i, (phase, phase_entries) in enumerate(phase_groups, 1):
         sys.stderr.write(
@@ -1090,27 +1102,28 @@ def _run_nano(
         sys.stderr.flush()
 
     # ── Phase 2: Section-by-section generation ────────────────────────────────
-    n_sections   = len(_NANO_SECTIONS)
+    n_sections    = len(_NANO_SECTIONS)
     generated: dict[str, str] = {}
-    carry_context = ""  # rolling context from last 2 sections
+    carry_context = ""
+    carry_cap     = ctx_k * 400          # chars per section in rolling carry
+    exec_carry_cap = ctx_k * 500 * len(_NANO_SECTIONS)  # chars for exec summary context
 
     sys.stderr.write(f"\n  Generating {n_sections} report sections...\n")
     sys.stderr.flush()
 
     for idx, (key, sec_title, preferred_phases, instruction) in enumerate(_NANO_SECTIONS, 1):
-        n_call = n_phases + idx
+        n_call  = n_phases + idx
         n_total = n_phases + n_sections
         sys.stderr.write(f"  [{n_call}/{n_total}] '{sec_title}'... ")
         sys.stderr.flush()
 
-        # Executive Summary gets all previous sections for full coherence
         if key == "executive_summary":
             all_prev = []
             for (k, t, _, _) in _NANO_SECTIONS[:-1]:
                 txt = generated.get(k, "").strip()
                 if txt:
-                    all_prev.append(f"=== {t} ===\n{txt[:500]}")
-            carry_ctx = "\n\n".join(all_prev)[:2000]
+                    all_prev.append(f"=== {t} ===\n{txt[:ctx_k * 500]}")
+            carry_ctx = "\n\n".join(all_prev)[:exec_carry_cap]
         else:
             carry_ctx = carry_context
 
@@ -1126,18 +1139,19 @@ def _run_nano(
             now=now,
             fmt_name=fmt_name,
             carry_context=carry_ctx,
+            ctx_k=ctx_k,
         )
 
         messages      = [{"role": "user", "content": prompt}]
         section_text  = llm_fn(messages, verbose=False)
         generated[key] = (section_text or "").strip()
 
-        # Update rolling carry context (last 2 sections, ~400 chars each)
+        # Update rolling carry context (last 2 sections)
         if key != "executive_summary":
             recent: list[str] = []
             for (k, t, _, _) in _NANO_SECTIONS:
                 if k in generated and k != "executive_summary":
-                    recent.append(f"=== {t} ===\n{generated[k][:400]}")
+                    recent.append(f"=== {t} ===\n{generated[k][:carry_cap]}")
             carry_context = "\n\n".join(recent[-2:])
 
         words = len((section_text or "").split())
@@ -1164,9 +1178,11 @@ def main():
     parser.add_argument("-L", "--limit",   default=None, type=int, metavar="N",
                         help="Keep last N commands per phase category (recon/scan/exploit/…); "
                              "works with all modes — balances coverage across the whole engagement")
-    parser.add_argument("-C", "--chunked", action="store_true",
-                        help="Chunked mode: section-by-section generation with carry-forward coherence — "
-                             "for small context models (~4K tokens per call)")
+    parser.add_argument("-C", "--chunked", nargs="?", const=-1, default=None, type=int,
+                        metavar="K",
+                        help="Chunked mode: section-by-section generation; "
+                             "K = context window in K tokens (e.g. -C 16); "
+                             "auto-detects from profile when omitted (-C)")
     parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
@@ -1186,7 +1202,7 @@ def main():
             "Usage:\n"
             "  psreport                                    Generate report from full filtered history\n"
             "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage\n"
-            "  psreport -C, --chunked                      Chunked: section-by-section generation (~4K tokens per call)\n"
+            "  psreport -C [K], --chunked [K]              Chunked: section-by-section; K = context in K tokens (e.g. -C 16); auto from profile if K omitted\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
             "  psreport -v, --verbose                      Stream synthesis to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
@@ -1383,27 +1399,28 @@ Generate the complete {fmt_name} report below using exactly this template:
     snap_summary = _build_snapshot_summary(snapshot)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # CHUNKED MODE — per-phase extraction → single synthesis → evidence inject
+    # CHUNKED MODE — section-by-section generation, context-aware
     # ══════════════════════════════════════════════════════════════════════════
-    # ══════════════════════════════════════════════════════════════════════════
-    # NANO MODE — section-by-section generation for 4K context models
-    # ══════════════════════════════════════════════════════════════════════════
-    if args.chunked:
-        ctx_window_nano   = _ai._get_ctx_window(profile, base_dir)
+    if args.chunked is not None:
+        # Resolve ctx_k: explicit K from CLI, or auto-detect from profile
+        if args.chunked == -1:
+            ctx_window_ch = _ai._get_ctx_window(profile, base_dir)
+            ctx_k         = max(1, (ctx_window_ch // 1000)) if ctx_window_ch else 4
+            ctx_source    = f"auto from profile ({ctx_k}K)"
+        else:
+            ctx_k         = args.chunked
+            ctx_window_ch = ctx_k * 1000
+            ctx_source    = f"manual ({ctx_k}K)"
+
         phase_groups_prev = _group_entries_by_phase(entries)
         n_prev            = len(phase_groups_prev)
         n_sections        = len(_NANO_SECTIONS)
-        ctx_line = (
-            f"  Context  : {ctx_window_nano:,} tokens per call — designed for 4K models\n"
-            if ctx_window_nano else
-            "  Context  : unknown (model not in registry)\n"
-        )
         sys.stderr.write(
-            f"\n  Entries  : {len(entries)}/{total} (full filtered history)\n"
+            f"\n  Entries  : {len(entries)}/{total}\n"
             f"  Phases   : {', '.join(p for p, _ in phase_groups_prev)}\n"
+            f"  Context  : {ctx_source} per section call\n"
             f"  API calls: {n_prev} extraction + {n_sections} sections = "
             f"{n_prev + n_sections} total (min)\n"
-            + ctx_line +
             f"\nContinue? [y/n] "
         )
         sys.stderr.flush()
@@ -1432,7 +1449,8 @@ Generate the complete {fmt_name} report below using exactly this template:
             fmt=fmt,
             report_title=title,
             verbose=args.verbose,
-            ctx_window=ctx_window_nano,
+            ctx_window=ctx_window_ch,
+            ctx_k=ctx_k,
         )
         if not response:
             _ai._err("No response from model.")
