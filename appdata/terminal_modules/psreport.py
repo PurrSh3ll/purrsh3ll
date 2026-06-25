@@ -398,11 +398,10 @@ def _format_entry(row: sqlite3.Row) -> str:
 
 
 def _confirm_send(prompt: str, n_entries: int, total: int,
-                  mode_label: str, profile: dict, base_dir: str) -> bool:
+                  mode_label: str, ctx_window: int | None) -> bool:
     """Print token estimate + context fit, ask Continue? [y/n], return True if confirmed."""
     import math as _math
     est_tokens = len(prompt) // 4
-    ctx_window = _ai._get_ctx_window(profile, base_dir)
 
     lines = [
         f"\n  Entries : {n_entries}/{total} ({mode_label})",
@@ -1299,7 +1298,8 @@ Generate the complete {fmt_name} report below using exactly this template:
 {template}"""
 
     mode_label = f"light — last {_ai._TERMINAL_HIST_LIMIT}" if args.light else "full filtered history"
-    if not _confirm_send(prompt, len(entries), total, mode_label, profile, base_dir):
+    ctx_window_std = _ai._get_ctx_window(profile, base_dir)
+    if not _confirm_send(prompt, len(entries), total, mode_label, ctx_window_std):
         sys.exit(0)
 
     # ── LLM call ──────────────────────────────────────────────────────────────
