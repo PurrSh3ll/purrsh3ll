@@ -93,7 +93,8 @@ def _build_messages(b64: str, media_type: str, question: str, provider: str) -> 
 
 
 def _db_connect(base_dir: str) -> sqlite3.Connection | None:
-    path = os.path.join(base_dir, "appdata", "logs", "terminal_history.db")
+    path = (os.environ.get("PSDB")
+            or os.path.join(base_dir, "appdata", "logs", "terminal_history.db"))
     if not os.path.exists(path):
         return None
     conn = sqlite3.connect(path)

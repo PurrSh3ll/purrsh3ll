@@ -33,10 +33,11 @@ import sys
 import sqlite3
 from datetime import datetime
 
-DEFAULT_DB = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "logs", "terminal_history.db"
-)
+DEFAULT_DB = (os.environ.get("PSDB")
+              or os.path.join(
+                  os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                  "logs", "terminal_history.db"
+              ))
 
 
 def _ts(unix):
