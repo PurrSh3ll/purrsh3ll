@@ -152,8 +152,14 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
                 section.append(line)
         parts.append("\n".join(section))
 
-    # ── Findings (with source command link) ────────────────────────────────────
+    # ── Findings (with source command link, optionally filtered by target) ────────
     finding_sections = []
+
+    # When target_filter is set: show findings for that target OR findings with
+    # no target recorded (NULL) — e.g. flags, CVEs, users discovered globally.
+    _tf      = target_filter
+    _tf_cond = "AND (f.target = ? OR f.target IS NULL)" if _tf else ""
+    _tf_arg  = (_tf,) if _tf else ()
 
     def _src(r) -> str:
         """Return '  [cmd_id] $ cmd' annotation if source command is known."""
@@ -164,15 +170,16 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         return ""
 
     creds = conn.execute(
-        """
+        f"""
         SELECT f.value, f.target, f.service,
                f.command_id AS cmd_id,
                (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
         FROM findings f
-        WHERE f.finding_type = 'credential'
+        WHERE f.finding_type = 'credential' {_tf_cond}
         GROUP BY f.value, f.target, f.service
         ORDER BY f.target, f.value
-        """
+        """,
+        _tf_arg,
     ).fetchall()
     if creds:
         lines = ["Credentials:"]
@@ -186,15 +193,16 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         finding_sections.append("\n".join(lines))
 
     users = conn.execute(
-        """
+        f"""
         SELECT f.value,
                f.command_id AS cmd_id,
                (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
         FROM findings f
-        WHERE f.finding_type = 'user'
+        WHERE f.finding_type = 'user' {_tf_cond}
         GROUP BY f.value
         ORDER BY f.value
-        """
+        """,
+        _tf_arg,
     ).fetchall()
     if users:
         lines = ["Users:"]
@@ -203,15 +211,16 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         finding_sections.append("\n".join(lines))
 
     hashes = conn.execute(
-        """
+        f"""
         SELECT f.value, f.target,
                f.command_id AS cmd_id,
                (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
         FROM findings f
-        WHERE f.finding_type = 'hash'
+        WHERE f.finding_type = 'hash' {_tf_cond}
         GROUP BY f.value, f.target
         ORDER BY f.target, f.value
-        """
+        """,
+        _tf_arg,
     ).fetchall()
     if hashes:
         lines = ["Hashes:"]
@@ -224,15 +233,16 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         finding_sections.append("\n".join(lines))
 
     flags = conn.execute(
-        """
+        f"""
         SELECT f.value,
                f.command_id AS cmd_id,
                (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
         FROM findings f
-        WHERE f.finding_type = 'flag'
+        WHERE f.finding_type = 'flag' {_tf_cond}
         GROUP BY f.value
         ORDER BY f.value
-        """
+        """,
+        _tf_arg,
     ).fetchall()
     if flags:
         lines = ["Flags:"]
@@ -241,15 +251,16 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         finding_sections.append("\n".join(lines))
 
     cves = conn.execute(
-        """
+        f"""
         SELECT f.value,
                f.command_id AS cmd_id,
                (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
         FROM findings f
-        WHERE f.finding_type = 'cve'
+        WHERE f.finding_type = 'cve' {_tf_cond}
         GROUP BY f.value
         ORDER BY f.value
-        """
+        """,
+        _tf_arg,
     ).fetchall()
     if cves:
         lines = ["CVEs:"]
