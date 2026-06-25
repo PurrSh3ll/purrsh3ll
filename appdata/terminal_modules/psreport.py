@@ -786,29 +786,67 @@ Generate the complete {fmt_name} report below using exactly this template:
         sys.exit(0)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # STANDARD MODE — intel header + filtered commands (no output)
+    # STANDARD MODE — intel header + commands (no output) + evidence injection
     # ══════════════════════════════════════════════════════════════════════════
     entries, total = _load_entries_sqlite(base_dir, limit=_ai._TERMINAL_HIST_LIMIT)
     if not entries and not intel_header:
         _ai._err("No relevant history found — run some pentest commands first.")
         sys.exit(1)
 
+    # Snapshot full history for placeholder resolution (done before confirm
+    # so the snapshot is consistent with what the model sees)
+    conn_snap = _db_connect(base_dir)
+    snapshot: list[dict] = []
+    if conn_snap:
+        try:
+            snapshot = _snapshot_history(conn_snap)
+        finally:
+            conn_snap.close()
+
+    snap_summary = _build_snapshot_summary(snapshot)
+
     commands = "\n".join(_format_entry(e) for e in entries)
     prompt   = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
     prompt  += f"Target: {target or 'Unknown'}\n"
     if cwd:
-        prompt += f"Working directory: {cwd}\n"
+        prompt  += f"Working directory: {cwd}\n"
     if intel_header:
-        prompt += f"\n{intel_header}\n"
+        prompt  += f"\n{intel_header}\n"
     if commands:
-        prompt += f"\n[COMMANDS EXECUTED — last {len(entries)} entries]\n{commands}\n"
-    prompt += (
-        f"\nYou are an expert penetration tester writing a professional report. "
-        f"Based on the intelligence summary and commands above, generate "
-        f"a complete {fmt_name} report using exactly this template. Fill each "
-        f"section with concrete data. Mark sections as '[No data found]' if no "
-        f"evidence. Do not invent findings.\n\n{template}"
-    )
+        prompt  += f"\n[COMMANDS EXECUTED — last {len(entries)} entries]\n{commands}\n"
+    if snap_summary:
+        prompt  += f"\n{snap_summary}\n"
+    prompt += f"""
+[INSTRUCTIONS]
+You are an expert penetration tester writing a professional report.
+The intelligence summary and command list above are your data sources.
+
+For every specific finding, exploitation step, or discovered asset you write
+about, insert a placeholder marker on its own line immediately after the
+relevant sentence:
+
+    <!-- PSEVIDENCE: <specific search terms> -->
+
+The application will replace these markers with the actual terminal command
+and its output from the session database, including timestamp.
+Use precise terms — IP addresses, tool names, CVE IDs, service names,
+port numbers, hash values, usernames.
+
+Good marker examples:
+    <!-- PSEVIDENCE: nmap 192.168.1.10 port 445 smb -->
+    <!-- PSEVIDENCE: hydra brute force ssh admin password -->
+    <!-- PSEVIDENCE: gobuster admin login panel -->
+    <!-- PSEVIDENCE: linpeas suid privesc root -->
+
+Aim for 1–3 markers per major finding. Do not invent terminal outputs.
+If something likely has no terminal evidence, omit the marker.
+Mark sections as '[No data found]' if no evidence exists.
+Do not invent findings.
+
+Generate the complete {fmt_name} report below using exactly this template:
+
+{template}"""
+
     if not _confirm_send(prompt, len(entries), total, "filtered (tagged + keyword)", profile, base_dir):
         sys.exit(0)
 
@@ -816,14 +854,20 @@ Generate the complete {fmt_name} report below using exactly this template:
     if _ai._SHOW_QUERYING:
         _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info("Generating report...\n")
-    messages  = [{"role": "user", "content": prompt}]
-    response  = _llm(messages, verbose=args.verbose)
+    messages = [{"role": "user", "content": prompt}]
+    response = _llm(messages, verbose=args.verbose)
 
-    # ── Save to file ──────────────────────────────────────────────────────────
     if not response:
         _ai._err("No response from model.")
         sys.exit(1)
 
+    # ── Inject terminal evidence ───────────────────────────────────────────────
+    _ai._info("Injecting terminal evidence...\n")
+    resolved = _resolve_placeholders(response, snapshot)
+    injected = response.count("<!-- PSEVIDENCE:") - resolved.count("<!-- PSEVIDENCE:")
+    _ai._info(f"Evidence injected: {injected} placeholder(s) resolved.\n")
+
+    # ── Save to file ──────────────────────────────────────────────────────────
     reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
     os.makedirs(reports_dir, exist_ok=True)
 
@@ -832,7 +876,7 @@ Generate the complete {fmt_name} report below using exactly this template:
 
     try:
         with open(report_path, "w", encoding="utf-8") as f:
-            f.write(response)
+            f.write(resolved)
         _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
     except Exception as e:
         _ai._err(f"Failed to save report: {e}")
