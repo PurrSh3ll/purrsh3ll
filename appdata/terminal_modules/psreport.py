@@ -894,116 +894,6 @@ def _extract_phase_summary(phase: str, entries, intel_brief: str,
     return _parse_extraction_json(raw, phase, entries)
 
 
-def _run_chunked(
-    intel_header: str,
-    snapshot: list[dict],
-    entries,
-    total: int,
-    llm_fn,
-    sys_info: str,
-    now,
-    target: str | None,
-    cwd: str,
-    fmt_name: str,
-    template: str,
-    verbose: bool,
-    ctx_window: int | None = None,
-) -> str | None:
-    """
-    --chunked report generation.
-
-    Phase 1 — Extraction (one silent call per active phase):
-        commands → structured JSON {vulns, creds, flags, command_ids}
-
-    Phase 2 — Synthesis (one call):
-        intel_header + phase JSON summaries → full report with <!-- PSEVIDENCE: cmd:ID -->
-
-    Phase 3 — Evidence injection:
-        _resolve_placeholders() runs on the synthesis output (unchanged).
-
-    Prompt sizes:
-        Extraction: ~500-2000 tokens per phase (always small, commands-only)
-        Synthesis:  intel_header + compact JSON ≈ 2000-5000 tokens (model-agnostic)
-    """
-    phase_groups = _group_entries_by_phase(entries)
-    if not phase_groups:
-        return None
-
-    n_phases    = len(phase_groups)
-    intel_brief = (intel_header or "")[:600]   # abbreviated for extraction prompts
-
-    sys.stderr.write(
-        f"\n  Chunked mode: {n_phases} phase(s) → extraction  +  1 synthesis call\n"
-        f"  Phases: {', '.join(p for p, _ in phase_groups)}\n\n"
-    )
-    sys.stderr.flush()
-
-    # ── Phase 1: Extract ──────────────────────────────────────────────────────
-    phase_summaries: list[dict] = []
-    for i, (phase, phase_entries) in enumerate(phase_groups, 1):
-        sys.stderr.write(
-            f"  [{i}/{n_phases}] Extracting '{phase}' ({len(phase_entries)} cmds)... "
-        )
-        sys.stderr.flush()
-
-        summary = _extract_phase_summary(phase, phase_entries, intel_brief, llm_fn, sys_info,
-                                          ctx_window=ctx_window)
-        phase_summaries.append(summary)
-
-        tags = []
-        if summary.get("vulnerabilities"):
-            tags.append(f"{len(summary['vulnerabilities'])} vuln(s)")
-        if summary.get("credentials"):
-            tags.append(f"{len(summary['credentials'])} cred(s)")
-        if summary.get("flags"):
-            tags.append(f"{len(summary['flags'])} flag(s)")
-        sys.stderr.write("done" + (f"  [{', '.join(tags)}]" if tags else "") + "\n")
-        sys.stderr.flush()
-
-    # ── Phase 2: Synthesis ────────────────────────────────────────────────────
-    summaries_json = json.dumps(phase_summaries, indent=2)
-    snap_summary   = _build_snapshot_summary(snapshot)
-
-    prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
-    prompt += f"Target: {target or 'Unknown'}\n"
-    if cwd:
-        prompt += f"Working directory: {cwd}\n"
-    if intel_header:
-        prompt += f"\n{intel_header}\n"
-    prompt += (
-        f"\n[PHASE SUMMARIES — {len(entries)} commands across {n_phases} phase(s)]\n"
-        f"{summaries_json}\n"
-    )
-    if snap_summary:
-        prompt += f"\n{snap_summary}\n"
-    prompt += f"""
-[INSTRUCTIONS]
-You are an expert penetration tester writing a professional report.
-The intel header and phase summaries above are your data sources.
-Phase summaries contain "command_ids" — use these for precise evidence markers.
-
-PREFERRED evidence marker (exact ID, 100% accurate):
-    <!-- PSEVIDENCE: cmd:47 -->
-
-FALLBACK (keyword search):
-    <!-- PSEVIDENCE: nmap 192.168.1.10 smb 445 -->
-
-Aim for 1–3 markers per major finding. Do not invent findings not present in the data.
-Mark sections as '[No data found]' if no evidence exists for that section.
-
-Generate the complete {fmt_name} report using exactly this template:
-
-{template}"""
-
-    est = len(prompt) // 4
-    sys.stderr.write(
-        f"\n  [{n_phases + 1}/{n_phases + 1}] Synthesis (~{est:,} tokens)...\n"
-    )
-    sys.stderr.flush()
-
-    return llm_fn([{"role": "user", "content": prompt}], verbose=verbose)
-
-
 # ── Nano mode helpers ──────────────────────────────────────────────────────────
 
 def _build_section_prompt(
@@ -1274,9 +1164,6 @@ def main():
     parser.add_argument("-L", "--limit",   default=None, type=int, metavar="N",
                         help="Keep last N commands per phase category (recon/scan/exploit/…); "
                              "works with all modes — balances coverage across the whole engagement")
-    parser.add_argument("-C", "--chunked", action="store_true",
-                        help="Chunked mode: extract per-phase then synthesize — for large histories "
-                             "or small context models (Ollama 8K-32K)")
     parser.add_argument("-N", "--nano",    action="store_true",
                         help="Nano mode: section-by-section generation with carry-forward coherence — "
                              "for very small context models (4K tokens)")
@@ -1299,7 +1186,6 @@ def main():
             "Usage:\n"
             "  psreport                                    Generate report from full filtered history\n"
             "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage\n"
-            "  psreport -C, --chunked                      Chunked: extract per-phase + synthesize (8K-32K models)\n"
             "  psreport -N, --nano                         Nano: section-by-section generation (4K context models)\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
             "  psreport -v, --verbose                      Stream synthesis to terminal while saving\n"
@@ -1499,72 +1385,6 @@ Generate the complete {fmt_name} report below using exactly this template:
     # ══════════════════════════════════════════════════════════════════════════
     # CHUNKED MODE — per-phase extraction → single synthesis → evidence inject
     # ══════════════════════════════════════════════════════════════════════════
-    if args.chunked:
-        # Pre-flight: show plan and ask for confirmation
-        ctx_window_ch     = _ai._get_ctx_window(profile, base_dir)
-        phase_groups_prev = _group_entries_by_phase(entries)
-        n_prev            = len(phase_groups_prev)
-        ctx_line = (
-            f"  Context  : {ctx_window_ch:,} tokens — extraction auto-splits when phase >75%\n"
-            if ctx_window_ch else
-            "  Context  : unknown (model not in registry) — no auto-split\n"
-        )
-        sys.stderr.write(
-            f"\n  Entries  : {len(entries)}/{total} (full filtered history)\n"
-            f"  Phases   : {', '.join(p for p, _ in phase_groups_prev)}\n"
-            f"  API calls: {n_prev} extraction + 1 synthesis = {n_prev + 1} total (min)\n"
-            + ctx_line +
-            f"\nContinue? [y/n] "
-        )
-        sys.stderr.flush()
-        try:
-            _reply = sys.stdin.readline().strip()
-        except Exception:
-            _reply = ""
-        if _reply.lower() != "y":
-            sys.stderr.write("Aborted.\n")
-            sys.exit(0)
-
-        if _ai._SHOW_QUERYING:
-            _ai._info(f"Querying {model} via {provider}…\n")
-
-        response = _run_chunked(
-            intel_header=intel_header,
-            snapshot=snapshot,
-            entries=entries,
-            total=total,
-            llm_fn=_llm,
-            sys_info=sys_info,
-            now=now,
-            target=target,
-            cwd=cwd,
-            fmt_name=fmt_name,
-            template=template,
-            verbose=args.verbose,
-            ctx_window=ctx_window_ch,
-        )
-        if not response:
-            _ai._err("No response from model.")
-            sys.exit(1)
-
-        _ai._info("Injecting terminal evidence...\n")
-        resolved = _resolve_placeholders(response, snapshot)
-        injected = response.count("<!-- PSEVIDENCE:") - resolved.count("<!-- PSEVIDENCE:")
-        _ai._info(f"Evidence injected: {injected} placeholder(s) resolved.\n")
-
-        reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
-        os.makedirs(reports_dir, exist_ok=True)
-        filename    = f"report_{now.strftime('%Y-%m-%d_%H-%M')}.{fmt}"
-        report_path = os.path.join(reports_dir, filename)
-        try:
-            with open(report_path, "w", encoding="utf-8") as f:
-                f.write(resolved)
-            _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
-        except Exception as e:
-            _ai._err(f"Failed to save report: {e}")
-            sys.exit(1)
-        sys.exit(0)
-
     # ══════════════════════════════════════════════════════════════════════════
     # NANO MODE — section-by-section generation for 4K context models
     # ══════════════════════════════════════════════════════════════════════════
