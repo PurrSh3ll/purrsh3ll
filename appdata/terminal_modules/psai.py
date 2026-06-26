@@ -812,6 +812,15 @@ def _run_llm_tool_call(provider: str, model: str, messages: list,
     tool_def must be an OpenAI-style function dict:
         {"name": "...", "description": "...", "parameters": {"type": "object", ...}}
     """
+    if _DEBUG_PROMPT:
+        sys.stderr.write("\033[33m[debug] ── prompt messages (tool call) ──────────────────\033[0m\n")
+        for i, m in enumerate(messages):
+            role = m.get("role", "?")
+            content = m.get("content", "")
+            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{content}\n")
+        sys.stderr.write(f"\033[33m[debug] tool: {tool_def.get('name')}\033[0m\n")
+        sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
+        sys.stderr.flush()
     import time as _time
 
     if provider == "anthropic":
