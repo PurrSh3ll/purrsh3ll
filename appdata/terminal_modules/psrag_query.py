@@ -19,6 +19,8 @@ import urllib.error
 # Strip ANSI escape codes that ollama outputs (spinner, colors, cursor movement)
 _ANSI_RE = re.compile(rb'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
+_DEBUG_PROMPT = False  # set to True via --debug; prints full prompt to stderr
+
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -531,6 +533,11 @@ def _run_llm(provider: str, model: str, prompt: str,
              url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None):
     """Dispatch to the correct runner based on provider."""
+    if _DEBUG_PROMPT:
+        sys.stderr.write("\033[33m[debug] ── prompt ───────────────────────────────────────\033[0m\n")
+        sys.stderr.write(prompt + "\n")
+        sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
+        sys.stderr.flush()
     try:
         import os as _os, time as _time
         _tok  = max(1, len(prompt) // 4)
@@ -572,6 +579,7 @@ def main():
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
     parser.add_argument("-s", "--show-sources", action="store_true")
     parser.add_argument("--base-dir",      default=None)
+    parser.add_argument("--debug",         action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help",    action="store_true")
     args = parser.parse_args()
 
@@ -592,6 +600,10 @@ def main():
             '  psrag -H http://192.168.1.10:11434 "query"'
         )
         sys.exit(0)
+
+    global _DEBUG_PROMPT
+    if args.debug:
+        _DEBUG_PROMPT = True
 
     query    = " ".join(args.query)
     base_dir = args.base_dir or os.path.dirname(
