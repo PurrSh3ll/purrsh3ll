@@ -116,6 +116,37 @@ def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
     sys.stderr.flush()
 
 
+def _debug_format_content(content) -> str:
+    """Format a message content for --debug output.
+    Strings are returned as-is; multimodal lists replace image data with a
+    size summary so megabytes of base64 don't flood the terminal."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    parts = []
+    for part in content:
+        ptype = part.get("type", "")
+        if ptype == "text":
+            parts.append(part.get("text", ""))
+        elif ptype == "image_url":
+            url_val = part.get("image_url", {}).get("url", "")
+            if ";base64," in url_val:
+                media   = url_val.split("data:", 1)[-1].split(";base64,")[0]
+                size_kb = len(url_val.split(";base64,", 1)[1]) * 3 // 4 // 1024
+                parts.append(f"[image: {media}, ~{size_kb} KB]")
+            else:
+                parts.append(f"[image_url: {url_val[:80]}]")
+        elif ptype == "image":
+            src     = part.get("source", {})
+            media   = src.get("media_type", "?")
+            size_kb = len(src.get("data", "")) * 3 // 4 // 1024
+            parts.append(f"[image: {media}, ~{size_kb} KB]")
+        else:
+            parts.append(f"[{ptype}]")
+    return "\n".join(parts)
+
+
 # ── Context window helper ─────────────────────────────────────────────────────
 
 def _get_ctx_window(profile: dict, base_dir: str) -> int | None:
@@ -731,8 +762,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
         sys.stderr.write("\033[33m[debug] ── prompt messages ──────────────────────────────\033[0m\n")
         for i, m in enumerate(messages):
             role = m.get("role", "?")
-            content = m.get("content", "")
-            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{content}\n")
+            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{_debug_format_content(m.get('content', ''))}\n")
         sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
         sys.stderr.flush()
     try:
@@ -816,8 +846,7 @@ def _run_llm_tool_call(provider: str, model: str, messages: list,
         sys.stderr.write("\033[33m[debug] ── prompt messages (tool call) ──────────────────\033[0m\n")
         for i, m in enumerate(messages):
             role = m.get("role", "?")
-            content = m.get("content", "")
-            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{content}\n")
+            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{_debug_format_content(m.get('content', ''))}\n")
         sys.stderr.write(f"\033[33m[debug] tool: {tool_def.get('name')}\033[0m\n")
         sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
         sys.stderr.flush()
