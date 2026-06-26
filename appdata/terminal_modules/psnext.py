@@ -297,6 +297,7 @@ def main():
                              "output cap so the full prompt stays within 75%% of ctx_window")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
+    parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
 
@@ -320,6 +321,9 @@ def main():
 
     sys.path.insert(0, os.path.dirname(__file__))
     import psai as _ai
+
+    if args.debug:
+        _ai._DEBUG_PROMPT = True
 
     config  = _ai._load_config(base_dir)
     profile = _ai._resolve_profile(config, args.profile)

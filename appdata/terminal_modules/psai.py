@@ -88,6 +88,7 @@ _TERMINAL_HIST_BROAD_LIMIT = 120 # max extended history entries (cmd + exit code
 # ── Display flags (set by _load_config, read by external scripts via _ai._SHOW_*) ──
 _SHOW_STATS    = True   # psai_show_stats in app_config.json
 _SHOW_QUERYING = True   # psai_show_querying in app_config.json
+_DEBUG_PROMPT  = False  # set to True via --debug flag; prints full messages to stderr
 
 # ── Thinking spinner (used when hide_thinking=True) ───────────────────────────
 _SPINNER     = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -726,6 +727,14 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None,
              hide_thinking: bool = False) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
+    if _DEBUG_PROMPT:
+        sys.stderr.write("\033[33m[debug] ── prompt messages ──────────────────────────────\033[0m\n")
+        for i, m in enumerate(messages):
+            role = m.get("role", "?")
+            content = m.get("content", "")
+            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{content}\n")
+        sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
+        sys.stderr.flush()
     try:
         import time as _time
         _tok  = _estimate_prompt_tokens(messages)
@@ -1093,6 +1102,7 @@ def main():
     parser.add_argument("-n", "--top-n",  type=int, default=5, metavar="N", dest="top_n",
                         help="Number of RAG chunks (default: 5, used with --rag)")
     parser.add_argument("--base-dir",     default=None)
+    parser.add_argument("--debug",        action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help",   action="store_true")
     args = parser.parse_args()
 
@@ -1110,6 +1120,10 @@ def main():
     base_dir = args.base_dir or os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+
+    global _DEBUG_PROMPT
+    if args.debug:
+        _DEBUG_PROMPT = True
 
     config  = _load_config(base_dir)
     profile = _resolve_profile(config, args.profile)
