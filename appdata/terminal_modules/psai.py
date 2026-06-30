@@ -1147,8 +1147,8 @@ def main():
     parser.add_argument("-c", "--clear",  action="store_true", help="Clear chat history and exit (chat mode)")
     parser.add_argument("--history",      action="store_true", help="Show chat history (chat mode)")
     parser.add_argument("-r", "--rag",    action="store_true", help="Enrich prompt with RAG context")
-    parser.add_argument("-n", "--top-n",  type=int, default=5, metavar="N", dest="top_n",
-                        help="Number of RAG chunks (default: 5, used with --rag)")
+    parser.add_argument("-n", "--top-n",  type=int, default=None, metavar="N", dest="top_n",
+                        help="Number of RAG chunks (default: 5, requires --rag)")
     parser.add_argument("--base-dir",     default=None)
     parser.add_argument("--debug",        action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help",   action="store_true")
@@ -1164,6 +1164,13 @@ def main():
             "Run each command with -h for detailed help."
         )
         sys.exit(0)
+
+    # -n/--top-n only makes sense for RAG retrieval (-r/--rag)
+    if args.top_n is not None and not args.rag:
+        _err("-n/--top-n only applies with -r/--rag (it sets the number of RAG chunks).")
+        sys.exit(1)
+    if args.top_n is None:
+        args.top_n = 5
 
     base_dir = args.base_dir or os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

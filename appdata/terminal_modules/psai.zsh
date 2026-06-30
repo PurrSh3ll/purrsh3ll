@@ -28,7 +28,7 @@ Options:
   -p, --profile NAME   Use a specific saved profile by name
   -H, --host URL       Base URL override
   -r, --rag            Enrich prompt with RAG knowledge base context
-  -n, --top-n N        Number of RAG chunks to retrieve (default: 5, used with --rag)
+  -n, --top-n N        Number of RAG chunks to retrieve (default: 5, requires --rag)
   -h, --help           Show this help
 
 Examples:
@@ -57,7 +57,7 @@ Options:
   -p, --profile NAME   Use a specific saved profile by name
   -H, --host URL       Base URL override
   -r, --rag            Enrich current message with RAG knowledge base context
-  -n, --top-n N        Number of RAG chunks to retrieve (default: 5, used with --rag)
+  -n, --top-n N        Number of RAG chunks to retrieve (default: 5, requires --rag)
   -c, --clear          Clear conversation history and exit
   -h, --help           Show this help
 

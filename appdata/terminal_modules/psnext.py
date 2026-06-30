@@ -288,8 +288,8 @@ def main():
                         help="Target host/network for additional context")
     parser.add_argument("-r", "--rag",    action="store_true",
                         help="Enrich prompt with knowledge base context")
-    parser.add_argument("-n", "--top-n",  type=int, default=5, metavar="N", dest="top_n",
-                        help="Number of RAG chunks (default: 5, used with --rag)")
+    parser.add_argument("-n", "--top-n",  type=int, default=None, metavar="N", dest="top_n",
+                        help="Number of RAG chunks (default: 5, requires --rag)")
     parser.add_argument("-c", "--cmd",    action="store_true",
                         help="Output only the best command, no analysis (used internally by zsh)")
     parser.add_argument("--fit",          action="store_true",
@@ -309,7 +309,7 @@ def main():
             "  psnext -c, --cmd                     Output only the best command (no analysis)\n"
             "  psnext -t, --target 192.168.1.0/24  Include target context\n"
             "  psnext -r, --rag                    Enrich with knowledge base context\n"
-            "  psnext -r --rag -n 8                Use 8 RAG chunks\n"
+            "  psnext -r -n 8                      Use 8 RAG chunks (-n requires --rag)\n"
             "  psnext --fit                        Auto-fit recent session to model ctx window\n"
             "  psnext -p, --profile <name>         Use a specific saved profile\n"
         )
@@ -324,6 +324,13 @@ def main():
 
     if args.debug:
         _ai._DEBUG_PROMPT = True
+
+    # -n/--top-n only makes sense for RAG retrieval (-r/--rag)
+    if args.top_n is not None and not args.rag:
+        _ai._err("-n/--top-n only applies with -r/--rag (it sets the number of RAG chunks).")
+        sys.exit(1)
+    if args.top_n is None:
+        args.top_n = 5
 
     config  = _ai._load_config(base_dir)
     profile = _ai._resolve_profile(config, args.profile)
