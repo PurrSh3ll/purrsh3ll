@@ -312,47 +312,34 @@ def main():
             prompt += f"Output:\n{output}\n"
         if history_text:
             prompt += f"\nRecent terminal session history:\n{history_text}\n"
-        if use_tools:
-            prompt += (
-                "\nBased on the system info, working directory, and terminal history, "
-                "provide a deep analysis of why this command failed. "
-                "Consider the full context — previous commands, environment, permissions — "
-                "and suggest the most accurate fix. Be specific and practical. "
-                "Then call fix_command with the corrected command."
-            )
-        else:
-            prompt += (
-                "\nBased on the system info, working directory, and terminal history, "
-                "provide a deep analysis of why this command failed. "
-                "Consider the full context — previous commands, environment, permissions — "
-                "and suggest the most accurate fix. Be specific and practical.\n"
-                "At the very end, on a new line, write ONLY the corrected command "
-                "with no prefix, no explanation, no backticks — just the raw command."
-            )
+        # Analyze mode never uses function calling: it must show the full
+        # analysis, then emit the corrected command on the last line.
+        prompt += (
+            "\nBased on the system info, working directory, and terminal history, "
+            "provide a deep analysis of why this command failed. "
+            "Consider the full context — previous commands, environment, permissions — "
+            "and suggest the most accurate fix. Be specific and practical.\n"
+            "At the very end, on a new line, write ONLY the corrected command "
+            "with no prefix, no explanation, no backticks — just the raw command."
+        )
         if _ai._SHOW_QUERYING:
             _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info(f"Analyzing: {cmd}\n")
         messages = [{"role": "user", "content": prompt}]
 
-        if use_tools:
-            fix = _ai._run_llm_tool_call(provider, model, messages, _FIX_TOOL, url, api_key)
+        # Stream the analysis to stderr (visible in terminal via 2>/dev/tty),
+        # then print only the fix command to stdout (captured by zsh $() for paste).
+        _real_stdout = sys.stdout
+        sys.stdout   = sys.stderr
+        try:
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+        finally:
+            sys.stdout = _real_stdout
+
+        if response:
+            fix = _clean_command(response)
             if fix:
                 print(fix)
-        else:
-            # Stream analysis to stderr (visible in terminal via 2>/dev/tty),
-            # then print only the fix command to stdout (captured by zsh $())
-            import io as _io
-            _real_stdout = sys.stdout
-            sys.stdout   = sys.stderr
-            try:
-                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
-            finally:
-                sys.stdout = _real_stdout
-
-            if response:
-                fix = _clean_command(response)
-                if fix:
-                    print(fix)
 
     # ── Explain mode ──────────────────────────────────────────────────────────
     elif args.explain:
