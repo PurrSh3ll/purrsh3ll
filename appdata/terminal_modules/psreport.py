@@ -1355,6 +1355,255 @@ def _run_minimal(
     return _assemble_minimal_md(sections, title, target, now)
 
 
+# ── Deep mode ─────────────────────────────────────────────────────────────────
+#
+# 3-pass generator–critic pipeline for top-tier, large-context models:
+#   Pass 1  Investigation — read ALL commands WITH raw output, produce a
+#           structured findings ledger (the curated evidence base).
+#   Pass 2  Draft         — write the full report from the ledger (lean: the
+#           ledger carries cmd:IDs, raw output is injected app-side afterward).
+#   Pass 3  Critique       — senior self-review against the ledger, fix gaps /
+#           unsupported claims / severity mismatches, emit the final report.
+#
+# Unlike the removed --chunked mode (same task on phase slices), each pass is a
+# distinct cognitive mode over the WHOLE dataset, so the model keeps cross-phase
+# correlation and uses the full window. Phase batching is only a fallback in
+# Pass 1 when even a large window would overflow.
+
+_DEEP_OUT_LINES = 4      # output lines per command,  multiplied by ctx_k
+_DEEP_OUT_CHARS = 150    # output chars per command,  multiplied by ctx_k
+
+
+def _deep_cap_output(text: str, max_lines: int, max_chars: int) -> str:
+    """Cap a command's output, keeping the TAIL (results usually land last)."""
+    if not text:
+        return ""
+    lines = text.strip().splitlines()
+    truncated = False
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+        truncated = True
+    out = "\n".join(lines)
+    if len(out) > max_chars:
+        out = out[-max_chars:]
+        truncated = True
+    if truncated:
+        out = "...(truncated)...\n" + out.lstrip("\n")
+    return out
+
+
+def _deep_format_cmd(row, max_lines: int, max_chars: int) -> str:
+    """Format one command as '[id] $ cmd [status] [tags]' + fenced output."""
+    cmd_id = row["id"]
+    cmd    = row["cmd"] or ""
+    ec     = row["exit_code"]
+    status = f"exit {ec}" if ec not in (0, None) else "ok"
+    tags   = ""
+    try:
+        t = row["tags"]
+        if t:
+            tags = f"  [{t}]"
+    except (IndexError, KeyError):
+        pass
+    block = f"[{cmd_id}] $ {cmd} [{status}]{tags}"
+    try:
+        out = _deep_cap_output(row["output"] or "", max_lines, max_chars)
+    except (IndexError, KeyError):
+        out = ""
+    if out:
+        block += "\n```\n" + out + "\n```"
+    return block
+
+
+def _deep_commands_block(entries, max_lines: int, max_chars: int) -> str:
+    return "\n\n".join(_deep_format_cmd(e, max_lines, max_chars) for e in entries)
+
+
+def _deep_group_by_phase(entries) -> list[tuple[str, list]]:
+    """Group entries by primary phase tag (Pass-1 overflow fallback)."""
+    buckets: dict[str, list] = {}
+    for e in entries:
+        tags    = [t.strip() for t in (e["tags"] or "").split(",") if t.strip()]
+        primary = next((p for p in _PHASES_ORDER if p in tags), "other")
+        buckets.setdefault(primary, []).append(e)
+    return [(p, buckets[p]) for p in _PHASES_ORDER if p in buckets]
+
+
+def _build_investigation_prompt(intel_header: str, commands_block: str,
+                                sys_info: str, now, target: str | None) -> str:
+    prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
+    prompt += f"Target: {target or 'Unknown'}\n\n"
+    if intel_header:
+        prompt += f"{intel_header}\n\n"
+    prompt += f"[COMMANDS WITH OUTPUT]\n{commands_block}\n\n"
+    prompt += """[TASK]
+You are the lead penetration tester analyzing a completed engagement.
+Do NOT write the report yet. First investigate the raw terminal output above and
+produce a structured FINDINGS LEDGER in Markdown. Read every output carefully and
+extract concrete, evidence-backed facts.
+
+Produce these sections (omit one only if genuinely empty):
+
+## Hosts & Services
+Each host: IP, hostname, OS, open ports with service/version. Cite [cmd:ID].
+
+## Vulnerabilities
+Each: name, severity (Critical/High/Medium/Low/Info), affected host, concrete
+evidence quoted from the output, and [cmd:ID]. Justify every severity.
+
+## Credentials & Secrets
+Every credential, hash, key, token, and flag — exact value, source host, [cmd:ID].
+
+## Attack Chains & Pivots
+Trace how access was gained and escalated across hosts. Reference the [cmd:ID] of
+each pivotal step. Correlate findings across phases.
+
+## Gaps & Anomalies
+Failed commands, partial results, or areas that look unfinished.
+
+Quote exact values (hashes, versions, usernames) — never paraphrase them. Use the
+bracketed [cmd:ID] shown before each command. Be exhaustive and precise: this
+ledger is the sole evidence base for the report, so miss nothing."""
+    return prompt
+
+
+def _build_draft_prompt(intel_header: str, ledger: str, sys_info: str, now,
+                        target: str | None, fmt_name: str, template: str) -> str:
+    prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d %H:%M')}\n"
+    prompt += f"Target: {target or 'Unknown'}\n\n"
+    if intel_header:
+        prompt += f"{intel_header}\n\n"
+    prompt += f"[FINDINGS LEDGER — your curated evidence base]\n{ledger}\n\n"
+    prompt += f"""[TASK]
+You are an expert penetration tester writing a professional report.
+The findings ledger above is your authoritative, pre-analyzed evidence base —
+every fact in the report must trace back to it. Do not invent findings.
+
+For every specific finding, exploitation step, or discovered asset, insert a
+placeholder marker on its own line immediately after the relevant sentence:
+
+PREFERRED — direct ID reference (use the [cmd:ID] values from the ledger):
+    <!-- PSEVIDENCE: cmd:47 -->
+
+FALLBACK — keyword search (only when no command ID applies):
+    <!-- PSEVIDENCE: <specific search terms> -->
+
+The application replaces these markers with the real terminal command and output.
+Aim for 1–3 markers per major finding. Severities must match the ledger.
+
+Generate the complete {fmt_name} report below using exactly this template:
+
+{template}"""
+    return prompt
+
+
+def _build_critique_prompt(intel_header: str, ledger: str, draft: str,
+                           sys_info: str, fmt_name: str) -> str:
+    prompt  = f"System: {sys_info}\n\n"
+    if intel_header:
+        prompt += f"{intel_header}\n\n"
+    prompt += f"[FINDINGS LEDGER — ground truth]\n{ledger}\n\n"
+    prompt += f"[DRAFT REPORT]\n{draft}\n\n"
+    prompt += f"""[TASK]
+You are a senior reviewer performing QA on the draft report against the ledger.
+Critically check and FIX every issue, then output the improved final report only.
+
+Checklist:
+1. Coverage — every vulnerability, credential, and host in the ledger appears in
+   the report. Add anything missing.
+2. Support — every claim traces to ledger evidence. Remove or correct unsupported
+   or invented statements.
+3. Severity — ratings match the ledger and are justified.
+4. Consistency — the Executive Summary matches the body; no contradictions.
+5. Recommendations — each maps to a specific finding, ordered by severity.
+6. Evidence markers — keep and repair <!-- PSEVIDENCE: cmd:ID --> placeholders and
+   add them where strong findings lack one. Do NOT expand the markers yourself.
+7. Professional tone and correct {fmt_name} structure following the template.
+
+Output ONLY the final, corrected {fmt_name} report — no commentary, no diff, and
+no preamble describing what you changed."""
+    return prompt
+
+
+def _run_deep(
+    entries,
+    intel_header: str,
+    sys_info: str,
+    now,
+    target: str | None,
+    fmt_name: str,
+    template: str,
+    llm_fn,
+    ctx_k: int,
+    ctx_window: int | None,
+    verbose: bool,
+) -> str | None:
+    """3-pass deep generation. Returns the final report text (pre-injection)."""
+    max_lines = max(20,  ctx_k * _DEEP_OUT_LINES)
+    max_chars = max(800, ctx_k * _DEEP_OUT_CHARS)
+
+    sys.stderr.write(
+        f"\n  Deep mode: 3-pass (investigate → draft → critique)  [{ctx_k}K context]\n\n"
+    )
+    sys.stderr.flush()
+
+    # ── Pass 1: Investigation (overflow → phase-batched ledger merge) ──────────
+    sys.stderr.write("  [1/3] Investigation — analyzing raw output... ")
+    sys.stderr.flush()
+
+    full_block = _deep_commands_block(entries, max_lines, max_chars)
+    est_tokens = len(full_block) // 4
+    budget     = int((ctx_window or 0) * 0.6)
+
+    if ctx_window and est_tokens > budget and len(entries) > 1:
+        groups = _deep_group_by_phase(entries)
+        sys.stderr.write(f"\n        large dataset → {len(groups)} phase batch(es)\n")
+        sys.stderr.flush()
+        ledgers = []
+        for i, (phase, grp) in enumerate(groups, 1):
+            sys.stderr.write(f"        [{i}/{len(groups)}] {phase} ({len(grp)} cmds)... ")
+            sys.stderr.flush()
+            block = _deep_commands_block(grp, max_lines, max_chars)
+            p     = _build_investigation_prompt(intel_header, block, sys_info, now, target)
+            part  = llm_fn([{"role": "user", "content": p}], verbose=False)
+            ledgers.append(f"### Phase: {phase}\n{(part or '').strip()}")
+            sys.stderr.write("done\n")
+            sys.stderr.flush()
+        ledger = "\n\n".join(ledgers)
+        sys.stderr.write("        ledgers merged\n")
+        sys.stderr.flush()
+    else:
+        p      = _build_investigation_prompt(intel_header, full_block, sys_info, now, target)
+        ledger = (llm_fn([{"role": "user", "content": p}], verbose=False) or "").strip()
+        sys.stderr.write(f"done  ({len(ledger.split())} words)\n")
+        sys.stderr.flush()
+
+    if not ledger:
+        return None
+
+    # ── Pass 2: Draft ──────────────────────────────────────────────────────────
+    sys.stderr.write("  [2/3] Drafting report from ledger... ")
+    sys.stderr.flush()
+    p2    = _build_draft_prompt(intel_header, ledger, sys_info, now, target, fmt_name, template)
+    draft = (llm_fn([{"role": "user", "content": p2}], verbose=False) or "").strip()
+    sys.stderr.write(f"done  ({len(draft.split())} words)\n")
+    sys.stderr.flush()
+    if not draft:
+        return None
+
+    # ── Pass 3: Critique & finalize ────────────────────────────────────────────
+    sys.stderr.write("  [3/3] Critique & finalize...")
+    sys.stderr.write("\n" if verbose else " ")
+    sys.stderr.flush()
+    p3    = _build_critique_prompt(intel_header, ledger, draft, sys_info, fmt_name)
+    final = (llm_fn([{"role": "user", "content": p3}], verbose=verbose) or "").strip()
+    sys.stderr.write(f"done  ({len(final.split())} words)\n")
+    sys.stderr.flush()
+
+    # Critique returning empty → fall back to the draft rather than failing.
+    return final or draft
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1371,6 +1620,11 @@ def main():
                         help="Minimal mode: 5 app-side sections + 2 LLM calls only "
                              "(exec summary + recommendations); suited for small models; "
                              "K = context in K tokens (e.g. -m 4); auto from profile if omitted (-m)")
+    parser.add_argument("-d", "--deep", nargs="?", const=-1, default=None, type=int,
+                        metavar="K",
+                        help="Deep mode: 3-pass generation (investigate → draft → critique) "
+                             "with full command output; for top-tier large-context models; "
+                             "K = context in K tokens (e.g. -d 64); auto from profile if omitted (-d)")
     parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
@@ -1392,6 +1646,7 @@ def main():
             "  psreport                                    Generate report from full filtered history\n"
             "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage\n"
             "  psreport -m [K], --minimal [K]              Minimal: app-side report + 2 LLM calls (exec summary + recommendations); K = context K tokens; for small models\n"
+            "  psreport -d [K], --deep [K]                 Deep: 3-pass (investigate → draft → critique) with full output; K = context K tokens; for top-tier models\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
             "  psreport -v, --verbose                      Stream synthesis to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
@@ -1642,6 +1897,86 @@ Generate the complete {fmt_name} report below using exactly this template:
         try:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(response)
+            _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
+        except Exception as e:
+            _ai._err(f"Failed to save report: {e}")
+            sys.exit(1)
+        sys.exit(0)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # DEEP MODE — 3-pass (investigate → draft → critique) for top-tier models
+    # ══════════════════════════════════════════════════════════════════════════
+    if args.deep is not None:
+        if args.deep == -1:
+            ctx_window_d = _ai._get_ctx_window(profile, base_dir)
+            ctx_k        = max(1, ctx_window_d // 1000) if ctx_window_d else 32
+            ctx_source   = f"auto from profile ({ctx_k}K)"
+        else:
+            ctx_k        = args.deep
+            ctx_window_d = ctx_k * 1000
+            ctx_source   = f"manual ({ctx_k}K)"
+
+        entries_d, total_d = _load_entries_sqlite(base_dir, limit_per_phase=args.limit)
+        if not entries_d and not intel_header:
+            _ai._err("No relevant history found — run some pentest commands first.")
+            sys.exit(1)
+
+        conn_snap_d = _db_connect(base_dir)
+        snapshot_d: list[dict] = []
+        if conn_snap_d:
+            try:
+                snapshot_d = _snapshot_history(conn_snap_d)
+            finally:
+                conn_snap_d.close()
+
+        sys.stderr.write(
+            f"\n  Entries  : {len(entries_d)}/{total_d} (relevant commands, full output)\n"
+            f"  Context  : {ctx_source} per pass\n"
+            f"  API calls: 3 (investigation + draft + critique)\n"
+            f"\n  Deep mode targets large, high-quality models (32K+ context).\n"
+            f"\nContinue? [y/n] "
+        )
+        sys.stderr.flush()
+        try:
+            _reply_d = sys.stdin.readline().strip()
+        except Exception:
+            _reply_d = ""
+        if _reply_d.lower() != "y":
+            sys.stderr.write("Aborted.\n")
+            sys.exit(0)
+
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
+
+        response = _run_deep(
+            entries=entries_d,
+            intel_header=intel_header,
+            sys_info=sys_info,
+            now=now,
+            target=target,
+            fmt_name=fmt_name,
+            template=template,
+            llm_fn=_llm,
+            ctx_k=ctx_k,
+            ctx_window=ctx_window_d,
+            verbose=args.verbose,
+        )
+        if not response:
+            _ai._err("No response from model.")
+            sys.exit(1)
+
+        _ai._info("Injecting terminal evidence...\n")
+        resolved = _resolve_placeholders(response, snapshot_d)
+        injected = response.count("<!-- PSEVIDENCE:") - resolved.count("<!-- PSEVIDENCE:")
+        _ai._info(f"Evidence injected: {injected} placeholder(s) resolved.\n")
+
+        reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        filename    = f"report_{now.strftime('%Y-%m-%d_%H-%M')}.{fmt}"
+        report_path = os.path.join(reports_dir, filename)
+        try:
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(resolved)
             _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
         except Exception as e:
             _ai._err(f"Failed to save report: {e}")
