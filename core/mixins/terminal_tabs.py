@@ -124,7 +124,8 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         term.receivedData.connect(self._on_terminal_received)
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None, "cwd": ""}
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None,
+                      "cwd": "", "pending_id": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
         _wrapper_ref = [None]
 
@@ -141,11 +142,30 @@ class TerminalTabsMixin:
                     _state["ts_start"] = int(ts)
                     _state["output"] = []
                     _state["cwd"] = ""
+                    _state["pending_id"] = None
                     if cwd_b64:
                         try:
                             _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
                         except Exception:
                             pass
+                    # Record the command immediately (output/exit_code filled in at end),
+                    # so long-running commands (e.g. python -m http.server) are visible
+                    # in history while they run instead of only after they terminate.
+                    if not getattr(self, "terminal_history_disabled", False):
+                        _cmd_name = cmd.split()[0] if cmd.strip() else ""
+                        if _cmd_name and _cmd_name not in _PURRSH_TOOLS:
+                            try:
+                                _db = self._get_term_db()
+                                if _db is not None:
+                                    _state["pending_id"] = _db.insert_command(
+                                        ts=_state["ts_start"],
+                                        terminal=_tid,
+                                        cmd=cmd,
+                                        cwd=_state.get("cwd") or None,
+                                    )
+                            except Exception:
+                                logger.error("Failed to write pending command to DB", exc_info=True)
+                                _state["pending_id"] = None
                     # Hide overlay when new command starts
                     _w = _wrapper_ref[0]
                     if _w is not None:
@@ -160,8 +180,10 @@ class TerminalTabsMixin:
                         "exit_code": exit_code,
                         "output": "".join(_state["output"]).strip()
                     }
+                    _pending_id = _state.get("pending_id")
                     _state["cmd"] = None
                     _state["output"] = []
+                    _state["pending_id"] = None
                     if not getattr(self, "terminal_history_disabled", False):
                         _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
                         if _cmd_name not in _PURRSH_TOOLS:
@@ -169,15 +191,26 @@ class TerminalTabsMixin:
                                 _db = self._get_term_db()
                                 if _db is not None:
                                     _raw_output = entry["output"]
-                                    _cid = _db.insert_command(
-                                        ts=entry["ts"],
-                                        ts_end=entry["ts_end"],
-                                        terminal=entry["terminal"],
-                                        cmd=entry["cmd"],
-                                        exit_code=entry["exit_code"],
-                                        output=_trim_output(_raw_output),
-                                        cwd=_state.get("cwd") or None,
-                                    )
+                                    if _pending_id:
+                                        # Finalize the row inserted at command start
+                                        _db.update_command(
+                                            command_id=_pending_id,
+                                            ts_end=entry["ts_end"],
+                                            exit_code=entry["exit_code"],
+                                            output=_trim_output(_raw_output),
+                                        )
+                                        _cid = _pending_id
+                                    else:
+                                        # No pending row (history was off at start, or insert failed)
+                                        _cid = _db.insert_command(
+                                            ts=entry["ts"],
+                                            ts_end=entry["ts_end"],
+                                            terminal=entry["terminal"],
+                                            cmd=entry["cmd"],
+                                            exit_code=entry["exit_code"],
+                                            output=_trim_output(_raw_output),
+                                            cwd=_state.get("cwd") or None,
+                                        )
                                     _tagger = self._get_auto_tagger()
                                     if _tagger is not None and _cid:
                                         _tags = _tagger.get_tags(entry["cmd"])
@@ -1156,7 +1189,7 @@ class TerminalTabsMixin:
         except Exception:
             pass
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": ""}
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": "", "pending_id": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
 
         def _on_split_log(data: str, _state=_log_state, _tid=f"split_{_split_idx}"):
@@ -1172,11 +1205,29 @@ class TerminalTabsMixin:
                     _state["ts_start"] = int(ts)
                     _state["output"] = []
                     _state["cwd"] = ""
+                    _state["pending_id"] = None
                     if cwd_b64:
                         try:
                             _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
                         except Exception:
                             pass
+                    # Record the command immediately so long-running commands are
+                    # visible in history while they run (see main terminal handler).
+                    if not getattr(self, "terminal_history_disabled", False):
+                        _cmd_name = cmd.split()[0] if cmd.strip() else ""
+                        if _cmd_name and _cmd_name not in _PURRSH_TOOLS:
+                            try:
+                                _db = self._get_term_db()
+                                if _db is not None:
+                                    _state["pending_id"] = _db.insert_command(
+                                        ts=_state["ts_start"],
+                                        terminal=_tid,
+                                        cmd=cmd,
+                                        cwd=_state.get("cwd") or None,
+                                    )
+                            except Exception:
+                                logger.error("Failed to write pending split command to DB", exc_info=True)
+                                _state["pending_id"] = None
                 elif typ == "end" and _state["cmd"] is not None:
                     exit_code = int(payload)
                     entry = {
@@ -1187,8 +1238,10 @@ class TerminalTabsMixin:
                         "exit_code": exit_code,
                         "output": "".join(_state["output"]).strip()
                     }
+                    _pending_id = _state.get("pending_id")
                     _state["cmd"] = None
                     _state["output"] = []
+                    _state["pending_id"] = None
                     if not getattr(self, "terminal_history_disabled", False):
                         _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
                         if _cmd_name not in _PURRSH_TOOLS:
@@ -1196,15 +1249,25 @@ class TerminalTabsMixin:
                                 _db = self._get_term_db()
                                 if _db is not None:
                                     _raw_output = entry["output"]
-                                    _cid = _db.insert_command(
-                                        ts=entry["ts"],
-                                        ts_end=entry["ts_end"],
-                                        terminal=entry["terminal"],
-                                        cmd=entry["cmd"],
-                                        exit_code=entry["exit_code"],
-                                        output=_trim_output(_raw_output),
-                                        cwd=_state.get("cwd") or None,
-                                    )
+                                    if _pending_id:
+                                        # Finalize the row inserted at command start
+                                        _db.update_command(
+                                            command_id=_pending_id,
+                                            ts_end=entry["ts_end"],
+                                            exit_code=entry["exit_code"],
+                                            output=_trim_output(_raw_output),
+                                        )
+                                        _cid = _pending_id
+                                    else:
+                                        _cid = _db.insert_command(
+                                            ts=entry["ts"],
+                                            ts_end=entry["ts_end"],
+                                            terminal=entry["terminal"],
+                                            cmd=entry["cmd"],
+                                            exit_code=entry["exit_code"],
+                                            output=_trim_output(_raw_output),
+                                            cwd=_state.get("cwd") or None,
+                                        )
                                     _tagger = self._get_auto_tagger()
                                     if _tagger is not None and _cid:
                                         _tags = _tagger.get_tags(entry["cmd"])

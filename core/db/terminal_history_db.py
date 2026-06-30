@@ -201,6 +201,29 @@ class TerminalHistoryDB:
             )
             return cur.lastrowid  # type: ignore[return-value]
 
+    def update_command(
+        self,
+        command_id: int,
+        ts_end: Optional[int] = None,
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ) -> None:
+        """Finalize a pending command row (inserted at start) with its result.
+
+        Used by the two-phase logger: a row is inserted at command start with
+        exit_code/output/ts_end NULL (so long-running commands are visible while
+        they run), then completed here when the command ends.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE commands
+                   SET ts_end = ?, exit_code = ?, output = ?
+                 WHERE id = ?
+                """,
+                (ts_end, exit_code, output, command_id),
+            )
+
     def get_recent_commands(
         self,
         limit: int = 50,

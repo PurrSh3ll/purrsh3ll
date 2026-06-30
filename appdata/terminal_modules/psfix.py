@@ -25,8 +25,11 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
     if conn is None:
         return None
     try:
+        # Only finished commands are fixable — a row with NULL exit_code is a
+        # command still running (logged at start by the two-phase logger).
         row = conn.execute(
-            "SELECT cmd, exit_code, output FROM commands ORDER BY ts DESC LIMIT 1"
+            "SELECT cmd, exit_code, output FROM commands "
+            "WHERE exit_code IS NOT NULL ORDER BY ts DESC LIMIT 1"
         ).fetchone()
         if row:
             return {"cmd": row["cmd"], "exit_code": row["exit_code"], "output": row["output"] or ""}
@@ -65,15 +68,20 @@ def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0,
     finally:
         conn.close()
 
+    def _status(ec: int | None) -> str:
+        # NULL exit_code = command still running (logged at start, not yet finished)
+        if ec is None:
+            return "running"
+        return f"exit {ec}" if ec != 0 else "ok"
+
     parts = []
 
     # Extended history (oldest context, commands only)
     if broad_rows:
         parts.append("Extended history (commands only):")
         for row in reversed(broad_rows):
-            ec     = row["exit_code"] if row["exit_code"] is not None else 0
             cmd    = row["cmd"] or ""
-            status = f"exit {ec}" if ec != 0 else "ok"
+            status = _status(row["exit_code"])
             parts.append(f"$ {cmd} [{status}]")
         parts.append("")  # blank separator
 
@@ -81,10 +89,9 @@ def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0,
     if recent_rows:
         parts.append("Recent history (with output):")
         for row in reversed(recent_rows):
-            ec     = row["exit_code"] if row["exit_code"] is not None else 0
             cmd    = row["cmd"] or ""
             out    = (row["output"] or "")[:recent_output_cap]
-            status = f"exit {ec}" if ec != 0 else "ok"
+            status = _status(row["exit_code"])
             part   = f"$ {cmd} [{status}]"
             if out:
                 part += f"\n{out}"
