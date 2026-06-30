@@ -340,8 +340,20 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._psai_tok_watcher.addPath(self._psai_tok_path)
             self._on_psai_tok_changed(self._psai_tok_path)
 
+    @staticmethod
+    def _fallback_ctx_window(provider):
+        """Default context window when the model's real window is unknown, so the
+        GUI can always render a percentage bar instead of a raw token count:
+        ollama → 4k, every other provider → 200k."""
+        return 4000 if (provider or "").lower() == "ollama" else 200_000
+
     def _get_active_ctx_window(self):
-        """Return context window size for the active profile, or None if unknown."""
+        """Return context window size for the active profile.
+
+        Resolution order: explicit profile override → model_ctx_registry.json →
+        provider-based fallback (_fallback_ctx_window). Returns None only when no
+        active profile exists (nothing is being sent)."""
+        provider = ""
         try:
             with open(self.api_profiles_path, encoding="utf-8") as f:
                 data = json.load(f)
@@ -352,6 +364,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             )
             if profile is None:
                 return None
+            provider = profile.get("provider", "").lower()
             # Use explicit override if set
             override = int(profile.get("context_tokens") or 0)
             if override > 0:
@@ -360,7 +373,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             reg_path = os.path.join(self.base_path, "appdata", "model_ctx_registry.json")
             with open(reg_path, encoding="utf-8") as f:
                 reg = json.load(f)
-            provider = profile.get("provider", "").lower()
             model = profile.get("model", "")
             if model.lower().startswith("models/"):
                 model = model[7:]
@@ -368,21 +380,24 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 model = model.split(":")[0]
             model_lc = model.lower()
             section = reg.get(provider, {})
-            if not section:
-                return None
-            models = section.get("models", {})
-            for key, val in models.items():
-                if model_lc == key.lower():
-                    return val
-            for key, val in models.items():
-                if model == key:
-                    return val
-            for key, val in models.items():
-                if model_lc.startswith(key.lower()):
-                    return val
-            return section.get("default")
+            if section:
+                models = section.get("models", {})
+                for key, val in models.items():
+                    if model_lc == key.lower():
+                        return val
+                for key, val in models.items():
+                    if model == key:
+                        return val
+                for key, val in models.items():
+                    if model_lc.startswith(key.lower()):
+                        return val
+                default = section.get("default")
+                if default:
+                    return default
+            # Unknown model / provider not in registry → provider-based fallback
+            return self._fallback_ctx_window(provider)
         except Exception:
-            return None
+            return self._fallback_ctx_window(provider)
 
     @staticmethod
     def _fmt_ctx(n):
