@@ -892,6 +892,78 @@ def build_main_layout(main_window):
 
         _profiles_cache = []
 
+        def _resolve_ctx(p):
+            """Context window for a profile: override → registry → provider fallback.
+            Returns (value, is_fallback)."""
+            try:
+                override = int(p.get("context_tokens") or 0)
+            except (TypeError, ValueError):
+                override = 0
+            if override > 0:
+                return override, False
+            provider = (p.get("provider") or "").lower()
+            model = p.get("model", "") or ""
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            if ":" in model:
+                model = model.split(":")[0]
+            model_lc = model.lower()
+            try:
+                reg_path = os.path.join(getattr(c, "base_path", ""),
+                                        "appdata", "model_ctx_registry.json")
+                with open(reg_path, encoding="utf-8") as f:
+                    reg = json.load(f)
+            except Exception:
+                reg = {}
+            section = reg.get(provider, {})
+            if section:
+                models = section.get("models", {})
+                for key, val in models.items():
+                    if model_lc == key.lower():
+                        return val, False
+                for key, val in models.items():
+                    if model == key:
+                        return val, False
+                for key, val in models.items():
+                    if model_lc.startswith(key.lower()):
+                        return val, False
+                default = section.get("default")
+                if default:
+                    return default, False
+            try:
+                fb = c._fallback_ctx_window(provider)
+            except Exception:
+                fb = 4000 if provider == "ollama" else 200_000
+            return fb, True
+
+        def _fmt_ctx_for(p):
+            try:
+                val, is_fb = _resolve_ctx(p)
+            except Exception:
+                return "—"
+            try:
+                s = c._fmt_ctx(val)
+            except Exception:
+                s = str(val)
+            return f"{s} (default)" if is_fb else s
+
+        def _fmt_thinking(p):
+            if p.get("disable_thinking"):
+                return "false (disabled)"
+            if p.get("hide_thinking"):
+                return "false (hidden)"
+            return "true"
+
+        def _profile_fields(p):
+            provider = p.get("provider", "—")
+            model    = p.get("model", "—")
+            return (
+                f"{'Provider:':<15}{provider}\n"
+                f"{'Model:':<15}{model}\n"
+                f"{'Context:':<15}{_fmt_ctx_for(p)}\n"
+                f"{'Show thinking:':<15}{_fmt_thinking(p)}"
+            )
+
         def _update_tooltip():
             name = combo.currentData() or ""
             if not name:
@@ -899,12 +971,9 @@ def build_main_layout(main_window):
                 return
             for p in _profiles_cache:
                 if p.get("name") == name:
-                    provider = p.get("provider", "—")
-                    model = p.get("model", "—")
                     combo.setToolTip(
-                        f"Active AI profile — used by psai tools and AI chat\n"
-                        f"Provider:  {provider}\n"
-                        f"Model:     {model}"
+                        "Active AI profile — used by psai tools and AI chat\n"
+                        + _profile_fields(p)
                     )
                     return
             combo.setToolTip("Active AI profile — used by psai tools and AI chat")
@@ -922,10 +991,7 @@ def build_main_layout(main_window):
                 for p in _profiles_cache:
                     combo.addItem(p["name"], p["name"])
                     idx = combo.count() - 1
-                    provider = p.get("provider", "—")
-                    model = p.get("model", "—")
-                    combo.setItemData(idx,
-                        f"Provider:  {provider}\nModel:     {model}",
+                    combo.setItemData(idx, _profile_fields(p),
                         Qt.ItemDataRole.ToolTipRole)
                 idx = combo.findData(active)
                 combo.setCurrentIndex(max(0, idx))
