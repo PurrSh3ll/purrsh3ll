@@ -107,6 +107,23 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking    = bool(profile.get("hide_thinking", False))
+    use_tools        = _ai._tools_enabled(profile, base_dir)
+
+    _CMD_TOOL = {
+        "name":        "run_command",
+        "description": "Return the single shell command that accomplishes the requested task",
+        "parameters": {
+            "type":       "object",
+            "properties": {
+                "command": {
+                    "type":        "string",
+                    "description": "The shell command, ready to execute as-is",
+                }
+            },
+            "required": ["command"],
+        },
+    }
 
     description = " ".join(args.description)
     cwd = (args.cwd or "").strip()
@@ -115,29 +132,47 @@ def main():
     prompt = f"System: {sys_info}\n"
     if cwd:
         prompt += f"Working directory: {cwd}\n"
-    prompt += (
-        f"\nGenerate a shell command that: {description}\n\n"
-        "Return ONLY the shell command — no explanation, no markdown, no backticks, "
-        "just the raw command on a single line."
-    )
+    prompt += f"\nGenerate a shell command that: {description}\n"
+    if use_tools:
+        prompt += "\nCall run_command with the shell command."
+    else:
+        prompt += (
+            "\nReturn ONLY the shell command — no explanation, no markdown, no backticks, "
+            "just the raw command on a single line."
+        )
 
     if _ai._SHOW_QUERYING:
         _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info(f"Generating: {description}\n")
     messages = [{"role": "user", "content": prompt}]
 
-    # Stream to stderr (visible via 2>/dev/tty), print clean command to stdout
-    _real_stdout = sys.stdout
-    sys.stdout   = sys.stderr
-    try:
-        response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params)
-    finally:
-        sys.stdout = _real_stdout
+    def _run_text() -> str | None:
+        # Stream to stderr (visible via 2>/dev/tty), keep stdout for the command
+        _real_stdout = sys.stdout
+        sys.stdout   = sys.stderr
+        try:
+            return _ai._run_llm(provider, model, messages, url, api_key,
+                                disable_thinking, custom_params, hide_thinking)
+        finally:
+            sys.stdout = _real_stdout
 
-    if response:
-        cmd = _clean_command(response)
+    if use_tools:
+        cmd = _ai._run_llm_tool_call(provider, model, messages, _CMD_TOOL, url, api_key)
         if cmd:
             print(cmd)
+        else:
+            # Fallback to text path if the tool call fails
+            response = _run_text()
+            if response:
+                cmd = _clean_command(response)
+                if cmd:
+                    print(cmd)
+    else:
+        response = _run_text()
+        if response:
+            cmd = _clean_command(response)
+            if cmd:
+                print(cmd)
 
 
 if __name__ == "__main__":
