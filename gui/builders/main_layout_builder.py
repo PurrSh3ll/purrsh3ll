@@ -948,11 +948,9 @@ def build_main_layout(main_window):
             return f"{s} (default)" if is_fb else s
 
         def _fmt_thinking(p):
-            if p.get("disable_thinking"):
-                return "false (disabled)"
-            if p.get("hide_thinking"):
-                return "false (hidden)"
-            return "true"
+            # Mirrors the "Hide thinking output" (hide_thinking) profile checkbox:
+            # show thinking == not hidden.
+            return "false" if p.get("hide_thinking") else "true"
 
         def _profile_fields(p):
             provider = p.get("provider", "—")
