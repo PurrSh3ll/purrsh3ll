@@ -948,9 +948,9 @@ def build_main_layout(main_window):
             return f"{s} (default)" if is_fb else s
 
         def _fmt_thinking(p):
-            # Mirrors the "Hide thinking output" (hide_thinking) profile checkbox:
-            # show thinking == not hidden.
-            return "false" if p.get("hide_thinking") else "true"
+            # Mirrors the "Hide thinking output" (hide_thinking) profile checkbox
+            # exactly: true when checked, false when unchecked.
+            return "true" if p.get("hide_thinking") else "false"
 
         def _profile_fields(p):
             provider = p.get("provider", "—")
@@ -959,7 +959,7 @@ def build_main_layout(main_window):
                 f"{'Provider:':<15}{provider}\n"
                 f"{'Model:':<15}{model}\n"
                 f"{'Context:':<15}{_fmt_ctx_for(p)}\n"
-                f"{'Show thinking:':<15}{_fmt_thinking(p)}"
+                f"{'Hide thinking:':<15}{_fmt_thinking(p)}"
             )
 
         def _update_tooltip():
