@@ -260,8 +260,12 @@ class TerminalTabsMixin:
         except Exception:
             pass
 
+        # Identifies this terminal session in the DB `terminal` column; exported
+        # so psfix can scope "last failed command" to the tab it runs in.
+        _term_id = f"terminal_{idx}"
         try:
             term.setShellProgram("/bin/zsh")
+            _base_env = list(self._term_env) + [f"PURRSH_TERM_ID={_term_id}"]
             _fifo_dir = os.path.join(self.base_path, "appdata", "terminal_fifos")
             os.makedirs(_fifo_dir, exist_ok=True)
             _fifo_path = os.path.join(_fifo_dir, f"terminal_{idx}.fifo")
@@ -270,11 +274,11 @@ class TerminalTabsMixin:
             os.mkfifo(_fifo_path)
             _fifo_fd = os.open(_fifo_path, os.O_RDWR | os.O_NONBLOCK)
             self.terminal_fifos[f"terminal_{idx}"] = (_fifo_path, _fifo_fd)
-            _term_env_with_fifo = list(self._term_env) + [f"PURRSH_FIFO={_fifo_path}"]
+            _term_env_with_fifo = _base_env + [f"PURRSH_FIFO={_fifo_path}"]
             term.setEnvironment(_term_env_with_fifo)
             term.startShellProgram()
         except Exception:
-            term.setEnvironment(self._term_env)
+            term.setEnvironment(list(self._term_env) + [f"PURRSH_TERM_ID={_term_id}"])
             try:
                 term.startShellProgram()
             except Exception:
@@ -1162,8 +1166,10 @@ class TerminalTabsMixin:
         term.setScrollBarPosition(QTermWidget.ScrollBarPosition.ScrollBarRight)
         term.setStyleSheet(self.terminal_qss_scroll)
         term.setColorScheme(self.terminals_stylesheet)
+        _term_id = f"split_{_split_idx}"
         try:
             term.setShellProgram("/bin/zsh")
+            _base_env = list(self._term_env) + [f"PURRSH_TERM_ID={_term_id}"]
             _fifo_dir = os.path.join(self.base_path, "appdata", "terminal_fifos")
             os.makedirs(_fifo_dir, exist_ok=True)
             _fifo_key = f"split_{_split_idx}"
@@ -1174,13 +1180,13 @@ class TerminalTabsMixin:
             _fifo_fd = os.open(_fifo_path, os.O_RDWR | os.O_NONBLOCK)
             self.terminal_fifos[_fifo_key] = (_fifo_path, _fifo_fd)
             term._fifo_key = _fifo_key
-            _term_env_with_fifo = list(self._term_env) + [f"PURRSH_FIFO={_fifo_path}"]
+            _term_env_with_fifo = _base_env + [f"PURRSH_FIFO={_fifo_path}"]
             term.setEnvironment(_term_env_with_fifo)
             term.startShellProgram()
         except Exception:
             self.terminal_fifos.pop(f"split_{_split_idx}", None)
             try:
-                term.setEnvironment(self._term_env)
+                term.setEnvironment(list(self._term_env) + [f"PURRSH_TERM_ID={_term_id}"])
                 term.startShellProgram()
             except Exception:
                 pass

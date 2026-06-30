@@ -20,17 +20,27 @@ def _db_connect(base_dir: str) -> sqlite3.Connection | None:
     return conn
 
 
-def _last_terminal_entry(base_dir: str) -> dict | None:
+def _last_terminal_entry(base_dir: str, terminal: str | None = None) -> dict | None:
     conn = _db_connect(base_dir)
     if conn is None:
         return None
     try:
         # Only finished commands are fixable — a row with NULL exit_code is a
         # command still running (logged at start by the two-phase logger).
-        row = conn.execute(
-            "SELECT cmd, exit_code, output FROM commands "
-            "WHERE exit_code IS NOT NULL ORDER BY ts DESC LIMIT 1"
-        ).fetchone()
+        # Scope to the invoking terminal session when known, so a successful
+        # command in another tab doesn't mask this tab's last failure.
+        if terminal:
+            row = conn.execute(
+                "SELECT cmd, exit_code, output FROM commands "
+                "WHERE exit_code IS NOT NULL AND terminal = ? "
+                "ORDER BY ts DESC LIMIT 1",
+                (terminal,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT cmd, exit_code, output FROM commands "
+                "WHERE exit_code IS NOT NULL ORDER BY ts DESC LIMIT 1"
+            ).fetchone()
         if row:
             return {"cmd": row["cmd"], "exit_code": row["exit_code"], "output": row["output"] or ""}
     except Exception:
@@ -41,27 +51,30 @@ def _last_terminal_entry(base_dir: str) -> dict | None:
 
 
 def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0,
-                         recent_output_cap: int = 400) -> str:
+                         recent_output_cap: int = 400, terminal: str | None = None) -> str:
     """Load terminal history as formatted string (oldest → newest).
 
     limit             — recent entries sent with output (capped at recent_output_cap chars)
     broad_limit       — older entries sent with cmd + exit code only (no output);
                         fetched as OFFSET limit, so they never overlap with recent
     recent_output_cap — max chars of output per recent entry (default 400)
+    terminal          — when set, restrict to this terminal session (DB `terminal` col)
     """
     conn = _db_connect(base_dir)
     if conn is None:
         return ""
+    _where = "WHERE terminal = ? " if terminal else ""
+    _scope = (terminal,) if terminal else ()
     try:
         recent_rows = conn.execute(
-            "SELECT cmd, exit_code, output FROM commands ORDER BY ts DESC LIMIT ?",
-            (limit,),
+            f"SELECT cmd, exit_code, output FROM commands {_where}ORDER BY ts DESC LIMIT ?",
+            (*_scope, limit),
         ).fetchall()
         broad_rows = []
         if broad_limit > 0:
             broad_rows = conn.execute(
-                "SELECT cmd, exit_code FROM commands ORDER BY ts DESC LIMIT ? OFFSET ?",
-                (broad_limit, limit),
+                f"SELECT cmd, exit_code FROM commands {_where}ORDER BY ts DESC LIMIT ? OFFSET ?",
+                (*_scope, broad_limit, limit),
             ).fetchall()
     except Exception:
         return ""
@@ -178,6 +191,9 @@ def main():
     parser.add_argument("--output",     default=None, metavar="OUTPUT")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
                         dest="profile", help="Use a specific saved profile by name")
+    parser.add_argument("--term-id", default=None, metavar="ID",
+                        help="Scope history to this terminal session "
+                             "(defaults to $PURRSH_TERM_ID)")
     parser.add_argument("--debug", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help", action="store_true")
     args = parser.parse_args()
@@ -216,13 +232,17 @@ def main():
 
     api_key = _ai._load_api_key(profile.get("name", ""), base_dir)
 
+    # Restrict history to the terminal session psfix runs in, so a successful
+    # command in another open tab doesn't hide this tab's last failure.
+    term_id = args.term_id or os.environ.get("PURRSH_TERM_ID") or None
+
     # Data can come from direct args (overlay button) or from history file (manual psfix)
     if args.cmd is not None and args.exit_code is not None:
         cmd       = args.cmd
         exit_code = args.exit_code
         output    = (args.output or "").strip()
     else:
-        entry = _last_terminal_entry(base_dir)
+        entry = _last_terminal_entry(base_dir, terminal=term_id)
         if not entry:
             _ai._err("No terminal history found — run a command first.")
             sys.exit(1)
@@ -303,12 +323,14 @@ def main():
                 limit=recent_limit,
                 broad_limit=broad_limit,
                 recent_output_cap=recent_output_cap,
+                terminal=term_id,
             )
         else:
             history_text = _load_recent_history(
                 base_dir,
                 limit=_ai._TERMINAL_HIST_LIMIT,
                 broad_limit=_ai._TERMINAL_HIST_BROAD_LIMIT,
+                terminal=term_id,
             )
 
         prompt = f"System: {sys_info}\n"
