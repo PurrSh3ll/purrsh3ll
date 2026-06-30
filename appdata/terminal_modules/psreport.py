@@ -1167,6 +1167,649 @@ def _run_nano(
     return _assemble_md_nano(generated, report_title, target, now)
 
 
+# ── Minimal mode ──────────────────────────────────────────────────────────────
+
+_MINI_TOOL_NAMES = [
+    "nmap", "masscan", "rustscan", "gobuster", "feroxbuster", "dirb", "nikto",
+    "wfuzz", "ffuf", "sqlmap", "nuclei", "wpscan", "droopescan",
+    "enum4linux", "crackmapexec", "smbclient", "smbmap", "rpcclient", "ldapsearch",
+    "bloodhound", "kerbrute", "secretsdump", "evil-winrm", "pwncat",
+    "hydra", "medusa", "hashcat", "john", "credmaster",
+    "msfconsole", "msfvenom", "searchsploit", "netcat", "socat",
+    "chisel", "ligolo", "proxychains", "theHarvester", "amass", "subfinder",
+    "aircrack", "wifite", "linpeas", "winpeas", "pspy", "impacket",
+    "psexec", "wmiexec",
+]
+
+_MINI_SEVERITY_MAP = {
+    "exploit": "Critical", "privesc": "Critical",
+    "shell":   "High",     "lateral": "High",
+    "crack":   "High",     "ad":      "High",
+    "web":     "Medium",   "smb":     "Medium",
+    "ldap":    "Medium",   "ssh":     "Medium",
+    "ftp":     "Low",      "recon":   "Info",
+    "scan":    "Info",
+}
+
+_MINI_OUT_LINES = 15
+_MINI_OUT_CHARS = 400
+
+
+def _mini_cap_output(text: str) -> str:
+    if not text:
+        return ""
+    lines = text.strip().splitlines()[-_MINI_OUT_LINES:]
+    out = "\n".join(lines)
+    if len(out) > _MINI_OUT_CHARS:
+        out = "...\n" + out[-_MINI_OUT_CHARS:].lstrip("\n")
+    return out
+
+
+def _mini_scope(conn: sqlite3.Connection, snapshot: list[dict]) -> str:
+    all_phases = [
+        "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
+        "exploit", "privesc", "lateral", "crack", "shell",
+        "network", "cloud", "forensics", "re", "wifi", "other",
+    ]
+    try:
+        phase_rows = conn.execute(
+            "SELECT ct.tag, COUNT(*) AS cnt FROM command_tags ct "
+            "WHERE ct.tag IN ({}) GROUP BY ct.tag ORDER BY cnt DESC".format(
+                ",".join("?" * len(all_phases))
+            ),
+            all_phases,
+        ).fetchall()
+    except Exception:
+        phase_rows = []
+
+    try:
+        ts_row = conn.execute(
+            "SELECT MIN(ts) AS t0, MAX(COALESCE(ts_end,ts)) AS t1 "
+            "FROM commands WHERE ts IS NOT NULL"
+        ).fetchone()
+    except Exception:
+        ts_row = None
+
+    tools_used = []
+    for tool in _MINI_TOOL_NAMES:
+        for row in snapshot:
+            if tool in (row.get("cmd") or "").lower():
+                tools_used.append(tool)
+                break
+
+    try:
+        host_count = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+    except Exception:
+        host_count = 0
+
+    lines = []
+    if ts_row and ts_row["t0"] and ts_row["t1"]:
+        try:
+            t0 = datetime.fromtimestamp(ts_row["t0"]).strftime("%Y-%m-%d %H:%M")
+            t1 = datetime.fromtimestamp(ts_row["t1"]).strftime("%Y-%m-%d %H:%M")
+            lines.append(f"- **Duration:** {t0} → {t1}")
+        except Exception:
+            pass
+    if host_count:
+        lines.append(f"- **Hosts discovered:** {host_count}")
+    if phase_rows:
+        ph = ", ".join(f"{r['tag']} ({r['cnt']})" for r in phase_rows)
+        lines.append(f"- **Phases covered:** {ph}")
+    if tools_used:
+        lines.append(f"- **Tools used:** {', '.join(tools_used)}")
+    return "\n".join(lines) if lines else "*No scope data available.*"
+
+
+def _mini_assets(conn: sqlite3.Connection, target_filter: str | None) -> str:
+    try:
+        if target_filter:
+            rows = conn.execute(
+                """SELECT t.ip, t.hostname, t.os_guess,
+                          tp.port, tp.protocol, tp.service, tp.version
+                   FROM targets t
+                   LEFT JOIN target_ports tp ON tp.target_id = t.id
+                   WHERE t.ip = ? OR t.hostname = ?
+                   ORDER BY t.ip, tp.port""",
+                (target_filter, target_filter),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT t.ip, t.hostname, t.os_guess,
+                          tp.port, tp.protocol, tp.service, tp.version
+                   FROM targets t
+                   LEFT JOIN target_ports tp ON tp.target_id = t.id
+                   ORDER BY t.ip, tp.port"""
+            ).fetchall()
+    except Exception:
+        return "*Targets table unavailable.*"
+
+    if not rows:
+        return "*No assets discovered.*"
+
+    hosts: dict[str, dict] = {}
+    for r in rows:
+        ip = r["ip"]
+        if ip not in hosts:
+            hosts[ip] = {"hostname": r["hostname"], "os": r["os_guess"], "ports": []}
+        if r["port"] is not None:
+            hosts[ip]["ports"].append(r)
+
+    lines = []
+    for ip, info in hosts.items():
+        meta = [x for x in (info["hostname"], info["os"]) if x]
+        lines.append(f"**{ip}**" + (f" ({' · '.join(meta)})" if meta else ""))
+        for p in info["ports"]:
+            line = f"- {p['port']}/{p['protocol']}"
+            if p["service"]:
+                line += f"  {p['service']}"
+            if p["version"]:
+                line += f"  {p['version'][:60]}"
+            lines.append(line)
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _mini_vulns(conn: sqlite3.Connection, snapshot: list[dict],
+                target_filter: str | None) -> str:
+    parts = []
+    snapshot_by_id = {r["id"]: r for r in snapshot}
+    _tf_cond = "AND (f.target = ? OR f.target IS NULL)" if target_filter else ""
+    _tf_arg  = (target_filter,) if target_filter else ()
+
+    try:
+        cves = conn.execute(
+            f"SELECT f.value, f.target, f.command_id FROM findings f "
+            f"WHERE f.finding_type='cve' {_tf_cond} GROUP BY f.value ORDER BY f.value",
+            _tf_arg,
+        ).fetchall()
+    except Exception:
+        cves = []
+
+    for r in cves:
+        block = [f"### {r['value']}"]
+        if r["target"]:
+            block.append(f"*Affected: {r['target']}*")
+        cmd_id = r["command_id"]
+        if cmd_id and cmd_id in snapshot_by_id:
+            row = snapshot_by_id[cmd_id]
+            block.append(f"*Source: [cmd:{row['id']}] `{(row['cmd'] or '')[:80]}`*")
+            out = _mini_cap_output(row.get("output") or "")
+            if out:
+                block.append("```")
+                block.append(out)
+                block.append("```")
+        parts.append("\n".join(block))
+
+    exploit_phases = ["exploit", "privesc", "lateral", "shell", "crack", "ad", "web", "smb"]
+    seen_ids: set = set()
+    for row in snapshot:
+        tags = {t.strip() for t in (row.get("tags") or "").split(",") if t.strip()}
+        if not tags & set(exploit_phases):
+            continue
+        rid = row["id"]
+        if rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+        phase    = next((p for p in exploit_phases if p in tags), "other")
+        severity = _MINI_SEVERITY_MAP.get(phase, "Info")
+        cmd_short = (row.get("cmd") or "")[:80]
+        ec     = row.get("exit_code")
+        status = f"exit {ec}" if ec not in (0, None) else "ok"
+        block  = [f"### [{severity}] {phase.capitalize()} — [cmd:{rid}]"]
+        block.append(f"`{cmd_short}` [{status}]")
+        out = _mini_cap_output(row.get("output") or "")
+        if out:
+            block.append("```")
+            block.append(out)
+            block.append("```")
+        parts.append("\n".join(block))
+        if len(parts) >= 25:
+            break
+
+    return "\n\n".join(parts) if parts else "*No vulnerabilities identified.*"
+
+
+def _mini_creds(conn: sqlite3.Connection, target_filter: str | None,
+                snapshot: list[dict]) -> str:
+    _tf_cond = "AND (f.target = ? OR f.target IS NULL)" if target_filter else ""
+    _tf_arg  = (target_filter,) if target_filter else ()
+    try:
+        rows = conn.execute(
+            f"SELECT f.finding_type, f.value, f.target, f.service, f.command_id "
+            f"FROM findings f "
+            f"WHERE f.finding_type IN ('credential','hash','user','flag') {_tf_cond} "
+            f"ORDER BY f.finding_type, f.target, f.value",
+            _tf_arg,
+        ).fetchall()
+    except Exception:
+        return "*Findings table unavailable.*"
+
+    if not rows:
+        return "*No credentials or sensitive data found.*"
+
+    snapshot_by_id = {r["id"]: r for r in snapshot}
+    type_labels = {
+        "credential": "Credentials",
+        "hash":       "Password Hashes",
+        "user":       "Discovered Users",
+        "flag":       "Captured Flags",
+    }
+    groups: dict[str, list] = {}
+    for r in rows:
+        groups.setdefault(r["finding_type"], []).append(r)
+
+    parts = []
+    for ftype in ("credential", "hash", "user", "flag"):
+        if ftype not in groups:
+            continue
+        lines = [f"**{type_labels[ftype]}**"]
+        for r in groups[ftype]:
+            val  = (r["value"] or "")
+            meta = [x for x in (r["target"], r["service"]) if x]
+            line = f"- `{val}`"
+            if meta:
+                line += f"  ({', '.join(meta)})"
+            cmd_id = r["command_id"]
+            if cmd_id and cmd_id in snapshot_by_id:
+                row = snapshot_by_id[cmd_id]
+                cmd_short = (row.get("cmd") or "")[:60]
+                out = _mini_cap_output(row.get("output") or "")
+                line += f"\n  *from: [cmd:{cmd_id}] `{cmd_short}`*"
+                if out:
+                    line += f"\n  ```\n{out}\n  ```"
+            lines.append(line)
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _mini_timeline(snapshot: list[dict]) -> str:
+    if not snapshot:
+        return "*No timeline data available.*"
+    lines = []
+    for row in snapshot:
+        ts  = row.get("ts")
+        ts_str = ""
+        if ts:
+            try:
+                ts_str = datetime.fromtimestamp(ts).strftime("%H:%M")
+            except Exception:
+                pass
+        cmd    = (row.get("cmd") or "")[:100]
+        ec     = row.get("exit_code")
+        status = f"exit {ec}" if ec not in (0, None) else "ok"
+        tags   = row.get("tags") or ""
+        tag_str = f" [{tags}]" if tags else ""
+        prefix  = f"`[{ts_str}]`" if ts_str else "-"
+        lines.append(f"{prefix} `{cmd}` [{status}]{tag_str}")
+    return "\n".join(lines)
+
+
+def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
+                      target_filter: str | None, sys_info: str,
+                      now, ctx_k: int) -> str:
+    surface_cap  = ctx_k * 300
+    findings_cap = ctx_k * 200
+    scope_cap    = ctx_k * 100
+
+    try:
+        if target_filter:
+            rows = conn.execute(
+                """SELECT t.ip, t.hostname, t.os_guess, tp.port, tp.protocol, tp.service
+                   FROM targets t LEFT JOIN target_ports tp ON tp.target_id = t.id
+                   WHERE t.ip = ? OR t.hostname = ? ORDER BY t.ip, tp.port""",
+                (target_filter, target_filter),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT t.ip, t.hostname, t.os_guess, tp.port, tp.protocol, tp.service
+                   FROM targets t LEFT JOIN target_ports tp ON tp.target_id = t.id
+                   ORDER BY t.ip, tp.port"""
+            ).fetchall()
+    except Exception:
+        rows = []
+
+    hosts: dict[str, dict] = {}
+    for r in rows:
+        ip = r["ip"]
+        if ip not in hosts:
+            hosts[ip] = {"hostname": r["hostname"], "os": r["os_guess"], "ports": []}
+        if r["port"]:
+            hosts[ip]["ports"].append(r)
+
+    surface_lines = []
+    for ip, info in hosts.items():
+        meta = [x for x in (info["hostname"], info["os"]) if x]
+        hdr  = ip + (f" ({' · '.join(meta)})" if meta else "")
+        pts  = ", ".join(
+            f"{p['port']}/{p['protocol']}" + (f" {p['service']}" if p["service"] else "")
+            for p in info["ports"][:8]
+        )
+        surface_lines.append(f"{hdr}: {pts}" if pts else hdr)
+    surface_text = "\n".join(surface_lines)
+    if len(surface_text) > surface_cap:
+        surface_text = surface_text[:surface_cap] + "\n..."
+
+    _tf_cond = "AND (f.target = ? OR f.target IS NULL)" if target_filter else ""
+    _tf_arg  = (target_filter,) if target_filter else ()
+
+    findings_lines = []
+    try:
+        cve_rows = conn.execute(
+            f"SELECT f.value FROM findings f WHERE f.finding_type='cve' {_tf_cond} "
+            f"GROUP BY f.value ORDER BY f.value",
+            _tf_arg,
+        ).fetchall()
+        if cve_rows:
+            findings_lines.append("CVEs: " + ", ".join(r["value"] for r in cve_rows[:10]))
+    except Exception:
+        pass
+    for ftype, label in (
+        ("credential", "Credentials captured"),
+        ("hash",       "Hashes captured"),
+        ("user",       "Users discovered"),
+        ("flag",       "Flags captured"),
+    ):
+        try:
+            n = conn.execute(
+                f"SELECT COUNT(DISTINCT f.value) FROM findings f "
+                f"WHERE f.finding_type=? {_tf_cond}",
+                (ftype,) + _tf_arg,
+            ).fetchone()[0]
+            if n:
+                findings_lines.append(f"{label}: {n}")
+        except Exception:
+            pass
+    try:
+        exploit_n = conn.execute(
+            "SELECT COUNT(DISTINCT c.id) FROM commands c "
+            "JOIN command_tags ct ON ct.command_id = c.id "
+            "WHERE ct.tag IN ('exploit','privesc','lateral','shell')"
+        ).fetchone()[0]
+        if exploit_n:
+            findings_lines.append(f"Exploitation activities: {exploit_n} commands")
+    except Exception:
+        pass
+    findings_text = "\n".join(findings_lines)
+    if len(findings_text) > findings_cap:
+        findings_text = findings_text[:findings_cap] + "\n..."
+
+    all_phases = [
+        "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
+        "exploit", "privesc", "lateral", "crack", "shell",
+        "network", "cloud", "forensics", "re", "wifi",
+    ]
+    scope_lines = []
+    try:
+        phase_rows = conn.execute(
+            "SELECT ct.tag, COUNT(*) AS cnt FROM command_tags ct "
+            "WHERE ct.tag IN ({}) GROUP BY ct.tag ORDER BY cnt DESC".format(
+                ",".join("?" * len(all_phases))
+            ),
+            all_phases,
+        ).fetchall()
+        if phase_rows:
+            scope_lines.append("Phases: " + ", ".join(f"{r['tag']}({r['cnt']})" for r in phase_rows))
+    except Exception:
+        pass
+    try:
+        ts_row = conn.execute(
+            "SELECT MIN(ts) AS t0, MAX(COALESCE(ts_end,ts)) AS t1 "
+            "FROM commands WHERE ts IS NOT NULL"
+        ).fetchone()
+        if ts_row and ts_row["t0"] and ts_row["t1"]:
+            t0 = datetime.fromtimestamp(ts_row["t0"]).strftime("%Y-%m-%d %H:%M")
+            t1 = datetime.fromtimestamp(ts_row["t1"]).strftime("%Y-%m-%d %H:%M")
+            scope_lines.append(f"Duration: {t0} → {t1}")
+    except Exception:
+        pass
+    if hosts:
+        scope_lines.append(f"Hosts: {len(hosts)}")
+    scope_text = "\n".join(scope_lines)
+    if len(scope_text) > scope_cap:
+        scope_text = scope_text[:scope_cap] + "\n..."
+
+    prompt  = f"System: {sys_info}\nDate: {now.strftime('%Y-%m-%d')}\n"
+    prompt += f"Target: {target_filter or 'Unknown'}\n\n"
+    if scope_text:
+        prompt += f"[SCOPE]\n{scope_text}\n\n"
+    if surface_text:
+        prompt += f"[ATTACK SURFACE]\n{surface_text}\n\n"
+    if findings_text:
+        prompt += f"[KEY FINDINGS]\n{findings_text}\n\n"
+    prompt += (
+        "[TASK]\n"
+        "Write a 2-3 paragraph Executive Summary covering:\n"
+        "(1) what was tested and scope,\n"
+        "(2) key findings and their impact,\n"
+        "(3) overall risk posture and immediate priorities.\n"
+        "Be concise. Output only the summary text, no section headers."
+    )
+    return prompt
+
+
+def _mini_recs_prompt(conn: sqlite3.Connection, snapshot: list[dict],
+                      target_filter: str | None, sys_info: str,
+                      ctx_k: int) -> str:
+    vulns_cap = ctx_k * 600
+    creds_cap = ctx_k * 200
+
+    _tf_cond = "AND (f.target = ? OR f.target IS NULL)" if target_filter else ""
+    _tf_arg  = (target_filter,) if target_filter else ()
+
+    vuln_lines = []
+    try:
+        cve_rows = conn.execute(
+            f"SELECT f.value, f.target, f.service FROM findings f "
+            f"WHERE f.finding_type='cve' {_tf_cond} GROUP BY f.value ORDER BY f.value",
+            _tf_arg,
+        ).fetchall()
+        if cve_rows:
+            vuln_lines.append("KNOWN CVEs:")
+            for r in cve_rows:
+                line = f"  - {r['value']}"
+                meta = [x for x in (r["target"], r["service"]) if x]
+                if meta:
+                    line += f" ({', '.join(meta)})"
+                vuln_lines.append(line)
+    except Exception:
+        pass
+
+    exploit_phases = ["exploit", "privesc", "lateral", "shell", "crack", "ad", "web", "smb"]
+    seen_phases: set[str] = set()
+    for row in snapshot:
+        tags  = {t.strip() for t in (row.get("tags") or "").split(",") if t.strip()}
+        phase = next((p for p in exploit_phases if p in tags), None)
+        if not phase or phase in seen_phases:
+            continue
+        seen_phases.add(phase)
+        severity  = _MINI_SEVERITY_MAP.get(phase, "Info")
+        cmd_short = (row.get("cmd") or "")[:80]
+        ec        = row.get("exit_code")
+        status    = f"exit {ec}" if ec not in (0, None) else "ok"
+        vuln_lines.append(f"\n{severity.upper()} — {phase.capitalize()} phase:")
+        vuln_lines.append(f"  Evidence: $ {cmd_short} [{status}]")
+        out = _mini_cap_output(row.get("output") or "")
+        if out:
+            first = "\n".join(l for l in out.splitlines() if l.strip())[:200]
+            if first:
+                vuln_lines.append(f"  Output: {first}")
+
+    vulns_text = "\n".join(vuln_lines)
+    if len(vulns_text) > vulns_cap:
+        vulns_text = vulns_text[:vulns_cap] + "\n..."
+
+    creds_lines = []
+    try:
+        cred_rows = conn.execute(
+            f"SELECT f.finding_type, f.value, f.target, f.service FROM findings f "
+            f"WHERE f.finding_type IN ('credential','hash') {_tf_cond} "
+            f"GROUP BY f.value ORDER BY f.finding_type, f.value",
+            _tf_arg,
+        ).fetchall()
+        for r in cred_rows[:15]:
+            line = f"  - [{r['finding_type']}] {(r['value'] or '')[:60]}"
+            meta = [x for x in (r["target"], r["service"]) if x]
+            if meta:
+                line += f" ({', '.join(meta)})"
+            creds_lines.append(line)
+    except Exception:
+        pass
+    creds_text = "\n".join(creds_lines)
+    if len(creds_text) > creds_cap:
+        creds_text = creds_text[:creds_cap] + "\n..."
+
+    prompt = f"System: {sys_info}\n\n"
+    if vulns_text:
+        prompt += f"[VULNERABILITIES & EVIDENCE]\n{vulns_text}\n\n"
+    if creds_text:
+        prompt += f"[CREDENTIALS FOUND — for context]\n{creds_text}\n\n"
+    prompt += (
+        "[TASK]\n"
+        "Write concrete, actionable Recommendations for each vulnerability.\n"
+        "Order: Critical → High → Medium → Low.\n"
+        "For each: name, risk explanation, specific remediation steps (2-4 bullet points).\n"
+        "Output only the recommendations section content, no report title or preamble."
+    )
+    return prompt
+
+
+def _assemble_minimal_md(sections: dict[str, str], title: str,
+                          target: str | None, now) -> str:
+    ordered = [
+        ("executive_summary", "Executive Summary"),
+        ("scope",             "Scope & Methodology"),
+        ("assets",            "Discovered Assets"),
+        ("vulnerabilities",   "Vulnerabilities & Findings"),
+        ("credentials",       "Credentials & Sensitive Data"),
+        ("timeline",          "Timeline of Key Actions"),
+        ("recommendations",   "Recommendations"),
+    ]
+    lines = [
+        f"# {title}",
+        f"**Date:** {now.strftime('%Y-%m-%d')}",
+        f"**Target:** {target or 'Unknown'}",
+        "**Tester:** [to be filled]",
+        "**Status:** Draft — requires review",
+        "", "---", "",
+    ]
+    for key, header in ordered:
+        content = sections.get(key, "").strip()
+        lines.append(f"## {header}")
+        lines.append(content if content else "[No data generated for this section]")
+        lines.append("")
+    lines.append("---")
+    lines.append("*Report generated by psreport --minimal — verify and complete before delivery.*")
+    return "\n".join(lines)
+
+
+def _assemble_minimal_html(sections: dict[str, str], title: str,
+                            target: str | None, now) -> str:
+    import html as _html
+    ordered = [
+        ("executive_summary", "Executive Summary"),
+        ("scope",             "Scope &amp; Methodology"),
+        ("assets",            "Discovered Assets"),
+        ("vulnerabilities",   "Vulnerabilities &amp; Findings"),
+        ("credentials",       "Credentials &amp; Sensitive Data"),
+        ("timeline",          "Timeline of Key Actions"),
+        ("recommendations",   "Recommendations"),
+    ]
+    body = ""
+    for key, header in ordered:
+        content      = sections.get(key, "").strip()
+        content_html = (
+            _html.escape(content)
+            .replace("\n\n", "</p><p>")
+            .replace("\n", "<br>\n")
+        )
+        body += f"<h2>{header}</h2>\n<p>{content_html or '[No data]'}</p>\n"
+    return (
+        f"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+        f"<meta charset=\"UTF-8\">\n<title>{_html.escape(title)}</title>\n"
+        f"<style>\n"
+        f"  body {{ font-family: Arial, sans-serif; max-width: 960px; margin: 40px auto; color: #222; }}\n"
+        f"  h1 {{ color: #c0392b; }} h2 {{ color: #2c3e50; border-bottom: 1px solid #ccc; padding-bottom: 4px; }}\n"
+        f"  .meta {{ color: #555; margin-bottom: 24px; }}\n"
+        f"  code {{ background: #eee; padding: 2px 4px; border-radius: 3px; font-size: 0.9em; }}\n"
+        f"  pre {{ background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; overflow-x: auto; }}\n"
+        f"  footer {{ color: #999; font-size: 0.85em; margin-top: 40px; }}\n"
+        f"</style>\n</head>\n<body>\n"
+        f"<h1>{_html.escape(title)}</h1>\n"
+        f"<div class=\"meta\">\n"
+        f"  <strong>Date:</strong> {now.strftime('%Y-%m-%d')}<br>\n"
+        f"  <strong>Target:</strong> {_html.escape(target or 'Unknown')}<br>\n"
+        f"  <strong>Tester:</strong> [to be filled]<br>\n"
+        f"  <strong>Status:</strong> Draft — requires review\n"
+        f"</div>\n{body}\n"
+        f"<footer>Report generated by psreport --minimal — verify and complete before delivery.</footer>\n"
+        f"</body>\n</html>"
+    )
+
+
+def _run_minimal(
+    conn: sqlite3.Connection,
+    snapshot: list[dict],
+    target_filter: str | None,
+    sys_info: str,
+    now,
+    target: str | None,
+    llm_fn,
+    fmt: str,
+    title: str,
+    ctx_k: int,
+) -> str | None:
+    sections: dict[str, str] = {}
+
+    sys.stderr.write(f"\n  Minimal mode: 5 app-side + 2 LLM calls  [{ctx_k}K context]\n\n")
+    sys.stderr.flush()
+
+    sys.stderr.write("  [1/7] Scope & Methodology (app-side)... ")
+    sys.stderr.flush()
+    sections["scope"] = _mini_scope(conn, snapshot)
+    sys.stderr.write("done\n")
+
+    sys.stderr.write("  [2/7] Discovered Assets (app-side)... ")
+    sys.stderr.flush()
+    sections["assets"] = _mini_assets(conn, target_filter)
+    sys.stderr.write("done\n")
+
+    sys.stderr.write("  [3/7] Vulnerabilities & Findings (app-side)... ")
+    sys.stderr.flush()
+    sections["vulnerabilities"] = _mini_vulns(conn, snapshot, target_filter)
+    sys.stderr.write("done\n")
+
+    sys.stderr.write("  [4/7] Credentials & Sensitive Data (app-side)... ")
+    sys.stderr.flush()
+    sections["credentials"] = _mini_creds(conn, target_filter, snapshot)
+    sys.stderr.write("done\n")
+
+    sys.stderr.write("  [5/7] Timeline (app-side)... ")
+    sys.stderr.flush()
+    sections["timeline"] = _mini_timeline(snapshot)
+    sys.stderr.write("done\n")
+
+    sys.stderr.write("  [6/7] Executive Summary (LLM)... ")
+    sys.stderr.flush()
+    p1      = _mini_exec_prompt(conn, snapshot, target_filter, sys_info, now, ctx_k)
+    result1 = llm_fn([{"role": "user", "content": p1}], verbose=False)
+    sections["executive_summary"] = (result1 or "").strip()
+    sys.stderr.write(f"done  ({len((result1 or '').split())} words)\n")
+
+    sys.stderr.write("  [7/7] Recommendations (LLM)... ")
+    sys.stderr.flush()
+    p2      = _mini_recs_prompt(conn, snapshot, target_filter, sys_info, ctx_k)
+    result2 = llm_fn([{"role": "user", "content": p2}], verbose=False)
+    sections["recommendations"] = (result2 or "").strip()
+    sys.stderr.write(f"done  ({len((result2 or '').split())} words)\n")
+
+    sys.stderr.write("\n  Assembling report...\n")
+    sys.stderr.flush()
+
+    if fmt == "html":
+        return _assemble_minimal_html(sections, title, target, now)
+    return _assemble_minimal_md(sections, title, target, now)
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1183,6 +1826,11 @@ def main():
                         help="Chunked mode: section-by-section generation; "
                              "K = context window in K tokens (e.g. -C 16); "
                              "auto-detects from profile when omitted (-C)")
+    parser.add_argument("-m", "--minimal", nargs="?", const=-1, default=None, type=int,
+                        metavar="K",
+                        help="Minimal mode: 5 app-side sections + 2 LLM calls only "
+                             "(exec summary + recommendations); suited for small models; "
+                             "K = context in K tokens (e.g. -m 4); auto from profile if omitted (-m)")
     parser.add_argument("-n", "--notes",   default=None, metavar="FILE",
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
@@ -1204,6 +1852,7 @@ def main():
             "  psreport                                    Generate report from full filtered history\n"
             "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage\n"
             "  psreport -C [K], --chunked [K]              Chunked: section-by-section; K = context in K tokens (e.g. -C 16); auto from profile if K omitted\n"
+            "  psreport -m [K], --minimal [K]              Minimal: app-side report + 2 LLM calls (exec summary + recommendations); K = context K tokens; for small models\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
             "  psreport -v, --verbose                      Stream synthesis to terminal while saving\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
@@ -1377,6 +2026,84 @@ Generate the complete {fmt_name} report below using exactly this template:
             with open(report_path, "w", encoding="utf-8") as f:
                 f.write(resolved)
             _ai._info(f"Report saved: {os.path.relpath(report_path, base_dir)}\n")
+        except Exception as e:
+            _ai._err(f"Failed to save report: {e}")
+            sys.exit(1)
+        sys.exit(0)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MINIMAL MODE — app-side sections + 2 LLM calls (exec summary + recs)
+    # ══════════════════════════════════════════════════════════════════════════
+    if args.minimal is not None:
+        if args.minimal == -1:
+            ctx_window_m = _ai._get_ctx_window(profile, base_dir)
+            ctx_k        = max(1, ctx_window_m // 1000) if ctx_window_m else 4
+            ctx_source   = f"auto from profile ({ctx_k}K)"
+        else:
+            ctx_k        = args.minimal
+            ctx_window_m = ctx_k * 1000
+            ctx_source   = f"manual ({ctx_k}K)"
+
+        conn_m = _db_connect(base_dir)
+        if not conn_m:
+            _ai._err("No terminal history database found.")
+            sys.exit(1)
+
+        try:
+            snapshot_m = _snapshot_history(conn_m)
+            total_m    = conn_m.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
+        except Exception as _e:
+            conn_m.close()
+            _ai._err(f"Database error: {_e}")
+            sys.exit(1)
+
+        sys.stderr.write(
+            f"\n  Entries  : {len(snapshot_m)}/{total_m} (relevant commands)\n"
+            f"  Context  : {ctx_source} per LLM call\n"
+            f"  API calls: 2 (exec summary + recommendations)\n"
+            f"\nContinue? [y/n] "
+        )
+        sys.stderr.flush()
+        try:
+            _reply_m = sys.stdin.readline().strip()
+        except Exception:
+            _reply_m = ""
+        if _reply_m.lower() != "y":
+            conn_m.close()
+            sys.stderr.write("Aborted.\n")
+            sys.exit(0)
+
+        if _ai._SHOW_QUERYING:
+            _ai._info(f"Querying {model} via {provider}…\n")
+
+        try:
+            response = _run_minimal(
+                conn=conn_m,
+                snapshot=snapshot_m,
+                target_filter=target,
+                sys_info=sys_info,
+                now=now,
+                target=target,
+                llm_fn=_llm,
+                fmt=fmt,
+                title=title,
+                ctx_k=ctx_k,
+            )
+        finally:
+            conn_m.close()
+
+        if not response:
+            _ai._err("No response from model.")
+            sys.exit(1)
+
+        reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        filename    = f"report_{now.strftime('%Y-%m-%d_%H-%M')}.{fmt}"
+        report_path = os.path.join(reports_dir, filename)
+        try:
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(response)
+            _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
         except Exception as e:
             _ai._err(f"Failed to save report: {e}")
             sys.exit(1)
