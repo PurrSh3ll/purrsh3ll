@@ -12,6 +12,7 @@ Options:
   -p, --profile NAME   Use a specific saved profile by name
   -H, --host URL       Provider host/base URL override
   -s, --show-sources   Print source filenames and scores before the answer
+  -l, --list           List indexed documents and saved terminal fragments, then exit
   -h, --help           Show this help
 
 Examples:
@@ -19,6 +20,7 @@ Examples:
   psrag -n 3 -s "how to enumerate subdomains"
   psrag -p my-ollama "explain SQL injection"
   psrag -H http://192.168.1.10:11434 "query"
+  psrag -l
 EOF
         return 0
     fi

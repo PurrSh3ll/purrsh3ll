@@ -568,16 +568,94 @@ def _err(msg: str):
     print(f"\033[31m[psrag] Error: {msg}\033[0m", file=sys.stderr)
 
 
+# ── Index listing ─────────────────────────────────────────────────────────────
+
+def _list_index(base_dir: str, preview: int = 100) -> None:
+    """List indexed documents (rag_kb) and saved terminal fragments (memory).
+
+    Reads the ChromaDB collections directly — no embedding model, no LLM call.
+    """
+    try:
+        import chromadb
+        from chromadb.api.client import SharedSystemClient
+        SharedSystemClient.clear_system_cache()
+    except ImportError:
+        _err("chromadb is not installed. Run: pip install chromadb")
+        sys.exit(1)
+
+    db_path = os.path.join(base_dir, "appdata", "rag", "chroma_db")
+    if not os.path.exists(db_path):
+        _err("Vector database not found.\nRun 'Refresh index' in Settings > RAG first.")
+        sys.exit(1)
+
+    client = chromadb.PersistentClient(path=db_path)
+
+    # ── Documents (rag_kb) — grouped by source file ────────────────────────────
+    metas = []
+    try:
+        col = client.get_collection("rag_kb")
+        res = col.get(include=["metadatas"])
+        metas = res.get("metadatas", []) or []
+    except Exception:
+        metas = []
+
+    docs: dict[str, int] = {}
+    for m in metas:
+        src = (m or {}).get("source", "?")
+        docs[src] = docs.get(src, 0) + 1
+
+    if docs:
+        print(f"\033[1mKnowledge base documents (rag_kb):\033[0m "
+              f"{len(metas)} chunk(s) across {len(docs)} file(s)")
+        width = min(60, max((len(s) for s in docs), default=0))
+        for src, cnt in sorted(docs.items()):
+            label = src if len(src) <= 60 else "…" + src[-59:]
+            print(f"  \033[90m•\033[0m {label:<{width}}  "
+                  f"\033[90m({cnt} chunk{'s' if cnt != 1 else ''})\033[0m")
+    else:
+        print("\033[1mKnowledge base documents (rag_kb):\033[0m none")
+
+    print()
+
+    # ── Terminal fragments (memory) — individual snippets ──────────────────────
+    mdocs, mmetas = [], []
+    try:
+        mem  = client.get_collection("memory")
+        mres = mem.get(include=["documents", "metadatas"])
+        mdocs  = mres.get("documents", []) or []
+        mmetas = mres.get("metadatas", []) or []
+    except Exception:
+        mdocs, mmetas = [], []
+
+    if mdocs:
+        entries = list(zip(mdocs, [m or {} for m in mmetas]))
+        entries.sort(key=lambda e: e[1].get("timestamp", ""), reverse=True)
+        n = len(mdocs)
+        print(f"\033[1mTerminal snippets (memory):\033[0m {n} entr{'ies' if n != 1 else 'y'}")
+        for doc, m in entries:
+            ts  = m.get("timestamp", "")
+            src = m.get("source", "terminal")
+            text = " ".join((doc or "").split())
+            if preview and len(text) > preview:
+                text = text[:preview] + "…"
+            tag = f"[{ts}] " if ts else ""
+            print(f"  \033[90m•\033[0m {tag}\033[90m({src})\033[0m  {text}")
+    else:
+        print("\033[1mTerminal snippets (memory):\033[0m none")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(prog="psrag", add_help=False)
-    parser.add_argument("query",           nargs="+")
+    parser.add_argument("query",           nargs="*")
     parser.add_argument("-n", "--top-n",   type=int, default=5, metavar="N", dest="top_n")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE", dest="profile")
     parser.add_argument("-H", "--host",    default="", metavar="URL",
                         help="Ollama host (sets OLLAMA_HOST, e.g. http://192.168.1.10:11434)")
     parser.add_argument("-s", "--show-sources", action="store_true")
+    parser.add_argument("-l", "--list",    action="store_true",
+                        help="List indexed documents and terminal fragments, then exit")
     parser.add_argument("--base-dir",      default=None)
     parser.add_argument("--debug",         action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("-h", "--help",    action="store_true")
@@ -592,12 +670,14 @@ def main():
             "  -p, --profile NAME   Use a specific saved profile by name\n"
             "  -H, --host URL       Provider host/base URL override\n"
             "  -s, --show-sources   Print source files and scores before answer\n"
+            "  -l, --list           List indexed documents and terminal fragments, then exit\n"
             "  -h, --help           Show this help\n\n"
             "Examples:\n"
             '  psrag "what is XSS?"\n'
             '  psrag -n 3 -s "how to enumerate subdomains"\n'
             '  psrag -p my-ollama "explain SQL injection"\n'
-            '  psrag -H http://192.168.1.10:11434 "query"'
+            '  psrag -H http://192.168.1.10:11434 "query"\n'
+            "  psrag -l"
         )
         sys.exit(0)
 
@@ -605,10 +685,20 @@ def main():
     if args.debug:
         _DEBUG_PROMPT = True
 
-    query    = " ".join(args.query)
     base_dir = args.base_dir or os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
+
+    # ── List mode: dump the index and exit (no embedding, no LLM) ──────────────
+    if args.list:
+        _list_index(base_dir)
+        sys.exit(0)
+
+    if not args.query:
+        _err("No query provided.\n"
+             "Usage: psrag [options] <query>   (or 'psrag -l' to list the index)")
+        sys.exit(1)
+    query = " ".join(args.query)
 
     config            = _load_config(base_dir)
     llama_cfg         = config.get("llama", {})
