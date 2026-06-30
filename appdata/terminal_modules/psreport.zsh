@@ -6,7 +6,7 @@ psreport — AI-powered pentest report generator
 
 Usage:
   psreport                                    Generate report from full filtered history
-  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage
+  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage (default & --deep)
   psreport -m [K], --minimal [K]              Minimal: app-side report + 2 LLM calls (exec summary + recommendations); K = context K tokens; for small models
   psreport -d [K], --deep [K]                 Deep: 3-pass (investigate → draft → critique) with full output; K = context K tokens; for top-tier models
   psreport -n, --notes FILE                   Notes mode: report from your notes + terminal evidence

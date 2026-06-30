@@ -763,6 +763,11 @@ _MINI_SEVERITY_MAP = {
 _MINI_OUT_LINES = 15
 _MINI_OUT_CHARS = 400
 
+# Timeline is an app-side display section (not an LLM prompt), and -L does not
+# reach it — so cap it directly to keep the saved minimal report readable.
+_MINI_TIMELINE_MAX  = 80   # max timeline entries rendered
+_MINI_TIMELINE_HEAD = 15   # of those, keep this many from the start (recon opening)
+
 
 def _mini_cap_output(text: str) -> str:
     if not text:
@@ -994,8 +999,8 @@ def _mini_creds(conn: sqlite3.Connection, target_filter: str | None,
 def _mini_timeline(snapshot: list[dict]) -> str:
     if not snapshot:
         return "*No timeline data available.*"
-    lines = []
-    for row in snapshot:
+
+    def _fmt(row: dict) -> str:
         ts  = row.get("ts")
         ts_str = ""
         if ts:
@@ -1009,7 +1014,19 @@ def _mini_timeline(snapshot: list[dict]) -> str:
         tags   = row.get("tags") or ""
         tag_str = f" [{tags}]" if tags else ""
         prefix  = f"`[{ts_str}]`" if ts_str else "-"
-        lines.append(f"{prefix} `{cmd}` [{status}]{tag_str}")
+        return f"{prefix} `{cmd}` [{status}]{tag_str}"
+
+    # Long engagement: keep the opening (recon) + the most recent actions so the
+    # saved report stays readable. The snapshot itself is untouched — evidence
+    # injection still resolves every cmd:ID.
+    if len(snapshot) > _MINI_TIMELINE_MAX:
+        tail_n  = _MINI_TIMELINE_MAX - _MINI_TIMELINE_HEAD
+        omitted = len(snapshot) - _MINI_TIMELINE_HEAD - tail_n
+        lines   = [_fmt(r) for r in snapshot[:_MINI_TIMELINE_HEAD]]
+        lines.append(f"\n*… {omitted} earlier entries omitted ({len(snapshot)} total) …*\n")
+        lines  += [_fmt(r) for r in snapshot[-tail_n:]]
+    else:
+        lines = [_fmt(r) for r in snapshot]
     return "\n".join(lines)
 
 
@@ -1592,7 +1609,8 @@ def main():
     parser.add_argument("-T", "--title",   default=None, metavar="TITLE")
     parser.add_argument("-L", "--limit",   default=None, type=int, metavar="N",
                         help="Keep last N commands per phase category (recon/scan/exploit/…); "
-                             "works with all modes — balances coverage across the whole engagement")
+                             "applies to the default and --deep modes (which send the command "
+                             "list to the model) — balances coverage across the whole engagement")
     parser.add_argument("-m", "--minimal", nargs="?", const=-1, default=None, type=int,
                         metavar="K",
                         help="Minimal mode: 5 app-side sections + 2 LLM calls only "
@@ -1622,7 +1640,7 @@ def main():
             "psreport — AI-powered pentest report generator\n\n"
             "Usage:\n"
             "  psreport                                    Generate report from full filtered history\n"
-            "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage\n"
+            "  psreport -L, --limit N                      Last N commands per phase (recon/scan/exploit/…) — balanced coverage (default & --deep)\n"
             "  psreport -m [K], --minimal [K]              Minimal: app-side report + 2 LLM calls (exec summary + recommendations); K = context K tokens; for small models\n"
             "  psreport -d [K], --deep [K]                 Deep: 3-pass (investigate → draft → critique) with full output; K = context K tokens; for top-tier models\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
