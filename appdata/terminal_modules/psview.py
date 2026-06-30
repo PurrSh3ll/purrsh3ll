@@ -129,45 +129,6 @@ def _save_to_history(base_dir: str, filename: str, analysis: str,
         conn.close()
 
 
-def _clean_command(text: str) -> str:
-    """Extract last meaningful shell command from AI response."""
-    lines_raw = text.strip().splitlines()
-    filtered  = []
-    in_fence  = False
-    in_think  = False
-    for raw in lines_raw:
-        s  = raw.strip()
-        lo = s.lower()
-        if s.startswith("```"):
-            in_fence = not in_fence
-            continue
-        if "<think>" in lo or "<thinking>" in lo:
-            in_think = True
-        if in_think:
-            if "</think>" in lo or "</thinking>" in lo:
-                in_think = False
-            continue
-        if not in_fence and not s:
-            continue
-        filtered.append(s)
-
-    candidates = []
-    for line in filtered:
-        if line.lower().startswith(("the ", "here ", "you ", "try ", "this ", "use ", "note", "#")):
-            continue
-        if line.startswith("`") and line.endswith("`"):
-            line = line[1:-1]
-        if line:
-            candidates.append(line)
-
-    if candidates:
-        return candidates[-1]
-    for line in reversed(lines_raw):
-        if line.strip():
-            return line.strip()
-    return text.strip()
-
-
 def main():
     import argparse
 
@@ -176,8 +137,6 @@ def main():
                         help="Path to image file (PNG, JPG, JPEG, WebP, GIF)")
     parser.add_argument("question", nargs="*",
                         help="Optional question about the image")
-    parser.add_argument("-c", "--cmd",  action="store_true",
-                        help="Output only the best command based on the image, no analysis text")
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
     parser.add_argument("-p", "--profile", default=None, metavar="PROFILE",
@@ -192,7 +151,6 @@ def main():
             "Usage:\n"
             "  psview <image>                          Analyze image with default pentest prompt\n"
             "  psview <image> \"<question>\"             Ask a specific question about the image\n"
-            "  psview <image> -c, --cmd                Output only the best command (no analysis)\n"
             "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
@@ -226,22 +184,6 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
-    use_tools        = _ai._tools_enabled(profile, base_dir)
-
-    _CMD_TOOL = {
-        "name":        "suggest_command",
-        "description": "Return the single most important shell command to run based on the image analysis",
-        "parameters": {
-            "type":       "object",
-            "properties": {
-                "command": {
-                    "type":        "string",
-                    "description": "The shell command to run, ready to execute as-is",
-                }
-            },
-            "required": ["command"],
-        },
-    }
 
     # ── Load image ─────────────────────────────────────────────────────────────
     image_path = args.image
@@ -263,44 +205,7 @@ def main():
     if not question:
         question = _DEFAULT_QUESTION
 
-    # For --cmd text path: append command instruction (no Findings marker needed)
-    cmd_question = question
-    if args.cmd and not use_tools:
-        cmd_question = (
-            question + "\n\n"
-            "At the very end, on a new line, write ONLY the single most important command "
-            "to run based solely on what you see in this image — "
-            "no prefix, no explanation, no backticks, just the raw command."
-        )
-
-    messages = _build_messages(b64, media_type, cmd_question, provider)
-
-    # ── --cmd mode: command only, no analysis output ───────────────────────────
-    if args.cmd:
-        if _ai._SHOW_QUERYING:
-            _ai._info(f"Querying {model} via {provider}…\n")
-        _ai._info(f"Analyzing {filename}...\n")
-        if use_tools:
-            cmd = _ai._run_llm_tool_call(provider, model, messages, _CMD_TOOL, url, api_key)
-            if cmd:
-                print(cmd)
-        else:
-            import io as _io
-            _real_stdout = sys.stdout
-            _real_stderr = sys.stderr
-            sys.stdout   = _io.StringIO()
-            sys.stderr   = _io.StringIO()
-            try:
-                response = _ai._run_llm(provider, model, messages, url, api_key,
-                                        disable_thinking, custom_params, hide_thinking)
-            finally:
-                sys.stdout = _real_stdout
-                sys.stderr = _real_stderr
-            if response:
-                cmd = _clean_command(response)
-                if cmd:
-                    print(cmd)
-        sys.exit(0)
+    messages = _build_messages(b64, media_type, question, provider)
 
     # ── Stream analysis ────────────────────────────────────────────────────────
     if _ai._SHOW_QUERYING:

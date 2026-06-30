@@ -7,7 +7,6 @@ psview — AI-powered screenshot / image analyzer
 Usage:
   psview <image>                          Analyze image with default pentest prompt
   psview <image> "<question>"             Ask a specific question about the image
-  psview <image> -c, --cmd                Analyze and paste best command (image only, y/n)
   psview -p, --profile NAME <image>       Use a specific saved profile
 
 Supported formats: PNG, JPG, JPEG, WebP, GIF
@@ -31,20 +30,5 @@ EOF
         return 1
     fi
 
-    if [[ "$*" == *"--cmd"* ]] || [[ "$*" == *" -c"* ]]; then
-        # Stream analysis to terminal (via 2>/dev/tty),
-        # capture best command on stdout, then ask y/n
-        local _cmd
-        _cmd=$("$_py" "$_script" --base-dir "$_base" --cwd "$PWD" "$@" 2>/dev/tty)
-        if [[ -n "$_cmd" ]]; then
-            echo "  → $_cmd" >/dev/tty
-            echo -n "Paste command? [y/n] " >/dev/tty
-            read -r _reply </dev/tty
-            if [[ "$_reply" == [yY] ]]; then
-                print -z "$_cmd"
-            fi
-        fi
-    else
-        "$_py" "$_script" --base-dir "$_base" --cwd "$PWD" "$@"
-    fi
+    "$_py" "$_script" --base-dir "$_base" --cwd "$PWD" "$@"
 }
