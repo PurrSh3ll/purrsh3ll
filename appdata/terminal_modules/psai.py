@@ -852,6 +852,16 @@ def _run_llm_tool_call(provider: str, model: str, messages: list,
         sys.stderr.flush()
     import time as _time
 
+    # Emit prompt-token estimate so the GUI ctx indicator updates on the
+    # function-calling path too (mirrors _run_llm).
+    try:
+        _tok  = _estimate_prompt_tokens(messages)
+        _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs", "psai_tok")
+        with open(_path, "w") as _f:
+            _f.write(f"{int(_time.time() * 1000)}:{_tok}")
+    except Exception:
+        pass
+
     if provider == "anthropic":
         return _call_anthropic_tool(model, messages, tool_def, url, api_key)
 
