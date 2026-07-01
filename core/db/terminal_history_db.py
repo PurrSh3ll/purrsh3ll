@@ -66,8 +66,11 @@ PRAGMA synchronous  = NORMAL;
 -- ── commands ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS commands {_COMMANDS_COLS};
 
-CREATE INDEX IF NOT EXISTS idx_commands_ts  ON commands(ts);
-CREATE INDEX IF NOT EXISTS idx_commands_cmd ON commands(cmd);
+CREATE INDEX IF NOT EXISTS idx_commands_ts      ON commands(ts);
+CREATE INDEX IF NOT EXISTS idx_commands_cmd     ON commands(cmd);
+-- Composite index for psfix's scoped lookups (WHERE terminal = ? ORDER BY ts):
+-- turns a backward ts-scan that skips other terminals into a direct seek.
+CREATE INDEX IF NOT EXISTS idx_commands_term_ts ON commands(terminal, ts);
 
 -- ── pstool_commands ─────────────────────────────────────────────────────────
 --
@@ -258,8 +261,9 @@ class TerminalHistoryDB:
         INSERT INTO _commands_new ({collist}) SELECT {collist} FROM commands;
         DROP TABLE commands;
         ALTER TABLE _commands_new RENAME TO commands;
-        CREATE INDEX IF NOT EXISTS idx_commands_ts  ON commands(ts);
-        CREATE INDEX IF NOT EXISTS idx_commands_cmd ON commands(cmd);
+        CREATE INDEX IF NOT EXISTS idx_commands_ts      ON commands(ts);
+        CREATE INDEX IF NOT EXISTS idx_commands_cmd     ON commands(cmd);
+        CREATE INDEX IF NOT EXISTS idx_commands_term_ts ON commands(terminal, ts);
         COMMIT;
         PRAGMA foreign_keys=ON;
         """
