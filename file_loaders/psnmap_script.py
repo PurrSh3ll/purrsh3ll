@@ -361,7 +361,11 @@ class ScriptLauncher(QWidget):
         self.webmap_dir = os.path.join(self.controller.base_path, "appmodules", "Cyb3rCollector", "webmap")
         self.controller_term_tabs = self.controller.widgets["terminal_tabs"]
         self.data = data
-        self.parsed_data = json.loads(self.data)
+        try:
+            self.parsed_data = json.loads(self.data)
+        except (ValueError, TypeError):
+            logger.warning("psnmap file is not valid JSON, loading empty: %s", self.path, exc_info=True)
+            self.parsed_data = {}
         self.profiles = self.parsed_data.get("profiles", [])
 
         self.name = os.path.splitext(os.path.basename(self.path))[0]
