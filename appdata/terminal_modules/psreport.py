@@ -393,11 +393,20 @@ def _load_entries_sqlite(
         conn.close()
 
 
+def _status_str(exit_code) -> str:
+    """Human status for a command row. exit_code IS NULL means the command is
+    still running — the two-phase logger inserts the row at start and finalizes
+    it at end, so a NULL exit code is a live process, not a success."""
+    if exit_code is None:
+        return "running"
+    return "ok" if exit_code == 0 else f"exit {exit_code}"
+
+
 def _format_entry(row: sqlite3.Row) -> str:
     ec     = row["exit_code"]
     cmd    = row["cmd"] or ""
     cmd_id = row["id"]
-    status = f"exit {ec}" if ec not in (0, None) else "ok"
+    status = _status_str(ec)
     fs = ""
     try:
         findings_summary = row["findings_summary"]
@@ -641,7 +650,7 @@ def _format_evidence_block(rows: list[dict]) -> str:
             except Exception:
                 pass
         ec     = row.get("exit_code")
-        status = f"exit {ec}" if ec not in (0, None) else "ok"
+        status = _status_str(ec)
         tags   = f"  [{row['tags']}]" if row.get("tags") else ""
         out    = (row.get("output") or "").strip()
         # cap output: 25 lines or 600 chars
@@ -936,7 +945,7 @@ def _mini_vulns(conn: sqlite3.Connection, snapshot: list[dict],
         severity = "Info" if failed else _MINI_SEVERITY_MAP.get(phase, "Info")
         label    = f"Attempted {phase.capitalize()}" if failed else phase.capitalize()
         cmd_short = (row.get("cmd") or "")[:80]
-        status   = f"exit {ec}" if failed else "ok"
+        status   = _status_str(ec)
         block  = [f"### [{severity}] {label} — [cmd:{rid}]"]
         block.append(f"`{cmd_short}` [{status}]")
         out = _mini_cap_output(row.get("output") or "")
@@ -1018,7 +1027,7 @@ def _mini_timeline(snapshot: list[dict]) -> str:
                 pass
         cmd    = (row.get("cmd") or "")[:100]
         ec     = row.get("exit_code")
-        status = f"exit {ec}" if ec not in (0, None) else "ok"
+        status = _status_str(ec)
         tags   = row.get("tags") or ""
         tag_str = f" [{tags}]" if tags else ""
         prefix  = f"`[{ts_str}]`" if ts_str else "-"
@@ -1219,7 +1228,7 @@ def _mini_recs_prompt(conn: sqlite3.Connection, snapshot: list[dict],
         severity  = _MINI_SEVERITY_MAP.get(phase, "Info")
         cmd_short = (row.get("cmd") or "")[:80]
         ec        = row.get("exit_code")
-        status    = f"exit {ec}" if ec not in (0, None) else "ok"
+        status    = _status_str(ec)
         vuln_lines.append(f"\n{severity.upper()} — {phase.capitalize()} phase:")
         vuln_lines.append(f"  Evidence: $ {cmd_short} [{status}]")
         out = _mini_cap_output(row.get("output") or "")
@@ -1400,7 +1409,7 @@ def _deep_format_cmd(row, max_lines: int, max_chars: int) -> str:
     cmd_id = row["id"]
     cmd    = row["cmd"] or ""
     ec     = row["exit_code"]
-    status = f"exit {ec}" if ec not in (0, None) else "ok"
+    status = _status_str(ec)
     tags   = ""
     try:
         t = row["tags"]
@@ -1686,6 +1695,18 @@ def main():
 
     sys.path.insert(0, os.path.dirname(__file__))
     import psai as _ai
+
+    # Modes are mutually exclusive — dispatch picks the first that matches
+    # (notes > minimal > deep > standard), so passing more than one would
+    # silently ignore the rest. Fail fast instead of guessing intent.
+    _modes = [n for n, v in (
+        ("--notes",   args.notes),
+        ("--minimal", args.minimal),
+        ("--deep",    args.deep),
+    ) if v is not None]
+    if len(_modes) > 1:
+        _ai._err(f"Modes are mutually exclusive — {', '.join(_modes)} given together. Pick one.")
+        sys.exit(1)
 
     if args.debug:
         _ai._DEBUG_PROMPT = True
