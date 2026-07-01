@@ -700,6 +700,12 @@ def _resolve_placeholders(text: str, snapshot: list[dict]) -> str:
             if row and row_id not in used_ids:
                 used_ids.add(row_id)
                 return "\n\n" + _format_evidence_block([row])
+            # Already injected earlier (re.sub runs left-to-right, so the first
+            # occurrence is always physically above). Leave a back-reference
+            # instead of an empty string so a re-citation (e.g. in
+            # Recommendations) keeps a visible pointer to its evidence.
+            if row:
+                return f"*(evidence for [cmd:{row_id}] shown above)*"
             return ""
 
         # Token-based search fallback
