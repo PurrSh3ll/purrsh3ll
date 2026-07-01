@@ -1,6 +1,10 @@
 import os, re, shutil, subprocess, threading, signal, resource, tempfile, time
 import csv
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
 
 class ExecutionMixin:
     def _execute_external_term(self, command):
@@ -73,7 +77,7 @@ class ExecutionMixin:
                             if ids:
                                 win_ids.extend(ids)
                         except subprocess.CalledProcessError:
-                            pass
+                            logger.debug("xdotool search found no window for class", exc_info=True)
                     if not win_ids:
                         out = subprocess.check_output(["xdotool", "search", "--onlyvisible", "--name", "."],
                                                       stderr=subprocess.DEVNULL)
@@ -92,7 +96,7 @@ class ExecutionMixin:
                                     stderr=subprocess.DEVNULL)
                     time.sleep(0.05)
                 except Exception:
-                    pass
+                    logger.debug("xdotool windowactivate failed", exc_info=True)
 
                 has_newline = "\n" in command
                 to_type = command
@@ -114,7 +118,7 @@ class ExecutionMixin:
                             subprocess.call(["xdotool", "key", "--window", found_win, "Return"],
                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         except Exception:
-                            pass
+                            logger.debug("xdotool key Return failed", exc_info=True)
 
             threading.Thread(target=worker, daemon=True).start()
         open_clean_terminal_nonblocking_paste(command)
@@ -135,7 +139,7 @@ class ExecutionMixin:
                     self.history_field.update_data_async()
 
         except Exception:
-            pass
+            logger.warning("failed to append command to script history", exc_info=True)
 
         terminal_tabs = self.controller.widgets["terminal_tabs"]
 
