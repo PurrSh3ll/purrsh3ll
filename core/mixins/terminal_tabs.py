@@ -43,7 +43,7 @@ def _force_term_repaint(term):
 # history/reports (which read `commands`) never show them.
 _PSTOOL_NAMES = frozenset({
     "psreport", "psrag", "pshistory", "pshelp", "pstldr",
-    "psai", "pscmd", "psopen",
+    "psai", "psask", "pschat", "pscmd", "psopen", "psview",
 })
 # Never logged at all: the fix/suggest meta-tools would create self-referential
 # noise (psfix analyzing a previous psfix run).

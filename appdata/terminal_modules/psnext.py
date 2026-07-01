@@ -259,7 +259,9 @@ def _build_prompt_context(base_dir: str, target_filter: str | None, recent_limit
             section = [f"[RECENT SESSION — last {len(recent)} commands]"]
             for r in recent:
                 ec     = r["exit_code"]
-                status = f"exit {ec}" if ec not in (0, None) else "ok"
+                # NULL exit_code = command still running (two-phase logger); don't
+                # mislabel it as a successful "ok".
+                status = "running" if ec is None else ("ok" if ec == 0 else f"exit {ec}")
                 line   = f"$ {r['cmd']} [{status}]"
                 if r["cwd"]:
                     line += f"  # cwd: {r['cwd']}"

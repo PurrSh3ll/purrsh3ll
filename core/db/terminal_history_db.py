@@ -483,23 +483,38 @@ class TerminalHistoryDB:
             return cur.fetchall()
 
     def trim_to_limit(self, max_entries: int) -> int:
-        """Delete oldest commands so at most max_entries remain. Returns number deleted."""
+        """Delete oldest commands so at most max_entries remain. Returns number deleted.
+
+        The separate pstool_commands table (ps* helper commands) is trimmed to the
+        same limit so it can't grow unbounded when delete_logs_at_close is off."""
         with self._cursor() as cur:
             total = cur.execute("SELECT COUNT(*) FROM commands").fetchone()[0]
             to_delete = total - max_entries
-            if to_delete <= 0:
-                return 0
-            cur.execute(
-                """
-                DELETE FROM commands WHERE id IN (
-                    SELECT id FROM commands ORDER BY ts ASC LIMIT ?
+            if to_delete > 0:
+                cur.execute(
+                    """
+                    DELETE FROM commands WHERE id IN (
+                        SELECT id FROM commands ORDER BY ts ASC LIMIT ?
+                    )
+                    """,
+                    (to_delete,),
                 )
-                """,
-                (to_delete,),
-            )
-            cur.execute("DELETE FROM command_tags WHERE command_id NOT IN (SELECT id FROM commands)")
+                cur.execute("DELETE FROM command_tags WHERE command_id NOT IN (SELECT id FROM commands)")
+
+            ps_total = cur.execute("SELECT COUNT(*) FROM pstool_commands").fetchone()[0]
+            ps_delete = ps_total - max_entries
+            if ps_delete > 0:
+                cur.execute(
+                    """
+                    DELETE FROM pstool_commands WHERE id IN (
+                        SELECT id FROM pstool_commands ORDER BY ts ASC LIMIT ?
+                    )
+                    """,
+                    (ps_delete,),
+                )
+
             self._conn.commit()
-            return to_delete
+            return max(to_delete, 0) + max(ps_delete, 0)
 
     def clear(self) -> None:
         """Delete all history data (commands, tags, findings, targets, ports)."""
