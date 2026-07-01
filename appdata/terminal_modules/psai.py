@@ -103,6 +103,14 @@ def _info(msg: str):
 def _err(msg: str):
     print(f"\033[31m[psai] Error: {msg}\033[0m", file=sys.stderr)
 
+def _dbg(msg: str):
+    """Trace an otherwise-silent caught failure. Quiet by default; the message
+    and current traceback are printed to stderr only under --debug."""
+    if _DEBUG_PROMPT:
+        import traceback
+        sys.stderr.write(f"\033[90m[psai:debug] {msg}\n{traceback.format_exc()}\033[0m")
+        sys.stderr.flush()
+
 def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
     """Print dim gray inference stats line to stderr after model response."""
     if not _SHOW_STATS:
@@ -204,7 +212,7 @@ def _load_config(base_dir: str) -> dict:
         with open(profiles_path, encoding="utf-8") as f:
             cfg["api_providers"] = json.load(f)
     except Exception:
-        pass
+        _dbg("could not load api_profiles.json")
     _llama = cfg.get("llama", {})
     _SHOW_STATS           = bool(_llama.get("psai_show_stats",          True))
     _SHOW_QUERYING        = bool(_llama.get("psai_show_querying",        True))
@@ -244,7 +252,7 @@ def _load_api_key(profile_name: str, base_dir: str) -> str:
         if val:
             return val
     except Exception:
-        pass
+        _dbg("keyring lookup failed; falling back to json api_keys")
     try:
         path = os.path.join(base_dir, "appdata", "api_keys.json")
         with open(path, encoding="utf-8") as f:
@@ -361,7 +369,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
                         _prompt_count[0] = d.get("prompt_eval_count", 0)
                         break
                 except Exception:
-                    pass
+                    _dbg("skipped unparseable stream chunk")
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
         elif _in_thinking[0]:
@@ -531,7 +539,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                         sys.stdout.flush()
                         collected.append(content)
                 except Exception:
-                    pass
+                    _dbg("skipped unparseable stream chunk")
         # Flush any remaining partial-tag buffer as normal content
         if _thought_buf[0]:
             leftover = _thought_buf[0]
@@ -651,7 +659,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
                     elif etype == "message_delta":
                         _out_tok[0] = event.get("usage", {}).get("output_tokens", 0)
                 except Exception:
-                    pass
+                    _dbg("skipped unparseable stream event")
         if _in_thinking[0] and not hide_thinking:
             sys.stdout.write("\033[0m\n")
         elif _in_thinking[0]:
@@ -772,7 +780,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
         with open(_path, "w") as _f:
             _f.write(f"{int(_time.time() * 1000)}:{_tok}")
     except Exception:
-        pass
+        _dbg("could not write psai_tok telemetry file")
     if provider == "anthropic":
         return _stream_anthropic(model, messages, url, api_key, hide_thinking)
 
@@ -860,7 +868,7 @@ def _run_llm_tool_call(provider: str, model: str, messages: list,
         with open(_path, "w") as _f:
             _f.write(f"{int(_time.time() * 1000)}:{_tok}")
     except Exception:
-        pass
+        _dbg("could not write psai_tok telemetry file")
 
     if provider == "anthropic":
         return _call_anthropic_tool(model, messages, tool_def, url, api_key)
@@ -999,7 +1007,7 @@ def _load_session(base_dir: str, profile_name: str) -> list:
             with open(path, encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
-        pass
+        _dbg("could not load chat session history")
     return []
 
 
@@ -1010,7 +1018,7 @@ def _save_session(base_dir: str, profile_name: str, messages: list):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(messages[-_MAX_HISTORY:], f, indent=2, ensure_ascii=False)
     except Exception:
-        pass
+        _dbg("could not save chat session history")
 
 
 def _clear_session(base_dir: str, profile_name: str):
