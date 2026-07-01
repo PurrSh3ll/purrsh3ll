@@ -431,9 +431,6 @@ def _confirm_send(prompt: str, n_entries: int, total: int,
             lines.append(
                 f"  \033[33mWarning : prompt may be truncated or refused by the model.\033[0m"
             )
-            lines.append(
-                f"  \033[33m          Use --compress (coming soon) to reduce prompt size.\033[0m"
-            )
     else:
         lines.append(f"  Context : unknown (model not in registry)")
 
