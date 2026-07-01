@@ -242,7 +242,7 @@ def _help_run_subprocess(path, timeout):
             if "python" in candidate and os.path.isfile(candidate):
                 python_exec = candidate
     except Exception:
-        pass
+        logger.debug("failed to detect python interpreter from shebang", exc_info=True)
     if not python_exec:
         python_exec = shutil.which("python3") or shutil.which("python") or "python3"
 
@@ -589,7 +589,7 @@ class ContentMixin:
                         self.help_text = "[+] Help documentation found (local cache)\n\n" + source
                         return
                 except Exception as e:
-                    pass
+                    logger.debug("failed to read cached script help", exc_info=True)
 
         try:
             with open(self.path, "r", encoding="utf-8") as f:
@@ -962,7 +962,7 @@ class ContentMixin:
                             self.docs_text = "[+] Found Documentation Strings (loacl cache) \n\n" + source
                             return
                     except Exception as e:
-                        pass
+                        logger.debug("failed to read cached script docs", exc_info=True)
 
             source = open(self.path, "r", encoding="utf-8").read()
             tree = ast.parse(source, filename=self.path)

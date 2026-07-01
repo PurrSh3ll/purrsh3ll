@@ -10,9 +10,12 @@ import re
 
 import os
 import json
+import logging
 
 from core.controller import controller_instance
 from gui.widgets.custom_frame import CustomFrame
+
+logger = logging.getLogger(__name__)
 from gui.widgets.web_preview import WebPreview
 
 c = controller_instance
@@ -45,7 +48,7 @@ def _save_presets(presets):
         with open(p, "w", encoding="utf-8") as f:
             json.dump({"presets": presets}, f, indent=2, ensure_ascii=False)
     except Exception:
-        pass
+        logger.warning("failed to persist chat presets", exc_info=True)
 
 
 def build_chat_panel(main_window):
@@ -599,7 +602,7 @@ def build_chat_panel(main_window):
                 with open(c.config_path, "r", encoding="utf-8") as _f:
                     aichat_path = json.load(_f).get("llama", {}).get("llm_cli_path", "")
         except Exception:
-            pass
+            logger.debug("failed to read llm_cli_path from config", exc_info=True)
         if not aichat_path:
             aichat_path = "aichat"
 
@@ -674,7 +677,7 @@ def build_chat_panel(main_window):
                     else:
                         flags.append(f"--{k}={v}")
             except Exception:
-                pass
+                logger.debug("failed to parse chat preset params JSON", exc_info=True)
         cmd = f"{env_prefix}ollama run {model}"
         if flags:
             cmd += " " + " ".join(flags)

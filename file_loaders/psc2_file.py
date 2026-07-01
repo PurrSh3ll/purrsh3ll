@@ -1,6 +1,9 @@
 
 import os
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QLineEdit,
@@ -51,7 +54,7 @@ class Psc2_file(QWidget):
                 data = json.load(f)
             malware_options = data.get("malware_options", {})
         except Exception:
-            pass
+            logger.debug("failed to read malware_options from purr file", exc_info=True)
 
         scroll = QScrollArea(parent=parent.widgets['execution_tabs'])
         scroll.setWidgetResizable(True)
@@ -280,7 +283,7 @@ class Psc2_file(QWidget):
                 data = json.load(f)
             stagers = data.get("stagers", {})
         except Exception:
-            pass
+            logger.debug("failed to read stagers from purr file", exc_info=True)
 
         self._stagers_table.setRowCount(0)
         self._stagers_entries = {}
@@ -376,7 +379,7 @@ class Psc2_file(QWidget):
                 data = json.load(f)
             listeners = data.get("listeners", {})
         except Exception:
-            pass
+            logger.debug("failed to read listeners from purr file", exc_info=True)
 
         self._listeners_table.setRowCount(0)
         for name, entry in listeners.items():

@@ -509,9 +509,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 self.dynamic_vars[name] = value
 
         except FileNotFoundError:
-            pass
+            logger.debug("dynamic_vars file not found, starting empty", exc_info=True)
         except json.JSONDecodeError:
-            pass
+            logger.warning("dynamic_vars file is corrupt (invalid JSON), ignoring", exc_info=True)
 
     def load_sys_vars(self):
         if not os.path.exists(self.observer_panel_state_path):
@@ -567,7 +567,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 with open(self.sys_vars_path, "w", encoding="utf-8") as f:
                     pass
         except Exception as e:
-            pass
+            logger.warning("failed to truncate sys_vars file", exc_info=True)
 
     def cleanup_script_data(self, path: str, hash_len: int = 12):
         p = Path(path).expanduser().resolve()
