@@ -1588,6 +1588,15 @@ def _run_deep(
     sys.stderr.write("  [2/3] Drafting report from ledger... ")
     sys.stderr.flush()
     p2    = _build_draft_prompt(intel_header, ledger, sys_info, now, target, fmt_name, template)
+    # Pass 2 is the product — it cannot be skipped. A batched ledger from a long
+    # engagement can still swell it past the window, so at least warn instead of
+    # letting the model silently truncate/refuse the draft.
+    if ctx_window and len(p2) // 4 > budget:
+        sys.stderr.write(
+            f"\n        \033[33mwarning: draft prompt ~{len(p2) // 4:,} tokens exceeds "
+            f"{budget:,}-token budget — report may be truncated by the model\033[0m\n        "
+        )
+        sys.stderr.flush()
     draft = (llm_fn([{"role": "user", "content": p2}], verbose=False) or "").strip()
     sys.stderr.write(f"done  ({len(draft.split())} words)\n")
     sys.stderr.flush()
@@ -1595,10 +1604,20 @@ def _run_deep(
         return None
 
     # ── Pass 3: Critique & finalize ────────────────────────────────────────────
+    p3 = _build_critique_prompt(intel_header, ledger, draft, sys_info, fmt_name)
+    # Critique is a refinement, not the product — the draft is already a complete
+    # report. If Pass 3 would overflow the window, skip it and return the draft
+    # as-is rather than risk a silent truncation/refusal.
+    if ctx_window and len(p3) // 4 > budget:
+        sys.stderr.write(
+            f"  [3/3] Critique skipped — prompt ~{len(p3) // 4:,} tokens exceeds "
+            f"{budget:,}-token budget; returning uncritiqued draft.\n"
+        )
+        sys.stderr.flush()
+        return draft
     sys.stderr.write("  [3/3] Critique & finalize...")
     sys.stderr.write("\n" if verbose else " ")
     sys.stderr.flush()
-    p3    = _build_critique_prompt(intel_header, ledger, draft, sys_info, fmt_name)
     final = (llm_fn([{"role": "user", "content": p3}], verbose=verbose) or "").strip()
     sys.stderr.write(f"done  ({len(final.split())} words)\n")
     sys.stderr.flush()
