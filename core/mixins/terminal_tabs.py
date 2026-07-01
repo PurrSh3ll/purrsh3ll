@@ -166,7 +166,7 @@ class TerminalTabsMixin:
                 if filepath:
                     self.open_new_tab_for_terminal(file=filepath, mode=mode)
             except Exception:
-                pass
+                logger.debug("failed to handle psopen OSC payload", exc_info=True)
 
     def _add_new_terminal_tab(self, name=None, command=None, workdir=None):
         type(self).terminal_idx += 1
@@ -582,7 +582,7 @@ class TerminalTabsMixin:
                 with open(self.config_path, "r", encoding="utf-8") as _f:
                     _cmd = json.load(_f).get("llama", {}).get("logs_terminal_cmd", "")
         except Exception:
-            pass
+            logger.debug("failed to read logs_terminal_cmd from config", exc_info=True)
 
         _sent = [False]
         _handler = [None]
@@ -620,7 +620,7 @@ class TerminalTabsMixin:
                 with open(self.config_path, "r", encoding="utf-8") as _f:
                     _cfg = json.load(_f).get("llama", {})
         except Exception:
-            pass
+            logger.debug("failed to read llama config for terminal tab", exc_info=True)
 
         _logs_cmd_edit = QLineEdit(dlg)
         _logs_cmd_edit.setText(_cfg.get("logs_terminal_cmd", ""))
@@ -745,7 +745,7 @@ class TerminalTabsMixin:
                 with open(self.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception as ex:
-                pass
+                logger.warning("failed to persist agent role/skills/goal to config", exc_info=True)
             settings_agent_combo = self.widgets.get("settings_agent_role_combo")
             if settings_agent_combo:
                 settings_agent_combo.setCurrentText(_agent_role_combo.currentText())
@@ -784,7 +784,7 @@ class TerminalTabsMixin:
                     with open(self.config_path, "w", encoding="utf-8") as f:
                         json.dump(cfg, f, indent=2, ensure_ascii=False)
                 except Exception as ex:
-                    pass
+                    logger.warning("failed to persist logs_terminal_cmd to config", exc_info=True)
                 settings_edit = self.widgets.get("settings_logs_terminal_edit")
                 if settings_edit:
                     settings_edit.setText(val)
