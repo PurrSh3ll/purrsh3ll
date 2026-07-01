@@ -187,8 +187,9 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         f"""
         SELECT f.value, f.target, f.service,
                f.command_id AS cmd_id,
-               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+               c.cmd AS src_cmd
         FROM findings f
+        LEFT JOIN commands c ON c.id = f.command_id
         WHERE f.finding_type = 'credential' {_tf_cond}
         GROUP BY f.value, f.target, f.service
         ORDER BY f.target, f.value
@@ -210,8 +211,9 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         f"""
         SELECT f.value,
                f.command_id AS cmd_id,
-               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+               c.cmd AS src_cmd
         FROM findings f
+        LEFT JOIN commands c ON c.id = f.command_id
         WHERE f.finding_type = 'user' {_tf_cond}
         GROUP BY f.value
         ORDER BY f.value
@@ -228,8 +230,9 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         f"""
         SELECT f.value, f.target,
                f.command_id AS cmd_id,
-               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+               c.cmd AS src_cmd
         FROM findings f
+        LEFT JOIN commands c ON c.id = f.command_id
         WHERE f.finding_type = 'hash' {_tf_cond}
         GROUP BY f.value, f.target
         ORDER BY f.target, f.value
@@ -250,8 +253,9 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         f"""
         SELECT f.value,
                f.command_id AS cmd_id,
-               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+               c.cmd AS src_cmd
         FROM findings f
+        LEFT JOIN commands c ON c.id = f.command_id
         WHERE f.finding_type = 'flag' {_tf_cond}
         GROUP BY f.value
         ORDER BY f.value
@@ -268,8 +272,9 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         f"""
         SELECT f.value,
                f.command_id AS cmd_id,
-               (SELECT c.cmd FROM commands c WHERE c.id = f.command_id) AS src_cmd
+               c.cmd AS src_cmd
         FROM findings f
+        LEFT JOIN commands c ON c.id = f.command_id
         WHERE f.finding_type = 'cve' {_tf_cond}
         GROUP BY f.value
         ORDER BY f.value
