@@ -33,13 +33,11 @@ from typing import Generator, List, Optional
 # DDL
 # ---------------------------------------------------------------------------
 
-_DDL = """
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
-PRAGMA synchronous  = NORMAL;
-
--- ── commands ──────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS commands (
+# Column definitions for `commands`, shared by the DDL and the one-time
+# CHECK-removal rebuild. entry_type is a plain TEXT column (NO CHECK): the value
+# set is enforced application-side (consistent with tags/findings) so that new
+# entry_type values never require a table rebuild — SQLite cannot ALTER a CHECK.
+_COMMANDS_COLS = """(
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           INTEGER NOT NULL,          -- unix epoch, command start
     ts_end       INTEGER,                   -- unix epoch, command end
@@ -58,8 +56,15 @@ CREATE TABLE IF NOT EXISTS commands (
                                             -- accurate; duration_ms is coarse, from
                                             -- second-resolution ts). NULL = unknown.
     entry_type   TEXT    NOT NULL DEFAULT 'command'
-                         CHECK(entry_type IN ('command','note','bookmark','error'))
-);
+)"""
+
+_DDL = f"""
+PRAGMA journal_mode = WAL;
+PRAGMA foreign_keys = ON;
+PRAGMA synchronous  = NORMAL;
+
+-- ── commands ──────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS commands {_COMMANDS_COLS};
 
 CREATE INDEX IF NOT EXISTS idx_commands_ts  ON commands(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_cmd ON commands(cmd);
@@ -205,6 +210,11 @@ class TerminalHistoryDB:
         if "elapsed_ms" not in cols:
             conn.execute("ALTER TABLE commands ADD COLUMN elapsed_ms INTEGER")
 
+        # One-time rebuild to drop the legacy entry_type CHECK constraint (SQLite
+        # cannot ALTER a CHECK). No-op once the constraint is gone. Runs after the
+        # elapsed_ms migration so that column exists to copy over.
+        self._drop_entry_type_check(conn)
+
         # Sweep orphaned "running" rows. A NULL exit_code means a command was
         # still pending (two-phase logger) when the app/terminal closed. init()
         # runs once per session, before anything new is logged, so a NULL row
@@ -220,6 +230,48 @@ class TerminalHistoryDB:
             "WHERE exit_code IS NULL"
         )
         conn.commit()
+
+    def _drop_entry_type_check(self, conn) -> None:
+        """Rebuild `commands` without the entry_type CHECK, once, if present.
+
+        SQLite has no ALTER to drop a CHECK, so we recreate the table from
+        _COMMANDS_COLS and copy the rows. Ids are preserved so command_tags /
+        findings foreign keys stay valid; generated columns are re-derived;
+        any unknown legacy columns (e.g. session_id) are simply not carried over.
+        Done atomically with foreign keys disabled so the DROP doesn't cascade.
+        """
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='commands'"
+        ).fetchone()
+        if not row or not row[0] or "check(entry_type" not in row[0].lower().replace(" ", ""):
+            return  # constraint already absent — nothing to do
+
+        old_cols = {r[1] for r in conn.execute("PRAGMA table_info(commands)")}
+        plain = ["id", "ts", "ts_end", "terminal", "cmd", "exit_code",
+                 "output", "cwd", "elapsed_ms", "entry_type"]
+        collist = ", ".join(c for c in plain if c in old_cols)
+
+        script = f"""
+        PRAGMA foreign_keys=OFF;
+        BEGIN;
+        CREATE TABLE _commands_new {_COMMANDS_COLS};
+        INSERT INTO _commands_new ({collist}) SELECT {collist} FROM commands;
+        DROP TABLE commands;
+        ALTER TABLE _commands_new RENAME TO commands;
+        CREATE INDEX IF NOT EXISTS idx_commands_ts  ON commands(ts);
+        CREATE INDEX IF NOT EXISTS idx_commands_cmd ON commands(cmd);
+        COMMIT;
+        PRAGMA foreign_keys=ON;
+        """
+        try:
+            conn.executescript(script)
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            conn.execute("PRAGMA foreign_keys=ON")
+            raise
 
     # ── commands ───────────────────────────────────────────────────────────
 
