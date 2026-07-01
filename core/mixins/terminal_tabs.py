@@ -172,7 +172,7 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         term.receivedData.connect(self._on_terminal_received)
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": _BoundedOutput(), "last_failed": None,
+        _log_state = {"cmd": None, "ts_start": 0, "ms_start": 0, "output": _BoundedOutput(), "last_failed": None,
                       "cwd": "", "pending_id": None, "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
         _wrapper_ref = [None]
@@ -187,7 +187,12 @@ class TerminalTabsMixin:
                     except Exception:
                         cmd = payload
                     _state["cmd"] = cmd
-                    _state["ts_start"] = int(ts)
+                    # Markers carry millisecond timestamps; ts stays in seconds
+                    # (all consumers assume seconds) and ms is kept only to
+                    # compute an accurate elapsed_ms at the end.
+                    _ms = int(ts)
+                    _state["ms_start"] = _ms
+                    _state["ts_start"] = _ms // 1000
                     _state["output"] = _BoundedOutput()
                     _state["cwd"] = ""
                     _state["pending_id"] = None
@@ -226,9 +231,12 @@ class TerminalTabsMixin:
                         _w.hide_error_overlay()
                 elif typ == "end" and _state["cmd"] is not None:
                     exit_code = int(payload)
+                    _ms_end   = int(ts)
+                    _ms_start = _state.get("ms_start") or 0
                     entry = {
                         "ts": _state["ts_start"],
-                        "ts_end": int(ts),
+                        "ts_end": _ms_end // 1000,
+                        "elapsed_ms": (_ms_end - _ms_start) if _ms_start else None,
                         "terminal": _tid,
                         "cmd": _state["cmd"],
                         "exit_code": exit_code,
@@ -275,6 +283,7 @@ class TerminalTabsMixin:
                                                 ts_end=entry["ts_end"],
                                                 exit_code=entry["exit_code"],
                                                 output=_raw_output,
+                                                elapsed_ms=entry["elapsed_ms"],
                                             )
                                             _cid = _pending_id
                                         else:
@@ -287,6 +296,7 @@ class TerminalTabsMixin:
                                                 exit_code=entry["exit_code"],
                                                 output=_raw_output,
                                                 cwd=_state.get("cwd") or None,
+                                                elapsed_ms=entry["elapsed_ms"],
                                             )
                                         _tagger = self._get_auto_tagger()
                                         if _tagger is not None and _cid:
@@ -1272,7 +1282,7 @@ class TerminalTabsMixin:
         except Exception:
             pass
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": _BoundedOutput(), "cwd": "", "pending_id": None,
+        _log_state = {"cmd": None, "ts_start": 0, "ms_start": 0, "output": _BoundedOutput(), "cwd": "", "pending_id": None,
                       "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
 
@@ -1286,7 +1296,12 @@ class TerminalTabsMixin:
                     except Exception:
                         cmd = payload
                     _state["cmd"] = cmd
-                    _state["ts_start"] = int(ts)
+                    # Markers carry millisecond timestamps; ts stays in seconds
+                    # (all consumers assume seconds) and ms is kept only to
+                    # compute an accurate elapsed_ms at the end.
+                    _ms = int(ts)
+                    _state["ms_start"] = _ms
+                    _state["ts_start"] = _ms // 1000
                     _state["output"] = _BoundedOutput()
                     _state["cwd"] = ""
                     _state["pending_id"] = None
@@ -1320,9 +1335,12 @@ class TerminalTabsMixin:
                                 _state["pending_table"] = None
                 elif typ == "end" and _state["cmd"] is not None:
                     exit_code = int(payload)
+                    _ms_end   = int(ts)
+                    _ms_start = _state.get("ms_start") or 0
                     entry = {
                         "ts": _state["ts_start"],
-                        "ts_end": int(ts),
+                        "ts_end": _ms_end // 1000,
+                        "elapsed_ms": (_ms_end - _ms_start) if _ms_start else None,
                         "terminal": _tid,
                         "cmd": _state["cmd"],
                         "exit_code": exit_code,
@@ -1369,6 +1387,7 @@ class TerminalTabsMixin:
                                                 ts_end=entry["ts_end"],
                                                 exit_code=entry["exit_code"],
                                                 output=_raw_output,
+                                                elapsed_ms=entry["elapsed_ms"],
                                             )
                                             _cid = _pending_id
                                         else:
@@ -1380,6 +1399,7 @@ class TerminalTabsMixin:
                                                 exit_code=entry["exit_code"],
                                                 output=_raw_output,
                                                 cwd=_state.get("cwd") or None,
+                                                elapsed_ms=entry["elapsed_ms"],
                                             )
                                         _tagger = self._get_auto_tagger()
                                         if _tagger is not None and _cid:

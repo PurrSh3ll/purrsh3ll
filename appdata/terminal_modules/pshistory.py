@@ -284,15 +284,26 @@ def cmd_show(conn, cmd_id):
     tags = [r["tag"] for r in conn.execute(
         "SELECT tag FROM command_tags WHERE command_id = ? ORDER BY tag", (cmd_id,)
     ).fetchall()]
+    # elapsed_ms is the sub-second-accurate duration; fall back to the coarse
+    # generated duration_ms, and to "n/a" for old schemas that have neither.
+    _keys = row.keys()
+    if "elapsed_ms" in _keys and row["elapsed_ms"] is not None:
+        _dur = f"{row['elapsed_ms']} ms"
+    elif "duration_ms" in _keys and row["duration_ms"] is not None:
+        _dur = f"{row['duration_ms']} ms"
+    else:
+        _dur = "n/a"
     print(f"ID        : {row['id']}")
     print(f"Terminal  : {row['terminal']}")
-    print(f"Time      : {_ts(row['ts'])} → {_ts(row['ts_end'])}  ({row['duration_ms']} ms)")
+    print(f"Time      : {_ts(row['ts'])} → {_ts(row['ts_end'])}  ({_dur})")
     print(f"Exit code : {row['exit_code']}")
     print(f"CWD       : {row['cwd'] or '-'}")
     print(f"Tags      : {', '.join(tags) or '-'}")
     print(f"Command   :\n  {row['cmd']}")
     if row['output']:
-        print(f"Output ({row['output_size']} bytes):\n{row['output']}")
+        # output_size is a generated column; older schemas lack it — fall back to len().
+        _osz = row["output_size"] if ("output_size" in _keys and row["output_size"] is not None) else len(row["output"])
+        print(f"Output ({_osz} bytes):\n{row['output']}")
 
 
 def cmd_clear(conn, yes):

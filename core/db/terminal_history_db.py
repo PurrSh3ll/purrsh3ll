@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS commands (
                      CASE WHEN output IS NOT NULL THEN length(output) ELSE 0 END
                  ) STORED,
     cwd          TEXT,                      -- working directory at execution time
+    elapsed_ms   INTEGER,                   -- real command duration in ms (sub-second
+                                            -- accurate; duration_ms is coarse, from
+                                            -- second-resolution ts). NULL = unknown.
     entry_type   TEXT    NOT NULL DEFAULT 'command'
                          CHECK(entry_type IN ('command','note','bookmark','error'))
 );
@@ -195,6 +198,27 @@ class TerminalHistoryDB:
         """Create all tables and indexes (idempotent)."""
         conn = self.connect()
         conn.executescript(_DDL)
+        # Additive migration for DBs created before elapsed_ms existed. ADD COLUMN
+        # is safe/non-destructive; ts/ts_end stay in seconds so every existing
+        # consumer keeps working.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(commands)")}
+        if "elapsed_ms" not in cols:
+            conn.execute("ALTER TABLE commands ADD COLUMN elapsed_ms INTEGER")
+
+        # Sweep orphaned "running" rows. A NULL exit_code means a command was
+        # still pending (two-phase logger) when the app/terminal closed. init()
+        # runs once per session, before anything new is logged, so a NULL row
+        # here is necessarily from a previous session — nothing is genuinely
+        # running yet. Mark them aborted (exit_code = -1) with a best-effort
+        # ts_end so they stop showing as [running] forever in psfix/psreport.
+        conn.execute(
+            "UPDATE commands SET exit_code = -1, ts_end = COALESCE(ts_end, ts) "
+            "WHERE exit_code IS NULL"
+        )
+        conn.execute(
+            "UPDATE pstool_commands SET exit_code = -1, ts_end = COALESCE(ts_end, ts) "
+            "WHERE exit_code IS NULL"
+        )
         conn.commit()
 
     # ── commands ───────────────────────────────────────────────────────────
@@ -209,15 +233,16 @@ class TerminalHistoryDB:
         output: Optional[str] = None,
         cwd: Optional[str] = None,
         entry_type: str = "command",
+        elapsed_ms: Optional[int] = None,
     ) -> int:
         """Insert a command record and return its id."""
         with self._cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO commands (ts, ts_end, terminal, cmd, exit_code, output, cwd, entry_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO commands (ts, ts_end, terminal, cmd, exit_code, output, cwd, entry_type, elapsed_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (ts, ts_end, terminal, cmd, exit_code, output, cwd, entry_type),
+                (ts, ts_end, terminal, cmd, exit_code, output, cwd, entry_type, elapsed_ms),
             )
             return cur.lastrowid  # type: ignore[return-value]
 
@@ -227,6 +252,7 @@ class TerminalHistoryDB:
         ts_end: Optional[int] = None,
         exit_code: Optional[int] = None,
         output: Optional[str] = None,
+        elapsed_ms: Optional[int] = None,
     ) -> None:
         """Finalize a pending command row (inserted at start) with its result.
 
@@ -238,10 +264,10 @@ class TerminalHistoryDB:
             cur.execute(
                 """
                 UPDATE commands
-                   SET ts_end = ?, exit_code = ?, output = ?
+                   SET ts_end = ?, exit_code = ?, output = ?, elapsed_ms = ?
                  WHERE id = ?
                 """,
-                (ts_end, exit_code, output, command_id),
+                (ts_end, exit_code, output, elapsed_ms, command_id),
             )
 
     # ── pstool_commands (ps* helper tools — visible only to psfix) ───────────
