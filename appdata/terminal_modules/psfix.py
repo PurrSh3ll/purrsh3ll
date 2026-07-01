@@ -20,6 +20,16 @@ def _db_connect(base_dir: str) -> sqlite3.Connection | None:
     return conn
 
 
+def _has_pstool_table(conn) -> bool:
+    """True if the ps*-tool command table exists (created by the app on init)."""
+    try:
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pstool_commands'"
+        ).fetchone() is not None
+    except Exception:
+        return False
+
+
 def _last_terminal_entry(base_dir: str, terminal: str | None = None) -> dict | None:
     conn = _db_connect(base_dir)
     if conn is None:
@@ -29,17 +39,22 @@ def _last_terminal_entry(base_dir: str, terminal: str | None = None) -> dict | N
         # command still running (logged at start by the two-phase logger).
         # Scope to the invoking terminal session when known, so a successful
         # command in another tab doesn't mask this tab's last failure.
-        if terminal:
-            row = conn.execute(
-                "SELECT cmd, exit_code, output FROM commands "
-                "WHERE exit_code IS NOT NULL AND terminal = ? "
-                "ORDER BY ts DESC LIMIT 1",
-                (terminal,),
-            ).fetchone()
+        # Merge normal commands with ps*-tool commands (pstool_commands) so psfix
+        # can also fix a failed ps* invocation — that table is psfix-only.
+        _filt = "exit_code IS NOT NULL" + (" AND terminal = ?" if terminal else "")
+        _args = (terminal,) if terminal else ()
+        if _has_pstool_table(conn):
+            sql = (f"SELECT cmd, exit_code, output FROM ("
+                   f"SELECT cmd, exit_code, output, ts FROM commands WHERE {_filt} "
+                   f"UNION ALL "
+                   f"SELECT cmd, exit_code, output, ts FROM pstool_commands WHERE {_filt}"
+                   f") ORDER BY ts DESC LIMIT 1")
+            row = conn.execute(sql, (*_args, *_args)).fetchone()
         else:
             row = conn.execute(
-                "SELECT cmd, exit_code, output FROM commands "
-                "WHERE exit_code IS NOT NULL ORDER BY ts DESC LIMIT 1"
+                f"SELECT cmd, exit_code, output FROM commands WHERE {_filt} "
+                f"ORDER BY ts DESC LIMIT 1",
+                _args,
             ).fetchone()
         if row:
             return {"cmd": row["cmd"], "exit_code": row["exit_code"], "output": row["output"] or ""}
@@ -66,15 +81,28 @@ def _load_recent_history(base_dir: str, limit: int = 40, broad_limit: int = 0,
     _where = "WHERE terminal = ? " if terminal else ""
     _scope = (terminal,) if terminal else ()
     try:
+        # Merge normal commands with ps*-tool commands so recent context (and the
+        # last failure) includes ps* invocations; that table is psfix-only.
+        _pstool = _has_pstool_table(conn)
+        _wargs  = _scope * (2 if _pstool else 1)
+
+        def _src(cols: str) -> str:
+            if _pstool:
+                return (f"(SELECT {cols} FROM commands {_where}"
+                        f"UNION ALL SELECT {cols} FROM pstool_commands {_where})")
+            return f"(SELECT {cols} FROM commands {_where})"
+
         recent_rows = conn.execute(
-            f"SELECT cmd, exit_code, output FROM commands {_where}ORDER BY ts DESC LIMIT ?",
-            (*_scope, limit),
+            f"SELECT cmd, exit_code, output FROM {_src('cmd, exit_code, output, ts')} "
+            f"ORDER BY ts DESC LIMIT ?",
+            (*_wargs, limit),
         ).fetchall()
         broad_rows = []
         if broad_limit > 0:
             broad_rows = conn.execute(
-                f"SELECT cmd, exit_code FROM commands {_where}ORDER BY ts DESC LIMIT ? OFFSET ?",
-                (*_scope, broad_limit, limit),
+                f"SELECT cmd, exit_code FROM {_src('cmd, exit_code, ts')} "
+                f"ORDER BY ts DESC LIMIT ? OFFSET ?",
+                (*_wargs, broad_limit, limit),
             ).fetchall()
     except Exception:
         return ""

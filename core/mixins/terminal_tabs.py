@@ -38,10 +38,29 @@ def _force_term_repaint(term):
             pass
 
 
-_PURRSH_TOOLS = frozenset({
-    "psfix", "psnext", "psreport", "psrag", "pshistory",
-    "pshelp", "pstldr", "psai", "pscmd", "psopen",
+# ps* helper-tool commands are logged to a SEPARATE table (pstool_commands) so
+# only psfix sees them — it can then fix a failed ps* command, while normal
+# history/reports (which read `commands`) never show them.
+_PSTOOL_NAMES = frozenset({
+    "psreport", "psrag", "pshistory", "pshelp", "pstldr",
+    "psai", "pscmd", "psopen",
 })
+# Never logged at all: the fix/suggest meta-tools would create self-referential
+# noise (psfix analyzing a previous psfix run).
+_PURRSH_NEVER_LOG = frozenset({"psfix", "psnext"})
+
+
+def _log_target(cmd_name: str) -> str | None:
+    """Which table a command should be logged to, or None to skip logging.
+
+    ps* tools → 'pstool_commands' (read only by psfix); psfix/psnext → skip;
+    everything else → the normal 'commands' table.
+    """
+    if not cmd_name or cmd_name in _PURRSH_NEVER_LOG:
+        return None
+    if cmd_name in _PSTOOL_NAMES:
+        return "pstool_commands"
+    return "commands"
 
 _MAX_OUTPUT_BYTES = 100_000  # 100 KB per command output stored in DB
 _HEAD_BYTES       =  60_000  # first 60 KB kept
@@ -125,7 +144,7 @@ class TerminalTabsMixin:
         term.receivedData.connect(self._on_terminal_received)
 
         _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None,
-                      "cwd": "", "pending_id": None}
+                      "cwd": "", "pending_id": None, "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
         _wrapper_ref = [None]
 
@@ -153,19 +172,25 @@ class TerminalTabsMixin:
                     # in history while they run instead of only after they terminate.
                     if not getattr(self, "terminal_history_disabled", False):
                         _cmd_name = cmd.split()[0] if cmd.strip() else ""
-                        if _cmd_name and _cmd_name not in _PURRSH_TOOLS:
+                        _table = _log_target(_cmd_name)
+                        if _table is not None:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
-                                    _state["pending_id"] = _db.insert_command(
+                                    _ins = (_db.insert_pstool_command
+                                            if _table == "pstool_commands"
+                                            else _db.insert_command)
+                                    _state["pending_id"] = _ins(
                                         ts=_state["ts_start"],
                                         terminal=_tid,
                                         cmd=cmd,
                                         cwd=_state.get("cwd") or None,
                                     )
+                                    _state["pending_table"] = _table
                             except Exception:
                                 logger.error("Failed to write pending command to DB", exc_info=True)
                                 _state["pending_id"] = None
+                                _state["pending_table"] = None
                     # Hide overlay when new command starts
                     _w = _wrapper_ref[0]
                     if _w is not None:
@@ -181,52 +206,75 @@ class TerminalTabsMixin:
                         "output": "".join(_state["output"]).strip()
                     }
                     _pending_id = _state.get("pending_id")
+                    _pending_table = _state.get("pending_table")
                     _state["cmd"] = None
                     _state["output"] = []
                     _state["pending_id"] = None
+                    _state["pending_table"] = None
                     if not getattr(self, "terminal_history_disabled", False):
                         _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
-                        if _cmd_name not in _PURRSH_TOOLS:
+                        _table = _pending_table or _log_target(_cmd_name)
+                        if _table is not None:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
                                     _raw_output = entry["output"]
-                                    if _pending_id:
-                                        # Finalize the row inserted at command start
-                                        _db.update_command(
-                                            command_id=_pending_id,
-                                            ts_end=entry["ts_end"],
-                                            exit_code=entry["exit_code"],
-                                            output=_trim_output(_raw_output),
-                                        )
-                                        _cid = _pending_id
-                                    else:
-                                        # No pending row (history was off at start, or insert failed)
-                                        _cid = _db.insert_command(
-                                            ts=entry["ts"],
-                                            ts_end=entry["ts_end"],
-                                            terminal=entry["terminal"],
-                                            cmd=entry["cmd"],
-                                            exit_code=entry["exit_code"],
-                                            output=_trim_output(_raw_output),
-                                            cwd=_state.get("cwd") or None,
-                                        )
-                                    _tagger = self._get_auto_tagger()
-                                    if _tagger is not None and _cid:
-                                        _tags = _tagger.get_tags(entry["cmd"])
-                                        if _tags:
-                                            _db.add_tags(_cid, _tags)
-                                    _parser = self._get_output_parser()
-                                    if _parser is not None and _cid:
-                                        try:
-                                            _parser.process(
-                                                db=_db, cmd_id=_cid,
-                                                cmd=entry["cmd"],
-                                                output=_raw_output,
-                                                tags=_tags if _tagger else [],
+                                    if _table == "pstool_commands":
+                                        # ps* command — logged for psfix only; not tagged/parsed
+                                        if _pending_id:
+                                            _db.update_pstool_command(
+                                                command_id=_pending_id,
+                                                ts_end=entry["ts_end"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
                                             )
-                                        except Exception:
-                                            logger.error("OutputParser failed (terminal)", exc_info=True)
+                                        else:
+                                            _db.insert_pstool_command(
+                                                ts=entry["ts"],
+                                                ts_end=entry["ts_end"],
+                                                terminal=entry["terminal"],
+                                                cmd=entry["cmd"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
+                                                cwd=_state.get("cwd") or None,
+                                            )
+                                    else:
+                                        if _pending_id:
+                                            # Finalize the row inserted at command start
+                                            _db.update_command(
+                                                command_id=_pending_id,
+                                                ts_end=entry["ts_end"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
+                                            )
+                                            _cid = _pending_id
+                                        else:
+                                            # No pending row (history was off at start, or insert failed)
+                                            _cid = _db.insert_command(
+                                                ts=entry["ts"],
+                                                ts_end=entry["ts_end"],
+                                                terminal=entry["terminal"],
+                                                cmd=entry["cmd"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
+                                                cwd=_state.get("cwd") or None,
+                                            )
+                                        _tagger = self._get_auto_tagger()
+                                        if _tagger is not None and _cid:
+                                            _tags = _tagger.get_tags(entry["cmd"])
+                                            if _tags:
+                                                _db.add_tags(_cid, _tags)
+                                        _parser = self._get_output_parser()
+                                        if _parser is not None and _cid:
+                                            try:
+                                                _parser.process(
+                                                    db=_db, cmd_id=_cid,
+                                                    cmd=entry["cmd"],
+                                                    output=_raw_output,
+                                                    tags=_tags if _tagger else [],
+                                                )
+                                            except Exception:
+                                                logger.error("OutputParser failed (terminal)", exc_info=True)
                             except Exception:
                                 logger.error("Failed to write terminal history to DB", exc_info=True)
                     # Show or hide error overlay
@@ -1195,7 +1243,8 @@ class TerminalTabsMixin:
         except Exception:
             pass
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": "", "pending_id": None}
+        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": "", "pending_id": None,
+                      "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
 
         def _on_split_log(data: str, _state=_log_state, _tid=f"split_{_split_idx}"):
@@ -1221,19 +1270,25 @@ class TerminalTabsMixin:
                     # visible in history while they run (see main terminal handler).
                     if not getattr(self, "terminal_history_disabled", False):
                         _cmd_name = cmd.split()[0] if cmd.strip() else ""
-                        if _cmd_name and _cmd_name not in _PURRSH_TOOLS:
+                        _table = _log_target(_cmd_name)
+                        if _table is not None:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
-                                    _state["pending_id"] = _db.insert_command(
+                                    _ins = (_db.insert_pstool_command
+                                            if _table == "pstool_commands"
+                                            else _db.insert_command)
+                                    _state["pending_id"] = _ins(
                                         ts=_state["ts_start"],
                                         terminal=_tid,
                                         cmd=cmd,
                                         cwd=_state.get("cwd") or None,
                                     )
+                                    _state["pending_table"] = _table
                             except Exception:
                                 logger.error("Failed to write pending split command to DB", exc_info=True)
                                 _state["pending_id"] = None
+                                _state["pending_table"] = None
                 elif typ == "end" and _state["cmd"] is not None:
                     exit_code = int(payload)
                     entry = {
@@ -1245,51 +1300,74 @@ class TerminalTabsMixin:
                         "output": "".join(_state["output"]).strip()
                     }
                     _pending_id = _state.get("pending_id")
+                    _pending_table = _state.get("pending_table")
                     _state["cmd"] = None
                     _state["output"] = []
                     _state["pending_id"] = None
+                    _state["pending_table"] = None
                     if not getattr(self, "terminal_history_disabled", False):
                         _cmd_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
-                        if _cmd_name not in _PURRSH_TOOLS:
+                        _table = _pending_table or _log_target(_cmd_name)
+                        if _table is not None:
                             try:
                                 _db = self._get_term_db()
                                 if _db is not None:
                                     _raw_output = entry["output"]
-                                    if _pending_id:
-                                        # Finalize the row inserted at command start
-                                        _db.update_command(
-                                            command_id=_pending_id,
-                                            ts_end=entry["ts_end"],
-                                            exit_code=entry["exit_code"],
-                                            output=_trim_output(_raw_output),
-                                        )
-                                        _cid = _pending_id
-                                    else:
-                                        _cid = _db.insert_command(
-                                            ts=entry["ts"],
-                                            ts_end=entry["ts_end"],
-                                            terminal=entry["terminal"],
-                                            cmd=entry["cmd"],
-                                            exit_code=entry["exit_code"],
-                                            output=_trim_output(_raw_output),
-                                            cwd=_state.get("cwd") or None,
-                                        )
-                                    _tagger = self._get_auto_tagger()
-                                    if _tagger is not None and _cid:
-                                        _tags = _tagger.get_tags(entry["cmd"])
-                                        if _tags:
-                                            _db.add_tags(_cid, _tags)
-                                    _parser = self._get_output_parser()
-                                    if _parser is not None and _cid:
-                                        try:
-                                            _parser.process(
-                                                db=_db, cmd_id=_cid,
-                                                cmd=entry["cmd"],
-                                                output=_raw_output,
-                                                tags=_tags if _tagger else [],
+                                    if _table == "pstool_commands":
+                                        # ps* command — logged for psfix only; not tagged/parsed
+                                        if _pending_id:
+                                            _db.update_pstool_command(
+                                                command_id=_pending_id,
+                                                ts_end=entry["ts_end"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
                                             )
-                                        except Exception:
-                                            logger.error("OutputParser failed (split)", exc_info=True)
+                                        else:
+                                            _db.insert_pstool_command(
+                                                ts=entry["ts"],
+                                                ts_end=entry["ts_end"],
+                                                terminal=entry["terminal"],
+                                                cmd=entry["cmd"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
+                                                cwd=_state.get("cwd") or None,
+                                            )
+                                    else:
+                                        if _pending_id:
+                                            # Finalize the row inserted at command start
+                                            _db.update_command(
+                                                command_id=_pending_id,
+                                                ts_end=entry["ts_end"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
+                                            )
+                                            _cid = _pending_id
+                                        else:
+                                            _cid = _db.insert_command(
+                                                ts=entry["ts"],
+                                                ts_end=entry["ts_end"],
+                                                terminal=entry["terminal"],
+                                                cmd=entry["cmd"],
+                                                exit_code=entry["exit_code"],
+                                                output=_trim_output(_raw_output),
+                                                cwd=_state.get("cwd") or None,
+                                            )
+                                        _tagger = self._get_auto_tagger()
+                                        if _tagger is not None and _cid:
+                                            _tags = _tagger.get_tags(entry["cmd"])
+                                            if _tags:
+                                                _db.add_tags(_cid, _tags)
+                                        _parser = self._get_output_parser()
+                                        if _parser is not None and _cid:
+                                            try:
+                                                _parser.process(
+                                                    db=_db, cmd_id=_cid,
+                                                    cmd=entry["cmd"],
+                                                    output=_raw_output,
+                                                    tags=_tags if _tagger else [],
+                                                )
+                                            except Exception:
+                                                logger.error("OutputParser failed (split)", exc_info=True)
                             except Exception:
                                 logger.error("Failed to write split terminal history to DB", exc_info=True)
             if _state["cmd"] is not None:

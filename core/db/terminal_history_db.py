@@ -61,6 +61,26 @@ CREATE TABLE IF NOT EXISTS commands (
 CREATE INDEX IF NOT EXISTS idx_commands_ts  ON commands(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_cmd ON commands(cmd);
 
+-- ── pstool_commands ─────────────────────────────────────────────────────────
+--
+-- Commands invoked from the ps* helper tools (psai, psopen, pscmd, psrag,
+-- pshistory, pshelp, pstldr, psreport). Kept in a SEPARATE table so they never
+-- surface in the normal history/report consumers that read `commands`; only
+-- psfix reads this table (UNION) so it can still fix a failed ps* command.
+-- Same two-phase logging: a row is inserted at command start (NULL exit_code)
+-- and finalized at end. Not tagged/parsed (ps* runs are not pentest actions).
+CREATE TABLE IF NOT EXISTS pstool_commands (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER NOT NULL,
+    ts_end       INTEGER,
+    terminal     TEXT    NOT NULL DEFAULT 'terminal_1',
+    cmd          TEXT    NOT NULL,
+    exit_code    INTEGER,
+    output       TEXT,
+    cwd          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pstool_ts ON pstool_commands(ts);
+
 -- ── command_tags ──────────────────────────────────────────────────────────
 --
 -- Tag vocabulary (enforced by application, not DB):
@@ -218,6 +238,49 @@ class TerminalHistoryDB:
             cur.execute(
                 """
                 UPDATE commands
+                   SET ts_end = ?, exit_code = ?, output = ?
+                 WHERE id = ?
+                """,
+                (ts_end, exit_code, output, command_id),
+            )
+
+    # ── pstool_commands (ps* helper tools — visible only to psfix) ───────────
+
+    def insert_pstool_command(
+        self,
+        ts: int,
+        cmd: str,
+        terminal: str = "terminal_1",
+        ts_end: Optional[int] = None,
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+        cwd: Optional[str] = None,
+    ) -> int:
+        """Insert a ps* tool command into the separate pstool_commands table
+        and return its id. These rows are read only by psfix (so it can fix a
+        failed ps* command) and never appear in normal history/report output."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO pstool_commands (ts, ts_end, terminal, cmd, exit_code, output, cwd)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (ts, ts_end, terminal, cmd, exit_code, output, cwd),
+            )
+            return cur.lastrowid  # type: ignore[return-value]
+
+    def update_pstool_command(
+        self,
+        command_id: int,
+        ts_end: Optional[int] = None,
+        exit_code: Optional[int] = None,
+        output: Optional[str] = None,
+    ) -> None:
+        """Finalize a pending pstool_commands row (two-phase logger)."""
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                UPDATE pstool_commands
                    SET ts_end = ?, exit_code = ?, output = ?
                  WHERE id = ?
                 """,
@@ -448,6 +511,7 @@ class TerminalHistoryDB:
             DELETE FROM target_ports;
             DELETE FROM targets;
             DELETE FROM commands;
+            DELETE FROM pstool_commands;
             DELETE FROM sqlite_sequence;
         """)
         conn.commit()
