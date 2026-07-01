@@ -931,11 +931,16 @@ def _mini_vulns(conn: sqlite3.Connection, snapshot: list[dict],
             continue
         seen_ids.add(rid)
         phase    = next((p for p in exploit_phases if p in tags), "other")
-        severity = _MINI_SEVERITY_MAP.get(phase, "Info")
+        ec       = row.get("exit_code")
+        failed   = ec not in (0, None)
+        # A failed command is not evidence of a vulnerability — don't rate it
+        # by phase. Downgrade to Info and label it as an attempt so the model
+        # doesn't treat exit!=0 offensive commands as confirmed Critical/High.
+        severity = "Info" if failed else _MINI_SEVERITY_MAP.get(phase, "Info")
+        label    = f"Attempted {phase.capitalize()}" if failed else phase.capitalize()
         cmd_short = (row.get("cmd") or "")[:80]
-        ec     = row.get("exit_code")
-        status = f"exit {ec}" if ec not in (0, None) else "ok"
-        block  = [f"### [{severity}] {phase.capitalize()} — [cmd:{rid}]"]
+        status   = f"exit {ec}" if failed else "ok"
+        block  = [f"### [{severity}] {label} — [cmd:{rid}]"]
         block.append(f"`{cmd_short}` [{status}]")
         out = _mini_cap_output(row.get("output") or "")
         if out:
