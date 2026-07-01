@@ -12,8 +12,11 @@ import os
 import json
 import subprocess
 import threading
+import logging
 
 from core.controller import controller_instance
+
+logger = logging.getLogger(__name__)
 
 
 class _ScrollableComboBox(QComboBox):
@@ -273,7 +276,7 @@ def build_menu(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist behavior setting to config", exc_info=True)
 
         def _on_save_sys_changed(state):
             c.save_system_vars = save_sys_checkbox.isChecked()
@@ -345,7 +348,7 @@ def build_menu(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist window geometry to config", exc_info=True)
 
         def _on_lw_changed(state):
             c.lightweight_web_browser = lw_checkbox.isChecked()
@@ -358,7 +361,7 @@ def build_menu(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist performance setting to config", exc_info=True)
 
         def _on_fullwindow_changed(state):
             checked = fullwindow_checkbox.isChecked()
@@ -376,7 +379,7 @@ def build_menu(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist maximized state to config", exc_info=True)
 
         width_spin.valueChanged.connect(lambda _: _save_window_settings())
         height_spin.valueChanged.connect(lambda _: _save_window_settings())
@@ -642,7 +645,7 @@ def build_menu(main_window):
                         with open(c.config_path, "w", encoding="utf-8") as f:
                             json.dump(cfg, f, indent=2, ensure_ascii=False)
                     except Exception:
-                        pass
+                        logger.warning("failed to persist llama setting to config", exc_info=True)
                     popup.accept()
 
                 popup_ok.clicked.connect(_confirm)
@@ -1594,7 +1597,7 @@ def build_menu(main_window):
                     with open(_meta_path_ui, "r", encoding="utf-8") as f:
                         return json.load(f)
                 except Exception:
-                    pass
+                    logger.debug("failed to read RAG file-meta, using empty", exc_info=True)
             return {}
 
         def _delete_chunks_from_db(chunk_ids: list) -> None:
@@ -1619,7 +1622,7 @@ def build_menu(main_window):
                 with open(_meta_path_ui, "w", encoding="utf-8") as f:
                     json.dump(meta, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist RAG file-meta", exc_info=True)
 
         def _kb_path_now() -> str:
             kb = rag_path_edit.text().strip()
@@ -1742,7 +1745,7 @@ def build_menu(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist rag setting to config", exc_info=True)
 
         def _save_llama_key(key, value):
             if not os.path.exists(c.config_path):
@@ -1754,7 +1757,7 @@ def build_menu(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist llama setting to config", exc_info=True)
 
         def _restart_watcher_if_active():
             if rag_auto_checkbox.isChecked():
@@ -2068,7 +2071,7 @@ def build_menu(main_window):
                     with open(_api_keys_path, "r", encoding="utf-8") as f:
                         return json.load(f)
             except Exception:
-                pass
+                logger.debug("failed to read API keys file, using empty", exc_info=True)
             return {}
 
         def _write_file_keys(keys):
@@ -2077,7 +2080,7 @@ def build_menu(main_window):
                     json.dump(keys, f, indent=2, ensure_ascii=False)
                 os.chmod(_api_keys_path, stat.S_IRUSR | stat.S_IWUSR)
             except Exception:
-                pass
+                logger.warning("failed to persist API keys file (or set 0600 perms)", exc_info=True)
 
         def _get_api_key(profile_name):
             """Read key: keyring first, file fallback."""
@@ -2087,7 +2090,7 @@ def build_menu(main_window):
                 if val:
                     return val
             except Exception:
-                pass
+                logger.debug("keyring get_password unavailable, falling back to file", exc_info=True)
             return _load_file_keys().get(profile_name, "")
 
         def _save_api_key(profile_name, key):
@@ -2102,7 +2105,7 @@ def build_menu(main_window):
                         _write_file_keys(_fkeys)
                     return
                 except Exception:
-                    pass
+                    logger.debug("keyring set_password unavailable, falling back to file", exc_info=True)
                 # keyring unavailable — fallback to file
                 _fkeys = _load_file_keys()
                 _fkeys[profile_name] = key
@@ -2113,7 +2116,7 @@ def build_menu(main_window):
                     import keyring
                     keyring.delete_password(_KR_SERVICE, profile_name)
                 except Exception:
-                    pass
+                    logger.debug("keyring delete_password unavailable or key absent", exc_info=True)
                 _fkeys = _load_file_keys()
                 if profile_name in _fkeys:
                     _fkeys.pop(profile_name)
@@ -2134,7 +2137,7 @@ def build_menu(main_window):
                     with open(_api_profiles_path, "r", encoding="utf-8") as f:
                         return json.load(f)
             except Exception:
-                pass
+                logger.debug("failed to read API providers config, using empty", exc_info=True)
             return {}
 
         def _save_providers_to_config(profiles_list, active_name):
@@ -2144,7 +2147,7 @@ def build_menu(main_window):
                 with open(_api_profiles_path, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist API providers config", exc_info=True)
 
         def _collect_profiles_from_table():
             profiles = []
