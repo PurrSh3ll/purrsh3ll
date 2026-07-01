@@ -62,6 +62,12 @@ def _log_target(cmd_name: str) -> str | None:
         return "pstool_commands"
     return "commands"
 
+# Alternate-screen enter/leave sequences emitted by full-screen TUI apps
+# (top, htop, vim, less, nano …). While in this mode the app emits constant
+# screen redraws that are pure noise, so output capture is suppressed. Covers
+# the modern (1049) and legacy (1047/47) variants.
+_ALT_SCREEN_RE = re.compile(r'\x1b\[\?(?:1049|1047|47)([hl])')
+
 _MAX_OUTPUT_BYTES = 100_000  # 100 KB per command output stored in DB
 _HEAD_BYTES       =  60_000  # first 60 KB kept
 _TAIL_BYTES       =  40_000  # last 40 KB kept
@@ -172,7 +178,7 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         term.receivedData.connect(self._on_terminal_received)
 
-        _log_state = {"cmd": None, "ts_start": 0, "ms_start": 0, "output": _BoundedOutput(), "last_failed": None,
+        _log_state = {"cmd": None, "ts_start": 0, "ms_start": 0, "alt_screen": False, "alt_seen": False, "output": _BoundedOutput(), "last_failed": None,
                       "cwd": "", "pending_id": None, "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
         _wrapper_ref = [None]
@@ -196,6 +202,8 @@ class TerminalTabsMixin:
                     _state["output"] = _BoundedOutput()
                     _state["cwd"] = ""
                     _state["pending_id"] = None
+                    _state["alt_screen"] = False
+                    _state["alt_seen"] = False
                     if cwd_b64:
                         try:
                             _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
@@ -240,7 +248,9 @@ class TerminalTabsMixin:
                         "terminal": _tid,
                         "cmd": _state["cmd"],
                         "exit_code": exit_code,
-                        "output": _state["output"].result().strip()
+                        "output": (_state["output"].result().strip()
+                                   or ("[full-screen/TUI output not captured]"
+                                       if _state.get("alt_seen") else ""))
                     }
                     _pending_id = _state.get("pending_id")
                     _pending_table = _state.get("pending_table")
@@ -331,10 +341,20 @@ class TerminalTabsMixin:
                         else:
                             _w.hide_error_overlay()
             if _state["cmd"] is not None:
-                clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
-                clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
-                if clean.strip():
-                    _state["output"].append(clean)
+                # Track alternate-screen mode and skip capture while inside it —
+                # full-screen TUI apps emit endless redraws we don't want stored.
+                # The command row is still recorded (just with no output).
+                _alt_before = _state["alt_screen"]
+                _toggled = False
+                for _m in _ALT_SCREEN_RE.finditer(data):
+                    _state["alt_screen"] = (_m.group(1) == "h")
+                    _state["alt_seen"] = True
+                    _toggled = True
+                if not (_alt_before or _state["alt_screen"] or _toggled):
+                    clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
+                    clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
+                    if clean.strip():
+                        _state["output"].append(clean)
 
         term.receivedData.connect(_on_log)
 
@@ -1282,7 +1302,7 @@ class TerminalTabsMixin:
         except Exception:
             pass
 
-        _log_state = {"cmd": None, "ts_start": 0, "ms_start": 0, "output": _BoundedOutput(), "cwd": "", "pending_id": None,
+        _log_state = {"cmd": None, "ts_start": 0, "ms_start": 0, "alt_screen": False, "alt_seen": False, "output": _BoundedOutput(), "cwd": "", "pending_id": None,
                       "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
 
@@ -1305,6 +1325,8 @@ class TerminalTabsMixin:
                     _state["output"] = _BoundedOutput()
                     _state["cwd"] = ""
                     _state["pending_id"] = None
+                    _state["alt_screen"] = False
+                    _state["alt_seen"] = False
                     if cwd_b64:
                         try:
                             _state["cwd"] = base64.b64decode(cwd_b64 + "==").decode("utf-8", errors="replace").strip()
@@ -1344,7 +1366,9 @@ class TerminalTabsMixin:
                         "terminal": _tid,
                         "cmd": _state["cmd"],
                         "exit_code": exit_code,
-                        "output": _state["output"].result().strip()
+                        "output": (_state["output"].result().strip()
+                                   or ("[full-screen/TUI output not captured]"
+                                       if _state.get("alt_seen") else ""))
                     }
                     _pending_id = _state.get("pending_id")
                     _pending_table = _state.get("pending_table")
@@ -1420,10 +1444,20 @@ class TerminalTabsMixin:
                             except Exception:
                                 logger.error("Failed to write split terminal history to DB", exc_info=True)
             if _state["cmd"] is not None:
-                clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
-                clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
-                if clean.strip():
-                    _state["output"].append(clean)
+                # Track alternate-screen mode and skip capture while inside it —
+                # full-screen TUI apps emit endless redraws we don't want stored.
+                # The command row is still recorded (just with no output).
+                _alt_before = _state["alt_screen"]
+                _toggled = False
+                for _m in _ALT_SCREEN_RE.finditer(data):
+                    _state["alt_screen"] = (_m.group(1) == "h")
+                    _state["alt_seen"] = True
+                    _toggled = True
+                if not (_alt_before or _state["alt_screen"] or _toggled):
+                    clean = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', data)
+                    clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
+                    if clean.strip():
+                        _state["output"].append(clean)
 
         term.receivedData.connect(_on_split_log)
         term.receivedData.connect(self._on_terminal_received)
