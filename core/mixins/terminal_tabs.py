@@ -67,21 +67,50 @@ _HEAD_BYTES       =  60_000  # first 60 KB kept
 _TAIL_BYTES       =  40_000  # last 40 KB kept
 
 
-def _trim_output(output: str) -> str:
-    """Trim output to _MAX_OUTPUT_BYTES using head+tail strategy.
+class _BoundedOutput:
+    """Accumulates command output with bounded memory using a head+tail strategy.
 
-    Keeps the first 60 KB (tool banner, config, early results) and the last
-    40 KB (summary, errors, final findings) with an omission notice between
-    them.  This ensures LLMs always see both the context of what was run and
-    the final result, regardless of output size.
+    Keeps the first _HEAD_BYTES (tool banner, config, early results) and the last
+    _TAIL_BYTES (summary, errors, final findings) of the stream plus a running
+    total. A command producing huge/unbounded output (find /, yes,
+    cat /dev/urandom | base64 …) can therefore never exhaust memory — the earlier
+    approach buffered the entire stream and only trimmed at write time.
+
+    result() is identical to trimming the full stream: the complete text when it
+    fits in _MAX_OUTPUT_BYTES, otherwise head + omission notice + tail. Peak
+    memory is bounded to ~_HEAD_BYTES + 2*_TAIL_BYTES.
     """
-    encoded = output.encode("utf-8", errors="replace")
-    if len(encoded) <= _MAX_OUTPUT_BYTES:
-        return output
-    omitted = len(encoded) - _HEAD_BYTES - _TAIL_BYTES
-    head = encoded[:_HEAD_BYTES].decode("utf-8", errors="replace")
-    tail = encoded[-_TAIL_BYTES:].decode("utf-8", errors="replace")
-    return head + f"\n[... {omitted:,} bytes omitted ...]\n" + tail
+    __slots__ = ("_head", "_tail", "_total")
+
+    def __init__(self) -> None:
+        self._head = bytearray()
+        self._tail = bytearray()
+        self._total = 0
+
+    def append(self, text: str) -> None:
+        b = text.encode("utf-8", errors="replace")
+        if not b:
+            return
+        self._total += len(b)
+        if len(self._head) < _HEAD_BYTES:
+            take = _HEAD_BYTES - len(self._head)
+            self._head += b[:take]
+            b = b[take:]
+        if b:
+            self._tail += b
+            # Compact lazily (at 2x) so trimming stays amortized O(1) per byte.
+            if len(self._tail) > 2 * _TAIL_BYTES:
+                del self._tail[:len(self._tail) - _TAIL_BYTES]
+
+    def result(self) -> str:
+        # head holds [0, HEAD); tail holds the bytes after HEAD (last TAIL kept),
+        # so they never overlap and head+tail == full stream when it all fit.
+        if self._total <= _MAX_OUTPUT_BYTES:
+            return (bytes(self._head) + bytes(self._tail)).decode("utf-8", errors="replace")
+        head = bytes(self._head).decode("utf-8", errors="replace")
+        tail = bytes(self._tail[-_TAIL_BYTES:]).decode("utf-8", errors="replace")
+        omitted = self._total - _HEAD_BYTES - _TAIL_BYTES
+        return head + f"\n[... {omitted:,} bytes omitted ...]\n" + tail
 
 
 class TerminalTabsMixin:
@@ -143,7 +172,7 @@ class TerminalTabsMixin:
         term.setColorScheme(self.terminals_stylesheet)
         term.receivedData.connect(self._on_terminal_received)
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": [], "last_failed": None,
+        _log_state = {"cmd": None, "ts_start": 0, "output": _BoundedOutput(), "last_failed": None,
                       "cwd": "", "pending_id": None, "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
         _wrapper_ref = [None]
@@ -159,7 +188,7 @@ class TerminalTabsMixin:
                         cmd = payload
                     _state["cmd"] = cmd
                     _state["ts_start"] = int(ts)
-                    _state["output"] = []
+                    _state["output"] = _BoundedOutput()
                     _state["cwd"] = ""
                     _state["pending_id"] = None
                     if cwd_b64:
@@ -203,12 +232,12 @@ class TerminalTabsMixin:
                         "terminal": _tid,
                         "cmd": _state["cmd"],
                         "exit_code": exit_code,
-                        "output": "".join(_state["output"]).strip()
+                        "output": _state["output"].result().strip()
                     }
                     _pending_id = _state.get("pending_id")
                     _pending_table = _state.get("pending_table")
                     _state["cmd"] = None
-                    _state["output"] = []
+                    _state["output"] = _BoundedOutput()
                     _state["pending_id"] = None
                     _state["pending_table"] = None
                     if not getattr(self, "terminal_history_disabled", False):
@@ -226,7 +255,7 @@ class TerminalTabsMixin:
                                                 command_id=_pending_id,
                                                 ts_end=entry["ts_end"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                             )
                                         else:
                                             _db.insert_pstool_command(
@@ -235,7 +264,7 @@ class TerminalTabsMixin:
                                                 terminal=entry["terminal"],
                                                 cmd=entry["cmd"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                                 cwd=_state.get("cwd") or None,
                                             )
                                     else:
@@ -245,7 +274,7 @@ class TerminalTabsMixin:
                                                 command_id=_pending_id,
                                                 ts_end=entry["ts_end"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                             )
                                             _cid = _pending_id
                                         else:
@@ -256,7 +285,7 @@ class TerminalTabsMixin:
                                                 terminal=entry["terminal"],
                                                 cmd=entry["cmd"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                                 cwd=_state.get("cwd") or None,
                                             )
                                         _tagger = self._get_auto_tagger()
@@ -1243,7 +1272,7 @@ class TerminalTabsMixin:
         except Exception:
             pass
 
-        _log_state = {"cmd": None, "ts_start": 0, "output": [], "cwd": "", "pending_id": None,
+        _log_state = {"cmd": None, "ts_start": 0, "output": _BoundedOutput(), "cwd": "", "pending_id": None,
                       "pending_table": None}
         _osc_re = re.compile(r'\x1b\]777;purrlog_(cmd|end);([^;\x07]+);(\d+)(?:;([^\x07]*))?\x07')
 
@@ -1258,7 +1287,7 @@ class TerminalTabsMixin:
                         cmd = payload
                     _state["cmd"] = cmd
                     _state["ts_start"] = int(ts)
-                    _state["output"] = []
+                    _state["output"] = _BoundedOutput()
                     _state["cwd"] = ""
                     _state["pending_id"] = None
                     if cwd_b64:
@@ -1297,12 +1326,12 @@ class TerminalTabsMixin:
                         "terminal": _tid,
                         "cmd": _state["cmd"],
                         "exit_code": exit_code,
-                        "output": "".join(_state["output"]).strip()
+                        "output": _state["output"].result().strip()
                     }
                     _pending_id = _state.get("pending_id")
                     _pending_table = _state.get("pending_table")
                     _state["cmd"] = None
-                    _state["output"] = []
+                    _state["output"] = _BoundedOutput()
                     _state["pending_id"] = None
                     _state["pending_table"] = None
                     if not getattr(self, "terminal_history_disabled", False):
@@ -1320,7 +1349,7 @@ class TerminalTabsMixin:
                                                 command_id=_pending_id,
                                                 ts_end=entry["ts_end"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                             )
                                         else:
                                             _db.insert_pstool_command(
@@ -1329,7 +1358,7 @@ class TerminalTabsMixin:
                                                 terminal=entry["terminal"],
                                                 cmd=entry["cmd"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                                 cwd=_state.get("cwd") or None,
                                             )
                                     else:
@@ -1339,7 +1368,7 @@ class TerminalTabsMixin:
                                                 command_id=_pending_id,
                                                 ts_end=entry["ts_end"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                             )
                                             _cid = _pending_id
                                         else:
@@ -1349,7 +1378,7 @@ class TerminalTabsMixin:
                                                 terminal=entry["terminal"],
                                                 cmd=entry["cmd"],
                                                 exit_code=entry["exit_code"],
-                                                output=_trim_output(_raw_output),
+                                                output=_raw_output,
                                                 cwd=_state.get("cwd") or None,
                                             )
                                         _tagger = self._get_auto_tagger()
