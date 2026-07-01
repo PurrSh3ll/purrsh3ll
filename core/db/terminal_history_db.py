@@ -3,9 +3,9 @@ terminal_history_db.py — SQLite backend for PurrSh3ll terminal history.
 
 Schema:
   commands      — every command with full output
-  command_tags  — many-to-many tags per command (recon, exploit, found_flag, …)
-  findings      — extracted discoveries: ports, creds, hashes, CVEs, flags
-  targets       — known hosts / IPs
+  command_tags  — many-to-many tool-category tags per command (recon, exploit, …)
+  findings      — extracted discoveries: creds, hashes, CVEs, flags, users, paths
+  targets       — known hosts / IPs (discovered ports live in target_ports)
   target_ports  — open ports per target
 
 Usage:
@@ -94,12 +94,15 @@ CREATE INDEX IF NOT EXISTS idx_pstool_ts ON pstool_commands(ts);
 
 -- ── command_tags ──────────────────────────────────────────────────────────
 --
--- Tag vocabulary (enforced by application, not DB):
---   Phase tags : recon | scan | web | smb | ftp | ssh | ldap | snmp | sql
---                exploit | reverse_shell | privesc | lateral | persistence | cleanup
---   Finding tags: found_port | found_cred | found_hash | found_flag | found_cve
---                 found_user | found_host | found_path | found_service
---   State tags : success | failed | partial | manual
+-- Tag vocabulary — the tool categories the auto_tagger assigns from a command's
+-- first word. Single source of truth: appdata/tool_categories.json (enforced
+-- application-side, not by the DB):
+--   recon | scan | web | smb | ftp | ssh | ldap | ad | exploit | privesc
+--   lateral | crack | shell | network | cloud | forensics | re | wifi | other
+--   screenshot  (applied by psview, not via tool lookup)
+--
+-- Note: command success/failure is commands.exit_code (not a tag), and extracted
+-- artifacts (creds, hashes, ports, …) live in findings / target_ports (not tags).
 --
 CREATE TABLE IF NOT EXISTS command_tags (
     command_id  INTEGER NOT NULL REFERENCES commands(id) ON DELETE CASCADE,
@@ -111,8 +114,9 @@ CREATE INDEX IF NOT EXISTS idx_tags_tag ON command_tags(tag);
 
 -- ── findings ──────────────────────────────────────────────────────────────
 --
--- finding_type values:
---   port | credential | hash | flag | cve | user | host | path | service | note
+-- finding_type values emitted by the output parser:
+--   credential | hash | cve | flag | user | path | service
+-- (discovered hosts/ports are recorded in targets / target_ports, not here)
 --
 CREATE TABLE IF NOT EXISTS findings (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -659,7 +663,7 @@ if __name__ == "__main__":
     )
     print(f"[OK] Inserted command id={cid}")
 
-    db.add_tags(cid, ["recon", "scan", "smb", "found_port"])
+    db.add_tags(cid, ["recon", "scan", "smb"])
     print(f"[OK] Tags: {db.get_tags(cid)}")
 
     fid = db.add_finding(
