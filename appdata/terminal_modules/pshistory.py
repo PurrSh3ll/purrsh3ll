@@ -177,8 +177,8 @@ def cmd_categories(db_path):
             ).fetchall()
             counts = {r["tag"]: r["c"] for r in rows}
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[pshistory] Could not read tag counts from DB: {e}", file=sys.stderr)
 
     print(f"{'TAG':12}  {'LABEL':28}  IN DB")
     print("-" * 50)

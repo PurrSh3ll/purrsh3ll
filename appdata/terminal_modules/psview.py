@@ -18,6 +18,19 @@ import sqlite3
 import sys
 import time
 
+
+def _dbg(msg: str):
+    """Trace a swallowed error; quiet unless psai --debug (_ai._DEBUG_PROMPT) is on."""
+    try:
+        import psai as _ai
+        if getattr(_ai, "_DEBUG_PROMPT", False):
+            import traceback
+            sys.stderr.write(f"\033[90m[psview:debug] {msg}\n{traceback.format_exc()}\033[0m")
+            sys.stderr.flush()
+    except Exception:
+        pass
+
+
 _SUPPORTED_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _MEDIA_TYPES   = {
     ".png":  "image/png",
@@ -124,7 +137,7 @@ def _save_to_history(base_dir: str, filename: str, analysis: str,
             )
         conn.commit()
     except Exception:
-        pass
+        _dbg("failed to save psview screenshot analysis to history DB")
     finally:
         conn.close()
 

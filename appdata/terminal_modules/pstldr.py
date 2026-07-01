@@ -7,6 +7,19 @@ Accepts text directly, a file path, or stdin via pipe.
 import os
 import sys
 
+
+def _dbg(msg: str):
+    """Trace a swallowed error; quiet unless psai --debug (_ai._DEBUG_PROMPT) is on."""
+    try:
+        import psai as _ai
+        if getattr(_ai, "_DEBUG_PROMPT", False):
+            import traceback
+            sys.stderr.write(f"\033[90m[pstldr:debug] {msg}\n{traceback.format_exc()}\033[0m")
+            sys.stderr.flush()
+    except Exception:
+        pass
+
+
 _BINARY_CHECK_BYTES = 512
 
 
@@ -35,7 +48,7 @@ def _read_pdf(path: str) -> str | None:
             doc.close()
         return "\n\n".join(pages) if pages else None
     except ImportError:
-        pass
+        _dbg("PyMuPDF (fitz) not installed, falling back to pypdf")
     except Exception:
         return None
 

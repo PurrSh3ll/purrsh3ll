@@ -10,6 +10,18 @@ import sqlite3
 import sys
 
 
+def _dbg(msg: str):
+    """Trace a swallowed error; quiet unless psai --debug (_ai._DEBUG_PROMPT) is on."""
+    try:
+        import psai as _ai
+        if getattr(_ai, "_DEBUG_PROMPT", False):
+            import traceback
+            sys.stderr.write(f"\033[90m[psfix:debug] {msg}\n{traceback.format_exc()}\033[0m")
+            sys.stderr.flush()
+    except Exception:
+        pass
+
+
 def _db_connect(base_dir: str) -> sqlite3.Connection | None:
     path = (os.environ.get("PSDB")
             or os.path.join(base_dir, "appdata", "logs", "terminal_history.db"))
@@ -59,7 +71,7 @@ def _last_terminal_entry(base_dir: str, terminal: str | None = None) -> dict | N
         if row:
             return {"cmd": row["cmd"], "exit_code": row["exit_code"], "output": row["output"] or ""}
     except Exception:
-        pass
+        _dbg("failed to read last terminal entry from history DB")
     finally:
         conn.close()
     return None
