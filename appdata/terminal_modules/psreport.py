@@ -20,6 +20,18 @@ import sys
 from datetime import datetime
 
 
+_DEBUG = False  # set from --debug in main(); enables _dbg() traces
+
+
+def _dbg(msg: str) -> None:
+    """Trace an otherwise-silent caught failure. Quiet by default; message and
+    current traceback go to stderr only under --debug."""
+    if _DEBUG:
+        import traceback
+        sys.stderr.write(f"\033[90m[psreport:debug] {msg}\n{traceback.format_exc()}\033[0m")
+        sys.stderr.flush()
+
+
 # ── Fallback filter for commands not in tool_categories.json ──────────────────
 
 _SKIP_EXACT    = {"ls", "ll", "la", "l", "pwd", "clear", "cls", "history",
@@ -1126,7 +1138,7 @@ def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
         if cve_rows:
             findings_lines.append("CVEs: " + ", ".join(r["value"] for r in cve_rows[:10]))
     except Exception:
-        pass
+        _dbg("intel-header: CVE findings query failed")
     for ftype, label in (
         ("credential", "Credentials captured"),
         ("hash",       "Hashes captured"),
@@ -1142,7 +1154,7 @@ def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
             if n:
                 findings_lines.append(f"{label}: {n}")
         except Exception:
-            pass
+            _dbg("intel-header: findings count query failed")
     try:
         exploit_n = conn.execute(
             "SELECT COUNT(DISTINCT c.id) FROM commands c "
@@ -1152,7 +1164,7 @@ def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
         if exploit_n:
             findings_lines.append(f"Exploitation activities: {exploit_n} commands")
     except Exception:
-        pass
+        _dbg("intel-header: exploitation-activity query failed")
     findings_text = "\n".join(findings_lines)
     if len(findings_text) > findings_cap:
         findings_text = findings_text[:findings_cap] + "\n..."
@@ -1172,7 +1184,7 @@ def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
         if phase_rows:
             scope_lines.append("Phases: " + ", ".join(f"{r['tag']}({r['cnt']})" for r in phase_rows))
     except Exception:
-        pass
+        _dbg("intel-header: phase-coverage query failed")
     try:
         ts_row = conn.execute(
             "SELECT MIN(ts) AS t0, MAX(COALESCE(ts_end,ts)) AS t1 "
@@ -1183,7 +1195,7 @@ def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
             t1 = datetime.fromtimestamp(ts_row["t1"]).strftime("%Y-%m-%d %H:%M")
             scope_lines.append(f"Duration: {t0} → {t1}")
     except Exception:
-        pass
+        _dbg("intel-header: duration query failed")
     if hosts:
         scope_lines.append(f"Hosts: {len(hosts)}")
     scope_text = "\n".join(scope_lines)
@@ -1234,7 +1246,7 @@ def _mini_recs_prompt(conn: sqlite3.Connection, snapshot: list[dict],
                     line += f" ({', '.join(meta)})"
                 vuln_lines.append(line)
     except Exception:
-        pass
+        _dbg("minimal: vulnerability section query failed")
 
     exploit_phases = ["exploit", "privesc", "lateral", "shell", "crack", "ad", "web", "smb"]
     seen_phases: set[str] = set()
@@ -1275,7 +1287,7 @@ def _mini_recs_prompt(conn: sqlite3.Connection, snapshot: list[dict],
                 line += f" ({', '.join(meta)})"
             creds_lines.append(line)
     except Exception:
-        pass
+        _dbg("minimal: credentials section query failed")
     creds_text = "\n".join(creds_lines)
     if len(creds_text) > creds_cap:
         creds_text = creds_text[:creds_cap] + "\n..."
@@ -1729,6 +1741,8 @@ def main():
         sys.exit(1)
 
     if args.debug:
+        global _DEBUG
+        _DEBUG = True
         _ai._DEBUG_PROMPT = True
 
     config  = _ai._load_config(base_dir)
