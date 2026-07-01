@@ -288,9 +288,15 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
     ]
     phase_rows = conn.execute(
         """
-        SELECT ct.tag, COUNT(*) AS cnt, MAX(c.cmd) AS last_cmd
+        SELECT ct.tag,
+               COUNT(*) AS cnt,
+               (SELECT c2.cmd
+                  FROM commands c2
+                  JOIN command_tags ct2 ON ct2.command_id = c2.id
+                 WHERE ct2.tag = ct.tag
+                 ORDER BY c2.ts DESC, c2.id DESC
+                 LIMIT 1) AS last_cmd
         FROM command_tags ct
-        JOIN commands c ON c.id = ct.command_id
         WHERE ct.tag IN ({})
         GROUP BY ct.tag
         ORDER BY cnt DESC
