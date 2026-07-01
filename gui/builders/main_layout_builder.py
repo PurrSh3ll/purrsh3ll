@@ -231,7 +231,7 @@ def build_main_layout(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist welcome custom_text to config", exc_info=True)
 
         def _open_edit_text_dialog():
             dlg = QDialog(c.widgets["main_window"])
@@ -294,7 +294,7 @@ def build_main_layout(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist welcome bg_path to config", exc_info=True)
 
         def _apply_bg(path):
             if _bg_movie[0] is not None:
@@ -473,7 +473,7 @@ def build_main_layout(main_window):
                 with open(c.config_path, "w", encoding="utf-8") as f:
                     json.dump(cfg, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist welcome image_path to config", exc_info=True)
 
         _current_movie = [None]
 
@@ -994,7 +994,7 @@ def build_main_layout(main_window):
                 idx = combo.findData(active)
                 combo.setCurrentIndex(max(0, idx))
             except Exception:
-                pass
+                logger.debug("failed to load API profiles into combo", exc_info=True)
             combo.blockSignals(False)
             _update_tooltip()
 
@@ -1009,7 +1009,7 @@ def build_main_layout(main_window):
                 with open(_api_profiles_path, "w", encoding="utf-8") as f:
                     json.dump(prov, f, indent=2, ensure_ascii=False)
             except Exception:
-                pass
+                logger.warning("failed to persist active API profile", exc_info=True)
             # sync AI Settings combo if open
             ai_combo = c.widgets.get("ai_active_profile_combo")
             if ai_combo is not None:
