@@ -5,12 +5,15 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QWheelEvent
 import os
+import logging
 
 from core.controller import controller_instance
 from gui.widgets.observable_panel import ObserverPanel
 from gui.widgets.custom_frame import CustomFrame
 from gui.dialogs.custom_dialog import CustomDialog
 from gui.panels.snippet_panel import SnippetPanel
+
+logger = logging.getLogger(__name__)
 
 c = controller_instance
 
@@ -46,14 +49,14 @@ def build_side_panels(main_window):
                 with open(notes_path, "r", encoding="utf-8") as f:
                     notes_editor.setPlainText(f.read())
         except Exception:
-            pass
+            logger.debug("failed to load notes into editor", exc_info=True)
 
         def _save_notes():
             try:
                 with open(notes_path, "w", encoding="utf-8") as f:
                     f.write(notes_editor.toPlainText())
             except Exception as e:
-                pass
+                logger.warning("failed to save notes", exc_info=True)
 
         notes_editor.textChanged.connect(_save_notes)
 

@@ -229,7 +229,7 @@ class MainWindow(QMainWindow):
             if cfg.get("rag", {}).get("auto_index", False):
                 self.c.start_rag_watcher()
         except Exception:
-            pass
+            logger.debug("failed to read rag.auto_index from config", exc_info=True)
 
     def _load_state(self):
         self.c.load_dynamic_variables()
@@ -352,7 +352,7 @@ class MainWindow(QMainWindow):
                 if os.path.exists(notes_path):
                     open(notes_path, "w").close()
             except Exception as e:
-                pass
+                logger.warning("failed to clear psnotes at close", exc_info=True)
 
         if getattr(self.c, "clear_chat_history_on_exit", False):
             sessions_dir = os.path.join(self.c.base_path, "appdata", "chat_sessions")

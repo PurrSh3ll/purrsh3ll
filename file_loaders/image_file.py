@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import stat
 import subprocess
@@ -11,13 +12,15 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+logger = logging.getLogger(__name__)
+
 _EXIFTOOL = None
 try:
     _et = subprocess.run(['exiftool', '-ver'], capture_output=True, text=True, timeout=3)
     if _et.returncode == 0:
         _EXIFTOOL = 'exiftool'
 except Exception:
-    pass
+    logger.debug("exiftool not available, metadata extraction disabled", exc_info=True)
 
 _EXIFTOOL_PRIORITY = [
     'DateTimeOriginal', 'CreateDate', 'ModifyDate',
@@ -354,7 +357,7 @@ class Image_file:
             is_animated = getattr(pil_img, 'n_frames', 1) > 1
             pil_img.close()
         except Exception:
-            pass
+            logger.debug("failed to probe image for animation via PIL", exc_info=True)
 
         if not is_animated:
             # Single-frame — use static path for high-quality SmoothTransformation zoom
