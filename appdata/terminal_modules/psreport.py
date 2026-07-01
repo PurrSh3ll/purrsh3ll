@@ -557,11 +557,24 @@ def _save_report(report_md: str, fmt: str, title: str,
     text = _md_to_html(report_md, title) if fmt == "html" else report_md
     reports_dir = os.path.join(base_dir, "appmodules", "Cyb3rCollector", "reports")
     os.makedirs(reports_dir, exist_ok=True)
-    filename    = f"report_{now.strftime('%Y-%m-%d_%H-%M')}.{fmt}"
-    report_path = os.path.join(reports_dir, filename)
+    # Second-resolution timestamp + a collision counter so two reports generated
+    # in the same minute (or second) never overwrite each other.
+    stem        = f"report_{now.strftime('%Y-%m-%d_%H-%M-%S')}"
+    report_path = os.path.join(reports_dir, f"{stem}.{fmt}")
+    counter = 2
+    while os.path.exists(report_path):
+        report_path = os.path.join(reports_dir, f"{stem}_{counter}.{fmt}")
+        counter += 1
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(text)
     return report_path
+
+
+def _emit_report(text: str) -> None:
+    """Print the finished report to stdout — used by -v/--verbose so the user
+    sees the saved report in the terminal (same content that was written)."""
+    sys.stdout.write("\n" + text.rstrip() + "\n")
+    sys.stdout.flush()
 
 
 # ── Notes mode helpers ────────────────────────────────────────────────────────
@@ -1662,7 +1675,8 @@ def main():
                         help="Path to pentester notes file — AI generates report enriched "
                              "with terminal evidence via <!-- PSEVIDENCE: --> placeholders")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Stream report to terminal while saving (default: save only)")
+                        help="Also print the finished report to the terminal "
+                             "(default: save to file only)")
     parser.add_argument("-f", "--format",  default="md", choices=["md", "html"])
     parser.add_argument("--base-dir", default=None, metavar="DIR")
     parser.add_argument("--cwd",      default=None, metavar="DIR")
@@ -1681,7 +1695,7 @@ def main():
             "  psreport -m [K], --minimal [K]              Minimal: app-side report + 2 LLM calls (exec summary + recommendations); K = context K tokens; for small models\n"
             "  psreport -d [K], --deep [K]                 Deep: 3-pass (investigate → draft → critique) with full output; K = context K tokens; for top-tier models\n"
             "  psreport -n, --notes notes.txt              Notes mode: report from your notes + terminal evidence\n"
-            "  psreport -v, --verbose                      Stream synthesis to terminal while saving\n"
+            "  psreport -v, --verbose                      Also print the finished report to the terminal\n"
             "  psreport -f, --format html                  Generate HTML report instead of Markdown\n"
             "  psreport -t, --target 192.168.1.10          Filter attack surface to a specific host/IP\n"
             "  psreport -T, --title \"Internal Pentest\"      Set custom report title\n"
@@ -1846,7 +1860,7 @@ Generate the complete {fmt_name} report below using exactly this template:
             _ai._info(f"Querying {model} via {provider}…\n")
         _ai._info("Generating report from notes...\n")
         messages = [{"role": "user", "content": prompt}]
-        response = _llm(messages, verbose=args.verbose)
+        response = _llm(messages, verbose=False)
 
         if not response:
             _ai._err("No response from model.")
@@ -1860,6 +1874,8 @@ Generate the complete {fmt_name} report below using exactly this template:
 
         try:
             report_path = _save_report(resolved, fmt, title, base_dir, now)
+            if args.verbose:
+                _emit_report(resolved)
             _ai._info(f"Report saved: {os.path.relpath(report_path, base_dir)}\n")
         except Exception as e:
             _ai._err(f"Failed to save report: {e}")
@@ -1932,6 +1948,8 @@ Generate the complete {fmt_name} report below using exactly this template:
 
         try:
             report_path = _save_report(response, fmt, title, base_dir, now)
+            if args.verbose:
+                _emit_report(response)
             _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
         except Exception as e:
             _ai._err(f"Failed to save report: {e}")
@@ -1994,7 +2012,7 @@ Generate the complete {fmt_name} report below using exactly this template:
             llm_fn=_llm,
             ctx_k=ctx_k,
             ctx_window=ctx_window_d,
-            verbose=args.verbose,
+            verbose=False,
         )
         if not response:
             _ai._err("No response from model.")
@@ -2007,6 +2025,8 @@ Generate the complete {fmt_name} report below using exactly this template:
 
         try:
             report_path = _save_report(resolved, fmt, title, base_dir, now)
+            if args.verbose:
+                _emit_report(resolved)
             _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
         except Exception as e:
             _ai._err(f"Failed to save report: {e}")
@@ -2090,7 +2110,7 @@ Generate the complete {fmt_name} report below using exactly this template:
         _ai._info(f"Querying {model} via {provider}…\n")
     _ai._info("Generating report...\n")
     messages = [{"role": "user", "content": prompt}]
-    response = _llm(messages, verbose=args.verbose)
+    response = _llm(messages, verbose=False)
 
     if not response:
         _ai._err("No response from model.")
@@ -2105,6 +2125,8 @@ Generate the complete {fmt_name} report below using exactly this template:
     # ── Save to file ──────────────────────────────────────────────────────────
     try:
         report_path = _save_report(resolved, fmt, title, base_dir, now)
+        if args.verbose:
+            _emit_report(resolved)
         _ai._info(f"\nReport saved: {os.path.relpath(report_path, base_dir)}\n")
     except Exception as e:
         _ai._err(f"Failed to save report: {e}")

@@ -10,7 +10,7 @@ Usage:
   psreport -m [K], --minimal [K]              Minimal: app-side report + 2 LLM calls (exec summary + recommendations); K = context K tokens; for small models
   psreport -d [K], --deep [K]                 Deep: 3-pass (investigate → draft → critique) with full output; K = context K tokens; for top-tier models
   psreport -n, --notes FILE                   Notes mode: report from your notes + terminal evidence
-  psreport -v, --verbose                      Stream synthesis to terminal while saving
+  psreport -v, --verbose                      Also print the finished report to the terminal
   psreport -f, --format html                  Generate HTML report (default: md)
   psreport -t, --target <host/ip>             Filter attack surface to a specific host/IP
   psreport -T, --title "<title>"              Set custom report title
