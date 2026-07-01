@@ -1,53 +1,65 @@
-# PurrSh3ll — Python dependencies
-# This file is for reference only. The canonical install is via install.sh,
-# which also handles QTermWidget (custom wheel), system packages, and optional
-# voice/embedding components.
+# PurrSh3ll — Python dependencies (pinned)
+#
+# This is the single source of truth for the app's PyPI dependencies.
+# install.sh installs from this file (`pip install -r requirements.txt`),
+# then handles the non-PyPI pieces it cannot: QTermWidget (custom wheel),
+# system apt packages, aichat binary, docker images and Ollama.
+#
+# Why requirements.txt and not pyproject.toml:
+#   PurrSh3ll is an application run directly via `python3 main.py`, not a
+#   distributable package (`pip install .`). pyproject's build-system /
+#   entry-point machinery would go unused, and install.sh is still required
+#   for the apt/wheel/binary steps regardless. A pinned requirements.txt is
+#   the better fit here.
+#
+# Versions are pinned exactly (==) so test runs and fresh installs are
+# reproducible. Bump deliberately after verifying, not implicitly.
 
 # ── Core ──────────────────────────────────────────────────────────────────────
-PyQt6
-PyQt6-WebEngine
-pyqt6-sip
-QtPy
-watchdog
+PyQt6==6.10.0
+PyQt6-WebEngine==6.10.0
+pyqt6-sip==13.10.2
+QtPy==2.4.3
+watchdog==6.0.0
 
 # ── AI / RAG ──────────────────────────────────────────────────────────────────
-chromadb
-fastembed
-onnxruntime
-huggingface-hub
+chromadb==1.5.9
+fastembed==0.8.0
+onnxruntime==1.26.0
+huggingface-hub==1.14.0
 
 # ── Security / system ─────────────────────────────────────────────────────────
-keyring
-SecretStorage
-cryptography
-jeepney
-docker
+keyring==25.7.0
+SecretStorage==3.5.0
+cryptography==46.0.5
+jeepney==0.9.0
+docker==7.1.0
 
 # ── File handling ─────────────────────────────────────────────────────────────
-pymupdf
-mutagen
-Pillow
+pymupdf==1.27.2.3
+mutagen==1.47.0
+Pillow==12.0.0
 
 # ── Terminal / UI ─────────────────────────────────────────────────────────────
-pyte
-pyfiglet
-pygame
-Pygments
-markdown2
-rich
+pyte==0.8.2
+pyfiglet==1.0.4
+pygame==2.6.1
+Pygments==2.19.2
+markdown2==2.5.4
+rich==14.2.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
-numpy
-pydantic
-requests
-PyYAML
-loguru
+numpy==2.4.4
+pydantic==2.13.4
+requests==2.32.5
+PyYAML==6.0.3
+loguru==0.7.3
 
-# ── Voice (optional — installed only when Voice component selected) ────────────
-# faster-whisper
-# openwakeword
-# sounddevice
-# scipy
+# ── Voice (optional — installed by install.sh only when Voice is selected) ────
+# faster-whisper==1.2.1
+# openwakeword==0.4.0
+# sounddevice==0.5.5
+# scipy==1.17.1
 
 # ── Not on PyPI — installed via custom wheel by install.sh ────────────────────
 # qtermwidget

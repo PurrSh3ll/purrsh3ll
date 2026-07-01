@@ -282,35 +282,8 @@ success "Virtual environment ready"
 
 info "Installing Python packages..."
 
-"$PIP" install --progress-bar off \
-    PyQt6 \
-    PyQt6-WebEngine \
-    pyqt6-sip \
-    QtPy \
-    watchdog \
-    chromadb \
-    fastembed \
-    onnxruntime \
-    huggingface-hub \
-    keyring \
-    SecretStorage \
-    cryptography \
-    docker \
-    pyfiglet \
-    pygame \
-    Pillow \
-    pydantic \
-    requests \
-    PyYAML \
-    loguru \
-    rich \
-    numpy \
-    pyte \
-    markdown2 \
-    Pygments \
-    jeepney \
-    pymupdf \
-    mutagen \
+# Pinned dependencies live in requirements.txt (single source of truth).
+"$PIP" install --progress-bar off -r requirements.txt \
     2>&1 | grep -E "^(Collecting|Downloading|Installing collected|Successfully installed|ERROR|error:)" || true
 
 success "Core packages installed"
@@ -318,10 +291,10 @@ success "Core packages installed"
 if [[ "$INSTALL_VOICE" == true ]]; then
     info "Installing voice packages..."
     _voice_pip_out=$("$PIP" install --progress-bar off \
-        faster-whisper \
-        openwakeword \
-        sounddevice \
-        scipy 2>&1) && _voice_pip_ok=true || _voice_pip_ok=false
+        faster-whisper==1.2.1 \
+        openwakeword==0.4.0 \
+        sounddevice==0.5.5 \
+        scipy==1.17.1 2>&1) && _voice_pip_ok=true || _voice_pip_ok=false
     echo "$_voice_pip_out" | grep -E "^(Collecting|Downloading|Installing collected|Successfully installed|ERROR|error:)" || true
     if [[ "$_voice_pip_ok" == true ]]; then
         VOICE_OK=true
