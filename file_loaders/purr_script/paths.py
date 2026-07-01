@@ -1,6 +1,10 @@
 import os
 import hashlib
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
 
 class PathsMixin:
     def get_notes_path(self):
@@ -102,7 +106,7 @@ class PathsMixin:
                 f.write(current_text)
 
         except Exception as e:
-            pass
+            logger.warning("failed to save script notes", exc_info=True)
 
     @property
     def detail_texts(self):

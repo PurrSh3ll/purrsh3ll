@@ -23,11 +23,14 @@ Usage:
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # DDL
@@ -277,7 +280,7 @@ class TerminalHistoryDB:
             try:
                 conn.execute("ROLLBACK")
             except Exception:
-                pass
+                logger.debug("ROLLBACK after failed init script had nothing to undo", exc_info=True)
             conn.execute("PRAGMA foreign_keys=ON")
             raise
 

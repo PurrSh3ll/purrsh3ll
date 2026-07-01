@@ -2,8 +2,11 @@ import os
 import stat
 import hashlib
 import json
+import logging
 import subprocess
 import threading
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -37,7 +40,7 @@ try:
     if result.returncode == 0:
         _EXIFTOOL = 'exiftool'
 except Exception:
-    pass
+    logger.debug("exiftool not available, metadata extraction disabled", exc_info=True)
 
 # exiftool fields shown first in metadata panel — OSINT/forensics priority
 _PRIORITY_FIELDS = [

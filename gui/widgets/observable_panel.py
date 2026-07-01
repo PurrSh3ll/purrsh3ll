@@ -5,6 +5,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 import re, os, json, sys
 import shutil, subprocess
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class ObserverRow:
     WIDGET_KEYS = (
@@ -624,7 +628,7 @@ class ObserverPanel(QWidget):
                 with open(self.observer_panel_state_path, "w", encoding="utf-8") as f:
                     f.write("")
         except Exception as e:
-            pass
+            logger.warning("failed to persist observer panel state", exc_info=True)
 
     def is_system_command(self, name: str) -> bool:
         if shutil.which(name) is not None:

@@ -3,10 +3,13 @@ import os
 import stat
 import hashlib
 import json
+import logging
 import subprocess
 import threading
 import time
 import wave
+
+logger = logging.getLogger(__name__)
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
@@ -47,7 +50,7 @@ try:
     if _et.returncode == 0:
         _EXIFTOOL = 'exiftool'
 except Exception:
-    pass
+    logger.debug("exiftool not available, metadata extraction disabled", exc_info=True)
 
 
 def _fmt_time(seconds):

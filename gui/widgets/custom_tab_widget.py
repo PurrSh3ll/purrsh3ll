@@ -4,6 +4,10 @@ from PyQt6.QtGui import QAction
 import os, subprocess
 from core.controller import controller_instance
 import traceback
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 class CustomTabWidget(QTabWidget):
     def __init__(self, *args, **kwargs):
@@ -101,7 +105,7 @@ class CustomTabWidget(QTabWidget):
                         check=True,
                     )
             except Exception:
-                pass
+                logger.debug("failed to remove webmap docker container (may not exist)", exc_info=True)
 
         try:
             for key, val in list(controller_instance.widgets.items()):

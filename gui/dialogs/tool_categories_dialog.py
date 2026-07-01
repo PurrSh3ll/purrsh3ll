@@ -6,7 +6,10 @@ appdata/tool_categories.json.  Not yet wired to the auto-tagger.
 """
 
 import json
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtCore import Qt, QSortFilterProxyModel, QStringListModel
 from PyQt6.QtWidgets import (
@@ -57,7 +60,7 @@ class ToolCategoriesDialog(QDialog):
             with open(self._json_path, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2, ensure_ascii=False)
         except Exception:
-            pass
+            logger.warning("failed to persist tool categories", exc_info=True)
 
     # ── UI construction ────────────────────────────────────────────────────
 

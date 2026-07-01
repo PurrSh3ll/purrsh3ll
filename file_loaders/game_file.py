@@ -1,9 +1,12 @@
 
 import json
+import logging
 import os
 import sys
 import webbrowser
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QScrollArea, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
@@ -45,7 +48,7 @@ def _save_last_run(config_path: str, game_path: str, ts: int):
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception:
-        pass
+        logger.warning("failed to persist game_last_run to config", exc_info=True)
 
 
 def _format_last_run(ts: int | None) -> str:
