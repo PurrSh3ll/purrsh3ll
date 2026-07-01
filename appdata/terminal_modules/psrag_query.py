@@ -36,7 +36,7 @@ def _load_config(base_dir: str) -> dict:
         with open(profiles_path, encoding="utf-8") as f:
             cfg["api_providers"] = json.load(f)
     except Exception:
-        pass
+        _dbg("could not load api_profiles.json")
     return cfg
 
 
@@ -182,7 +182,7 @@ def _search(base_dir: str, query_vec: list, top_n: int) -> list:
         try:
             mem_count = client.get_collection("memory").count()
         except Exception:
-            pass
+            _dbg("could not read RAG memory collection count")
         if mem_count == 0:
             _err("Knowledge base is empty. Add files and run Refresh index.")
             sys.exit(1)
@@ -217,7 +217,7 @@ def _search(base_dir: str, query_vec: list, top_n: int) -> list:
             ):
                 chunks.append({"text": doc, "meta": meta, "distance": dist})
     except Exception:
-        pass
+        _dbg("could not assemble RAG memory results")
 
     chunks.sort(key=lambda x: x["distance"])
     return chunks[:top_n]
@@ -458,7 +458,7 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
                         sys.stdout.write(delta)
                         sys.stdout.flush()
                 except Exception:
-                    pass
+                    _dbg("skipped unparseable stream chunk")
         print()
     except KeyboardInterrupt:
         sys.stdout.write("\n")
@@ -515,7 +515,7 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
                             sys.stdout.write(delta)
                             sys.stdout.flush()
                 except Exception:
-                    pass
+                    _dbg("skipped unparseable stream event")
         print()
     except KeyboardInterrupt:
         sys.stdout.write("\n")
@@ -545,7 +545,7 @@ def _run_llm(provider: str, model: str, prompt: str,
         with open(_path, "w") as _f:
             _f.write(f"{int(_time.time() * 1000)}:{_tok}")
     except Exception:
-        pass
+        _dbg("could not write psai_tok telemetry file")
     if provider == "ollama":
         _run_ollama(model, prompt, disable_thinking, url)
     elif provider == "anthropic":
@@ -566,6 +566,14 @@ def _info(msg: str):
 
 def _err(msg: str):
     print(f"\033[31m[psrag] Error: {msg}\033[0m", file=sys.stderr)
+
+def _dbg(msg: str):
+    """Trace an otherwise-silent caught failure. Quiet by default; message and
+    current traceback go to stderr only under --debug."""
+    if _DEBUG_PROMPT:
+        import traceback
+        sys.stderr.write(f"\033[90m[psrag:debug] {msg}\n{traceback.format_exc()}\033[0m")
+        sys.stderr.flush()
 
 
 # ── Index listing ─────────────────────────────────────────────────────────────
@@ -754,14 +762,14 @@ def main():
             import keyring
             api_key = keyring.get_password(_KR_SERVICE, profile["name"]) or ""
         except Exception:
-            pass
+            _dbg("keyring lookup failed; falling back to json api_keys")
         if not api_key:
             try:
                 keys_path = os.path.join(base_dir, "appdata", "api_keys.json")
                 with open(keys_path, encoding="utf-8") as _f:
                     api_key = json.load(_f).get(profile["name"], "")
             except Exception:
-                pass
+                _dbg("could not load api key from api_keys.json")
 
     _FAST_SUFFIX = (
         "\n\nAnswer as briefly as possible. "
