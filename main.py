@@ -34,11 +34,13 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import QLockFile
 from core.app_logger import setup_logging, install_exception_handlers
+from core.health_check import log_health_summary
 
 _BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 _DEBUG     = "--debug" in sys.argv
 setup_logging(_BASE_PATH, debug=_DEBUG)
 install_exception_handlers(_BASE_PATH)
+log_health_summary(_BASE_PATH)
 
 
 class _SlowTooltipStyle(QProxyStyle):
