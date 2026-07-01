@@ -66,6 +66,11 @@ _OUTPUT_KEYWORDS = {
 }
 
 
+# Canonical phase list — single source of truth. Order = priority for picking a
+# command's "primary phase" (first match wins). Reused everywhere a full phase
+# list is needed (phase coverage, minimal scope, exec-summary scope) so a new
+# phase only has to be added here. NOTE: "other" is the catch-all and must stay
+# last; sections that report named phases only exclude it explicitly.
 _PHASES_ORDER = [
     "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
     "exploit", "lateral", "crack", "shell", "privesc",
@@ -281,11 +286,7 @@ def _build_intel_header(conn: sqlite3.Connection, target_filter: str | None) -> 
         parts.append("[FINDINGS]\n" + "\n".join(finding_sections))
 
     # ── Phase coverage ─────────────────────────────────────────────────────────
-    all_phases = [
-        "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
-        "exploit", "privesc", "lateral", "crack", "shell",
-        "network", "cloud", "forensics", "re", "wifi", "other",
-    ]
+    all_phases = _PHASES_ORDER
     phase_rows = conn.execute(
         """
         SELECT ct.tag,
@@ -798,11 +799,7 @@ def _mini_cap_output(text: str) -> str:
 
 
 def _mini_scope(conn: sqlite3.Connection, snapshot: list[dict]) -> str:
-    all_phases = [
-        "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
-        "exploit", "privesc", "lateral", "crack", "shell",
-        "network", "cloud", "forensics", "re", "wifi", "other",
-    ]
+    all_phases = _PHASES_ORDER
     try:
         phase_rows = conn.execute(
             "SELECT ct.tag, COUNT(*) AS cnt FROM command_tags ct "
@@ -1142,11 +1139,9 @@ def _mini_exec_prompt(conn: sqlite3.Connection, snapshot: list[dict],
     if len(findings_text) > findings_cap:
         findings_text = findings_text[:findings_cap] + "\n..."
 
-    all_phases = [
-        "recon", "scan", "web", "smb", "ftp", "ssh", "ldap", "ad",
-        "exploit", "privesc", "lateral", "crack", "shell",
-        "network", "cloud", "forensics", "re", "wifi",
-    ]
+    # "other" is intentionally excluded — the exec-summary phase line reports
+    # named pentest phases only, not the miscellaneous catch-all bucket.
+    all_phases = [p for p in _PHASES_ORDER if p != "other"]
     scope_lines = []
     try:
         phase_rows = conn.execute(
