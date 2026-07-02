@@ -65,6 +65,9 @@ _DDL = f"""
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 PRAGMA synchronous  = NORMAL;
+-- Cap the -wal file: after each automatic checkpoint SQLite truncates it back
+-- down to this size, so the WAL cannot grow unbounded during a long session.
+PRAGMA journal_size_limit = 8388608;   -- 8 MB
 
 -- ── commands ──────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS commands {_COMMANDS_COLS};
@@ -191,6 +194,15 @@ class TerminalHistoryDB:
 
     def close(self) -> None:
         if self._conn:
+            try:
+                # Flush the WAL into the main db and truncate the -wal file to
+                # zero, so a clean shutdown never leaves an ever-growing WAL
+                # behind. The app holds this connection for its whole lifetime,
+                # so without an explicit checkpoint here the closing checkpoint
+                # never runs and the WAL keeps growing across sessions.
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                logger.debug("WAL checkpoint on close failed", exc_info=True)
             self._conn.close()
             self._conn = None
 

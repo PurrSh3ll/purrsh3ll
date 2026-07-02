@@ -338,13 +338,16 @@ class MainWindow(QMainWindow):
                     pass
                 self.c.sudo_password = None
 
-        if getattr(self.c, "delete_logs_at_close", True):
-            try:
-                db = self.c._get_term_db() if hasattr(self.c, "_get_term_db") else None
-                if db is not None:
+        try:
+            db = self.c._get_term_db() if hasattr(self.c, "_get_term_db") else None
+            if db is not None:
+                if getattr(self.c, "delete_logs_at_close", True):
                     db.clear()
-            except Exception:
-                pass
+                # Checkpoint the WAL into the main db and close the connection so
+                # a clean exit does not leave an ever-growing -wal file behind.
+                db.close()
+        except Exception:
+            logger.debug("terminal history DB close on exit failed", exc_info=True)
 
         if getattr(self.c, "delete_notes_at_close", False):
             notes_path = os.path.join(self.c.base_path, "appdata", "psnotes.txt")
