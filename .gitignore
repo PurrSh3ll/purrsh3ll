@@ -37,9 +37,9 @@ appdata/scripts_history/
 appdata/scripts_notes/
 appdata/scripts_favorities/
 
-# Cyb3rCollector — dane runtime (listeners, stagers, webmap scans, reports)
-appmodules/Cyb3rCollector/*
-!appmodules/Cyb3rCollector/.gitkeep
+# Cyb3rCollector — dane runtime (listeners, stagers, webmap scans, reports).
+# Folder tworzony przy starcie przez controller, więc nie potrzeba .gitkeep.
+appmodules/Cyb3rCollector/
 
 # BrainDump — prywatne notatki i pliki RAG (nie wersjonujemy)
 appmodules/BrainDump/*
@@ -56,3 +56,6 @@ usermodules/*
 # Old installer scripts
 install_old.sh
 install_full_old.sh
+
+# Old / superseded reference files
+requirements_old.txt

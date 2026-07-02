@@ -142,6 +142,16 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.home_dir = os.path.expanduser("~")
             self.app_modules_path = os.path.join(self.base_path, "appmodules")
             self.user_modules_path = os.path.join(self.base_path, "usermodules")
+            # Cyb3rCollector holds tool output (reports/webmap/stagers). It is
+            # created here at startup so the folder always exists on a fresh
+            # install without needing a tracked .gitkeep placeholder.
+            try:
+                os.makedirs(
+                    os.path.join(self.app_modules_path, "Cyb3rCollector"),
+                    exist_ok=True,
+                )
+            except OSError:
+                logger.warning("Failed to create Cyb3rCollector folder", exc_info=True)
             self.icons_path = os.path.join(self.base_path, "icons")
             self.sys_vars_path = os.path.join(self.base_path, "appdata", "terminal_modules", "system_vars.zsh")
             self.observer_panel_state_path = os.path.join(self.base_path, "appdata", "ob_panel_state.json")
