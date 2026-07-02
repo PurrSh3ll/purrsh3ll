@@ -272,8 +272,11 @@ def main():
 
     api_key = _ai._load_api_key(profile.get("name", ""), base_dir)
 
-    # Restrict history to the terminal session psfix runs in, so a successful
-    # command in another open tab doesn't hide this tab's last failure.
+    # term_id scopes which failing command to fix to the terminal psfix runs
+    # in, so a successful command in another open tab doesn't hide this tab's
+    # last failure. Analyze mode (-a) deliberately does NOT scope its history
+    # context by term_id — it pulls history/output from ALL terminals so the
+    # analysis can use cross-terminal context (e.g. setup done in another tab).
     term_id = args.term_id or os.environ.get("PURRSH_TERM_ID") or None
 
     # Data can come from direct args (overlay button) or from history file (manual psfix)
@@ -363,14 +366,14 @@ def main():
                 limit=recent_limit,
                 broad_limit=broad_limit,
                 recent_output_cap=recent_output_cap,
-                terminal=term_id,
+                terminal=None,
             )
         else:
             history_text = _load_recent_history(
                 base_dir,
                 limit=_ai._TERMINAL_HIST_LIMIT,
                 broad_limit=_ai._TERMINAL_HIST_BROAD_LIMIT,
-                terminal=term_id,
+                terminal=None,
             )
 
         prompt = f"System: {sys_info}\n"
