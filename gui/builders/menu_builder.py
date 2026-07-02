@@ -109,11 +109,13 @@ def build_menu(main_window):
     about_qt_action = QAction("About Qt", main_window)
     about_qterm_action = QAction("About QTerm", main_window)
     about_licenses_action = QAction("Licenses", main_window)
+    health_check_action = QAction("Health Check", main_window)
     help_menu.addAction(user_guide_action)
     help_menu.addAction(manual_action)
     help_menu.addSeparator()
     help_menu.addAction(whats_new_action)
     help_menu.addAction(check_updates_action)
+    help_menu.addAction(health_check_action)
     help_menu.addSeparator()
     help_menu.addAction(about_qt_action)
     help_menu.addAction(about_qterm_action)
@@ -125,6 +127,25 @@ def build_menu(main_window):
     c.register_widget("about_qt_action", about_qt_action)
     c.register_widget("about_qterm_action", about_qterm_action)
     c.register_widget("about_licenses_action", about_licenses_action)
+    c.register_widget("health_check_action", health_check_action)
+
+    def _run_health_check():
+        """Run the pshealth dependency check in the active terminal."""
+        term_tabs = c.widgets.get("terminal_tabs")
+        if not term_tabs:
+            return
+        wrapper = term_tabs.widget(term_tabs.currentIndex())
+        if wrapper is None:
+            return
+        term = c.wrapper_to_console.get(wrapper)
+        if term is None:
+            return
+        try:
+            term.sendText("pshealth\n")
+        except Exception:
+            logger.error("Failed to run health check in terminal", exc_info=True)
+
+    health_check_action.triggered.connect(_run_health_check)
 
     def _auto_hide_menu_bar():
         if QApplication.activePopupWidget() is None:
