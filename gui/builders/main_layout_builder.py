@@ -1046,7 +1046,7 @@ def build_main_layout(main_window):
         c.widgets["v_splitter_bottom"].addWidget(c.widgets["terminal_groupbox"])
         c.widgets["h_splitter_top"].setSizes([100, 400])
         c.widgets["v_splitter_bottom"].setSizes([400, 400])
-        c.widgets["splitter_main"].setSizes([400, 160])
+        c.widgets["splitter_main"].setSizes([275, 225])
 
     create_main_window_splitters()
     create_scripts_listbox()
