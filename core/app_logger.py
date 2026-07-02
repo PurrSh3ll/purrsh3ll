@@ -61,6 +61,15 @@ def _show_dialog(exc_type, exc_value, log_path: str) -> None:
 def setup_logging(base_path: str, debug: bool = False) -> None:
     log_path = os.path.join(base_path, "appdata", "logs", "app.log")
 
+    # appdata/logs/ is gitignored, so it is absent on a fresh clone/install.
+    # setup_logging runs first at startup, so creating it here makes file
+    # logging, the health-check "logs writable" probe and the QLockFile
+    # single-instance guard (all rooted in this dir) work on first launch.
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    except OSError:
+        pass
+
     root = logging.getLogger()
     if root.handlers:
         return
