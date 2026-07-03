@@ -65,7 +65,7 @@ print_plan() {
     echo -e "${BOLD}  Installation plan:${NC}"
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
-    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~15 MB  — 7 git submodules)"     || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
+    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~15 MB  — 7 git repos)"          || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
     [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
@@ -165,7 +165,7 @@ are always installed regardless of selection.
 SPACE = toggle   |   ENTER = confirm" \
         22 68 8 \
         "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
-        "skills"     "AI Skills       ~15 MB   (7 git submodules)"      ON \
+        "skills"     "AI Skills       ~15 MB   (7 git repos)"           ON \
         "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "docker"     "Docker          ~300 MB  (container runtime)"     ON \
@@ -259,19 +259,46 @@ else
 fi
 success "Repository at $INSTALL_DIR"
 
-# ── AI Skills submodules ──────────────────────────────────────────────────────
+# ── AI Skills — cloned on demand from upstream repos ──────────────────────────
+# Skill sets are NOT vendored or submoduled in the main repo, so a plain
+# `git clone` stays clean (no empty skill folders). The installer clones each
+# set here only when AI Skills is selected. All MIT-licensed, upstream repos.
+SKILLS_DIR="$INSTALL_DIR/appdata/agent_modes/skills"
+SKILL_REPOS=(
+    "awesome-claude-skills-security|https://github.com/Eyadkelleh/awesome-claude-skills-security.git"
+    "claude-code-pentest|https://github.com/Orizon-eu/claude-code-pentest.git"
+    "secskills|https://github.com/trilwu/secskills"
+    "cybersecurity-claude-skills|https://github.com/mahmutka/cybersecurity-claude-skills"
+    "communitytools|https://github.com/transilienceai/communitytools"
+    "claude-code-owasp|https://github.com/agamm/claude-code-owasp"
+    "pentest-ai-agents|https://github.com/0xSteph/pentest-ai-agents"
+)
 
 if [[ "$INSTALL_SKILLS" == true ]]; then
-    info "Initializing AI skill submodules..."
-    git -C "$INSTALL_DIR" submodule update --init --recursive
-    SKILLS_OK=true
-    success "AI Skills ready (7 skill sets: awesome-claude-skills-security, claude-code-pentest, secskills, cybersecurity-claude-skills, communitytools, claude-code-owasp, pentest-ai-agents)"
-else
-    # `git clone` creates an empty mount-point directory for every submodule
-    # even when it isn't initialized. Remove those empty directories so the
-    # skills/ folder is left clean when the user opts out of AI Skills.
-    info "Skipping AI Skills — removing empty skill directories..."
-    find "$INSTALL_DIR/appdata/agent_modes/skills" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+    info "Cloning AI skill sets..."
+    mkdir -p "$SKILLS_DIR"
+    _skills_failed=0
+    for _entry in "${SKILL_REPOS[@]}"; do
+        _name="${_entry%%|*}"; _url="${_entry##*|}"
+        _dest="$SKILLS_DIR/$_name"
+        if [[ -d "$_dest/.git" ]]; then
+            info "  $_name already present — skipping"
+            continue
+        fi
+        rm -rf "$_dest"
+        if git clone --depth 1 "$_url" "$_dest" >/dev/null 2>&1; then
+            info "  ✓ $_name"
+        else
+            warn "  ✗ $_name (clone failed: $_url)"
+            _skills_failed=$((_skills_failed + 1))
+        fi
+    done
+    if [[ "$_skills_failed" -eq 0 ]]; then
+        SKILLS_OK=true
+        success "AI Skills ready (${#SKILL_REPOS[@]} skill sets)"
+    else
+        warn "AI Skills: $_skills_failed of ${#SKILL_REPOS[@]} sets failed to clone"
+    fi
 fi
 
 cd "$INSTALL_DIR"
@@ -637,7 +664,7 @@ _summary_row() {
 
 echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB)"
 _summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
-_summary_row "AI Skills           " "(~10 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
+_summary_row "AI Skills           " "(~15 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
 _summary_row "Ollama              " "(~1.5 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
 _summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
 _summary_row "Docker              " "(~300 MB)" "$INSTALL_DOCKER"      "$DOCKER_OK"    "(skipped)"

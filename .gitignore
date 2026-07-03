@@ -45,6 +45,10 @@ appmodules/Cyb3rCollector/
 appmodules/BrainDump/*
 !appmodules/BrainDump/purrsh3ll_app_guide.md
 
+# AI Skills — klonowane na żądanie przez installer (nie wersjonujemy).
+# Nie są to submoduły ani vendored — dzięki temu goły `git clone` jest czysty.
+appdata/agent_modes/skills/
+
 # Pliki audio
 *.wav
 
