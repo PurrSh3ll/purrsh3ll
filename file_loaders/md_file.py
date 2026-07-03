@@ -686,7 +686,11 @@ class Markdown_file(ChunkedFileLoader):
             _img_natural_sizes = {}
 
             def _rescale_images():
-                if preview_widget is None:
+                # preview_widget may already be destroyed (e.g. tab closed via
+                # "Close All") while a deferred singleShot / resize-timer call is
+                # still pending — the Python wrapper survives but the C++ object is
+                # gone, so guard with isdeleted, not just `is None`.
+                if preview_widget is None or isdeleted(preview_widget):
                     return
                 full_viewport_w = preview_widget.viewport().width()
                 if full_viewport_w <= 0:
@@ -736,6 +740,10 @@ class Markdown_file(ChunkedFileLoader):
                 doc.setPageSize(QSizeF(full_viewport_w, -1))
 
             def update_preview():
+                # Guard against a textChanged firing during teardown after the
+                # preview's C++ object is already gone (same reason as _rescale_images).
+                if preview_widget is None or isdeleted(preview_widget):
+                    return
                 text = self.text_widget.toPlainText()
 
                 doc = preview_widget.document()
