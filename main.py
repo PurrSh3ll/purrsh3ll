@@ -41,13 +41,14 @@ from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle, QMessageBox
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import QLockFile
-from core.app_logger import setup_logging, install_exception_handlers
+from core.app_logger import setup_logging, install_exception_handlers, install_qt_message_handler
 from core.health_check import log_health_summary
 
 _BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 _DEBUG     = "--debug" in sys.argv
 setup_logging(_BASE_PATH, debug=_DEBUG)
 install_exception_handlers(_BASE_PATH)
+install_qt_message_handler()   # Qt log messages → app.log (keeps the console clean)
 log_health_summary(_BASE_PATH)
 
 

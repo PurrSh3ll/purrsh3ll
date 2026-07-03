@@ -109,3 +109,50 @@ def setup_logging(base_path: str, debug: bool = False) -> None:
     sh.setLevel(logging.DEBUG if debug else logging.WARNING)
     sh.setFormatter(logging.Formatter("%(levelname)-8s %(name)s — %(message)s"))
     root.addHandler(sh)
+
+
+def install_qt_message_handler() -> None:
+    """Route Qt's internal log messages (qDebug/qWarning/… and category logs) to
+    app.log instead of the launching console's stderr — the terminal stays clean
+    while the messages are preserved for debugging. Call after setup_logging().
+
+    Complements QT_LOGGING_RULES (set in main.py): the loudest categories are
+    disabled entirely there; whatever Qt still emits is captured here at a mapped
+    level. Written to the file handler only (propagate=False) so nothing reaches
+    the root's stderr StreamHandler.
+    """
+    try:
+        from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
+    except Exception:
+        return
+
+    qt_logger = logging.getLogger("qt")
+    qt_logger.setLevel(logging.DEBUG)
+    qt_logger.propagate = False  # keep Qt messages off the root's stderr handler
+
+    # Reuse the app's rotating file handler so Qt messages land in app.log.
+    root = logging.getLogger()
+    file_handler = next(
+        (h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)),
+        None,
+    )
+    qt_logger.addHandler(file_handler if file_handler is not None else logging.NullHandler())
+
+    _levels = {
+        QtMsgType.QtDebugMsg:    logging.DEBUG,
+        QtMsgType.QtInfoMsg:     logging.INFO,
+        QtMsgType.QtWarningMsg:  logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg:    logging.CRITICAL,
+    }
+
+    def _qt_handler(msg_type, context, message):
+        # Called from arbitrary Qt threads — must never raise.
+        try:
+            level = _levels.get(msg_type, logging.INFO)
+            category = getattr(context, "category", None) or "default"
+            qt_logger.log(level, "[%s] %s", category, message)
+        except Exception:
+            pass
+
+    qInstallMessageHandler(_qt_handler)
