@@ -65,7 +65,7 @@ print_plan() {
     echo -e "${BOLD}  Installation plan:${NC}"
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
-    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~10 MB  — git submodules)"       || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
+    [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~15 MB  — 7 git submodules)"     || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
     [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
@@ -165,7 +165,7 @@ are always installed regardless of selection.
 SPACE = toggle   |   ENTER = confirm" \
         22 68 8 \
         "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
-        "skills"     "AI Skills       ~10 MB   (git submodules)"        ON \
+        "skills"     "AI Skills       ~15 MB   (7 git submodules)"      ON \
         "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "docker"     "Docker          ~300 MB  (container runtime)"     ON \
@@ -265,7 +265,7 @@ if [[ "$INSTALL_SKILLS" == true ]]; then
     info "Initializing AI skill submodules..."
     git -C "$INSTALL_DIR" submodule update --init --recursive
     SKILLS_OK=true
-    success "AI Skills ready (awesome-claude-skills-security, claude-code-pentest)"
+    success "AI Skills ready (7 skill sets: awesome-claude-skills-security, claude-code-pentest, secskills, cybersecurity-claude-skills, communitytools, claude-code-owasp, pentest-ai-agents)"
 fi
 
 cd "$INSTALL_DIR"
