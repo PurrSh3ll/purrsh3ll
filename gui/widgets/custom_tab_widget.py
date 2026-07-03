@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QTabWidget, QMenu
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import Qt, QPoint, QTimer
 from PyQt6.QtGui import QAction
+from PyQt6.sip import isdeleted
 import os, subprocess
 from core.controller import controller_instance
 import traceback
@@ -204,6 +205,15 @@ class CustomTabWidget(QTabWidget):
         except Exception:
             pass
 
+        # Prune the class-level widget registries of entries whose C++ object is
+        # now gone. tracked_combos in particular is never cleaned on tab close
+        # (only on a theme change), so without this it grows unbounded with every
+        # file opened. Deferred so it runs after the deleteLater above completes.
+        try:
+            QTimer.singleShot(0, self._prune_class_registries)
+        except Exception:
+            self._prune_class_registries()
+
         try:
             if len(controller_instance.opened_tabs_tree) == 0:
                 if "welcome_tab_text" in controller_instance.widgets:
@@ -222,6 +232,18 @@ class CustomTabWidget(QTabWidget):
 
         try:
             controller_instance.save_session()
+        except Exception:
+            pass
+
+    def _prune_class_registries(self):
+        """Drop deleted widgets from the class-level registries so they don't
+        accumulate across tab opens/closes (tracked_combos has no other cleanup)."""
+        try:
+            cls = controller_instance.__class__
+            for attr in ("tracked_combos", "text_loaders", "text_highlighters"):
+                lst = getattr(cls, attr, None)
+                if isinstance(lst, list):
+                    lst[:] = [obj for obj in lst if not isdeleted(obj)]
         except Exception:
             pass
 

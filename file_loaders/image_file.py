@@ -124,6 +124,9 @@ class Image_file:
                 self._movie = None
         except Exception:
             pass
+        # Release the decoded image explicitly — pixmaps are the heaviest per-file
+        # allocation, so don't wait for the loader to be garbage-collected.
+        self._pixmap = None
 
     # ------------------------------------------------------------------
     # Background workers
