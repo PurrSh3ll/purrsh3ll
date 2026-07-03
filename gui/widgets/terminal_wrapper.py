@@ -112,6 +112,7 @@ class TerminalWrapper(QtWidgets.QWidget):
         self._pref_h = pref_h
         self._overlay: _ErrorOverlay | None = None
         self._hint: _HintOverlay | None = None
+        self._orig_send_text = None
 
         try:
             self._console.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -125,6 +126,30 @@ class TerminalWrapper(QtWidgets.QWidget):
             from PyQt6.QtWidgets import QApplication
             QApplication.instance().installEventFilter(self)
             QtCore.QTimer.singleShot(800, self._show_hint)
+            self._install_send_text_hook()
+
+    def _install_send_text_hook(self):
+        """Dismiss the hint when a command is sent into the terminal from the
+        app (Health Check, snippets, chat, …). Manual typing is handled by the
+        key-press event filter; this covers programmatic sends without reacting
+        to prompt redraws on resize (which is why hooking receivedData is wrong).
+        """
+        orig = getattr(self._console, "sendText", None)
+        if orig is None:
+            return
+        self._orig_send_text = orig
+
+        def _wrapped(text, *a, **kw):
+            try:
+                self._hide_hint()
+            except Exception:
+                pass
+            return orig(text, *a, **kw)
+
+        try:
+            self._console.sendText = _wrapped
+        except Exception:
+            self._orig_send_text = None
 
     # ── hint overlay ──────────────────────────────────────────────────────────
 
@@ -143,12 +168,21 @@ class TerminalWrapper(QtWidgets.QWidget):
             y = self.height() - self._hint.height() - margin
             self._hint.move(max(0, x), max(0, y))
 
-    def _hide_hint(self):
+    def _hide_hint(self, *args):
+        # *args so this works both as a direct call (event filter) and as a
+        # wrapper around the console's sendText (which passes the command text).
         if self._hint is not None:
             self._hint.hide()
             try:
                 from PyQt6.QtWidgets import QApplication
                 QApplication.instance().removeEventFilter(self)
+            except Exception:
+                pass
+            # Restore the original sendText so we stop intercepting it.
+            try:
+                if self._orig_send_text is not None:
+                    self._console.sendText = self._orig_send_text
+                    self._orig_send_text = None
             except Exception:
                 pass
 
