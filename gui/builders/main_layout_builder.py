@@ -643,14 +643,14 @@ def build_main_layout(main_window):
         popup_btn_layout.setContentsMargins(0, 0, 0, 0)
         popup_btn_layout.setSpacing(6)
 
-        accept_btn = QPushButton("✓ Accept", popup_btn_row)
+        accept_btn = QPushButton("✓ Confirm", popup_btn_row)
         accept_btn.setFixedHeight(22)
         accept_btn.setStyleSheet(
             "QPushButton { background: #1a4a1a; border: 1px solid #55aa55; "
             "border-radius: 3px; color: #88ff88; font-size: 11px; }"
             "QPushButton:hover { background: #1e5e1e; }"
         )
-        cancel_btn = QPushButton("✗ Cancel", popup_btn_row)
+        cancel_btn = QPushButton("✗ Abort", popup_btn_row)
         cancel_btn.setFixedHeight(22)
         cancel_btn.setStyleSheet(
             "QPushButton { background: #4a1a1a; border: 1px solid #aa5555; "
@@ -682,7 +682,7 @@ def build_main_layout(main_window):
             _state["command"] = command
             popup_label.setText(
                 f"<b>Command:</b> <code>{command}</code><br>"
-                f"<small style='color:#888'>Say 'Hey Jarvis' then 'Accept' or 'Cancel'</small>"
+                f"<small style='color:#888'>Say 'Hey Jarvis' then 'Confirm' or 'Abort'</small>"
             )
             _position_popup()
             popup.show()
@@ -744,7 +744,19 @@ def build_main_layout(main_window):
             elif state == "confirming":
                 btn.setText("listening")
                 btn.setStyleSheet(_STYLE_LISTENING)
-                btn.setToolTip("Say 'Accept' or 'Cancel'…")
+                btn.setToolTip("Say 'Confirm' or 'Abort'…")
+            elif state == "confirm_retry":
+                # Heard speech but not confirm/abort (or too short) — nudge the user.
+                cmd = _state.get("command", "")
+                if cmd:
+                    popup_label.setText(
+                        f"<b>Command:</b> <code>{cmd}</code><br>"
+                        f"<small style='color:#c9a94a'>Didn't catch that — say "
+                        f"'Hey Jarvis' then 'Confirm' or 'Abort'</small>"
+                    )
+                btn.setText("wake")
+                btn.setStyleSheet(_STYLE_ON)
+                btn.setToolTip("Say 'Hey Jarvis' then 'Confirm' or 'Abort'…")
             elif state.startswith("error:"):
                 msg_text = state[6:]
                 import logging as _log

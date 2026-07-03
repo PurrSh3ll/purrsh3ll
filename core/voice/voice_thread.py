@@ -19,6 +19,7 @@ VM-friendly design:
   - Small sleep in wake word loop to yield CPU on vCPU-constrained VMs
 """
 
+import difflib
 import logging
 import os
 import queue
@@ -59,6 +60,22 @@ _WAKEWORD_SCORE_THRESHOLD = 0.4  # min detection score (lowered from 0.5: no fal
 # On a VM, ONNX inference + audio callback compete for the same vCPUs.
 # A tiny sleep after each chunk prediction lets the OS scheduler breathe.
 _WAKEWORD_LOOP_SLEEP = 0.01   # 10 ms — negligible latency, big CPU relief
+
+# ── Voice confirmation ─────────────────────────────────────────────────────────
+# Words spoken (after the wake word) to accept/reject a generated command.
+# "confirm"/"abort" are distinctive, multi-syllable and far apart phonetically —
+# short words like "accept"/"cancel" transcribe poorly on the tiny STT model and
+# get dropped by the VAD. The transcript is mapped to an action by NEAREST match
+# (edit distance) against each word plus its common mishears, not an exact
+# substring, so a misrecognition ("conform", "a board", …) still resolves.
+_CONFIRM_KEYWORDS = {
+    "accept": ["confirm", "confirmed", "conform", "affirm", "confirmation"],
+    "cancel": ["abort", "aborted", "aboard", "a board", "abort it"],
+}
+_CONFIRM_PROMPT             = "confirm or abort"  # biases the STT decoder toward these words
+_CONFIRM_MATCH_THRESHOLD    = 0.7   # min similarity (0-1) to accept a keyword match
+_CONFIRM_MIN_SPEECH_FRAMES  = 3     # ~240 ms — lower than normal so a quick
+                                    # "confirm"/"abort" isn't dropped by the VAD
 
 
 def _rms(chunk: np.ndarray) -> float:
@@ -185,20 +202,26 @@ class VoiceThread(QThread):
                         break
 
                     self.state_changed.emit("confirming")
-                    frames = self._record_speech(audio_q)
-                    if frames is None:
-                        self.state_changed.emit("idle")
-                        continue
+                    frames = self._record_speech(
+                        audio_q, min_speech_frames=_CONFIRM_MIN_SPEECH_FRAMES
+                    )
+                    action = None
+                    if frames is not None:
+                        text = self._transcribe(
+                            stt_model, frames, initial_prompt=_CONFIRM_PROMPT
+                        )
+                        action = self._classify_confirmation(text)
 
-                    text = self._transcribe(stt_model, frames).lower()
-                    if "accept" in text:
+                    if action == "accept":
                         self.confirm_action.emit("accept")
                         break  # back to main wake word loop
-                    elif "cancel" in text:
+                    elif action == "cancel":
                         self.confirm_action.emit("cancel")
                         break  # back to main wake word loop
                     else:
-                        # Neither word — cooldown then back to wake word listening
+                        # Too short, or not a confirm/abort keyword — nudge the
+                        # user, cooldown, then back to wake word listening.
+                        self.state_changed.emit("confirm_retry")
                         self._ww_cooldown(audio_q, ww_model, seconds=1.5)
                         self.state_changed.emit("idle")
 
@@ -278,8 +301,15 @@ class VoiceThread(QThread):
 
     # ── Speech recording with energy VAD ─────────────────────────────────────
 
-    def _record_speech(self, audio_q: queue.Queue) -> "list[np.ndarray] | None":
-        """Record from queue until silence. Returns list of int16 chunks or None."""
+    def _record_speech(
+        self,
+        audio_q: queue.Queue,
+        min_speech_frames: int = _VAD_MIN_SPEECH_FRAMES,
+    ) -> "list[np.ndarray] | None":
+        """Record from queue until silence. Returns list of int16 chunks or None.
+
+        min_speech_frames is the minimum speech length to accept — lowered by the
+        confirm phase so a short "confirm"/"abort" isn't discarded as noise."""
         frames = []
         silence_chunks = 0
         speech_chunks  = 0
@@ -292,7 +322,7 @@ class VoiceThread(QThread):
             except queue.Empty:
                 # No audio coming — treat as silence
                 silence_chunks += 1
-                if silence_chunks >= silence_limit and speech_chunks >= _VAD_MIN_SPEECH_FRAMES:
+                if silence_chunks >= silence_limit and speech_chunks >= min_speech_frames:
                     break
                 continue
 
@@ -304,10 +334,10 @@ class VoiceThread(QThread):
                 silence_chunks = 0
             else:
                 silence_chunks += 1
-                if silence_chunks >= silence_limit and speech_chunks >= _VAD_MIN_SPEECH_FRAMES:
+                if silence_chunks >= silence_limit and speech_chunks >= min_speech_frames:
                     break
 
-        if speech_chunks < _VAD_MIN_SPEECH_FRAMES:
+        if speech_chunks < min_speech_frames:
             logger.info("VoiceThread: too short, ignoring (%d speech chunks)", speech_chunks)
             return None
 
@@ -322,9 +352,12 @@ class VoiceThread(QThread):
         logger.info("VoiceThread: loading Whisper model '%s' on %s", model_size, device)
         return WhisperModel(model_size, device=device, compute_type="int8")
 
-    def _transcribe(self, stt_model, frames: list) -> str:
+    def _transcribe(self, stt_model, frames: list, initial_prompt: "str | None" = None) -> str:
         """Concatenate frames and transcribe directly from numpy array.
-        No temp file written — avoids disk I/O overhead on VMs."""
+        No temp file written — avoids disk I/O overhead on VMs.
+
+        initial_prompt biases the decoder toward expected words (used by the
+        confirm phase to nudge Whisper toward 'confirm'/'abort')."""
         # Concatenate int16 frames and normalise to float32 [-1, 1]
         audio_int16 = np.concatenate(frames)
         audio_f32   = audio_int16.astype(np.float32) / 32768.0
@@ -336,10 +369,30 @@ class VoiceThread(QThread):
             beam_size=1,
             vad_filter=True,           # built-in Silero VAD removes silent segments
             vad_parameters={"min_silence_duration_ms": 300},
+            initial_prompt=initial_prompt,
         )
         text = " ".join(seg.text for seg in segments).strip()
         logger.info("VoiceThread: transcribed: %r", text)
         return text
+
+    @staticmethod
+    def _classify_confirmation(text: str) -> "str | None":
+        """Map a confirm-phase transcript to an action ('accept'/'cancel') by
+        nearest match against the confirm/abort keyword sets. Compares the whole
+        transcript and each token, so it survives extra words and tiny-model
+        mishears. Returns None when nothing is close enough (below threshold)."""
+        text = text.lower().strip()
+        if not text:
+            return None
+        candidates = [text] + text.split()
+        best_action, best_score = None, 0.0
+        for action, variants in _CONFIRM_KEYWORDS.items():
+            for variant in variants:
+                for cand in candidates:
+                    score = difflib.SequenceMatcher(None, cand, variant).ratio()
+                    if score > best_score:
+                        best_score, best_action = score, action
+        return best_action if best_score >= _CONFIRM_MATCH_THRESHOLD else None
 
     # ── AI command generation ─────────────────────────────────────────────────
 
