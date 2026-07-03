@@ -51,7 +51,9 @@ _VAD_MIN_SPEECH_FRAMES = 6      # ignore very short noises (< ~480 ms)
 _MAX_RECORD_SECONDS    = 30     # hard cap on recording length
 
 # ── Wake word ─────────────────────────────────────────────────────────────────
-_WAKEWORD_SCORE_THRESHOLD = 0.5  # min detection score
+_WAKEWORD_SCORE_THRESHOLD = 0.4  # min detection score (lowered from 0.5: no false
+                                 # positives observed, but triggering required
+                                 # speaking loud/slow — 0.4 makes it easier to fire)
 
 # ── CPU yield in wake word loop ───────────────────────────────────────────────
 # On a VM, ONNX inference + audio callback compete for the same vCPUs.
