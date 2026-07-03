@@ -346,18 +346,25 @@ if [[ "$INSTALL_EMBED_MODEL" == true ]]; then
     if find "$EMBED_CACHE_DIR" -name "*.onnx" 2>/dev/null | grep -q .; then
         EMBED_OK=true
         success "Embedding model already present — skipping download"
-    elif run_with_spinner "Downloading paraphrase-multilingual-MiniLM-L12-v2..." \
-        "$VENV_DIR/bin/python3" -c "
+    else
+        info "Downloading paraphrase-multilingual-MiniLM-L12-v2 (~220 MB)..."
+        # Run without run_with_spinner so huggingface_hub's native tqdm progress
+        # bars (percent, MB downloaded/total, speed, ETA) render live on the
+        # terminal instead of a generic spinner. Output goes straight to the tty
+        # — piping through tee would make tqdm drop to line mode and lose the
+        # live bar — so this step is not mirrored to the install log.
+        if "$VENV_DIR/bin/python3" -c "
 from fastembed import TextEmbedding
 import os
 cache = '$EMBED_CACHE_DIR'
 os.makedirs(cache, exist_ok=True)
 list(TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', cache_dir=cache).embed(['warmup']))
 "; then
-        EMBED_OK=true
-        success "Embedding model ready (~220 MB, 50+ languages incl. Polish, German, French…)"
-    else
-        warn "Could not download embedding model — it will be downloaded automatically on first use."
+            EMBED_OK=true
+            success "Embedding model ready (~220 MB, 50+ languages incl. Polish, German, French…)"
+        else
+            warn "Could not download embedding model — it will be downloaded automatically on first use."
+        fi
     fi
 fi
 
