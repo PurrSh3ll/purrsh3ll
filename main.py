@@ -25,6 +25,14 @@ os.environ["QTWEBENGINE_DISABLE_GPU"]   = "1"
 os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
 os.environ["ONNXRUNTIME_LOGLEVEL"]      = "3"   # ERROR only (0=VERBOSE … 4=FATAL)
 os.environ["TOKENIZERS_PARALLELISM"]    = "false"  # silences HuggingFace fork warning
+# Silence Qt category noise on the launching console: the FFmpeg backend dumps
+# every video's stream metadata ("Input #0 …") and the "Using Qt multimedia …"
+# banner under qt.multimedia.ffmpeg, and QImageReader's 256 MB allocation-limit
+# rejections under qt.gui.imageio. Both are routed through Qt's logging categories.
+os.environ["QT_LOGGING_RULES"] = (
+    "qt.multimedia.ffmpeg=false;"
+    "qt.gui.imageio.warning=false"
+)
 
 warnings.filterwarnings("ignore")  # suppress DeprecationWarning / UserWarning from libs
 
