@@ -266,6 +266,12 @@ if [[ "$INSTALL_SKILLS" == true ]]; then
     git -C "$INSTALL_DIR" submodule update --init --recursive
     SKILLS_OK=true
     success "AI Skills ready (7 skill sets: awesome-claude-skills-security, claude-code-pentest, secskills, cybersecurity-claude-skills, communitytools, claude-code-owasp, pentest-ai-agents)"
+else
+    # `git clone` creates an empty mount-point directory for every submodule
+    # even when it isn't initialized. Remove those empty directories so the
+    # skills/ folder is left clean when the user opts out of AI Skills.
+    info "Skipping AI Skills — removing empty skill directories..."
+    find "$INSTALL_DIR/appdata/agent_modes/skills" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
 fi
 
 cd "$INSTALL_DIR"

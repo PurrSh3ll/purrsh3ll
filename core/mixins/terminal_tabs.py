@@ -671,7 +671,13 @@ class TerminalTabsMixin:
         _skills = []
         try:
             if os.path.isdir(_skills_dir):
-                _skills = sorted(os.listdir(_skills_dir))
+                # Only non-empty skill sets — skip empty submodule mount-point
+                # directories left by `git clone` when a set wasn't fetched.
+                _skills = sorted(
+                    d for d in os.listdir(_skills_dir)
+                    if os.path.isdir(os.path.join(_skills_dir, d))
+                    and os.listdir(os.path.join(_skills_dir, d))
+                )
         except Exception:
             pass
         _skills_combo = QComboBox(dlg)
