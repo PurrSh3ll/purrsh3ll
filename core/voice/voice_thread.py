@@ -51,6 +51,9 @@ _VAD_ENERGY_THRESHOLD  = 200    # RMS energy below this → silence (lower for V
 _VAD_SILENCE_SECONDS   = 1.8    # seconds of silence before we stop recording
 _VAD_MIN_SPEECH_FRAMES = 6      # ignore very short noises (< ~480 ms)
 _MAX_RECORD_SECONDS    = 30     # hard cap on recording length
+_LISTEN_ONSET_TIMEOUT  = 10     # seconds — if no speech starts within this window
+                                # after the wake word, stop listening and go back
+                                # to wake mode (user said nothing)
 
 # ── Wake word ─────────────────────────────────────────────────────────────────
 _WAKEWORD_SCORE_THRESHOLD = 0.4  # min detection score (lowered from 0.5: no false
@@ -175,13 +178,27 @@ class VoiceThread(QThread):
                 logger.info("VoiceThread: wake word detected, recording...")
                 audio_frames = self._record_speech(audio_q)
                 if audio_frames is None:
+                    # No speech captured (e.g. onset timeout). Flush the wake-word
+                    # model's stale features + the audio queue first, otherwise the
+                    # buffered "Hey Jarvis" immediately re-triggers listening and the
+                    # state flickers wake→listening forever.
+                    self._ww_cooldown(audio_q, ww_model, seconds=1.0)
                     self.state_changed.emit("idle")
                     continue
 
                 # ── Phase 3: STT + AI ─────────────────────────────────────────
                 self.state_changed.emit("processing")
-                command = self._transcribe_and_generate(stt_model, audio_frames)
+                try:
+                    command = self._transcribe_and_generate(stt_model, audio_frames)
+                except Exception:
+                    logger.error("VoiceThread: processing failed", exc_info=True)
+                    command = ""
                 if not command:
+                    # Safety net: empty transcript, a model that misunderstood into
+                    # nothing usable, or any processing error must fall back to wake
+                    # — never leave the UI stuck in listening/processing or turn
+                    # voice off. Flush first so the wake word doesn't re-trigger.
+                    self._ww_cooldown(audio_q, ww_model, seconds=1.0)
                     self.state_changed.emit("idle")
                     continue
 
@@ -316,8 +333,14 @@ class VoiceThread(QThread):
         speech_chunks  = 0
         max_chunks     = int(_MAX_RECORD_SECONDS * _SAMPLE_RATE / _CHUNK_FRAMES)
         silence_limit  = int(_VAD_SILENCE_SECONDS * _SAMPLE_RATE / _CHUNK_FRAMES)
+        start          = time.monotonic()
 
         while self._running and len(frames) < max_chunks:
+            # No speech started within the onset window → the user stayed silent
+            # after the wake word; give up instead of waiting _MAX_RECORD_SECONDS.
+            if speech_chunks == 0 and (time.monotonic() - start) >= _LISTEN_ONSET_TIMEOUT:
+                logger.info("VoiceThread: no speech within %ds — back to wake", _LISTEN_ONSET_TIMEOUT)
+                break
             try:
                 chunk = audio_q.get(timeout=0.5)
             except queue.Empty:
