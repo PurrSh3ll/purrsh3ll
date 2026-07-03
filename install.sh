@@ -168,10 +168,10 @@ SPACE = toggle   |   ENTER = confirm" \
         "skills"     "AI Skills       ~15 MB   (7 git repos)"           ON \
         "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
-        "docker"     "Docker          ~300 MB  (container runtime)"     ON \
-        "openwebui"  "Open WebUI      ~4.8 GB  (Docker image)"          ON \
-        "webmap"     "WebMap          ~1.5 GB  (Docker image)"          ON \
         "embedmodel" "Embed model     ~220 MB  (multilingual MiniLM)"   ON \
+        "docker"     "Docker          ~300 MB  (container runtime)"     OFF \
+        "openwebui"  "Open WebUI      ~4.8 GB  (Docker image)"          OFF \
+        "webmap"     "WebMap          ~1.5 GB  (Docker image)"          OFF \
         3>&1 1>&2 2>&3) || { echo ""; warn "Installation cancelled."; exit 0; }
 
     [[ "$CHOICES" == *'"voice"'*       ]] && INSTALL_VOICE=true

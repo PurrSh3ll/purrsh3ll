@@ -93,6 +93,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **psfix `--fit`**: new flag for context-aware prompt trimming — works in both fix mode and `-a` analyze mode; fix mode: trims failed command output to 75% of ctx_window using head (60%) + tail (40%) strategy with `[... N chars omitted ...]` marker so model sees both banner/config and final error; analyze mode: fill-down allocation across 3 priority areas — Area 1 (failed output) ≤50% of data budget, Area 2 (recent history with output) ≤30%, Area 3 (broad cmd-only history) gets remaining tokens; per-entry output cap for recent history scales with area2 budget; falls back to defaults when ctx_window unknown; shows budget breakdown on stderr before querying
 - **psnext `--fit`**: new flag for context-aware recent session output cap — measures tokens consumed by structured layers (attack surface, findings, phase coverage) first, then divides remaining 75% ctx_window budget evenly across recent session entries to compute a dynamic per-entry output cap; large models automatically get more output per entry, small models get less; falls back to hardcoded 400 chars when ctx_window unknown
 
+### Changed
+
+- **install.sh — Docker components off by default**: in the interactive whiptail checklist, Docker, Open WebUI and WebMap are moved to the bottom of the list and now default to unchecked (`OFF`) — they are the heaviest, most optional components (~6.6 GB combined); `embedmodel` moved above them and stays checked; selecting Open WebUI or WebMap still auto-enables Docker; the `--all` non-interactive mode is unchanged (still installs everything)
+
 ### Fixed
 
 - **Terminal hint overlay lingering over output**: the one-shot `# Type pshelp to see available tools` hint only dismissed on a key press, so a command run from the app (e.g. Help → Health Check) left the hint overlaid on the output — now also dismissed when a command is sent into the terminal programmatically (Health Check, snippets, chat, …) by wrapping the console's `sendText`; deliberately not tied to `receivedData`, so resizing the terminal/window or clicking a menu no longer dismisses it prematurely
