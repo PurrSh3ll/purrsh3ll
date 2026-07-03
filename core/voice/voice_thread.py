@@ -19,6 +19,7 @@ VM-friendly design:
   - Small sleep in wake word loop to yield CPU on vCPU-constrained VMs
 """
 
+import contextlib
 import difflib
 import logging
 import os
@@ -440,10 +441,17 @@ class VoiceThread(QThread):
 
         messages = [{"role": "user", "content": prompt}]
         try:
-            response = _ai._run_llm(
-                provider, model, messages, url, api_key,
-                disable_thinking, custom_params,
-            )
+            # psai's _run_llm streams the model's thinking and the generated
+            # command straight to stdout/stderr (it's the CLI tool's output path).
+            # In voice mode we only want the returned string, so discard all of
+            # that streamed output — it must not leak to the launching console.
+            with open(os.devnull, "w") as _devnull, \
+                    contextlib.redirect_stdout(_devnull), \
+                    contextlib.redirect_stderr(_devnull):
+                response = _ai._run_llm(
+                    provider, model, messages, url, api_key,
+                    disable_thinking, custom_params,
+                )
         except Exception as e:
             logger.error("VoiceThread: AI error: %s", e)
             return ""
