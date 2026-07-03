@@ -87,12 +87,6 @@ def main() -> int:
     tname = f"terminal ({found_term})" if found_term else "terminal"
     print(_row(res["terminal"], tname, "no terminal emulator to launch external terminals"))
 
-    print(f"\n{_B}Optional components{_N}")
-    for name, why in _OPTIONAL_TOOLS:
-        print(_opt_row(res["optional_tools"][name], name, why))
-    for name, why in _OPTIONAL_LIBS:
-        print(_opt_row(res["optional_libs"][name], name, why))
-
     print(f"\n{_B}Python libraries{_N}")
     for name, why in _LIBS:
         print(_row(res["libs"][name], name, why))
@@ -100,6 +94,15 @@ def main() -> int:
     print(f"\n{_B}Paths{_N}")
     for label, ok in res["paths"].items():
         print(_row(ok, label, "missing or not writable"))
+
+    # Optional components last — they never affect the OK/degraded count, so
+    # they read as a trailing "you could also add these" appendix rather than
+    # breaking up the required-dependency picture above.
+    print(f"\n{_B}Optional components{_N}")
+    for name, why in _OPTIONAL_TOOLS:
+        print(_opt_row(res["optional_tools"][name], name, why))
+    for name, why in _OPTIONAL_LIBS:
+        print(_opt_row(res["optional_libs"][name], name, why))
 
     total = len(_TOOLS) + 1 + len(_LIBS) + len(res["paths"])
     ok_count = total - len(res["missing"])
