@@ -152,6 +152,17 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 )
             except OSError:
                 logger.warning("Failed to create Cyb3rCollector folder", exc_info=True)
+            # AI skill sets are cloned on demand by the installer and the folder
+            # is gitignored, so it may be absent on a fresh clone. Create it here
+            # at startup so the skills dropdown and skill deployment always have
+            # a directory to read from / write to.
+            try:
+                os.makedirs(
+                    os.path.join(self.base_path, "appdata", "agent_modes", "skills"),
+                    exist_ok=True,
+                )
+            except OSError:
+                logger.warning("Failed to create agent_modes/skills folder", exc_info=True)
             self.icons_path = os.path.join(self.base_path, "icons")
             self.sys_vars_path = os.path.join(self.base_path, "appdata", "terminal_modules", "system_vars.zsh")
             self.observer_panel_state_path = os.path.join(self.base_path, "appdata", "ob_panel_state.json")
