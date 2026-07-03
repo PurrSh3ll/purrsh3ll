@@ -21,7 +21,9 @@ if _BASE not in sys.path:
     sys.path.insert(0, _BASE)
 
 try:
-    from core.health_check import run_health_check, _TOOLS, _TERMINALS, _LIBS
+    from core.health_check import (
+        run_health_check, _TOOLS, _OPTIONAL_TOOLS, _TERMINALS, _LIBS, _OPTIONAL_LIBS,
+    )
 except Exception as e:  # module missing / run outside project
     sys.stderr.write(f"pshealth: cannot load health-check module: {e}\n")
     sys.exit(2)
@@ -36,6 +38,8 @@ _C   = "\033[36m" if _color else ""
 _N   = "\033[0m"  if _color else ""
 _OK  = f"{_G}✓{_N}" if _color else "[ok]"
 _NO  = f"{_R}✗{_N}" if _color else "[--]"
+# Neutral marker for absent optional components — not an error, so no red ✗.
+_OPTNO = f"{_DIM}○{_N}" if _color else "[  ]"
 
 _HELP = """pshealth — check PurrSh3ll external dependencies
 
@@ -51,6 +55,13 @@ EXIT CODE
 def _row(ok: bool, name: str, why: str) -> str:
     mark = _OK if ok else _NO
     note = "" if ok else f"  {_DIM}— {why}{_N}"
+    return f"  {mark} {name:<12}{note}"
+
+
+def _opt_row(ok: bool, name: str, why: str) -> str:
+    """Row for an optional component — absence is shown neutrally, not as a failure."""
+    mark = _OK if ok else _OPTNO
+    note = "" if ok else f"  {_DIM}— {why} (optional){_N}"
     return f"  {mark} {name:<12}{note}"
 
 
@@ -75,6 +86,12 @@ def main() -> int:
         print(_row(res["tools"][name], name, why))
     tname = f"terminal ({found_term})" if found_term else "terminal"
     print(_row(res["terminal"], tname, "no terminal emulator to launch external terminals"))
+
+    print(f"\n{_B}Optional components{_N}")
+    for name, why in _OPTIONAL_TOOLS:
+        print(_opt_row(res["optional_tools"][name], name, why))
+    for name, why in _OPTIONAL_LIBS:
+        print(_opt_row(res["optional_libs"][name], name, why))
 
     print(f"\n{_B}Python libraries{_N}")
     for name, why in _LIBS:

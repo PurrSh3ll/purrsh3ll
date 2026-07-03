@@ -27,8 +27,16 @@ _TOOLS = [
     ("xdotool",  "typing commands into external terminals"),
     ("exiftool", "media metadata extraction (image/pdf/video/audio)"),
     ("nmap",     "psnmap scanning module"),
-    ("docker",   "Cyb3rCollector / webmap containers"),
     ("sudo",     "privileged operations"),
+]
+
+# Optional external tools: needed only by opt-in features the user can skip at
+# install time and add later. Reported for visibility, but their absence does
+# NOT mark the health-check as degraded (they are not counted in "missing").
+_OPTIONAL_TOOLS = [
+    ("ollama",   "default local LLM backend for AI features (ps*, voice, chat)"),
+    ("aichat",   "chat panel CLI backend"),
+    ("docker",   "WebMap (psnmap) and Open WebUI containers"),
 ]
 
 # At least one of these is needed to launch an external terminal.
@@ -44,6 +52,15 @@ _LIBS = [
     ("fitz",     "fast PDF text extraction (falls back to pypdf)"),
     ("pygame",   "audio playback"),
     ("mutagen",  "audio metadata"),
+]
+
+# Optional Python libraries for opt-in features (installed by install.sh only
+# when the feature is selected). Reported for visibility, but absence does NOT
+# mark the health-check as degraded — same policy as _OPTIONAL_TOOLS.
+_OPTIONAL_LIBS = [
+    ("openwakeword",   "voice wake-word detection (Voice support)"),
+    ("faster_whisper", "voice speech-to-text (Voice support)"),
+    ("sounddevice",    "voice microphone capture (Voice support)"),
 ]
 
 
@@ -63,8 +80,10 @@ def run_health_check(base_path: str) -> dict:
     Pure inspection — nothing is created or modified.
     """
     tools = {name: shutil.which(name) is not None for name, _ in _TOOLS}
+    optional_tools = {name: shutil.which(name) is not None for name, _ in _OPTIONAL_TOOLS}
     terminal = any(shutil.which(t) is not None for t in _TERMINALS)
     libs = {name: _lib_available(name) for name, _ in _LIBS}
+    optional_libs = {name: _lib_available(name) for name, _ in _OPTIONAL_LIBS}
 
     appdata = os.path.join(base_path, "appdata")
     logs_dir = os.path.join(appdata, "logs")
@@ -88,8 +107,9 @@ def run_health_check(base_path: str) -> dict:
         if not ok:
             missing.append(f"path: {label}")
 
-    return {"tools": tools, "terminal": terminal, "libs": libs,
-            "paths": paths, "missing": missing}
+    return {"tools": tools, "optional_tools": optional_tools, "terminal": terminal,
+            "libs": libs, "optional_libs": optional_libs, "paths": paths,
+            "missing": missing}
 
 
 def log_health_summary(base_path: str) -> dict:
@@ -99,9 +119,15 @@ def log_health_summary(base_path: str) -> dict:
 
     for name, why in _TOOLS:
         logger.debug("tool %-9s %s", name, "OK" if result["tools"][name] else f"MISSING — {why}")
+    for name, why in _OPTIONAL_TOOLS:
+        logger.debug("opt-tool %-9s %s", name,
+                     "OK" if result["optional_tools"][name] else f"absent (optional) — {why}")
     logger.debug("terminal emulator %s", "OK" if result["terminal"] else "MISSING")
     for name, why in _LIBS:
         logger.debug("lib  %-9s %s", name, "OK" if result["libs"][name] else f"MISSING — {why}")
+    for name, why in _OPTIONAL_LIBS:
+        logger.debug("opt-lib %-14s %s", name,
+                     "OK" if result["optional_libs"][name] else f"absent (optional) — {why}")
     for label, ok in result["paths"].items():
         logger.debug("path %-18s %s", label, "OK" if ok else "MISSING/UNWRITABLE")
 
