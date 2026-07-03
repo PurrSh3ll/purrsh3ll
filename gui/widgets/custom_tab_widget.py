@@ -206,9 +206,10 @@ class CustomTabWidget(QTabWidget):
             pass
 
         # Prune the class-level widget registries of entries whose C++ object is
-        # now gone. tracked_combos in particular is never cleaned on tab close
-        # (only on a theme change), so without this it grows unbounded with every
-        # file opened. Deferred so it runs after the deleteLater above completes.
+        # now gone. tracked_combos and tracked_tables in particular have no other
+        # cleanup on tab close (only on a theme change), so without this they grow
+        # unbounded with every file opened. Deferred so it runs after the
+        # deleteLater above completes.
         try:
             QTimer.singleShot(0, self._prune_class_registries)
         except Exception:
@@ -237,10 +238,11 @@ class CustomTabWidget(QTabWidget):
 
     def _prune_class_registries(self):
         """Drop deleted widgets from the class-level registries so they don't
-        accumulate across tab opens/closes (tracked_combos has no other cleanup)."""
+        accumulate across tab opens/closes (tracked_combos/tracked_tables have no
+        other cleanup)."""
         try:
             cls = controller_instance.__class__
-            for attr in ("tracked_combos", "text_loaders", "text_highlighters"):
+            for attr in ("tracked_combos", "tracked_tables", "text_loaders", "text_highlighters"):
                 lst = getattr(cls, attr, None)
                 if isinstance(lst, list):
                     lst[:] = [obj for obj in lst if not isdeleted(obj)]

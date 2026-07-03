@@ -241,6 +241,7 @@ class Csv_file(ChunkedFileLoader):
         self.target_widget = None
         self.parent = None
         self._table_model = None
+        self._table_view = None
         self.text_widget = None
 
     # ── load_file ──────────────────────────────────────────────────────────
@@ -430,6 +431,7 @@ class Csv_file(ChunkedFileLoader):
         table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
         table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._table_view = table_view
         try:
             table_view.setStyleSheet(self.parent.table_stylesheet)
             self.parent.__class__.tracked_tables.append(table_view)
@@ -885,6 +887,21 @@ class Csv_file(ChunkedFileLoader):
                 except Exception:
                     pass
                 self.thread = None
+
+            # Unregister the table view from the class-level registry and detach
+            # its model, so neither the view shell nor the row data is retained.
+            tv = getattr(self, "_table_view", None)
+            if tv is not None:
+                try:
+                    if self.parent is not None and tv in self.parent.__class__.tracked_tables:
+                        self.parent.__class__.tracked_tables.remove(tv)
+                except Exception:
+                    pass
+                try:
+                    tv.setModel(None)
+                except Exception:
+                    pass
+                self._table_view = None
 
             self._table_model = None
 
