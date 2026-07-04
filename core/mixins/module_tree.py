@@ -49,6 +49,25 @@ _KNOWN_UNSUPPORTED = {
 class ModuleTreeMixin:
 
     def filter_tree(self, text):
+        tree = self.get_widget("tree")
+        searching = bool(text.strip())
+
+        # Snapshot the expansion state once, when a search begins, so we can
+        # restore it exactly when the search is cleared.
+        if searching and self._filter_expand_snapshot is None:
+            snap = {}
+
+            def take_snapshot(item):
+                path = item.data(0, Qt.ItemDataRole.UserRole)
+                if path and path != "__separator__":
+                    snap[path] = item.isExpanded()
+                for i in range(item.childCount()):
+                    take_snapshot(item.child(i))
+
+            for i in range(tree.topLevelItemCount()):
+                take_snapshot(tree.topLevelItem(i))
+            self._filter_expand_snapshot = snap
+
         def filter_item(item, text):
             match = text.lower() in item.text(0).lower()
             any_child_visible = False
@@ -59,11 +78,36 @@ class ModuleTreeMixin:
                 any_child_visible = any_child_visible or child_visible
 
             item.setHidden(not (match or any_child_visible))
+            # Reveal folders that contain a match — a matched child in a
+            # collapsed folder would otherwise stay hidden from view.
+            if searching and any_child_visible:
+                item.setExpanded(True)
             return match or any_child_visible
 
-        for i in range(self.get_widget("tree").topLevelItemCount()):
-            item = self.get_widget("tree").topLevelItem(i)
-            filter_item(item, text)
+        # Programmatic expand/collapse must not pollute expanded_modules
+        # (itemExpanded/itemCollapsed are wired to on_item_expand), so block
+        # signals for the whole filter pass.
+        tree.blockSignals(True)
+        try:
+            for i in range(tree.topLevelItemCount()):
+                filter_item(tree.topLevelItem(i), text)
+
+            # Search cleared — restore the pre-search expansion, drop snapshot.
+            if not searching and self._filter_expand_snapshot is not None:
+                snap = self._filter_expand_snapshot
+
+                def restore(item):
+                    path = item.data(0, Qt.ItemDataRole.UserRole)
+                    if path in snap:
+                        item.setExpanded(snap[path])
+                    for i in range(item.childCount()):
+                        restore(item.child(i))
+
+                for i in range(tree.topLevelItemCount()):
+                    restore(tree.topLevelItem(i))
+                self._filter_expand_snapshot = None
+        finally:
+            tree.blockSignals(False)
 
     def get_icon(self, icon_name: str, default: QIcon) -> QIcon:
         key = os.path.basename(icon_name) if icon_name else ""

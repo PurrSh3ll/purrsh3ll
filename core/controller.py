@@ -173,6 +173,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.themes_path = os.path.join(self.base_path, 'appdata', 'themes.json')
             self._debounce_ms = 500
             self._pending_update_message = None
+            self._filter_expand_snapshot = None
             self._update_timer = QTimer()
             self._update_timer.setSingleShot(True)
             self._update_timer.timeout.connect(self._do_update_modules)
