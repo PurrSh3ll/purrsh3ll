@@ -641,6 +641,7 @@ Icon=$INSTALL_DIR/icons/__app_icon.png
 Terminal=false
 Type=Application
 Categories=Security;Network;
+StartupWMClass=purrsh3ll
 EOF
 success "Desktop shortcut created"
 

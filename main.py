@@ -64,6 +64,12 @@ class _SlowTooltipStyle(QProxyStyle):
 
 def main():
     app = QApplication(sys.argv)
+    # Declare a stable app identity so the desktop environment shows "PurrSh3ll"
+    # instead of falling back to the script name ("main.py"). setDesktopFileName
+    # sets the Wayland app_id / helps X11 match purrsh3ll.desktop (which carries
+    # StartupWMClass=purrsh3ll) for the correct name + icon in taskbars.
+    app.setApplicationName("PurrSh3ll")
+    app.setDesktopFileName("purrsh3ll")
     app.setStyle(_SlowTooltipStyle(app.style()))
 
     lock = QLockFile(os.path.join(_BASE_PATH, "appdata", "logs", "app.lock"))
