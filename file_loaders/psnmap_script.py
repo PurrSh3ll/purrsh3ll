@@ -884,7 +884,9 @@ class ScriptLauncher(QWidget):
 
         if hasattr(self, 'chk_save_result') and self.chk_save_result.isChecked():
             if cmd.startswith("sudo "):
-                cmd = "sudo xmlwrap " + cmd[5:]
+                # xmlwrap is a zsh function, so `sudo xmlwrap` can't resolve it.
+                # Put sudo *inside* the wrapper: `xmlwrap sudo nmap …`.
+                cmd = "xmlwrap sudo " + cmd[5:]
             else:
                 cmd = "xmlwrap " + cmd
 

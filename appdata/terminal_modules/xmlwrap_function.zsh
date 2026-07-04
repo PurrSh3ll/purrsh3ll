@@ -7,6 +7,17 @@ xmlwrap() {
     cmd="$1"
     shift
 
+    # Allow `xmlwrap sudo nmap …`: xmlwrap is a shell function, so `sudo xmlwrap`
+    # can't resolve it. Instead we accept a leading `sudo`, strip it here, and
+    # re-apply it only to the nmap invocation (raw-socket scans like -sS/-sU need
+    # root). The wrapper itself keeps running as the normal user.
+    USE_SUDO=""
+    if [[ "$cmd" == "sudo" ]]; then
+        USE_SUDO="sudo"
+        cmd="$1"
+        shift
+    fi
+
     if [[ "$cmd" != "nmap" ]]; then
         echo "xmlwrap: supported only for nmap"
         return 1
@@ -35,20 +46,26 @@ xmlwrap() {
 
     # jeśli user NIE podał ani -oX ani -oA, dopisujemy własny -oX
     if [[ -z "$USER_OX" && -z "$USER_OA" ]]; then
-        /usr/bin/nmap "$@" -oX "$OUTFILE"
-        return $?
+        $USE_SUDO /usr/bin/nmap "$@" -oX "$OUTFILE"
+        STATUS=$?
+        # Under sudo nmap writes OUTFILE as root; hand it back to the invoking
+        # user so the app can read/clean it (sudo credentials are still cached).
+        if [[ -n "$USE_SUDO" && -f "$OUTFILE" ]]; then
+            sudo chown "$(id -un):$(id -gn)" "$OUTFILE"
+        fi
+        return $STATUS
     fi
 
     # jeśli user podał -oX -
     if [[ "$USER_OX" == "-" ]]; then
-        /usr/bin/nmap "$@" | tee "$OUTFILE"
+        $USE_SUDO /usr/bin/nmap "$@" | tee "$OUTFILE"
         STATUS=${PIPESTATUS[0]}
         echo "[xmlwrap] Saved XML output to: $OUTFILE"
         return $STATUS
     fi
 
     # normalne wykonanie nmap
-    /usr/bin/nmap "$@"
+    $USE_SUDO /usr/bin/nmap "$@"
     STATUS=$?
 
     # jeśli user podał -oX <plik>
