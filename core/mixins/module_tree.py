@@ -1,7 +1,16 @@
 import os
+import re
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QIcon, QFont
 from PyQt6.QtWidgets import QApplication, QStyle, QTreeWidgetItem
+
+
+def _natural_key(name):
+    """Case-insensitive natural sort key so 'file2' sorts before 'file10'."""
+    return [
+        int(tok) if tok.isdigit() else tok
+        for tok in re.split(r"(\d+)", name.lower())
+    ]
 
 # Extensions that are well-known formats the app cannot open meaningfully.
 # Everything NOT in this set and NOT in FILES_CATEGORY gets a neutral icon
@@ -80,8 +89,14 @@ class ModuleTreeMixin:
         font.setPointSize(12)
         tree.setFont(font)
         def get_ordered_entries(path):
-            entries = os.listdir(path)
-            return sorted(entries, key=lambda x: (x.lower(), x))
+            # Directories first, then files — each group natural-sorted, like
+            # professional IDEs. scandir() gives is_dir() cheaply (no extra stat).
+            try:
+                entries = list(os.scandir(path))
+            except OSError:
+                return []
+            entries.sort(key=lambda e: (not e.is_dir(), _natural_key(e.name)))
+            return [e.name for e in entries]
 
         style = QApplication.style()
         default_dir_icon = style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
@@ -148,7 +163,7 @@ class ModuleTreeMixin:
             item.setData(0, Qt.ItemDataRole.UserRole + 1, icon_filename)
 
         def add_items_recursively(parent_item, current_path):
-            for item_name in sorted(os.listdir(current_path), key=lambda x: (x.lower(), x)):
+            for item_name in get_ordered_entries(current_path):
                 full_path = os.path.join(current_path, item_name)
                 item = QTreeWidgetItem()
                 item.setText(0, item_name)
@@ -185,7 +200,7 @@ class ModuleTreeMixin:
         separator_item.setData(0, Qt.ItemDataRole.UserRole, "__separator__")
         tree.addTopLevelItem(separator_item)
 
-        for entry_name in sorted(os.listdir(self.user_modules_path), key=lambda x: (x.lower(), x)):
+        for entry_name in get_ordered_entries(self.user_modules_path):
             entry_path = os.path.join(self.user_modules_path, entry_name)
             item = QTreeWidgetItem()
             item.setText(0, entry_name)
