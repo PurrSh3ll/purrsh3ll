@@ -20,6 +20,32 @@ from gui.widgets.web_preview import WebPreview
 
 c = controller_instance
 
+# Built-in default for the web chat (Open WebUI) launch command. The user can
+# override it in AI Settings → "LLM web chat cmd" (stored under llama in the
+# config); _web_docker_cmd() returns the saved value or this default.
+DEFAULT_WEB_DOCKER_CMD = (
+    "sudo docker rm -f open-webui; "
+    "sudo docker run -d --network=host "
+    "-e OLLAMA_BASE_URL=http://localhost:11434 "
+    "-e PORT=3000 "
+    "-v open-webui:/app/backend/data "
+    "--name open-webui "
+    "ghcr.io/open-webui/open-webui:main"
+)
+
+
+def _web_docker_cmd():
+    """Return the web-chat launch command from AI Settings, or the default."""
+    saved = ""
+    try:
+        if os.path.exists(c.config_path):
+            with open(c.config_path, "r", encoding="utf-8") as f:
+                saved = (json.load(f) or {}).get("llama", {}).get("llm_web_chat_cmd", "")
+    except Exception:
+        logger.debug("failed to read llm_web_chat_cmd from config", exc_info=True)
+    return saved.strip() or DEFAULT_WEB_DOCKER_CMD
+
+
 _PRESETS_PATH = None  # set on first use
 
 
@@ -578,16 +604,6 @@ def build_chat_panel(main_window):
 
     # ── Preset / model logic ───────────────────────────────────────────────────
 
-    _WEB_DOCKER_CMD = (
-        "sudo docker rm -f open-webui; "
-        "sudo docker run -d --network=host "
-        "-e OLLAMA_BASE_URL=http://localhost:11434 "
-        "-e PORT=3000 "
-        "-v open-webui:/app/backend/data "
-        "--name open-webui "
-        "ghcr.io/open-webui/open-webui:main"
-    )
-
     def _load_ollama_profiles():
         """Return list of ollama profiles (full dicts) from api_profiles.json."""
         try:
@@ -652,7 +668,7 @@ def build_chat_panel(main_window):
             if is_web:
                 # Web run mode: no model needed, just show docker command
                 chat_combo_custom.blockSignals(False)
-                cmd_preview_edit.setPlainText(_WEB_DOCKER_CMD)
+                cmd_preview_edit.setPlainText(_web_docker_cmd())
                 _update_info_btn_visibility()
                 return
             # Load ollama profile names from global profiles
@@ -700,7 +716,7 @@ def build_chat_panel(main_window):
         if category == "cli":
             cmd_preview_edit.setPlainText(_build_ollama_run_cmd(profile))
         else:
-            cmd_preview_edit.setPlainText(_WEB_DOCKER_CMD)
+            cmd_preview_edit.setPlainText(_web_docker_cmd())
 
     def _open_add_dialog():
         dlg = QDialog(chat_panel)

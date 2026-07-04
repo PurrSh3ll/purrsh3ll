@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
     QListView, QListWidget, QListWidgetItem, QMessageBox, QTabWidget, QSizePolicy,
-    QToolButton, QSlider,
+    QToolButton, QSlider, QPlainTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
@@ -622,9 +622,12 @@ def build_menu(main_window):
             except Exception:
                 data = {}
 
+        from gui.builders.chat_panel_builder import DEFAULT_WEB_DOCKER_CMD
+
         llama_cfg = data.get("llama", {})
         llm_cli_default       = llama_cfg.get("llm_cli_path", "")
         logs_terminal_default = llama_cfg.get("logs_terminal_cmd", "")
+        llm_web_chat_default  = llama_cfg.get("llm_web_chat_cmd", "") or DEFAULT_WEB_DOCKER_CMD
 
         dlg = QDialog(main_window)
         dlg.setWindowTitle("AI Settings")
@@ -645,17 +648,26 @@ def build_menu(main_window):
             def _on_edit(checked=False, e=edit, k=config_key):
                 popup = QDialog(dlg)
                 popup.setWindowTitle("Edit value")
+                popup.setMinimumWidth(560)
                 popup_layout = QVBoxLayout(popup)
                 popup_layout.setContentsMargins(10, 10, 10, 10)
                 popup_layout.setSpacing(6)
-                popup_edit = QLineEdit(popup)
-                popup_edit.setText(e.text())
+                # Multi-line editor — a single line is too cramped for long
+                # values (e.g. the docker web-chat command).
+                popup_edit = QPlainTextEdit(popup)
+                popup_edit.setPlainText(e.text())
+                popup_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+                popup_edit.setMinimumHeight(140)
                 popup_layout.addWidget(popup_edit)
                 popup_ok = QPushButton("OK", popup)
                 popup_layout.addWidget(popup_ok, alignment=Qt.AlignmentFlag.AlignRight)
 
                 def _confirm():
-                    val = popup_edit.text()
+                    # Keep it a single logical line — the row edit is a QLineEdit
+                    # and these values are one line. Soft-wrap adds no newlines;
+                    # only neutralize any hard line breaks the user typed, so
+                    # internal spaces (e.g. paths with spaces) are preserved.
+                    val = popup_edit.toPlainText().replace("\r", " ").replace("\n", " ").strip()
                     e.setText(val)
                     try:
                         cfg = {}
@@ -681,9 +693,11 @@ def build_menu(main_window):
         form_llm.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         llm_cli_edit,       llm_cli_row       = _make_path_row(grp_llm, llm_cli_default,       "llm_cli_path")
+        llm_web_chat_edit,  llm_web_chat_row  = _make_path_row(grp_llm, llm_web_chat_default,  "llm_web_chat_cmd")
         logs_terminal_edit, logs_terminal_row = _make_path_row(grp_llm, logs_terminal_default, "logs_terminal_cmd")
 
         form_llm.addRow("LLM CLI path:",       llm_cli_row)
+        form_llm.addRow("LLM web chat cmd:",   llm_web_chat_row)
         form_llm.addRow("Agent run command:", logs_terminal_row)
 
         _base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -3216,6 +3230,7 @@ def build_menu(main_window):
             c.register_widget("ai_settings_dialog",             dlg)
             c.register_widget("ai_settings_tabs",               tabs)
             c.register_widget("ai_settings_llm_cli_edit",       llm_cli_edit)
+            c.register_widget("ai_settings_llm_web_chat_edit",  llm_web_chat_edit)
             c.register_widget("ai_settings_logs_terminal_edit", logs_terminal_edit)
             c.register_widget("ai_settings_agent_role_combo",   settings_agent_role_combo)
             c.register_widget("ai_settings_skills_combo",       settings_skills_combo)
