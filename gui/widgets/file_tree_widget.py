@@ -275,10 +275,24 @@ class FileTreeWidget(QTreeWidget):
             event.ignore()
             return
 
+        # Odrzuć wcześnie, gdy brak prawa zapisu do katalogu docelowego —
+        # czytelniejszy komunikat i brak próby ruszania pliku.
+        if not os.access(dest_dir, os.W_OK):
+            QMessageBox.warning(
+                self, "Move Failed", "No permission to write to this folder."
+            )
+            event.ignore()
+            return
+
         try:
             shutil.move(src_path, dest_path)
         except Exception as e:
+            # Akceptacja MoveAction każe Qt usunąć źródłowy element z drzewa,
+            # więc przy nieudanym przeniesieniu MUSIMY ignore() — inaczej plik
+            # znika z widoku mimo że nadal jest na dysku.
             QMessageBox.critical(self, "Move Failed", str(e))
+            event.ignore()
+            return
 
         # Nie wywołuj super().dropEvent — watcher odświeży drzewo
         event.accept()
