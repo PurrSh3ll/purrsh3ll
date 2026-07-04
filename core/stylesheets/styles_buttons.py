@@ -89,6 +89,10 @@ def build_button_styles(bg, fg, bd, gl) -> dict:
             color: {bg.get("buttons_pressed", "#2C5F8F")};
         }}
 
+        QCheckBox:disabled {{
+            color: {fg.get("text_disabled", "#AAAAAA")};
+        }}
+
         QCheckBox::indicator {{
 
             background: "transparent";
@@ -101,6 +105,10 @@ def build_button_styles(bg, fg, bd, gl) -> dict:
 
         QCheckBox::indicator:checked {{
             background: {bg.get("check_box_ind_chk", "#2C5F8F")};
+        }}
+
+        QCheckBox::indicator:disabled {{
+            border: 1px solid {fg.get("text_disabled", "#AAAAAA")};
         }}
 
         """

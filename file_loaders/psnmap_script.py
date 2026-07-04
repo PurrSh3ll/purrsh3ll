@@ -1109,6 +1109,14 @@ class ScriptLauncher(QWidget):
         def _on_external_toggled(checked):
             if checked:
                 self.chk_run_current.setChecked(False)
+            # WebMap Export can't be used with an external terminal — clear it and
+            # disable both the checkbox and its label while External Terminal is on.
+            # The greyed-out look comes from the theme's :disabled QSS (text_disabled),
+            # so it follows View > Change Theme instead of a hardcoded colour.
+            if checked and self.chk_save_result.isChecked():
+                self.chk_save_result.setChecked(False)
+            self.chk_save_result.setEnabled(not checked)
+            self.lbl_save_result.setEnabled(not checked)
 
         self.chk_run_external.toggled.connect(_on_external_toggled)
 
@@ -1122,9 +1130,9 @@ class ScriptLauncher(QWidget):
                 self.chk_run_external.setChecked(False)
 
         self.chk_run_current.toggled.connect(_on_current_toggled)
-        save_result = QLabel("WebMap Export", parent=self)
+        self.lbl_save_result = QLabel("WebMap Export", parent=self)
         self.chk_save_result = QCheckBox(parent=self)
-        row2.addWidget(save_result)
+        row2.addWidget(self.lbl_save_result)
         row2.addWidget(self.chk_save_result)
 
         self.chk_save_result.toggled.connect(lambda _: self._update_terminal_input())
