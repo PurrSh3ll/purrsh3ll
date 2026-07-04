@@ -1,102 +1,111 @@
 {
     "profiles": [
         {
-            "profile_name": "intense scan plus udp",
-            "command": "nmap -sS -sU -T4 -A -v",
-            "description": "Combines TCP SYN and UDP scanning with service version detection and OS identification for a comprehensive analysis."
-        },
-        {
-            "profile_name": "sample scan",
-            "command": "sudo nmap -sS -sU -T4 -A -v",
-            "description": "Combines TCP SYN and UDP scanning with service version detection and OS identification for a comprehensive analysis."
-        },
-        {
             "profile_name": "ping scan",
             "command": "nmap -sn",
-            "description": "Quickly identifies active hosts on the network without scanning ports."
+            "description": "Host discovery only (no port scan): quickly find which hosts on a subnet are alive."
+        },
+        {
+            "profile_name": "list scan",
+            "command": "nmap -sL",
+            "description": "Passive footprinting: reverse-DNS the target list without sending any probes to the hosts."
+        },
+        {
+            "profile_name": "traceroute",
+            "command": "nmap -sn --traceroute",
+            "description": "Map the network path (hops) to the target without scanning ports (requires root)."
         },
         {
             "profile_name": "quick scan",
             "command": "nmap -T4 -F",
-            "description": "Scans only the most common ports to quickly recognize targets."
+            "description": "Fast scan of the top 100 TCP ports for a rapid overview of a target."
         },
         {
             "profile_name": "quick scan plus",
-            "command": "nmap -sV -T4 -O -F --version-light",
-            "description": "Fast port scanning with lightweight service version detection and OS fingerprinting."
+            "command": "nmap -sV -O -F -T4",
+            "description": "Top-100 ports with service-version and OS fingerprinting (OS detection requires root)."
         },
         {
-            "profile_name": "quick traceroute",
-            "command": "nmap -sn --traceroute",
-            "description": "Performs a fast traceroute to determine the packet path without full port scanning."
+            "profile_name": "all ports fast",
+            "command": "nmap -Pn -p- --min-rate 5000 -T4 -v",
+            "description": "Sweep all 65535 TCP ports at a high packet rate, skipping host discovery. Ideal first pass in labs/CTF."
         },
         {
-            "profile_name": "vulnerability discovery",
-            "command": "nmap -sV --script vuln -T4",
-            "description": "Targets service version detection and automatically checks for known vulnerabilities (CVE)."
-        },
-        {
-            "profile_name": "service version scan",
-            "command": "nmap -sV -T4",
-            "description": "Detects the version of services running on open ports for inventory or security assessment."
-        },
-        {
-            "profile_name": "OS detection",
-            "command": "nmap -O -T4",
-            "description": "Performs operating system fingerprinting on the target host to identify OS type and version."
-        },
-        {
-            "profile_name": "stealth scan",
-            "command": "nmap -sS -T2",
-            "description": "TCP SYN stealth scan to probe ports without completing full TCP handshake, useful for avoiding detection."
-        },
-        {
-            "profile_name": "UDP scan",
-            "command": "nmap -sU -T3",
-            "description": "Scans UDP ports to detect services that may not appear in TCP scans."
-        },
-        {
-            "profile_name": "full scan",
-            "command": "nmap -p- -T4 -A -v",
-            "description": "Scans all 65535 ports with service version and OS detection for exhaustive reconnaissance."
+            "profile_name": "CTF deep scan",
+            "command": "nmap -Pn -p- -sC -sV -T4 -v",
+            "description": "Skip host discovery, scan every TCP port, then run default scripts and version detection. The standard HTB/THM workflow."
         },
         {
             "profile_name": "intense scan",
             "command": "nmap -T4 -A -v",
-            "description": "Performs a comprehensive scan including OS detection, version detection, script scanning, and traceroute."
+            "description": "Top-1000 ports with OS/version detection, default NSE scripts and traceroute (-A)."
         },
         {
-            "profile_name": "intense scan + TCP connect",
+            "profile_name": "full port scan",
+            "command": "nmap -p- -T4 -A -v",
+            "description": "All 65535 TCP ports with full -A analysis (OS, version, scripts, traceroute). Thorough but slow."
+        },
+        {
+            "profile_name": "TCP connect scan",
             "command": "nmap -sT -T4 -A -v",
-            "description": "Comprehensive scan using full TCP connect instead of SYN, with service version and OS detection."
+            "description": "Full-handshake scan for use without root privileges or through proxychains/SOCKS pivots."
+        },
+        {
+            "profile_name": "service and default scripts",
+            "command": "nmap -sC -sV -T4",
+            "description": "Top-1000 ports with service-version detection and the default NSE script set (-sC -sV)."
+        },
+        {
+            "profile_name": "service version scan",
+            "command": "nmap -sV -T4",
+            "description": "Identify the product/version of services on open ports for inventory or assessment."
+        },
+        {
+            "profile_name": "OS detection",
+            "command": "nmap -O -T4",
+            "description": "Fingerprint the target operating system type and version (requires root)."
+        },
+        {
+            "profile_name": "UDP top ports",
+            "command": "nmap -sU --top-ports 100 -T4",
+            "description": "Scan the 100 most common UDP ports (full UDP is extremely slow). Requires root."
+        },
+        {
+            "profile_name": "UDP service scan",
+            "command": "nmap -sU -sV --top-ports 50 -T4",
+            "description": "Version-detect the 50 most common UDP services (DNS, SNMP, TFTP, NTP...). Requires root."
         },
         {
             "profile_name": "slow comprehensive scan",
             "command": "nmap -sS -sU -T2 -A -v",
-            "description": "Performs a full scan with TCP SYN and UDP at slower timing to reduce detection and packet loss."
+            "description": "Combined TCP SYN + UDP at gentle timing to limit packet loss and reduce detection. Requires root."
         },
         {
-            "profile_name": "default scripts scan",
-            "command": "nmap -sC -T4",
-            "description": "Runs default Nmap scripts against the target to gather common information about services."
+            "profile_name": "vulnerability scan",
+            "command": "nmap -Pn -sV --script vuln -T4",
+            "description": "Version-detect services and run the 'vuln' NSE category to flag known CVEs (skips host discovery)."
+        },
+        {
+            "profile_name": "web enumeration",
+            "command": "nmap -p 80,443,8080,8443,8000 -sV --script http-enum,http-title,http-headers -T4",
+            "description": "Enumerate web servers on common HTTP(S) ports: titles, headers and frequently exposed paths."
+        },
+        {
+            "profile_name": "SMB enumeration",
+            "command": "nmap -p 139,445 -sV --script smb-os-discovery,smb-enum-shares,smb-enum-users,smb-vuln-* -T4",
+            "description": "Enumerate SMB shares/users/OS and probe for SMB vulnerabilities (EternalBlue et al.). A Windows pentest/CTF staple."
+        },
+        {
+            "profile_name": "stealth SYN scan",
+            "command": "nmap -sS -Pn -T2",
+            "description": "Half-open SYN scan at slow timing, skipping the ping probe, to keep the footprint low. Requires root."
+        },
+        {
+            "profile_name": "firewall/IDS evasion",
+            "command": "nmap -sS -Pn -T2 -f -D RND:5 --data-length 25",
+            "description": "SYN scan with packet fragmentation, five random decoys and padded payloads to study IDS/firewall behavior. Authorized testing only; requires root."
         }
     ],
-    "history": [
-        {
-            "profile_name": "sample scan",
-            "command": "sudo nmap -sS -sU -T4 -A -v localhost",
-            "datetime": "2026-05-21 08:34:35"
-        },
-        {
-            "profile_name": "intense scan plus udp",
-            "command": "nmap -sS -sU -T4 -A -v localhost",
-            "datetime": "2026-05-29 09:22:45"
-        },
-        {
-            "profile_name": "sample scan",
-            "command": "sudo nmap -sS -sU -T4 -A -v localhost",
-            "datetime": "2026-05-29 09:22:56"
-        }
-    ],
+    "history": [],
     "port": 8000
 }
