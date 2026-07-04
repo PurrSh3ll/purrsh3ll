@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QPushButton, QDialog, QFormLayout, QHBoxLayout, QVBoxLayout,
-    QLabel, QSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
+    QLabel, QSpinBox, QDoubleSpinBox, QCheckBox, QLineEdit, QComboBox, QGroupBox, QScrollArea, QWidget,
     QRadioButton, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QTextEdit,
     QListView, QListWidget, QListWidgetItem, QMessageBox, QTabWidget, QSizePolicy,
     QToolButton, QSlider, QPlainTextEdit,
@@ -2573,6 +2573,7 @@ def build_menu(main_window):
                 "fast_answers":       meta.get("fast_answers", False),
                 "custom_params":      meta.get("custom_params", ""),
                 "custom_system":      meta.get("custom_system", ""),
+                "temperature":        meta.get("temperature", ""),
                 "context_tokens":     meta.get("context_tokens", 0),
                 "tools_user_override": meta.get("tools_user_override"),
             }
@@ -2587,6 +2588,7 @@ def build_menu(main_window):
                     "fast_answers":      bool(profile.get("fast_answers", False)),
                     "custom_params":     profile.get("custom_params", ""),
                     "custom_system":     profile.get("custom_system", ""),
+                    "temperature":       profile.get("temperature", ""),
                     "context_tokens":    int(profile.get("context_tokens", 0)),
                     "tools_user_override": profile.get("tools_user_override"),
                 })
@@ -2897,29 +2899,48 @@ def build_menu(main_window):
             is_custom    = bool(saved_custom)
             is_ollama    = profile.get("provider", "") == "ollama"
 
-            saved_system   = profile.get("custom_system", "")
-            is_sys_custom  = bool(saved_system) and not is_custom
+            # Temperature — applies to every provider (Ollama native, OpenAI-compat,
+            # Anthropic) in the ps* tools and, via a baked Modelfile, in ai_chat.
+            _TEMP_DEFAULT = 0.8
+            _raw_temp = profile.get("temperature", "")
+            try:
+                saved_temp = float(_raw_temp) if _raw_temp not in (None, "") else None
+            except (TypeError, ValueError):
+                saved_temp = None
+            is_temp      = saved_temp is not None and not is_custom
+            temp_initial = saved_temp if saved_temp is not None else _TEMP_DEFAULT
 
             cb_think      = QCheckBox("Disable thinking")
             cb_hide_think = QCheckBox("Hide thinking output")
             cb_fast       = QCheckBox("Fast answers  (short responses)")
-            cb_system     = QCheckBox("Custom system prompt")
+            cb_temp       = QCheckBox("Temperature  (sampling randomness)")
             cb_custom     = QCheckBox("Custom parameters")
             cb_think.setChecked(bool(profile.get("disable_thinking", False)) and not is_custom)
             cb_hide_think.setChecked(bool(profile.get("hide_thinking", False)))
             cb_fast.setChecked(bool(profile.get("fast_answers",     False)) and not is_custom)
-            cb_system.setChecked(is_sys_custom)
+            cb_temp.setChecked(is_temp)
             cb_custom.setChecked(is_custom)
             # "Disable thinking" is Ollama-only; hide it for all other providers
             cb_think.setVisible(is_ollama)
 
-            system_edit = QTextEdit()
-            system_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-            system_edit.setMinimumHeight(60)
-            system_edit.setPlaceholderText("Enter system prompt text…")
-            system_edit.setVisible(is_sys_custom)
-            if saved_system:
-                system_edit.setPlainText(saved_system)
+            temp_widget = QWidget()
+            temp_row = QHBoxLayout(temp_widget)
+            temp_row.setContentsMargins(0, 0, 0, 0)
+            sb_temp = QDoubleSpinBox()
+            sb_temp.setRange(0.0, 2.0)
+            sb_temp.setSingleStep(0.1)
+            sb_temp.setDecimals(2)
+            sb_temp.setValue(temp_initial)
+            sb_temp.setFixedWidth(80)
+            temp_reset_btn = QPushButton("Default")
+            temp_reset_btn.setFixedWidth(62)
+            temp_reset_btn.setToolTip(f"Reset to {_TEMP_DEFAULT}")
+            temp_reset_btn.clicked.connect(lambda: sb_temp.setValue(_TEMP_DEFAULT))
+            temp_row.addWidget(sb_temp)
+            temp_row.addWidget(QLabel("0 = deterministic · higher = more random"))
+            temp_row.addStretch(1)
+            temp_row.addWidget(temp_reset_btn)
+            temp_widget.setVisible(is_temp)
 
             _PLACEHOLDER = (
                 '{"temperature": 0.7,\n'
@@ -2961,11 +2982,11 @@ def build_menu(main_window):
             custom_edit.focusInEvent  = _focus_in
             custom_edit.focusOutEvent = _focus_out
 
-            def _on_system_toggled():
-                _is = cb_system.isChecked()
+            def _on_temp_toggled():
+                _is = cb_temp.isChecked()
                 if _is and cb_custom.isChecked():
                     cb_custom.setChecked(False)
-                system_edit.setVisible(_is)
+                temp_widget.setVisible(_is)
                 w = bdlg.width()
                 bdlg.adjustSize()
                 bdlg.resize(w, bdlg.height())
@@ -2974,8 +2995,9 @@ def build_menu(main_window):
                 _is = cb_custom.isChecked()
                 if _is:
                     cb_think.setChecked(False)
+                    cb_hide_think.setChecked(False)
                     cb_fast.setChecked(False)
-                    cb_system.setChecked(False)
+                    cb_temp.setChecked(False)
                 custom_edit.setVisible(_is)
                 bdlg.adjustSize()
 
@@ -2986,14 +3008,14 @@ def build_menu(main_window):
             cb_think.stateChanged.connect(_on_other_checkbox_checked)
             cb_hide_think.stateChanged.connect(_on_other_checkbox_checked)
             cb_fast.stateChanged.connect(_on_other_checkbox_checked)
-            cb_system.stateChanged.connect(_on_system_toggled)
+            cb_temp.stateChanged.connect(_on_temp_toggled)
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
             bform.addWidget(cb_think)
             bform.addWidget(cb_hide_think)
             bform.addWidget(cb_fast)
-            bform.addWidget(cb_system)
-            bform.addWidget(system_edit, stretch=1)
+            bform.addWidget(cb_temp)
+            bform.addWidget(temp_widget)
             bform.addWidget(cb_custom)
             bform.addWidget(custom_edit, stretch=1)
 
@@ -3015,7 +3037,7 @@ def build_menu(main_window):
             profile["disable_thinking"] = cb_think.isChecked()
             profile["hide_thinking"]    = cb_hide_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()
-            profile["custom_system"]    = system_edit.toPlainText().strip() if cb_system.isChecked() else ""
+            profile["temperature"]      = round(sb_temp.value(), 2) if cb_temp.isChecked() else ""
             _raw = custom_edit.toPlainText().strip()
             profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
             _set_row_meta(row, profile)
@@ -3086,6 +3108,8 @@ def build_menu(main_window):
             profile["fast_answers"]     = existing.get("fast_answers", False)
             profile["custom_params"]    = existing.get("custom_params", "")
             profile["custom_system"]    = existing.get("custom_system", "")
+            profile["temperature"]      = existing.get("temperature", "")
+            profile["context_tokens"]   = existing.get("context_tokens", 0)
             _set_row_meta(row, profile)
             if profile["name"] != old_name:
                 _rename_api_key(old_name, profile["name"])

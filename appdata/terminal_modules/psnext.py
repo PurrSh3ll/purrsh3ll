@@ -348,6 +348,7 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
+    temperature      = _ai._profile_temperature(profile)
     use_tools        = _ai._tools_enabled(profile, base_dir)
 
     _NEXT_TOOL = {
@@ -464,7 +465,7 @@ def main():
         sys.stdout   = _io.StringIO()
         sys.stderr   = _io.StringIO()
         try:
-            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
         finally:
             sys.stdout = _real_stdout
             sys.stderr = _real_stderr
@@ -477,7 +478,7 @@ def main():
         _real_stdout = sys.stdout
         sys.stdout   = sys.stderr
         try:
-            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
         finally:
             sys.stdout = _real_stdout
         if response:

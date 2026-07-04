@@ -197,6 +197,7 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
+    temperature      = _ai._profile_temperature(profile)
 
     # ── Load image ─────────────────────────────────────────────────────────────
     image_path = args.image
@@ -226,7 +227,7 @@ def main():
     _ai._info(f"Analyzing {filename}...\n")
 
     analysis = _ai._run_llm(provider, model, messages, url, api_key,
-                            disable_thinking, custom_params, hide_thinking)
+                            disable_thinking, custom_params, hide_thinking, temperature)
 
     if not analysis:
         _ai._err("No response from model.")

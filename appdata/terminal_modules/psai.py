@@ -275,11 +275,26 @@ def _parse_custom_params(profile: dict) -> dict | None:
         return None
 
 
+def _profile_temperature(profile: dict):
+    """Return the profile's sampling temperature as a float, or None if unset.
+
+    Applies to every provider (Ollama native, OpenAI-compatible, Anthropic).
+    Advanced custom_params JSON with its own "temperature" takes precedence."""
+    raw = profile.get("temperature", "")
+    if raw is None or raw == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 # ── LLM runners ───────────────────────────────────────────────────────────────
 
 def _stream_ollama_native(model: str, messages: list, base_url: str,
                           disable_thinking: bool = False,
-                          hide_thinking: bool = False) -> str:
+                          hide_thinking: bool = False,
+                          temperature: float = None) -> str:
     """POST to Ollama native /api/chat — correctly honors think:false."""
     url = base_url.rstrip("/")
     # strip /v1 suffix if present — native API is at root
@@ -314,6 +329,8 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
     body = {"model": model, "messages": normalized, "stream": True}
     if disable_thinking:
         body["think"] = False
+    if temperature is not None:
+        body.setdefault("options", {})["temperature"] = temperature
 
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
@@ -406,7 +423,7 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
 
 def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: str,
                            provider: str = "openai", custom_params: dict = None,
-                           hide_thinking: bool = False) -> str:
+                           hide_thinking: bool = False, temperature: float = None) -> str:
     """POST to /chat/completions, stream tokens to stdout, return full response text."""
     url = base_url.rstrip("/") + "/chat/completions"
 
@@ -420,8 +437,10 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     body = {"model": model, "messages": msgs, "stream": True,
             "stream_options": {"include_usage": True}}
 
+    if temperature is not None:
+        body["temperature"] = temperature
     if custom_params:
-        body.update(custom_params)
+        body.update(custom_params)   # advanced JSON wins over the dedicated field
 
     headers = {
         "Content-Type":  "application/json",
@@ -583,7 +602,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
 
 
 def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
-                       hide_thinking: bool = False) -> str:
+                       hide_thinking: bool = False, temperature: float = None) -> str:
     """POST to Anthropic /v1/messages, stream tokens to stdout, return full response text."""
     url = (base_url.rstrip("/") if base_url else "https://api.anthropic.com") + "/v1/messages"
 
@@ -593,6 +612,8 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
     body = {"model": model, "max_tokens": 4096, "messages": user_msgs, "stream": True}
     if system_parts:
         body["system"] = "\n\n".join(system_parts)
+    if temperature is not None:
+        body["temperature"] = temperature
 
     headers = {
         "Content-Type":      "application/json",
@@ -764,7 +785,7 @@ def _estimate_prompt_tokens(messages: list) -> int:
 
 def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None,
-             hide_thinking: bool = False) -> str:
+             hide_thinking: bool = False, temperature: float = None) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
     if _DEBUG_PROMPT:
         sys.stderr.write("\033[33m[debug] ── prompt messages ──────────────────────────────\033[0m\n")
@@ -782,12 +803,12 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
     except Exception:
         _dbg("could not write psai_tok telemetry file")
     if provider == "anthropic":
-        return _stream_anthropic(model, messages, url, api_key, hide_thinking)
+        return _stream_anthropic(model, messages, url, api_key, hide_thinking, temperature)
 
     # Ollama: use native /api/chat (correctly honors think:false)
     # Fall back to OpenAI-compat only when custom_params are set
     if provider == "ollama" and not custom_params:
-        return _stream_ollama_native(model, messages, url, disable_thinking, hide_thinking)
+        return _stream_ollama_native(model, messages, url, disable_thinking, hide_thinking, temperature)
 
     # Ollama with custom_params: ensure /v1 suffix for OpenAI-compat endpoint
     if provider == "ollama":
@@ -796,7 +817,7 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
             base += "/v1"
         url = base
 
-    return _stream_openai_compat(model, messages, url, api_key, provider, custom_params, hide_thinking)
+    return _stream_openai_compat(model, messages, url, api_key, provider, custom_params, hide_thinking, temperature)
 
 
 # ── Function calling helpers ───────────────────────────────────────────────────
@@ -1041,6 +1062,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
     custom_system    = profile.get("custom_system", "").strip()
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking",    False))
+    temperature      = _profile_temperature(profile)
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
 
     query = " ".join(args.query)
@@ -1063,7 +1085,7 @@ def mode_ask(args, profile: dict, base_dir: str, api_key: str, config: dict):
 
     if _SHOW_QUERYING:
         _info(f"Querying {model} via {provider}…\n")
-    _run_llm(provider, model, msgs, url, api_key, disable_thinking, custom_params, hide_thinking)
+    _run_llm(provider, model, msgs, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
 
 
 # ── Mode: chat ────────────────────────────────────────────────────────────────
@@ -1078,6 +1100,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     custom_system    = profile.get("custom_system", "").strip()
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking",    False))
+    temperature      = _profile_temperature(profile)
     fast_answers     = bool(profile.get("fast_answers", False)) and not custom_params
 
     if args.clear:
@@ -1134,7 +1157,7 @@ def mode_chat(args, profile: dict, base_dir: str, api_key: str, config: dict):
     if _SHOW_QUERYING:
         _info(f"Chatting with {model} via {provider}…\n")
 
-    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params, hide_thinking)
+    response = _run_llm(provider, model, msgs_to_send, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
 
     if response:
         history.append({"role": "assistant", "content": response, "model": model})

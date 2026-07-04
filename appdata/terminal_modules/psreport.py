@@ -1759,6 +1759,7 @@ def main():
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
+    temperature      = _ai._profile_temperature(profile)
 
     now    = datetime.now()
     fmt    = args.format
@@ -1768,9 +1769,9 @@ def main():
 
     def _llm(messages, verbose=False):
         if verbose:
-            return _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            return _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
         return _run_silent(
-            lambda: _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking)
+            lambda: _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
         )
 
     sys_info  = f"{platform.system()} {platform.release()} ({platform.machine()})"

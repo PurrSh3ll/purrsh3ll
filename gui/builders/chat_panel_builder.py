@@ -186,6 +186,8 @@ def build_chat_panel(main_window):
     _connect_tmpdir = [None]
     _prev_btn_text = ["run"]
     _web_container_name = [None]   # --name from the web launch cmd, for stop/rm
+    _ollama_tmp_model = [None]     # temp `ollama create` model baking a system prompt
+    _ollama_tmpdir = [None]        # tmpdir holding that model's Modelfile
     _osc_end_re = re.compile(r'\x1b\]777;purrlog_end;')
     _STOP_STYLE = (
         "QToolButton { background-color: #8B2222; color: #ffffff; }"
@@ -446,6 +448,23 @@ def build_chat_panel(main_window):
                 pass
             _connect_tmpdir[0] = None
 
+        # Drop the temp ollama model baked for a system prompt. The terminal (and
+        # thus the `ollama run` process) was stopped above, so the model is free to
+        # remove now. Best-effort; a leftover is swept on the next baked launch.
+        if _ollama_tmp_model[0] is not None:
+            import subprocess
+            try:
+                subprocess.run(["ollama", "rm", _ollama_tmp_model[0]],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15)
+            except Exception:
+                logger.debug("failed to remove temp ollama model", exc_info=True)
+            _ollama_tmp_model[0] = None
+        if _ollama_tmpdir[0] is not None:
+            import shutil
+            shutil.rmtree(_ollama_tmpdir[0], ignore_errors=True)
+            _ollama_tmpdir[0] = None
+
         # Web engine is now down and the tab is back to its default view.
         _leave_running_state()
 
@@ -596,6 +615,9 @@ def build_chat_panel(main_window):
             else:
                 command = cmd_preview_edit.toPlainText().strip()
                 if command:
+                    profile = chat_combo_custom.currentData()
+                    if profile:
+                        command = _apply_model_overrides(command, profile)
                     _start_cli_session(command)
         elif chat_combo_interface.currentText() == "web":
             _start_web_session()
@@ -616,23 +638,32 @@ def build_chat_panel(main_window):
         except Exception:
             return []
 
+    def _ollama_system_prompt(profile: dict) -> str:
+        """Combined system prompt from custom_system + fast_answers (empty if none).
+
+        `ollama run` has no --system flag, so this text is baked into a temp
+        model via a Modelfile at launch time (see _apply_system_prompt)."""
+        parts = []
+        if profile.get("custom_system", "").strip():
+            parts.append(profile["custom_system"].strip())
+        if profile.get("fast_answers"):
+            parts.append("Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations.")
+        return "\n".join(parts)
+
     def _build_ollama_run_cmd(profile: dict) -> str:
-        """Build 'ollama run <model> [flags]' from profile settings."""
+        """Build 'ollama run <model> [flags]' from profile settings.
+
+        The system prompt is NOT a flag here (ollama run has none); it is applied
+        separately at launch time by baking a temp model (_apply_system_prompt)."""
         model = profile.get("model", "")
         env_prefix = ""
         flags = []
-        # custom_system / fast_answers → --system flag (combined if both set)
-        _sys_parts = []
-        if profile.get("custom_system", "").strip():
-            _sys_parts.append(profile["custom_system"].strip())
-        if profile.get("fast_answers"):
-            _sys_parts.append("Answer as briefly as possible. Use 1-3 sentences. No unnecessary explanations.")
-        if _sys_parts:
-            import shlex
-            flags.append(f"--system {shlex.quote(chr(10).join(_sys_parts))}")
         # disable_thinking checkbox → --think=false
         if profile.get("disable_thinking"):
             flags.append("--think=false")
+        # hide_thinking checkbox → --hidethinking (model still thinks, output hidden)
+        if profile.get("hide_thinking"):
+            flags.append("--hidethinking")
         # Parse custom_params JSON → CLI flags (may override think)
         raw_params = profile.get("custom_params", "")
         if raw_params:
@@ -649,6 +680,92 @@ def build_chat_panel(main_window):
         if flags:
             cmd += " " + " ".join(flags)
         return cmd
+
+    def _sweep_orphan_models():
+        """Remove leftover purrsh-chat-<pid>-* temp models whose owner is gone.
+
+        A crash/kill can leave a baked model behind. The pid embedded in the name
+        lets us skip models still owned by a live process (e.g. another running
+        instance) and only drop true orphans. Best-effort and quiet."""
+        import subprocess
+        try:
+            out = subprocess.run(["ollama", "list"], capture_output=True,
+                                 text=True, timeout=10)
+        except Exception:
+            return
+        for line in out.stdout.splitlines():
+            tok = line.split()
+            if not tok:
+                continue
+            name = tok[0]                       # e.g. purrsh-chat-123-abcd1234:latest
+            m = re.match(r"^purrsh-chat-(\d+)-[0-9a-f]+$", name.split(":")[0])
+            if not m:
+                continue
+            try:
+                os.kill(int(m.group(1)), 0)
+                continue                        # owner alive → leave it
+            except (ProcessLookupError, ValueError):
+                pass                            # owner gone → orphan, remove below
+            except PermissionError:
+                continue                        # exists but not ours → leave it
+            try:
+                subprocess.run(["ollama", "rm", name], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=10)
+            except Exception:
+                pass
+
+    def _ollama_temperature(profile: dict):
+        """Return the profile's temperature as a float, or None if unset/invalid."""
+        raw = profile.get("temperature", "")
+        if raw is None or raw == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _apply_model_overrides(command: str, profile: dict) -> str:
+        """Bake the profile's system prompt and/or temperature into a temp ollama
+        model and return a 'ollama create … && ollama run <temp> …' command;
+        otherwise return command unchanged. `ollama run` has no --system flag and
+        temperature is not a run flag either, so both go through a Modelfile.
+        Registers the temp model/dir for cleanup in _stop_session.
+
+        Only rewrites a genuine 'ollama run <profile-model> …' command, so a hand
+        edited preview (different model) is left alone rather than corrupted."""
+        sys_prompt = _ollama_system_prompt(profile)
+        temperature = _ollama_temperature(profile)
+        model = profile.get("model", "")
+        if (not sys_prompt and temperature is None) or not model \
+                or not command.startswith("ollama run "):
+            return command
+        rest = command[len("ollama run "):].lstrip()
+        if not rest.startswith(model):
+            return command  # preview edited away from this model → don't bake
+        tail = rest[len(model):]
+        _sweep_orphan_models()
+        import tempfile, uuid, shlex, shutil
+        tmpdir = tempfile.mkdtemp(prefix="purrsh_ollama_")
+        tmp_model = f"purrsh-chat-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        lines = [f"FROM {model}"]
+        if sys_prompt:
+            # SYSTEM """…""" is Modelfile's multi-line form; neutralize any literal
+            # triple-quote in the prompt so it can't terminate the block early.
+            lines.append(f'SYSTEM """{sys_prompt.replace(chr(34) * 3, chr(34))}"""')
+        if temperature is not None:
+            lines.append(f"PARAMETER temperature {temperature}")
+        mf_path = os.path.join(tmpdir, "Modelfile")
+        try:
+            with open(mf_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception:
+            logger.warning("failed to write ollama Modelfile", exc_info=True)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return command
+        _ollama_tmpdir[0] = tmpdir
+        _ollama_tmp_model[0] = tmp_model
+        return (f"ollama create {tmp_model} -f {shlex.quote(mf_path)} "
+                f"&& ollama run {tmp_model}{tail}")
 
     def _is_run_mode():
         return chat_btn_run.text() == "run"
