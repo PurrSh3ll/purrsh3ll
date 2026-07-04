@@ -159,6 +159,7 @@ def build_chat_panel(main_window):
     _chat_webview = [None]
     _connect_tmpdir = [None]
     _prev_btn_text = ["run"]
+    _web_container_name = [None]   # --name from the web launch cmd, for stop/rm
     _osc_end_re = re.compile(r'\x1b\]777;purrlog_end;')
     _STOP_STYLE = (
         "QToolButton { background-color: #8B2222; color: #ffffff; }"
@@ -294,6 +295,17 @@ def build_chat_panel(main_window):
         # Capture the command before UI state changes
         _web_launch_cmd = cmd_preview_edit.toPlainText().strip()
 
+        # Remember the container name (--name X) so stop can `docker rm -f` it and
+        # free the RAM it uses. Only when the launch command is genuinely a
+        # `docker run` with a --name — otherwise leave it None so a non-docker
+        # command (or one without --name) triggers no stop command at all.
+        _name_match = re.search(r"--name[= ]+(\S+)", _web_launch_cmd)
+        _web_container_name[0] = (
+            _name_match.group(1)
+            if (_name_match and re.search(r"\bdocker\s+run\b", _web_launch_cmd))
+            else None
+        )
+
         from PyQt6.QtCore import QUrl
         webview = WebPreview(parent=_term_container)
         webview.load(QUrl(raw))
@@ -400,8 +412,35 @@ def build_chat_panel(main_window):
                 pass
             _chat_webview[0] = None
 
+        if _connect_tmpdir[0] is not None:
+            import shutil
+            try:
+                shutil.rmtree(_connect_tmpdir[0], ignore_errors=True)
+            except Exception:
+                pass
+            _connect_tmpdir[0] = None
+
+        # Web engine is now down and the tab is back to its default view.
+        _leave_running_state()
+
+        # After returning to the default view, pop up the Info window (web mode
+        # only — the info terminal exists solely for web launches) with the
+        # launch console still showing, exactly as clicking ℹ would. Tear the
+        # info terminal down only once the user closes the dialog.
         info_term = _info_term[0]
         if info_term is not None:
+            # Stop and remove the launched container so it stops using RAM. Only
+            # when the launch was a `docker run --name X` (see _start_web_session);
+            # for any other command _web_container_name is None and nothing is
+            # sent. Runs in the info console (same shell that started it — sudo is
+            # still cached, so no second prompt) so the user sees it execute.
+            _name = _web_container_name[0]
+            if _name:
+                try:
+                    info_term.sendText(f"sudo docker rm -f {_name}\n")
+                except Exception:
+                    pass
+            _on_info_clicked()
             try:
                 info_term.receivedData.disconnect()
             except Exception:
@@ -421,16 +460,6 @@ def build_chat_panel(main_window):
             _info_term_container.hide()
             server_log_label.show()
             chat_info_dialog.setMinimumSize(0, 0)
-
-        if _connect_tmpdir[0] is not None:
-            import shutil
-            try:
-                shutil.rmtree(_connect_tmpdir[0], ignore_errors=True)
-            except Exception:
-                pass
-            _connect_tmpdir[0] = None
-
-        _leave_running_state()
 
     def _start_connect_session():
         dlg = QDialog(chat_panel)
