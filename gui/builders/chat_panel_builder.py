@@ -160,82 +160,12 @@ def build_chat_panel(main_window):
     _connect_tmpdir = [None]
     _prev_btn_text = ["run"]
     _osc_end_re = re.compile(r'\x1b\]777;purrlog_end;')
-    _blink_timer = [None]
-    _poll_timer = [None]
-    _blink_state = [False]
-    _INFO_BLINK_ON  = "QPushButton { background-color: #e6ac00; color: #000000; border: none; }"
-    _INFO_BLINK_OFF = "QPushButton { background-color: #37373B; color: #ffffff; border: none; }"
     _STOP_STYLE = (
         "QToolButton { background-color: #8B2222; color: #ffffff; }"
         "QToolButton:hover { background-color: #A52A2A; }"
         "QToolButton:pressed { background-color: #6B1111; }"
     )
     _controls = [chat_combo_interface, chat_combo_custom, chat_btn_info]
-
-    def _start_info_blink():
-        if _blink_timer[0] is not None:
-            return
-        t = QTimer(chat_panel)
-        t.setInterval(500)
-        def _toggle():
-            _blink_state[0] = not _blink_state[0]
-            chat_btn_info.setStyleSheet(_INFO_BLINK_ON if _blink_state[0] else _INFO_BLINK_OFF)
-        t.timeout.connect(_toggle)
-        t.start()
-        _blink_timer[0] = t
-
-    def _stop_info_blink():
-        if _blink_timer[0] is not None:
-            _blink_timer[0].stop()
-            _blink_timer[0] = None
-        chat_btn_info.setStyleSheet("")  # reset to inherited style
-        _blink_state[0] = False
-        if _poll_timer[0] is not None:
-            _poll_timer[0].stop()
-            _poll_timer[0] = None
-
-    def _check_port(host, port):
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
-        try:
-            return sock.connect_ex((host, port)) == 0
-        except Exception:
-            return False
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
-
-    def _start_port_poll(host, port):
-        _stop_info_blink()
-        t = QTimer(chat_panel)
-        t.setInterval(3000)
-
-        def _repeated_poll():
-            if not _running[0]:
-                _stop_info_blink()
-                t.stop()
-                _poll_timer[0] = None
-                return
-            if _check_port(host, port):
-                _stop_info_blink()
-                t.stop()
-                _poll_timer[0] = None
-
-        def _first_check():
-            if not _running[0]:
-                return
-            if not _check_port(host, port):
-                # Container not reachable — start blinking and keep polling
-                _start_info_blink()
-                t.timeout.connect(_repeated_poll)
-                t.start()
-                _poll_timer[0] = t
-            # else: container already running — do nothing, no blink
-
-        QTimer.singleShot(800, _first_check)
 
     def _enter_running_state():
         _prev_btn_text[0] = chat_btn_run.text()
@@ -375,15 +305,8 @@ def build_chat_panel(main_window):
         # Populate info dialog with a terminal running the launch command
         _launch_info_terminal(_web_launch_cmd)
 
-        # Blink ℹ immediately; stop when container is reachable on the port
-        try:
-            from urllib.parse import urlparse
-            _parsed = urlparse(raw)
-            _host = _parsed.hostname or "localhost"
-            _port = _parsed.port or (443 if raw.startswith("https") else 80)
-            _start_port_poll(_host, _port)
-        except Exception:
-            pass
+        # Show the Info window automatically — exactly as if the user clicked ℹ.
+        _on_info_clicked()
 
     def _launch_info_terminal(command):
         chat_info_dialog.setMinimumSize(520, 380)
@@ -507,7 +430,6 @@ def build_chat_panel(main_window):
                 pass
             _connect_tmpdir[0] = None
 
-        _stop_info_blink()
         _leave_running_state()
 
     def _start_connect_session():
@@ -985,7 +907,6 @@ def build_chat_panel(main_window):
     _info_term = [None]
 
     def _on_info_clicked():
-        _stop_info_blink()
         chat_info_dialog.exec()
 
     chat_btn_info.clicked.connect(_on_info_clicked)
