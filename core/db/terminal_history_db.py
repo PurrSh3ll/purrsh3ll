@@ -631,6 +631,13 @@ class TerminalHistoryDB:
             DELETE FROM sqlite_sequence;
         """)
         conn.commit()
+        # DELETE only frees pages logically — the .db file keeps its size. VACUUM
+        # rebuilds it so freed pages are returned to the OS; the subsequent
+        # close() runs wal_checkpoint(TRUNCATE), which zeroes the -wal. Best-effort.
+        try:
+            conn.execute("VACUUM")
+        except sqlite3.Error:
+            logger.debug("VACUUM after clear failed", exc_info=True)
 
     # ── convenience ────────────────────────────────────────────────────────
 

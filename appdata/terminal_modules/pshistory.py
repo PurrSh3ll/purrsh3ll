@@ -321,9 +321,22 @@ def cmd_clear(conn, yes):
         DELETE FROM target_ports;
         DELETE FROM targets;
         DELETE FROM commands;
+        DELETE FROM pstool_commands;
         DELETE FROM sqlite_sequence;
     """)
     conn.commit()
+    # DELETE is only a logical delete: freed pages stay in the .db file and the
+    # delete transaction is appended to the -wal (which grows it). Reclaim the
+    # space so both files actually shrink. TRUNCATE checkpoint zeroes the -wal;
+    # VACUUM rebuilds the .db and returns free pages to the OS. Best-effort: the
+    # app holds a live connection to the same DB, so this may hit SQLITE_BUSY —
+    # that only leaves the space unreclaimed for now, it never corrupts the DB.
+    # (Never unlink the -wal/-shm files directly while that connection is open.)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("VACUUM")
+    except sqlite3.Error:
+        pass  # app busy — space stays until the next clear or app close
     print(f"History cleared ({count} commands deleted). ID counter reset to 1.")
 
 
