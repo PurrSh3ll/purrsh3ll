@@ -265,8 +265,18 @@ if [[ "$RM_APPDIR" == true ]]; then
         cp "${BASH_SOURCE[0]}" /tmp/_purrsh3ll_uninstall_tmp.sh
         warn "Application folder will be removed. Uninstaller copy saved to /tmp/_purrsh3ll_uninstall_tmp.sh"
     fi
+    # Guard: never let an empty/unsafe path reach rm -rf.
+    if [[ -z "$INSTALL_DIR" || "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$HOME" ]]; then
+        die "Refusing to remove unsafe INSTALL_DIR: '$INSTALL_DIR'"
+    fi
     info "Removing application folder: $INSTALL_DIR..."
-    rm -rf "$INSTALL_DIR"
+    # Some files under the tree can be root-owned (WebMap XML written by the
+    # Docker container / earlier sudo nmap scans), so a plain user rm fails with
+    # Permission denied. Try unprivileged first, escalate to sudo only if needed.
+    if ! rm -rf "$INSTALL_DIR" 2>/dev/null; then
+        warn "Some files are root-owned (WebMap/Docker output) — retrying with sudo"
+        sudo rm -rf "$INSTALL_DIR"
+    fi
     success "Application folder removed"
 fi
 
