@@ -7,6 +7,7 @@ from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtCore import QSize, Qt, QTimer
 import os
 import json
+import logging
 
 from core.controller import controller_instance
 from gui.widgets.custom_tab_widget import CustomTabWidget
@@ -15,6 +16,8 @@ from gui.widgets.term_tab_bar import MyTabWidget
 from gui.dialogs.custom_dialog import CustomDialog
 
 c = controller_instance
+
+logger = logging.getLogger(__name__)
 
 def build_main_layout(main_window):
 
