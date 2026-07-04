@@ -33,11 +33,18 @@ git clone https://github.com/PurrSh3ll/purrsh3ll.git
 cd purrsh3ll
 python3 -m venv .venv
 source .venv/bin/activate
-pip install PyQt6 PyQt6-WebEngine watchdog chromadb fastembed loguru rich pydantic requests PyYAML Pillow pyte markdown2 Pygments keyring docker pygame pyfiglet numpy jeepney SecretStorage cryptography
-# Install QTermWidget wheel from GitHub Releases
+# Pinned PyPI dependencies — the single source of truth (kept in sync with install.sh)
+pip install -r requirements.txt
+# QTermWidget is not on PyPI — install the custom wheel from GitHub Releases
 pip install https://github.com/PurrSh3ll/purrsh3ll/releases/download/v1.0.0/qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl
 python main.py
 ```
+
+`requirements.txt` covers everything the app imports. The Voice feature has a
+few extra packages (commented out at the bottom of the file); uncomment them, or
+just run `./install.sh` and select Voice, if you need it. `install.sh` also pulls
+the non-Python pieces (system apt packages incl. the QTermWidget C++ library,
+the `aichat` binary, Docker images and Ollama).
 
 ## Project structure
 
