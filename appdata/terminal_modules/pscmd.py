@@ -160,6 +160,11 @@ def main():
     if use_tools:
         cmd = _ai._run_llm_tool_call(provider, model, messages, _CMD_TOOL, url, api_key)
         if cmd:
+            # The tool-call path does not stream, so echo the command to stderr
+            # (visible via 2>/dev/tty) so the user sees it before the paste
+            # prompt — mirroring how the text path streams to the terminal.
+            sys.stderr.write(cmd + "\n")
+            sys.stderr.flush()
             print(cmd)
         else:
             # Fallback to text path if the tool call fails
