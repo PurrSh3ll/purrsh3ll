@@ -5,12 +5,11 @@ import re
 import uuid
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QKeySequence, QShortcut, QAction
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
     QPushButton, QScrollArea, QLabel, QDialog, QPlainTextEdit,
     QCheckBox, QApplication, QSizePolicy, QFrame, QListView,
-    QToolButton, QMenu,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,9 +21,10 @@ class _PlaceholderDialog(QDialog):
     """Non-modal dialog for filling snippet placeholder values.
     Allows interacting with terminal and other tabs while open."""
 
-    def __init__(self, parent, placeholders, on_accept, stylesheet=""):
+    def __init__(self, parent, placeholders, on_accept, stylesheet="",
+                 content_preview="", default_current=False):
         super().__init__(parent)
-        self.setWindowTitle("Fill in values")
+        self.setWindowTitle("Fill in values" if placeholders else "Run snippet")
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setMinimumWidth(360)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -35,6 +35,14 @@ class _PlaceholderDialog(QDialog):
         layout.setSpacing(6)
         layout.setContentsMargins(12, 12, 12, 12)
 
+        # Command preview — mainly useful when there are no placeholder fields,
+        # so the dialog isn't empty and the user sees what will run.
+        if content_preview and not placeholders:
+            preview = QLabel(content_preview.strip())
+            preview.setWordWrap(True)
+            preview.setObjectName("snippet_preview")
+            layout.addWidget(preview)
+
         for name in placeholders:
             layout.addWidget(QLabel(f"{name}:"))
             edit = QLineEdit()
@@ -42,6 +50,11 @@ class _PlaceholderDialog(QDialog):
             edit.returnPressed.connect(self._accept)
             self._fields[name] = edit
             layout.addWidget(edit)
+
+        # Target: default is a new terminal; check to run in the current one.
+        self._cb_current = QCheckBox("Run in current terminal")
+        self._cb_current.setChecked(default_current)
+        layout.addWidget(self._cb_current)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
@@ -64,7 +77,7 @@ class _PlaceholderDialog(QDialog):
 
     def _accept(self):
         values = {name: edit.text() for name, edit in self._fields.items()}
-        self._on_accept(values)
+        self._on_accept(values, self._cb_current.isChecked())
         self.accept()
 
 
@@ -157,31 +170,8 @@ class SnippetRow(QWidget):
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top_row.addWidget(title_label)
 
-        # Run split-button: click runs in a NEW terminal (default), the dropdown
-        # also offers sending to the current terminal.
-        run_btn = QToolButton()
-        run_btn.setText("⧉T")
-        run_btn.setToolTip("Run in new terminal  (▾ send to current)")
-        run_btn.setFixedWidth(40)
-        run_btn.setFixedHeight(22)
-        run_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        run_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        run_btn.clicked.connect(self._run_in_new_terminal)
-        run_menu = QMenu(run_btn)
-        try:
-            run_menu.setStyleSheet(getattr(self._panel.c, "menu_stylesheet", "") or "")
-        except Exception:
-            pass
-        act_new = QAction("Run in new terminal", run_btn)
-        act_new.triggered.connect(self._run_in_new_terminal)
-        act_cur = QAction("Send to current terminal", run_btn)
-        act_cur.triggered.connect(self._send_to_terminal)
-        run_menu.addAction(act_new)
-        run_menu.addAction(act_cur)
-        run_btn.setMenu(run_menu)
-        top_row.addWidget(run_btn)
-
         for icon, tooltip, cb in [
+            ("▶T", "Run snippet (choose terminal in the dialog)", self._run_snippet),
             ("📋", "Copy to clipboard", self._copy_to_clipboard),
             ("✏️", "Edit", self._edit),
             ("🗑", "Delete", self._delete),
@@ -234,32 +224,24 @@ class SnippetRow(QWidget):
         except Exception:
             logger.error("Failed to run snippet in a new terminal", exc_info=True)
 
-    def _resolve_then(self, sink):
-        """Resolve {PLACEHOLDER} values (via dialog if the snippet has any),
-        then call sink(resolved_text). Shared by both run targets."""
+    def _run_snippet(self):
+        """Always open the dialog: fill placeholder values (if any) and choose
+        the terminal target (new by default; check 'Run in current terminal')."""
         content = self._snippet.get("content", "")
         placeholders = list(dict.fromkeys(re.findall(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', content)))
-        if not placeholders:
-            sink(content)
-            return
 
-        def on_accept(values):
+        def on_accept(values, run_current):
             resolved = content
             for name, value in values.items():
                 resolved = resolved.replace(f"{{{name}}}", value)
-            sink(resolved)
+            (self._do_send if run_current else self._do_run_new)(resolved)
 
         dlg = _PlaceholderDialog(
             self, placeholders, on_accept,
-            stylesheet=self._panel.c.dialog_stylesheet
+            stylesheet=self._panel.c.dialog_stylesheet,
+            content_preview=content,
         )
         dlg.show()
-
-    def _send_to_terminal(self):
-        self._resolve_then(self._do_send)
-
-    def _run_in_new_terminal(self):
-        self._resolve_then(self._do_run_new)
 
     def _copy_to_clipboard(self):
         QApplication.clipboard().setText(self._snippet.get("content", ""))
