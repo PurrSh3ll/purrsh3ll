@@ -10,6 +10,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Snippets — run in a new or the current terminal**: running a snippet from the side panel now opens the run dialog with a "Run in current terminal" checkbox — unchecked (default) runs the snippet in a **new** terminal tab (named after the snippet, created via `_add_new_terminal_tab` which waits for the shell prompt before sending), checked sends it to the **current** terminal (the previous behavior). The dialog now always appears, even for snippets without `{PLACEHOLDER}` values, showing a command preview so the target choice is available for every snippet
 - **Image viewer**: new file loader for images — supports PNG, JPG, GIF, BMP, WEBP, TIFF, SVG, ICO and other Qt-native formats; animated GIF/WEBP via QMovie; zoom toolbar (Fit / 1:1 / +/− / Ctrl+Scroll); Info dialog with EXIF metadata (exiftool) and MD5/SHA256 integrity hashes; static GIF/WEBP use SmoothTransformation for quality zoom; SVG rendered via QSvgRenderer, TIFF via Pillow fallback
 - **Skills & agents**: added 5 MIT-licensed cybersecurity skill sets to the dropdown — `secskills` (16 skills + 6 subagents), `cybersecurity-claude-skills` (4 skills), `communitytools` (38 skills with reference docs), `claude-code-owasp` (OWASP Top 10:2025 + ASVS 5.0), `pentest-ai-agents` (36 specialised subagents)
 - **Agent Configuration / AI Settings**: "Skills set" label renamed to "Skills & agents" — reflects that a set can contain both Claude Code skills (`.claude/skills/`) and subagents (`.claude/agents/`)
