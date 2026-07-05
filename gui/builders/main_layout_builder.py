@@ -878,15 +878,6 @@ def build_main_layout(main_window):
         btn.clicked.connect(_on_clicked)
         c.register_widget("voice_button", btn)
 
-    def create_rag_status_label():
-        lbl = QLabel("", c.widgets["central_widget"])
-        lbl.setFixedWidth(180)
-        lbl.setFixedHeight(22)
-        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
-        lbl.hide()
-        c.register_widget("rag_index_status_label", lbl)
-
     def create_prompt_token_label():
         lbl = QLabel("PurrSh3ll", c.widgets["central_widget"])
         lbl.setFixedHeight(22)
@@ -1078,7 +1069,6 @@ def build_main_layout(main_window):
     create_snippet_button()
     create_active_profile_combo()
     create_voice_button()
-    create_rag_status_label()
     create_prompt_token_label()
     dropdown_menu_button()
     add_widgets_to_layout_and_setup()

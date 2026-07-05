@@ -183,6 +183,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             )
             self._psai_tok_hide = None
             self._psai_tok_watcher = None
+            self._rag_status_path = os.path.join(
+                self.base_path, "appdata", "logs", "rag_status"
+            )
+            self._rag_status_watcher = None
 
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
@@ -295,44 +299,22 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         self._rag_index_worker = worker
 
         def _show_rag_label(current, total, filename):
-            lbl = self.widgets.get("rag_index_status_label")
-            if lbl is None:
-                return
             short = filename[:18] + "…" if len(filename) > 20 else filename
-            lbl.setText(f"⟳ {current}/{total}  {short}")
-            if not lbl.isVisible():
-                lbl.show()
-                self.set_position_active_profile_combo()
+            self.flash_status(f"⟳ {current}/{total}  {short}")
 
         def _done(_result):
             self._rag_index_worker = None
-            lbl = self.widgets.get("rag_index_status_label")
-            if lbl is None:
-                return
-            from PyQt6.QtCore import QTimer
             if _result == "OK":
-                lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
-                lbl.setText("✔ RAG indexing complete")
+                self.flash_status("✔ RAG indexing complete", color="#55aa55")
             else:
-                lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
-                lbl.setText(f"✖ {_result[:40]}")
-            lbl.show()
+                self.flash_status(f"✖ {_result[:40]}", color="#cc5555")
 
-            def _reset():
-                lbl.hide()
-                lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
-
-            QTimer.singleShot(5000, _reset)
-
-        lbl = self.widgets.get("rag_index_status_label")
-        if lbl is not None:
-            lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
-            lbl.setText("⟳ Starting indexing…")
-            lbl.show()
-            self.set_position_active_profile_combo()
-
+        self.flash_status("⟳ Starting indexing…")
         QApplication.processEvents()
 
+        worker.model_loading.connect(
+            lambda: self.flash_status("⟳ Loading embedding model…")
+        )
         worker.progress.connect(_show_rag_label)
         worker.finished.connect(_done)
         worker.start()
@@ -356,11 +338,41 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         self._psai_tok_watcher.fileChanged.connect(self._on_psai_tok_changed)
         self._psai_tok_watcher.directoryChanged.connect(self._on_psai_logs_dir_changed)
 
+        # Separate watcher for RAG model-loading notices written by the psrag
+        # subprocess (text messages, not the numeric psai_tok format).
+        self._rag_status_watcher = QFileSystemWatcher()
+        self._rag_status_watcher.addPath(
+            os.path.join(self.base_path, "appdata", "logs")
+        )
+        if os.path.exists(self._rag_status_path):
+            self._rag_status_watcher.addPath(self._rag_status_path)
+        self._rag_status_watcher.fileChanged.connect(self._on_rag_status_changed)
+        self._rag_status_watcher.directoryChanged.connect(self._on_rag_status_dir_changed)
+
     def _on_psai_logs_dir_changed(self, _path):
         if (os.path.exists(self._psai_tok_path) and
                 self._psai_tok_path not in self._psai_tok_watcher.files()):
             self._psai_tok_watcher.addPath(self._psai_tok_path)
             self._on_psai_tok_changed(self._psai_tok_path)
+
+    def _on_rag_status_dir_changed(self, _path):
+        if (os.path.exists(self._rag_status_path) and
+                self._rag_status_path not in self._rag_status_watcher.files()):
+            self._rag_status_watcher.addPath(self._rag_status_path)
+            self._on_rag_status_changed(self._rag_status_path)
+
+    def _on_rag_status_changed(self, _path):
+        if (self._rag_status_path not in self._rag_status_watcher.files()
+                and os.path.exists(self._rag_status_path)):
+            self._rag_status_watcher.addPath(self._rag_status_path)
+        try:
+            with open(self._rag_status_path) as f:
+                content = f.read().strip()
+            msg = content.split(":", 1)[1]
+        except Exception:
+            return
+        if msg:
+            self.flash_status(msg)
 
     @staticmethod
     def _fallback_ctx_window(provider):
@@ -430,6 +442,28 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             return f"{n // 1000}k"
         return str(n)
 
+    def _normal_tok_stylesheet(self):
+        return (f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')};"
+                f" font-size: 11px; background: transparent;")
+
+    def flash_status(self, text, color=None):
+        """Show a transient message in the bottom-left status label for 10s.
+
+        Single gateway for every source (CTX estimate, RAG index progress,
+        model-loading notices…). Last message wins: any new call overrides the
+        previous text and restarts the 10s timer, after which the label falls
+        back to "PurrSh3ll". color=None uses the normal theme text color."""
+        lbl = self.widgets.get("prompt_token_label")
+        if lbl is None:
+            return
+        if color:
+            lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
+        else:
+            lbl.setStyleSheet(self._normal_tok_stylesheet())
+        lbl.setText(text)
+        self._psai_tok_hide.stop()
+        self._psai_tok_hide.start(10_000)
+
     def _on_psai_tok_changed(self, path):
         if not self._psai_tok_watcher.files():
             self._psai_tok_watcher.addPath(self._psai_tok_path)
@@ -439,39 +473,31 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             n = int(content.split(":")[1])
         except Exception:
             return
-        lbl = self.widgets.get("prompt_token_label")
-        if lbl is None:
+        if self.widgets.get("prompt_token_label") is None:
             return
         prompt_str = f"~{n:,}".replace(",", "\u202f")
         ctx = self._get_active_ctx_window()
-        _normal_stylesheet = f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')}; font-size: 11px; background: transparent;"
         if ctx:
             pct = round(n / ctx * 100, 1)
             if n > ctx:
                 pct_str = f"{pct:.0f}%"
-                lbl.setText(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
                 _err_color = self.actual_theme.get("background", {}).get("button_info_hover", "#ff5555")
-                lbl.setStyleSheet(f"color: {_err_color}; font-size: 11px; background: transparent;")
+                self.flash_status(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}", color=_err_color)
             else:
                 steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
                 full   = steps // 2
                 half   = steps % 2
                 bar    = "▓" * full + "▒" * half + "░" * (10 - full - half)
                 pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
-                lbl.setText(f"{bar} {pct_str}")
-                lbl.setStyleSheet(_normal_stylesheet)
+                self.flash_status(f"{bar} {pct_str}")
         else:
-            lbl.setText(f"{prompt_str} tok")
-            lbl.setStyleSheet(_normal_stylesheet)
-        self._psai_tok_hide.stop()
-        self._psai_tok_hide.start(10_000)
+            self.flash_status(f"{prompt_str} tok")
 
     def _hide_tok_label(self):
         lbl = self.widgets.get("prompt_token_label")
         if lbl is not None:
             lbl.setText("PurrSh3ll")
-            _normal_stylesheet = f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')}; font-size: 11px; background: transparent;"
-            lbl.setStyleSheet(_normal_stylesheet)
+            lbl.setStyleSheet(self._normal_tok_stylesheet())
 
     def load_themes(self):
         try:

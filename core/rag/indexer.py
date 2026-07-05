@@ -111,10 +111,12 @@ class Indexer:
             metadata={"hnsw:space": "cosine"},
         )
 
-    def index_all(self, progress_callback=None) -> None:
+    def index_all(self, progress_callback=None, loading_callback=None) -> None:
         """
         Full incremental index of kb_path.
         progress_callback(current, total, filename) called for each file processed.
+        loading_callback() called once, right before the embedding model is loaded
+        into memory (only when there is actually something to (re)index).
         """
         meta      = _load_meta(self._meta_path)
         excluded  = self.excluded_rel or load_exclusions(self._exclusions_path)
@@ -137,6 +139,8 @@ class Indexer:
         # Load embedding model once for the entire indexing run
         model = None
         if to_index:
+            if loading_callback:
+                loading_callback()
             model = emb.load_model(self.model_name, self._cache_dir)
 
         try:

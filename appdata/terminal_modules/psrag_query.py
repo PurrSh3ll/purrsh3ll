@@ -575,6 +575,20 @@ def _dbg(msg: str):
         sys.stderr.write(f"\033[90m[psrag:debug] {msg}\n{traceback.format_exc()}\033[0m")
         sys.stderr.flush()
 
+def _write_rag_status(msg: str):
+    """Notify the GUI of a transient status (e.g. a model being loaded into
+    memory) via a small file the main app watches. Format: '<ms>:<message>'.
+    Runs in this subprocess, so a Qt signal is not available; the file+watcher
+    IPC mirrors the psai_tok telemetry mechanism. Best-effort, never fatal."""
+    try:
+        import time as _time
+        _path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "logs", "rag_status")
+        with open(_path, "w") as _f:
+            _f.write(f"{int(_time.time() * 1000)}:{msg}")
+    except Exception:
+        _dbg("could not write rag_status file")
+
 
 # ── Index listing ─────────────────────────────────────────────────────────────
 
@@ -781,6 +795,7 @@ def main():
     rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
 
     _info("Embedding query…")
+    _write_rag_status("⟳ Loading embedding model…")
     vec = _embed(query, embed_model, cache_dir)
 
     _info("Searching knowledge base…")
@@ -793,6 +808,7 @@ def main():
 
     if rerank_enabled:
         _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
+        _write_rag_status("⟳ Loading re-ranker model…")
         chunks = _rerank(chunks, query, rerank_model, cache_dir)
         chunks = chunks[:args.top_n]
 

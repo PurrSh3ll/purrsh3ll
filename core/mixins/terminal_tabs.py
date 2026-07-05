@@ -1600,14 +1600,10 @@ class TerminalTabsMixin:
         if mem_list is not None:
             relay.done.connect(lambda ok, ml=mem_list: self._refresh_memory_list_widget(ml, base_path))
 
-        # Show status label immediately and force repaint before the thread (and
+        # Show status message immediately and force repaint before the thread (and
         # potential GIL freeze) starts, so the user sees feedback right away.
-        status_lbl = self.widgets.get("rag_index_status_label")
-        if status_lbl is not None:
-            status_lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;")
-            status_lbl.setText("⟳ Saving to memory…")
-            status_lbl.show()
-            QApplication.processEvents()
+        self.flash_status("⟳ Saving to memory…")
+        QApplication.processEvents()
 
         import threading
         from core.rag import indexer as _rag_idx
@@ -1627,21 +1623,10 @@ class TerminalTabsMixin:
                 relay.done.emit(ok)
 
         def _on_done(ok: bool):
-            lbl = self.widgets.get("rag_index_status_label")
-            if lbl is None:
-                return
             if ok:
-                lbl.setStyleSheet("color: #55aa55; font-size: 11px; background: transparent;")
-                lbl.setText("✔ Saved to memory")
+                self.flash_status("✔ Saved to memory", color="#55aa55")
             else:
-                lbl.setStyleSheet("color: #cc5555; font-size: 11px; background: transparent;")
-                lbl.setText("✖ Memory save failed")
-            lbl.show()
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(3000, lambda: (
-                lbl.hide(),
-                lbl.setStyleSheet("color: #888; font-size: 11px; background: transparent;"),
-            ))
+                self.flash_status("✖ Memory save failed", color="#cc5555")
 
         relay.done.connect(_on_done)
         threading.Thread(target=_do_index, daemon=True).start()
