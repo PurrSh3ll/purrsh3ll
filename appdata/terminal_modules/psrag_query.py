@@ -21,6 +21,27 @@ _ANSI_RE = re.compile(rb'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 _DEBUG_PROMPT = False  # set to True via --debug; prints full prompt to stderr
 
+# ── Thinking spinner (used when hide_thinking=True), mirrors psai ──────────────
+_SPINNER     = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_SPINNER_CLR = "\r" + " " * 44 + "\r"   # clear the spinner line
+
+_OLLAMA_HIDETHINK = None  # cached: whether `ollama run` supports --hidethinking
+
+
+def _ollama_has_hidethinking() -> bool:
+    """Cheap one-time probe: does the installed `ollama run` accept
+    --hidethinking? Older ollama versions do not, so we must not blindly add
+    the flag (it would abort the query with 'unknown flag')."""
+    global _OLLAMA_HIDETHINK
+    if _OLLAMA_HIDETHINK is None:
+        try:
+            out = subprocess.run(["ollama", "run", "--help"],
+                                 capture_output=True, text=True, timeout=5)
+            _OLLAMA_HIDETHINK = "--hidethinking" in (out.stdout + out.stderr)
+        except Exception:
+            _OLLAMA_HIDETHINK = False
+    return _OLLAMA_HIDETHINK
+
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -313,7 +334,7 @@ def _build_prompt(query: str, chunks: list) -> str:
 # ── Ollama runner ─────────────────────────────────────────────────────────────
 
 def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
-                host: str = ""):
+                host: str = "", hide_thinking: bool = False):
     """
     Run `ollama run <model>` with the prompt via stdin.
     Uses a PTY for stdout so ollama streams tokens instead of buffering.
@@ -321,16 +342,35 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
     and exits automatically after responding — no /bye needed, no >>> prompts.
     Falls back to non-streaming subprocess if PTY is unavailable.
     host is passed as OLLAMA_HOST env variable (e.g. http://192.168.1.10:11434).
+
+    hide_thinking suppresses reasoning output via ollama's --hidethinking flag
+    (when the installed ollama supports it) and shows an animated spinner while
+    the model reasons silently, mirroring the psai tools.
     """
     cmd = ["ollama", "run", "--nowordwrap"]
     if disable_thinking:
         cmd.append("--think=false")
+    show_spinner = hide_thinking and not disable_thinking and _ollama_has_hidethinking()
+    if show_spinner:
+        cmd.append("--hidethinking")
     cmd.append(model)
     input_bytes = prompt.encode("utf-8") + b"\n"
 
     env = os.environ.copy()
     if host:
         env["OLLAMA_HOST"] = host
+
+    _spin_idx   = 0
+    _got_output = [False]
+
+    def _emit(clean: bytes):
+        if clean:
+            if show_spinner and not _got_output[0]:
+                sys.stderr.write(_SPINNER_CLR)
+                sys.stderr.flush()
+            _got_output[0] = True
+            sys.stdout.buffer.write(clean)
+            sys.stdout.flush()
 
     try:
         master_fd, slave_fd = pty.openpty()
@@ -352,29 +392,35 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
                 r, _, _ = select.select([master_fd], [], [], 0.2)
                 if r:
                     data = os.read(master_fd, 4096)
-                    clean = _ANSI_RE.sub(b"", data)
-                    if clean:
-                        sys.stdout.buffer.write(clean)
-                        sys.stdout.flush()
+                    _emit(_ANSI_RE.sub(b"", data))
+                elif show_spinner and not _got_output[0]:
+                    # Model is reasoning silently (thinking hidden) — animate.
+                    sys.stderr.write(f"\r\033[90m[psrag] thinking… {_SPINNER[_spin_idx % len(_SPINNER)]}\033[0m")
+                    sys.stderr.flush()
+                    _spin_idx += 1
                 if proc.poll() is not None:
                     # drain any remaining buffered output
                     try:
                         while select.select([master_fd], [], [], 0.05)[0]:
                             data = os.read(master_fd, 4096)
-                            clean = _ANSI_RE.sub(b"", data)
-                            if clean:
-                                sys.stdout.buffer.write(clean)
-                                sys.stdout.flush()
+                            _emit(_ANSI_RE.sub(b"", data))
                     except OSError:
                         pass
                     break
             except KeyboardInterrupt:
+                if show_spinner and not _got_output[0]:
+                    sys.stderr.write(_SPINNER_CLR)
+                    sys.stderr.flush()
                 proc.terminate()
                 sys.stdout.write("\n")
                 sys.stdout.flush()
                 sys.exit(130)
             except OSError:
                 break
+
+        if show_spinner and not _got_output[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
 
         try:
             os.close(master_fd)
@@ -397,7 +443,7 @@ def _run_ollama(model: str, prompt: str, disable_thinking: bool = False,
 
 def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
                        disable_thinking: bool = False, provider: str = "openai",
-                       custom_params: dict = None):
+                       custom_params: dict = None, hide_thinking: bool = False):
     """
     Call an OpenAI-compatible /v1/chat/completions endpoint (openai, groq, etc.)
     and stream the response to stdout.
@@ -442,6 +488,54 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
         "User-Agent":    "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+    # Thinking handling mirrors psai: native `reasoning` delta field, with a
+    # fallback that extracts <thought>…</thought> inlined in the content stream.
+    _in_thinking    = [False]
+    _spin_idx       = [0]
+    _thought_buf    = [""]
+    _in_thought_tag = [False]
+    _OPEN_TAG  = "<thought>"
+    _CLOSE_TAG = "</thought>"
+
+    def _tag_prefix_len(s: str, tag: str) -> int:
+        max_check = min(len(s), len(tag) - 1)
+        for i in range(max_check, 0, -1):
+            if s.endswith(tag[:i]):
+                return i
+        return 0
+
+    def _split_thought(text: str):
+        """Return (thinking_text, normal_text); only buffers trailing chars that
+        are an actual prefix of a tag, so normal tokens flush with zero latency."""
+        buf = _thought_buf[0] + (text or "")
+        think_parts, normal_parts = [], []
+        while buf:
+            if _in_thought_tag[0]:
+                end = buf.find(_CLOSE_TAG)
+                if end >= 0:
+                    think_parts.append(buf[:end])
+                    _in_thought_tag[0] = False
+                    buf = buf[end + len(_CLOSE_TAG):]
+                else:
+                    hold = _tag_prefix_len(buf, _CLOSE_TAG)
+                    think_parts.append(buf[:len(buf) - hold])
+                    _thought_buf[0] = buf[len(buf) - hold:]
+                    return "".join(think_parts), "".join(normal_parts)
+            else:
+                start = buf.find(_OPEN_TAG)
+                if start >= 0:
+                    normal_parts.append(buf[:start])
+                    _in_thought_tag[0] = True
+                    buf = buf[start + len(_OPEN_TAG):]
+                else:
+                    hold = _tag_prefix_len(buf, _OPEN_TAG)
+                    normal_parts.append(buf[:len(buf) - hold])
+                    _thought_buf[0] = buf[len(buf) - hold:]
+                    return "".join(think_parts), "".join(normal_parts)
+        _thought_buf[0] = ""
+        return "".join(think_parts), "".join(normal_parts)
+
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -452,15 +546,57 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
                 if data_str == "[DONE]":
                     break
                 try:
-                    chunk = json.loads(data_str)
-                    delta = chunk["choices"][0]["delta"].get("content", "")
-                    if delta:
-                        sys.stdout.write(delta)
+                    chunk    = json.loads(data_str)
+                    if not chunk.get("choices"):
+                        continue
+                    delta    = chunk["choices"][0]["delta"]
+                    thinking = delta.get("reasoning", "") or ""
+                    content  = delta.get("content", "") or ""
+                    if not thinking and (content or _thought_buf[0] or _in_thought_tag[0]):
+                        thinking, content = _split_thought(content)
+                    if thinking and not hide_thinking:
+                        if not _in_thinking[0]:
+                            sys.stdout.write("\033[90m")
+                            sys.stdout.flush()
+                            _in_thinking[0] = True
+                        sys.stdout.write(thinking)
+                        sys.stdout.flush()
+                    elif thinking:
+                        _in_thinking[0] = True
+                        sys.stderr.write(f"\r\033[90m[psrag] thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                        sys.stderr.flush()
+                        _spin_idx[0] += 1
+                    if content:
+                        if _in_thinking[0]:
+                            if not hide_thinking:
+                                sys.stdout.write("\033[0m\n")
+                                sys.stdout.flush()
+                            else:
+                                sys.stderr.write(_SPINNER_CLR)
+                                sys.stderr.flush()
+                            _in_thinking[0] = False
+                        sys.stdout.write(content)
                         sys.stdout.flush()
                 except Exception:
                     _dbg("skipped unparseable stream chunk")
+        if _thought_buf[0]:
+            leftover = _thought_buf[0]
+            _thought_buf[0] = ""
+            if not (_in_thinking[0] and hide_thinking):
+                sys.stdout.write(leftover)
+                sys.stdout.flush()
+        if _in_thinking[0] and not hide_thinking:
+            sys.stdout.write("\033[0m\n")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         print()
     except KeyboardInterrupt:
+        if _in_thinking[0] and not hide_thinking:
+            sys.stdout.write("\033[0m")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(130)
@@ -475,7 +611,7 @@ def _run_openai_compat(model: str, prompt: str, base_url: str, api_key: str,
 # ── Anthropic runner ───────────────────────────────────────────────────────────
 
 def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
-                   disable_thinking: bool = False):
+                   disable_thinking: bool = False, hide_thinking: bool = False):
     """
     Call the Anthropic messages API and stream the response to stdout.
     base_url defaults to https://api.anthropic.com if empty.
@@ -500,6 +636,9 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
         "User-Agent":        "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+    _in_thinking = [False]
+    _spin_idx    = [0]
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             for raw_line in resp:
@@ -509,15 +648,53 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
                 data_str = line[5:].strip()
                 try:
                     event = json.loads(data_str)
-                    if event.get("type") == "content_block_delta":
-                        delta = event.get("delta", {}).get("text", "")
-                        if delta:
-                            sys.stdout.write(delta)
+                    etype = event.get("type", "")
+                    if etype == "content_block_start":
+                        block_type = event.get("content_block", {}).get("type", "")
+                        _in_thinking[0] = (block_type == "thinking")
+                        if _in_thinking[0] and not hide_thinking:
+                            sys.stdout.write("\033[90m")
                             sys.stdout.flush()
+                    elif etype == "content_block_stop":
+                        if _in_thinking[0]:
+                            if not hide_thinking:
+                                sys.stdout.write("\033[0m\n")
+                                sys.stdout.flush()
+                            else:
+                                sys.stderr.write(_SPINNER_CLR)
+                                sys.stderr.flush()
+                            _in_thinking[0] = False
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        dtype = delta.get("type", "")
+                        if dtype == "thinking_delta":
+                            thinking = delta.get("thinking", "")
+                            if thinking and not hide_thinking:
+                                sys.stdout.write(thinking)
+                                sys.stdout.flush()
+                            elif thinking:
+                                sys.stderr.write(f"\r\033[90m[psrag] thinking… {_SPINNER[_spin_idx[0] % len(_SPINNER)]}\033[0m")
+                                sys.stderr.flush()
+                                _spin_idx[0] += 1
+                        elif dtype == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                sys.stdout.write(text)
+                                sys.stdout.flush()
                 except Exception:
                     _dbg("skipped unparseable stream event")
+        if _in_thinking[0] and not hide_thinking:
+            sys.stdout.write("\033[0m\n")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         print()
     except KeyboardInterrupt:
+        if _in_thinking[0] and not hide_thinking:
+            sys.stdout.write("\033[0m")
+        elif _in_thinking[0]:
+            sys.stderr.write(_SPINNER_CLR)
+            sys.stderr.flush()
         sys.stdout.write("\n")
         sys.stdout.flush()
         sys.exit(130)
@@ -531,7 +708,8 @@ def _run_anthropic(model: str, prompt: str, base_url: str, api_key: str,
 
 def _run_llm(provider: str, model: str, prompt: str,
              url: str, api_key: str,
-             disable_thinking: bool = False, custom_params: dict = None):
+             disable_thinking: bool = False, custom_params: dict = None,
+             hide_thinking: bool = False):
     """Dispatch to the correct runner based on provider."""
     if _DEBUG_PROMPT:
         sys.stderr.write("\033[33m[debug] ── prompt ───────────────────────────────────────\033[0m\n")
@@ -547,16 +725,17 @@ def _run_llm(provider: str, model: str, prompt: str,
     except Exception:
         _dbg("could not write psai_tok telemetry file")
     if provider == "ollama":
-        _run_ollama(model, prompt, disable_thinking, url)
+        _run_ollama(model, prompt, disable_thinking, url, hide_thinking)
     elif provider == "anthropic":
-        _run_anthropic(model, prompt, url, api_key, disable_thinking)
+        _run_anthropic(model, prompt, url, api_key, disable_thinking, hide_thinking)
     else:
         # For Groq thinking models, /no_think token disables chain-of-thought
         if disable_thinking and provider == "groq" and not custom_params:
             _GROQ_THINKING = ("qwq", "deepseek", "-r1", "thinking", "qwen3")
             if any(k in model.lower() for k in _GROQ_THINKING):
                 prompt = "/no_think\n" + prompt
-        _run_openai_compat(model, prompt, url, api_key, disable_thinking, provider, custom_params)
+        _run_openai_compat(model, prompt, url, api_key, disable_thinking, provider,
+                           custom_params, hide_thinking)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -766,6 +945,7 @@ def main():
         except Exception:
             _err(f"Invalid JSON in custom_params: {_custom_str[:60]}")
     disable_thinking  = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking     = bool(profile.get("hide_thinking", False))
     fast_answers      = bool(profile.get("fast_answers", False)) and not custom_params
 
     # Load API key for non-ollama providers: keyring first, file fallback
@@ -827,7 +1007,8 @@ def main():
     if fast_answers:
         prompt += _FAST_SUFFIX
     _info(f"Querying {model} via {provider}…\n")
-    _run_llm(provider, model, prompt, api_url, api_key, disable_thinking, custom_params)
+    _run_llm(provider, model, prompt, api_url, api_key, disable_thinking, custom_params,
+             hide_thinking)
 
 
 if __name__ == "__main__":
