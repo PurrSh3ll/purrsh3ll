@@ -769,6 +769,60 @@ def _write_rag_status(msg: str):
         _dbg("could not write rag_status file")
 
 
+def _model_is_cached(model_name: str, cache_dir: str, kind: str = "embed"):
+    """True if the model is already in cache_dir, False if it will be downloaded
+    on load, None if the mapping is unknown (caller then shows no download notice).
+    kind is 'embed' or 'rerank'."""
+    if not cache_dir:
+        return None
+    if model_name.startswith("local:"):
+        return True
+    if model_name.startswith("hf:"):
+        repo = model_name[3:].split(":", 1)[0]
+    else:
+        repo = _lookup_model_repo(model_name, kind)
+        if not repo:
+            return None
+    folder = os.path.join(cache_dir, "models--" + repo.replace("/", "--"))
+    if not os.path.isdir(folder):
+        return False
+    for _root, _dirs, files in os.walk(folder):
+        if any(f.endswith(".onnx") for f in files):
+            return True
+    return False
+
+
+def _lookup_model_repo(model_name: str, kind: str):
+    """Resolve a built-in fastembed model name to its HuggingFace source repo."""
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if kind == "rerank":
+                from fastembed.rerank.cross_encoder import TextCrossEncoder
+                models = TextCrossEncoder.list_supported_models()
+            else:
+                from fastembed import TextEmbedding
+                models = TextEmbedding.list_supported_models()
+    except Exception:
+        return None
+    for m in models:
+        name = m.get("model") if isinstance(m, dict) else getattr(m, "model", None)
+        if name == model_name:
+            src = m.get("sources") if isinstance(m, dict) else getattr(m, "sources", None)
+            if isinstance(src, dict):
+                return src.get("hf")
+            return getattr(src, "hf", None)
+    return None
+
+
+def _model_load_status(model_name: str, cache_dir: str, label: str, kind: str = "embed") -> str:
+    """Build the rag_status message: 'Downloading …' on first use, else 'Loading …'."""
+    if _model_is_cached(model_name, cache_dir, kind) is False:
+        return f"⟳ Downloading {label}… (first use)"
+    return f"⟳ Loading {label}…"
+
+
 # ── Index listing ─────────────────────────────────────────────────────────────
 
 def _list_index(base_dir: str, preview: int = 100) -> None:
@@ -975,7 +1029,7 @@ def main():
     rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
 
     _info("Embedding query…")
-    _write_rag_status("⟳ Loading embedding model…")
+    _write_rag_status(_model_load_status(embed_model, cache_dir, "embedding model", "embed"))
     vec = _embed(query, embed_model, cache_dir)
 
     _info("Searching knowledge base…")
@@ -988,7 +1042,7 @@ def main():
 
     if rerank_enabled:
         _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
-        _write_rag_status("⟳ Loading re-ranker model…")
+        _write_rag_status(_model_load_status(rerank_model, cache_dir, "re-ranker model", "rerank"))
         chunks = _rerank(chunks, query, rerank_model, cache_dir)
         chunks = chunks[:args.top_n]
 

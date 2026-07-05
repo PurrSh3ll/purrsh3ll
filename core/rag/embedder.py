@@ -4,6 +4,55 @@ import os
 DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
+def is_model_cached(model_name: str, cache_dir: str):
+    """Return whether an embedding model is already present in cache_dir.
+
+    True  — cached (loading will not download)
+    False — absent (loading will download it from HuggingFace on first use)
+    None  — unknown (mapping could not be resolved; caller should show no notice)
+
+    Used to decide whether to surface a "Downloading model…" notice before a
+    (potentially slow, hundreds-of-MB) first-time model load.
+    """
+    if not cache_dir:
+        return None
+    if model_name.startswith("local:"):
+        return True  # local ONNX never downloads
+    if model_name.startswith("hf:"):
+        repo = model_name[3:].split(":", 1)[0]
+    else:
+        repo = _lookup_builtin_repo(model_name)
+        if not repo:
+            return None
+    folder = os.path.join(cache_dir, "models--" + repo.replace("/", "--"))
+    if not os.path.isdir(folder):
+        return False
+    for _root, _dirs, files in os.walk(folder):
+        if any(f.endswith(".onnx") for f in files):
+            return True
+    return False
+
+
+def _lookup_builtin_repo(model_name: str):
+    """Resolve a built-in fastembed model name to its HuggingFace source repo."""
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            from fastembed import TextEmbedding
+            models = TextEmbedding.list_supported_models()
+    except Exception:
+        return None
+    for m in models:
+        name = m.get("model") if isinstance(m, dict) else getattr(m, "model", None)
+        if name == model_name:
+            src = m.get("sources") if isinstance(m, dict) else getattr(m, "sources", None)
+            if isinstance(src, dict):
+                return src.get("hf")
+            return getattr(src, "hf", None)
+    return None
+
+
 def _probe_dim(model_dir: str, onnx_rel: str) -> int:
     """Read embedding output dimension from an ONNX file without fully loading the model."""
     try:

@@ -1974,7 +1974,10 @@ def build_menu(main_window):
             QApplication.processEvents()
 
             worker.model_loading.connect(
-                lambda: c.flash_status("⟳ Loading embedding model…")
+                lambda downloading: c.flash_status(
+                    "⟳ Downloading embedding model… (first use)" if downloading
+                    else "⟳ Loading embedding model…"
+                )
             )
             worker.progress.connect(_on_progress)
             worker.finished.connect(_on_finished)

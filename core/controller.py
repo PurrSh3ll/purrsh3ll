@@ -318,7 +318,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         QApplication.processEvents()
 
         worker.model_loading.connect(
-            lambda: self.flash_status("⟳ Loading embedding model…")
+            lambda downloading: self.flash_status(
+                "⟳ Downloading embedding model… (first use)" if downloading
+                else "⟳ Loading embedding model…"
+            )
         )
         worker.progress.connect(_show_rag_label)
         worker.finished.connect(_done)

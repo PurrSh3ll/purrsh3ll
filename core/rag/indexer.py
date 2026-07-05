@@ -115,8 +115,10 @@ class Indexer:
         """
         Full incremental index of kb_path.
         progress_callback(current, total, filename) called for each file processed.
-        loading_callback() called once, right before the embedding model is loaded
-        into memory (only when there is actually something to (re)index).
+        loading_callback(downloading: bool) called once, right before the embedding
+        model is loaded into memory (only when there is actually something to
+        (re)index); downloading=True when the model is not cached and will be
+        fetched from HuggingFace on this run.
         """
         meta      = _load_meta(self._meta_path)
         excluded  = self.excluded_rel or load_exclusions(self._exclusions_path)
@@ -140,7 +142,8 @@ class Indexer:
         model = None
         if to_index:
             if loading_callback:
-                loading_callback()
+                downloading = emb.is_model_cached(self.model_name, self._cache_dir) is False
+                loading_callback(downloading)
             model = emb.load_model(self.model_name, self._cache_dir)
 
         try:
