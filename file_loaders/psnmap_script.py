@@ -741,6 +741,25 @@ class ScriptLauncher(QWidget):
 
         return docker_status
 
+    def _create_webmap_container(self, expected_port, pw):
+        """Create and start the 'webmap' container mapped to the given host port.
+        Returns True on success, or False (after a critical dialog) on failure."""
+        try:
+            _run_sudo([
+                "docker", "run", "-d",
+                "--name", "webmap",
+                "-h", "webmap",
+                "-p", f"{expected_port}:8000",
+                "-v", f"{self.webmap_dir}:/opt/xml",
+                "reborntc/webmap",
+            ], pw, check=True)
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error("Failed to create/start container 'webmap': %s", e.stderr)
+            QMessageBox.critical(self, "Container Creation Failed",
+                                 f"Failed to create/start container 'webmap'.\n{e.stderr}")
+            return False
+
     def _handle_docker_status(self, docker_status):
         """
         Obsługa stanu kontenera i portu.
@@ -754,36 +773,32 @@ class ScriptLauncher(QWidget):
         pw = pw_buf.decode('utf-8') if pw_buf else None
 
         if not docker_status["container"]:
-
-            try:
-                _run_sudo([
-                    "docker", "run", "-d",
-                    "--name", "webmap",
-                    "-h", "webmap",
-                    "-p", f"{expected_port}:8000",
-                    "-v", f"{self.webmap_dir}:/opt/xml",
-                    "reborntc/webmap",
-                ], pw, check=True)
-            except subprocess.CalledProcessError as e:
-                logger.error("Failed to create/start container 'webmap': %s", e.stderr)
-                QMessageBox.critical(self, "Container Creation Failed",
-                                     f"Failed to create/start container 'webmap'.\n{e.stderr}")
-                return False
-
-            return True
+            return self._create_webmap_container(expected_port, pw)
 
         actual_port = str(docker_status.get("port", "None"))
 
         if actual_port != expected_port:
-            msg = (
-                f"⚠️ Container 'webmap' port mismatch.\n"
-                f"Detected port: {actual_port}\n"
-                f"Expected port: {expected_port}\n\n"
-                "The port does not match the application configuration.\n"
-                "You should remove this container before continuing."
+            resp = QMessageBox.question(
+                self,
+                "Port Changed",
+                f"⚠️ Container 'webmap' is mapped to port {actual_port}, "
+                f"but the configured port is {expected_port}.\n\n"
+                "Docker cannot change a container's port mapping after it is "
+                "created.\n"
+                f"Remove the old container and recreate it on port {expected_port}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
-            QMessageBox.critical(self, "Port Mismatch", msg)
-            return False
+            if resp != QMessageBox.StandardButton.Yes:
+                return False
+            try:
+                _run_sudo(["docker", "rm", "-f", "webmap"], pw, check=True)
+            except subprocess.CalledProcessError as e:
+                logger.error("Failed to remove container 'webmap': %s", e.stderr)
+                QMessageBox.critical(self, "Remove Failed",
+                                     f"Failed to remove container 'webmap'.\n{e.stderr}")
+                return False
+            return self._create_webmap_container(expected_port, pw)
 
         if not docker_status["running"]:
             try:
@@ -808,7 +823,8 @@ class ScriptLauncher(QWidget):
         js_code = f'localStorage.setItem("sessionToken", "{token}");'
         self.web_preview.page().runJavaScript(js_code)
 
-        self.web_preview.setUrl(QUrl("http://127.0.0.1:8000/"))
+        port = str(self.parsed_data.get("port", 8000))
+        self.web_preview.setUrl(QUrl(f"http://127.0.0.1:{port}/"))
         self.visualization_layout.addWidget(self.web_preview)
 
     def _clear_layout(self):
