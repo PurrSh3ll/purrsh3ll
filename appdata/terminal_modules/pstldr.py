@@ -135,6 +135,7 @@ def main():
     model            = profile.get("model", "")
     custom_params    = _ai._parse_custom_params(profile)
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
+    hide_thinking    = bool(profile.get("hide_thinking", False))
     temperature      = _ai._profile_temperature(profile)
 
     # ── Resolve input ──────────────────────────────────────────────────────────
@@ -196,7 +197,7 @@ def main():
     _ai._info(f"Summarizing {source_label}...\n")
     messages = [{"role": "user", "content": prompt}]
     _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params,
-                 temperature=temperature)
+                 hide_thinking=hide_thinking, temperature=temperature)
 
 
 if __name__ == "__main__":
