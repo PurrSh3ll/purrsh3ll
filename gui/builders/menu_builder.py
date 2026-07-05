@@ -1966,9 +1966,9 @@ def build_menu(main_window):
                     rag_status_label.setStyleSheet("color: red; font-size: 11px;")
                 c._rag_index_worker = None
                 if result == "OK":
-                    c.flash_status("✔ RAG indexing complete", color="#55aa55")
+                    c.flash_status("✔ RAG indexing complete")
                 else:
-                    c.flash_status(f"✖ {result[:40]}", color="#cc5555")
+                    c.flash_status(f"✖ {result[:40]}")
 
             c.flash_status("⟳ Starting indexing…")
             QApplication.processEvents()

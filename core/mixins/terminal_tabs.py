@@ -1624,9 +1624,9 @@ class TerminalTabsMixin:
 
         def _on_done(ok: bool):
             if ok:
-                self.flash_status("✔ Saved to memory", color="#55aa55")
+                self.flash_status("✔ Saved to memory")
             else:
-                self.flash_status("✖ Memory save failed", color="#cc5555")
+                self.flash_status("✖ Memory save failed")
 
         relay.done.connect(_on_done)
         threading.Thread(target=_do_index, daemon=True).start()

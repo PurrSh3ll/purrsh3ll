@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QGroupBox, QHBoxLayout, QVBoxLayout, QWidget,
     QLabel, QPushButton, QDialog, QToolButton, QMenu, QSizePolicy,
     QTextEdit, QDialogButtonBox, QFileDialog, QComboBox, QMessageBox,
+    QListWidget,
 )
 from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtCore import QSize, Qt, QTimer
@@ -12,6 +13,7 @@ import logging
 from core.controller import controller_instance
 from gui.widgets.custom_tab_widget import CustomTabWidget
 from gui.widgets.custom_line_edit import ExpandingLineEdit
+from gui.widgets.clickable_label import ClickableLabel
 from gui.widgets.term_tab_bar import MyTabWidget
 from gui.dialogs.custom_dialog import CustomDialog
 
@@ -879,11 +881,41 @@ def build_main_layout(main_window):
         c.register_widget("voice_button", btn)
 
     def create_prompt_token_label():
-        lbl = QLabel("PurrSh3ll", c.widgets["central_widget"])
+        lbl = ClickableLabel("PurrSh3ll", c.widgets["central_widget"])
         lbl.setFixedHeight(22)
         lbl.setFixedWidth(240)
         lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lbl.setToolTip("Click to see recent AI activity")
+        lbl.clicked.connect(c.toggle_status_log_popup)
         c.register_widget("prompt_token_label", lbl)
+
+    def create_status_log_popup():
+        central_widget = c.widgets["central_widget"]
+        popup = QWidget(central_widget)
+        popup.setObjectName("status_log_popup")
+        popup.setFixedWidth(320)
+        # Neutral fallback until the theme stylesheet is applied on first paint.
+        popup.setStyleSheet(
+            "QWidget#status_log_popup { background: #2B2D30; "
+            "border: 1px solid #555; border-radius: 6px; }"
+        )
+        popup_layout = QVBoxLayout(popup)
+        popup_layout.setContentsMargins(8, 6, 8, 6)
+        popup_layout.setSpacing(4)
+
+        header = QLabel("AI activity", popup)
+        header.setObjectName("status_log_header")
+        popup_layout.addWidget(header)
+
+        lst = QListWidget(popup)
+        lst.setFixedHeight(260)
+        lst.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        popup_layout.addWidget(lst)
+
+        popup.hide()
+        popup.adjustSize()
+        c.register_widget("status_log_popup", popup)
+        c.register_widget("status_log_list", lst)
 
     def create_active_profile_combo():
         central_widget = c.widgets["central_widget"]
@@ -1070,5 +1102,6 @@ def build_main_layout(main_window):
     create_active_profile_combo()
     create_voice_button()
     create_prompt_token_label()
+    create_status_log_popup()
     dropdown_menu_button()
     add_widgets_to_layout_and_setup()

@@ -20,10 +20,12 @@ from core.file_types import FILES_CATEGORY
 import os
 import sys
 import json
+import time
 import pkgutil
 import hashlib
 import subprocess
 import threading
+import collections
 from pathlib import Path
 
 class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalManagerMixin):
@@ -187,6 +189,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 self.base_path, "appdata", "logs", "rag_status"
             )
             self._rag_status_watcher = None
+            # In-memory activity log (last 50 status messages); cleared on exit.
+            self._status_log = collections.deque(maxlen=50)
+            self._click_outside_filter = None
 
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
@@ -305,9 +310,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         def _done(_result):
             self._rag_index_worker = None
             if _result == "OK":
-                self.flash_status("✔ RAG indexing complete", color="#55aa55")
+                self.flash_status("✔ RAG indexing complete")
             else:
-                self.flash_status(f"✖ {_result[:40]}", color="#cc5555")
+                self.flash_status(f"✖ {_result[:40]}")
 
         self.flash_status("⟳ Starting indexing…")
         QApplication.processEvents()
@@ -446,23 +451,78 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         return (f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')};"
                 f" font-size: 11px; background: transparent;")
 
-    def flash_status(self, text, color=None):
+    def flash_status(self, text):
         """Show a transient message in the bottom-left status label for 10s.
 
         Single gateway for every source (CTX estimate, RAG index progress,
         model-loading notices…). Last message wins: any new call overrides the
         previous text and restarts the 10s timer, after which the label falls
-        back to "PurrSh3ll". color=None uses the normal theme text color."""
+        back to "PurrSh3ll". The text color is always the uniform theme text
+        color — no per-message coloring."""
         lbl = self.widgets.get("prompt_token_label")
         if lbl is None:
             return
-        if color:
-            lbl.setStyleSheet(f"color: {color}; font-size: 11px; background: transparent;")
-        else:
-            lbl.setStyleSheet(self._normal_tok_stylesheet())
+        lbl.setStyleSheet(self._normal_tok_stylesheet())
         lbl.setText(text)
         self._psai_tok_hide.stop()
         self._psai_tok_hide.start(10_000)
+        # Record into the in-memory activity log and live-refresh the popup if open.
+        self._status_log.append((time.strftime("%H:%M:%S"), text))
+        popup = self.widgets.get("status_log_popup")
+        if popup is not None and popup.isVisible():
+            self._populate_status_log()
+
+    def _populate_status_log(self):
+        lst = self.widgets.get("status_log_list")
+        if lst is None:
+            return
+        lst.clear()
+        if not self._status_log:
+            # Transient placeholder only — never stored in the buffer, so it
+            # vanishes as soon as the first real message arrives.
+            lst.addItem("No activity yet")
+            return
+        for ts, text in reversed(self._status_log):
+            lst.addItem(f"{ts}  {text}")
+
+    def toggle_status_log_popup(self):
+        popup = self.widgets.get("status_log_popup")
+        if popup is None:
+            return
+        if popup.isVisible():
+            self._hide_status_log_popup()
+            return
+        _ss = getattr(self.__class__, "status_log_popup_stylesheet", "")
+        if _ss:
+            popup.setStyleSheet(_ss)
+        self._populate_status_log()
+        popup.adjustSize()
+        self._position_status_log_popup()
+        popup.show()
+        popup.raise_()
+        # Close the popup as soon as the user clicks anywhere outside it.
+        if self._click_outside_filter is None:
+            from gui.widgets.click_outside_filter import ClickOutsideFilter
+            self._click_outside_filter = ClickOutsideFilter(
+                [popup, self.widgets.get("prompt_token_label")],
+                self._hide_status_log_popup,
+            )
+        QApplication.instance().installEventFilter(self._click_outside_filter)
+
+    def _hide_status_log_popup(self):
+        popup = self.widgets.get("status_log_popup")
+        if popup is not None:
+            popup.hide()
+        if self._click_outside_filter is not None:
+            QApplication.instance().removeEventFilter(self._click_outside_filter)
+
+    def _position_status_log_popup(self):
+        popup = self.widgets.get("status_log_popup")
+        lbl = self.widgets.get("prompt_token_label")
+        if popup is None or lbl is None:
+            return
+        # Anchor just above the bottom-left status label.
+        popup.move(8, lbl.y() - popup.height() - 4)
 
     def _on_psai_tok_changed(self, path):
         if not self._psai_tok_watcher.files():
@@ -481,8 +541,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             pct = round(n / ctx * 100, 1)
             if n > ctx:
                 pct_str = f"{pct:.0f}%"
-                _err_color = self.actual_theme.get("background", {}).get("button_info_hover", "#ff5555")
-                self.flash_status(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}", color=_err_color)
+                self.flash_status(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
             else:
                 steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
                 full   = steps // 2

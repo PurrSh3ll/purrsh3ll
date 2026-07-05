@@ -140,6 +140,10 @@ class PanelManagerMixin:
             py = main_window.height() - new_y - voice_popup.height() - 6
             voice_popup.move(px, py)
 
+        status_popup = self.widgets.get("status_log_popup")
+        if status_popup is not None and status_popup.isVisible():
+            self._position_status_log_popup()
+
     def _toggle_panel(self, panel_key, button_key, visible_attr, icon_closed, button_y_fn, anim_prefix):
         button = self.widgets[button_key]
         panel = self.widgets[panel_key]

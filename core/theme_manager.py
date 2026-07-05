@@ -418,6 +418,41 @@ def change_theme(controller):
             }}
             """
         )
+        c.__class__.status_log_popup_stylesheet = (
+            f"""
+            QWidget#status_log_popup {{
+                background-color: {bg.get("main_window", "#2B2D30")};
+                border: 1px solid {bd.get("default", "#555")};
+                border-radius: 6px;
+            }}
+            QLabel#status_log_header {{
+                color: {fg.get("text", "#ffffff")};
+                background: transparent;
+                border: none;
+                font-size: 10px;
+            }}
+            QWidget#status_log_popup QListWidget {{
+                background-color: transparent;
+                color: {fg.get("text", "#ffffff")};
+                border: none;
+                outline: none;
+                font-size: 11px;
+            }}
+            QWidget#status_log_popup QListWidget::item {{ padding: 1px 2px; }}
+            QWidget#status_log_popup QListWidget::item:hover {{
+                background-color: {bg.get("buttons_hover", "#6C6C73")};
+                color: {fg.get("text_hover", "#ffffff")};
+            }}
+            QWidget#status_log_popup QListWidget::item:selected {{
+                background-color: {bg.get("buttons_pressed", "#2C5F8F")};
+                color: {fg.get("text_pressed", "#ffffff")};
+            }}
+            """ + s["qss_QScrollArea"]
+        )
+        _status_popup = c.widgets.get("status_log_popup")
+        if _status_popup is not None:
+            _status_popup.setStyleSheet(c.__class__.status_log_popup_stylesheet)
+
         c.__class__.qss_QPainter = s["qss_QPainter"]
         c.__class__.terminals_stylesheet = terminal_color["colorscheme"]
         c.__class__.terminal_qss_scroll = s["terminal_qss_scroll"]
