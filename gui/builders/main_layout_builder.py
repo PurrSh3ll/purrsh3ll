@@ -990,14 +990,44 @@ def build_main_layout(main_window):
             # exactly: true when checked, false when unchecked.
             return "true" if p.get("hide_thinking") else "false"
 
+        def _fmt_function_calling(p):
+            # Mirrors psai._tools_enabled: explicit tools_user_override wins,
+            # otherwise the model default from model_ctx_registry.json (provider
+            # tools_default minus its no_tools list), shown with "(default)".
+            override = p.get("tools_user_override")
+            if override is not None:
+                return "true" if override else "false"
+            provider = (p.get("provider") or "").lower()
+            model = p.get("model", "") or ""
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            if ":" in model:
+                model = model.split(":")[0]
+            try:
+                reg_path = os.path.join(getattr(c, "base_path", ""),
+                                        "appdata", "model_ctx_registry.json")
+                with open(reg_path, encoding="utf-8") as f:
+                    reg = json.load(f)
+            except Exception:
+                reg = {}
+            section = reg.get(provider, {})
+            tools_default = section.get("tools_default")
+            if tools_default is None:
+                return "false (default)"
+            no_tools_lower = [m.lower() for m in section.get("no_tools", [])]
+            if model.lower() in no_tools_lower:
+                return "false (default)"
+            return f"{'true' if tools_default else 'false'} (default)"
+
         def _profile_fields(p):
             provider = p.get("provider", "—")
             model    = p.get("model", "—")
             return (
-                f"{'Provider:':<15}{provider}\n"
-                f"{'Model:':<15}{model}\n"
-                f"{'Context:':<15}{_fmt_ctx_for(p)}\n"
-                f"{'Hide thinking:':<15}{_fmt_thinking(p)}"
+                f"{'Provider:':<17}{provider}\n"
+                f"{'Model:':<17}{model}\n"
+                f"{'Context:':<17}{_fmt_ctx_for(p)}\n"
+                f"{'Hide thinking:':<17}{_fmt_thinking(p)}\n"
+                f"{'Function calling:':<17}{_fmt_function_calling(p)}"
             )
 
         def _update_tooltip():
