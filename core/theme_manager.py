@@ -212,7 +212,8 @@ def change_theme(controller):
         if snippet_widget:
             snippet_widget.setStyleSheet(
                 s["qss_QWidget"] + s["qss_QLineEdit"] + s["qss_QPushButton"] +
-                s["qss_QComboBox"] + s["qss_QScrollArea"] + s["qss_QLabel"] +
+                s["qss_QToolButton"] + s["qss_QComboBox"] + s["qss_QScrollArea"] +
+                s["qss_QLabel"] +
                 f"""
                 QLabel#snippet_preview {{ color: {fg.get("painter_text", "#AAAAAA")}; font-size: 10px; padding-left: 14px; }}
                 QFrame#snippet_sep {{ color: {bd.get("default", "#555")}; }}

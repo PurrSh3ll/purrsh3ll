@@ -5,11 +5,12 @@ import re
 import uuid
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QKeySequence, QShortcut, QAction
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
     QPushButton, QScrollArea, QLabel, QDialog, QPlainTextEdit,
     QCheckBox, QApplication, QSizePolicy, QFrame, QListView,
+    QToolButton, QMenu,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,8 +157,31 @@ class SnippetRow(QWidget):
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         top_row.addWidget(title_label)
 
+        # Run split-button: click runs in a NEW terminal (default), the dropdown
+        # also offers sending to the current terminal.
+        run_btn = QToolButton()
+        run_btn.setText("⧉T")
+        run_btn.setToolTip("Run in new terminal  (▾ send to current)")
+        run_btn.setFixedWidth(40)
+        run_btn.setFixedHeight(22)
+        run_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        run_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        run_btn.clicked.connect(self._run_in_new_terminal)
+        run_menu = QMenu(run_btn)
+        try:
+            run_menu.setStyleSheet(getattr(self._panel.c, "menu_stylesheet", "") or "")
+        except Exception:
+            pass
+        act_new = QAction("Run in new terminal", run_btn)
+        act_new.triggered.connect(self._run_in_new_terminal)
+        act_cur = QAction("Send to current terminal", run_btn)
+        act_cur.triggered.connect(self._send_to_terminal)
+        run_menu.addAction(act_new)
+        run_menu.addAction(act_cur)
+        run_btn.setMenu(run_menu)
+        top_row.addWidget(run_btn)
+
         for icon, tooltip, cb in [
-            ("→T", "Send to terminal", self._send_to_terminal),
             ("📋", "Copy to clipboard", self._copy_to_clipboard),
             ("✏️", "Edit", self._edit),
             ("🗑", "Delete", self._delete),
@@ -202,24 +226,40 @@ class SnippetRow(QWidget):
         except Exception:
             logger.error("Failed to send snippet to terminal", exc_info=True)
 
-    def _send_to_terminal(self):
+    def _do_run_new(self, content):
+        c = self._panel.c
+        try:
+            title = (self._snippet.get("title") or "Snippet").strip()[:20]
+            c._add_new_terminal_tab(command=content + "\n", name=title)
+        except Exception:
+            logger.error("Failed to run snippet in a new terminal", exc_info=True)
+
+    def _resolve_then(self, sink):
+        """Resolve {PLACEHOLDER} values (via dialog if the snippet has any),
+        then call sink(resolved_text). Shared by both run targets."""
         content = self._snippet.get("content", "")
         placeholders = list(dict.fromkeys(re.findall(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', content)))
         if not placeholders:
-            self._do_send(content)
+            sink(content)
             return
 
         def on_accept(values):
             resolved = content
             for name, value in values.items():
                 resolved = resolved.replace(f"{{{name}}}", value)
-            self._do_send(resolved)
+            sink(resolved)
 
         dlg = _PlaceholderDialog(
             self, placeholders, on_accept,
             stylesheet=self._panel.c.dialog_stylesheet
         )
         dlg.show()
+
+    def _send_to_terminal(self):
+        self._resolve_then(self._do_send)
+
+    def _run_in_new_terminal(self):
+        self._resolve_then(self._do_run_new)
 
     def _copy_to_clipboard(self):
         QApplication.clipboard().setText(self._snippet.get("content", ""))
