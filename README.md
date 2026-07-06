@@ -298,8 +298,6 @@ I have more ideas than time — building this solo alongside a full-time job mea
 
 - **A custom pentesting / hacking / CTF agent** — my own agent, purpose-built for offensive security and optimized for local models
 
-I'm aware there are still areas that need improvement — some widget colors, a few untested tools, and parts of the UI. These are on my list and will be addressed over time.
-
 > **Note:** The app is still under manual testing, and unit tests are on the way. I also haven't tested the paid LLM API providers yet (Anthropic, OpenAI, …) — they are implemented from the official API docs. If you hit an issue, please open one.
 
 If any of this sounds useful — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
