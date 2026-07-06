@@ -521,13 +521,6 @@ class ScriptLauncher(QWidget):
             self._execute_external_term(command)
             return
 
-        try:
-            if command.endswith("\n"):
-                cmd_clean = command.rstrip("\n")
-
-        except Exception:
-            pass
-
         terminal_tabs = self.controller.widgets["terminal_tabs"]
 
         if self.chk_run_current.isChecked():
