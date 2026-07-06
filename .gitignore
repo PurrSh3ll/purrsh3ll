@@ -21,6 +21,7 @@ psc2.purr
 todo.txt
 
 # Appdata — dane runtime (nie wersjonujemy)
+appdata/model_ctx_registry.json.bak
 appdata/logs/
 appdata/rag/
 appdata/api_keys.json

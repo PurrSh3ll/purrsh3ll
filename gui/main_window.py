@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
         self.c.get_widget("about_licenses_action").triggered.connect(self.c.open_licenses_help)
         self.c.get_widget("author_action").triggered.connect(self.c.open_author_dialog)
         self.c.get_widget("check_updates_action").triggered.connect(self._check_for_updates)
+        self.c.get_widget("update_models_action").triggered.connect(self._update_model_database)
         self.c.get_widget("user_guide_action").triggered.connect(
             lambda: self.c.open_new_tab_for_terminal(file=self.c.user_guide_path))
         self.c.get_widget("manual_action").triggered.connect(
@@ -126,6 +127,68 @@ class MainWindow(QMainWindow):
                 "Check your internet connection, or visit the releases page:\n"
                 f"{RELEASES_URL}"
             )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.exec()
+
+    def _update_model_database(self):
+        """Refresh model_ctx_registry.json from liteLLM (Edit → Update Model Database)."""
+        if getattr(self, "_model_update_worker", None) is not None:
+            return  # already running
+        confirm = QMessageBox(self)
+        confirm.setWindowTitle("Update Model Database")
+        confirm.setIcon(QMessageBox.Icon.Question)
+        confirm.setText("Download the latest model list (context windows and "
+                        "function-calling support) from the liteLLM database?")
+        confirm.setInformativeText("No API key needed. The current file is backed up first.")
+        confirm.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        confirm.setDefaultButton(QMessageBox.StandardButton.Yes)
+        confirm.setStyleSheet(self.c.messagebox_stylesheet)
+        if confirm.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        action = self.c.get_widget("update_models_action")
+        if action is not None:
+            action.setEnabled(False)
+            action.setText("Updating Model Database…")
+        from core.model_registry_updater import ModelRegistryUpdateWorker
+        worker = ModelRegistryUpdateWorker(self.c.base_path, self)
+        self._model_update_worker = worker
+        worker.result.connect(self._on_model_update_result)
+        worker.finished.connect(self._on_model_update_worker_done)
+        worker.start()
+
+    def _on_model_update_worker_done(self):
+        action = self.c.get_widget("update_models_action")
+        if action is not None:
+            action.setEnabled(True)
+            action.setText("Update Model Database…")
+        self._model_update_worker = None
+
+    def _on_model_update_result(self, info: dict):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Update Model Database")
+        msg.setStyleSheet(self.c.messagebox_stylesheet)
+        if info.get("ok"):
+            msg.setIcon(QMessageBox.Icon.Information)
+            total = info.get("total_models", 0)
+            providers = info.get("providers", {})
+            lines = "\n".join(
+                f"  • {p}: {s['count']} models (+{s['added']})"
+                for p, s in sorted(providers.items())
+            )
+            msg.setText(f"Model database updated — {total} models across "
+                        f"{len(providers)} providers.")
+            msg.setInformativeText(lines or "")
+            msg.setDetailedText(
+                "Source: liteLLM model_prices_and_context_window.json\n"
+                f"Backup: {info.get('backup') or '(none)'}\n\n"
+                "New values apply to context-window and function-calling display; "
+                "restart AI Settings to see refreshed model lists."
+            )
+        else:
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText("Couldn't update the model database.")
+            msg.setInformativeText(info.get("error") or "Check your internet connection.")
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
 

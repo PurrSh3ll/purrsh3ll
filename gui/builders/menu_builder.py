@@ -84,6 +84,9 @@ def build_menu(main_window):
     tool_categories_action = QAction("Tool Categories", main_window)
     edit_menu.addAction(tool_categories_action)
     edit_menu.addSeparator()
+    update_models_action = QAction("Update Model Database…", main_window)
+    edit_menu.addAction(update_models_action)
+    edit_menu.addSeparator()
     erase_data_action = QAction("Erase all data…", main_window)
     edit_menu.addAction(erase_data_action)
 
@@ -95,6 +98,7 @@ def build_menu(main_window):
     c.register_widget("edit_menu", edit_menu)
     c.register_widget("command_palette_action", command_palette_action)
     c.register_widget("tool_categories_action", tool_categories_action)
+    c.register_widget("update_models_action", update_models_action)
     c.register_widget("erase_data_action", erase_data_action)
 
     view_menu = menu_bar.addMenu("View")
