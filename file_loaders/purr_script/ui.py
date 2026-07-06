@@ -59,7 +59,13 @@ class UIMixin:
         self.install_btn.clicked.connect(self._on_install_clicked)
         top_row.addWidget(self.info_field, 1)
         top_row.addWidget(self.install_btn, 0, Qt.AlignmentFlag.AlignTop)
-        root_layout.addLayout(top_row)
+        # All script "chrome" (top row + tab buttons) lives in a container so the
+        # code view can hide it and use the full height for the editor.
+        self._chrome_header = QWidget(self)
+        _header_layout = QVBoxLayout(self._chrome_header)
+        _header_layout.setContentsMargins(0, 0, 0, 0)
+        _header_layout.setSpacing(6)
+        _header_layout.addLayout(top_row)
         buttons_row = QHBoxLayout()
         buttons_row.setContentsMargins(0, 0, 0, 0)
         buttons_row.setSpacing(6)
@@ -83,7 +89,16 @@ class UIMixin:
 
             buttons_row.addWidget(button)
 
-        root_layout.addLayout(buttons_row)
+        _header_layout.addLayout(buttons_row)
+        root_layout.addWidget(self._chrome_header)
+
+        # Back button — shown only in code-fullscreen mode (returns to script view).
+        self._code_back_btn = QPushButton("← Back", parent=self)
+        self._code_back_btn.setFixedHeight(28)
+        self._code_back_btn.setToolTip("Return to the script view")
+        self._code_back_btn.clicked.connect(self._exit_code_fullscreen)
+        self._code_back_btn.setVisible(False)
+        root_layout.addWidget(self._code_back_btn)
 
         self.central_container = QWidget(self)
         self.central_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -140,7 +155,12 @@ class UIMixin:
         sep1.setFrameShape(QFrame.Shape.HLine)
         sep1.setFrameShadow(QFrame.Shadow.Sunken)
         sep1.setObjectName("line")
-        root_layout.addWidget(sep1)
+        # Footer chrome (all controls below the central view) — hidden in code mode.
+        self._chrome_footer = QWidget(self)
+        _footer_layout = QVBoxLayout(self._chrome_footer)
+        _footer_layout.setContentsMargins(0, 0, 0, 0)
+        _footer_layout.setSpacing(6)
+        _footer_layout.addWidget(sep1)
         row1 = QHBoxLayout()
         row1.setContentsMargins(0, 0, 0, 0)
         row1.setSpacing(12)
@@ -225,7 +245,7 @@ class UIMixin:
         row1.addWidget(self.txt_save_output, stretch=1)
 
         row1.addStretch(1)
-        root_layout.addLayout(row1)
+        _footer_layout.addLayout(row1)
         row2 = QHBoxLayout()
         row2.setContentsMargins(0, 0, 0, 0)
         row2.setSpacing(12)
@@ -334,12 +354,12 @@ class UIMixin:
         row2.addWidget(self.chk_show_advanced)
 
         row2.addStretch(1)
-        root_layout.addLayout(row2)
+        _footer_layout.addLayout(row2)
         sep2 = QFrame(self)
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setFrameShadow(QFrame.Shadow.Sunken)
         sep2.setObjectName("line")
-        root_layout.addWidget(sep2)
+        _footer_layout.addWidget(sep2)
         self.advanced_widget = QWidget(parent=self)
         adv_layout = QVBoxLayout(self.advanced_widget)
         adv_layout.setContentsMargins(0, 0, 0, 0)
@@ -665,7 +685,7 @@ class UIMixin:
         sep3.setObjectName("line")
         adv_layout.addWidget(sep3)
         self.advanced_widget.setVisible(False)
-        root_layout.addWidget(self.advanced_widget)
+        _footer_layout.addWidget(self.advanced_widget)
         self.chk_show_advanced.toggled.connect(self.advanced_widget.setVisible)
         bottom_row = QHBoxLayout()
         bottom_row.setContentsMargins(0, 0, 0, 0)
@@ -685,7 +705,8 @@ class UIMixin:
         paste_btn.clicked.connect(lambda: self._execute_command(self.terminal_input.toPlainText() or ""))
         bottom_row.addWidget(enter_btn)
         bottom_row.addWidget(paste_btn)
-        root_layout.addLayout(bottom_row)
+        _footer_layout.addLayout(bottom_row)
+        root_layout.addWidget(self._chrome_footer)
 
         def populate_interpreter_cmb(file_path):
             self.cmb_interpreter.clear()

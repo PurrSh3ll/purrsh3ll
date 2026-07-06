@@ -133,6 +133,13 @@ class HandlersMixin:
                 if b is not button and b.isCheckable():
                     b.setChecked(False)
 
+            # Code view takes over the whole loader: hide all chrome, show only
+            # the editor and a Back button (much more room to read code).
+            if name == "code":
+                if getattr(self, "_code_widget", None) is not None:
+                    self._enter_code_fullscreen()
+                return
+
             target_widget = field_map.get(name)
 
             if target_widget is not None:
@@ -162,3 +169,25 @@ class HandlersMixin:
             any_checked = any(b.isCheckable() and b.isChecked() for b in self.buttons)
             if not any_checked:
                 self.central_stack.setCurrentWidget(self.welcome_field)
+
+    def _enter_code_fullscreen(self):
+        """Show the code editor across the whole loader — hide the top/bottom
+        chrome (tab buttons, Install, run controls) and reveal only a Back button,
+        so code analysis gets the full available height."""
+        self._pre_code_widget = self.central_stack.currentWidget()
+        self.central_stack.setCurrentWidget(self._code_widget)
+        self._chrome_header.setVisible(False)
+        self._chrome_footer.setVisible(False)
+        self._code_back_btn.setVisible(True)
+
+    def _exit_code_fullscreen(self):
+        """Restore the normal script view from code-fullscreen mode."""
+        self._chrome_header.setVisible(True)
+        self._chrome_footer.setVisible(True)
+        self._code_back_btn.setVisible(False)
+        self.code_button.setChecked(False)
+        prev = getattr(self, "_pre_code_widget", None)
+        try:
+            self.central_stack.setCurrentWidget(prev if prev is not None else self.welcome_field)
+        except Exception:
+            self.central_stack.setCurrentWidget(self.welcome_field)
