@@ -971,7 +971,8 @@ def build_main_layout(main_window):
             try:
                 fb = c._fallback_ctx_window(provider)
             except Exception:
-                fb = 4000 if provider == "ollama" else 200_000
+                # Mirror _fallback_ctx_window's conservative default (kept in sync)
+                fb = 4000 if provider == "ollama" else 32_768
             return fb, True
 
         def _fmt_ctx_for(p):

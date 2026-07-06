@@ -386,8 +386,12 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     def _fallback_ctx_window(provider):
         """Default context window when the model's real window is unknown, so the
         GUI can always render a percentage bar instead of a raw token count:
-        ollama → 4k, every other provider → 200k."""
-        return 4000 if (provider or "").lower() == "ollama" else 200_000
+        ollama → 4k, every other provider → 32 768 (a conservative safe default —
+        under-estimating is safe, over-estimating risks overflowing the real
+        window). Kept in sync with the Behavior dialog's _CTX_SAFE_DEFAULT so the
+        active-profile tooltip, the live CTX bar and the Profiles → Behavior
+        dialog all show the same value for an unknown model."""
+        return 4000 if (provider or "").lower() == "ollama" else 32_768
 
     def _get_active_ctx_window(self):
         """Return context window size for the active profile.
