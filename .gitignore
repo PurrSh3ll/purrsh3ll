@@ -44,7 +44,7 @@ appmodules/Cyb3rCollector/
 
 # BrainDump — prywatne notatki i pliki RAG (nie wersjonujemy)
 appmodules/BrainDump/*
-!appmodules/BrainDump/purrsh3ll_app_guide.md
+!appmodules/BrainDump/user_guide.md
 
 # AI Skills — klonowane na żądanie przez installer (nie wersjonujemy).
 # Nie są to submoduły ani vendored — dzięki temu goły `git clone` jest czysty.
