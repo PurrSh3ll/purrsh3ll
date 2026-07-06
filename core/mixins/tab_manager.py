@@ -101,7 +101,16 @@ class TabManagerMixin:
             icon = default_icon
 
         try:
-            file_class = FILE_LOADERS[file_class_name]
+            # Some file categories carry a distinct tree icon (e.g. archives,
+            # databases, documents) without a dedicated loader yet. Fall back to
+            # the generic Unsupported_file viewer instead of raising KeyError, so
+            # the file opens gracefully; a real loader added later takes over
+            # automatically once registered in FILE_LOADERS.
+            file_class = FILE_LOADERS.get(file_class_name)
+            if file_class is None:
+                logger.info("No loader for '%s' (%s); using Unsupported_file",
+                            file_class_name, os.path.basename(full_path))
+                file_class = FILE_LOADERS["Unsupported_file"]
             loader = file_class()
             content_widget = loader.load_file(
                 full_path,
