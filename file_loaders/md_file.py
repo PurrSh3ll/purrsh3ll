@@ -613,6 +613,13 @@ class Markdown_file(ChunkedFileLoader):
                 )
                 QTimer.singleShot(2500, QToolTip.hideText)
 
+            def _invalid_action_tooltip(name: str):
+                QToolTip.showText(
+                    QCursor.pos(),
+                    f"Unknown window action:\n{name}"
+                )
+                QTimer.singleShot(2500, QToolTip.hideText)
+
             def _print_action(url: QUrl):
                 category = url.host()
 
@@ -638,6 +645,23 @@ class Markdown_file(ChunkedFileLoader):
                         self.parent.change_actual_theme(payload)
                     else:
                         _invalid_theme_tooltip(payload)
+                elif category == "open" and action_type == "window":
+                    # Whitelist only — never call an arbitrary method named in the
+                    # document. Maps a known window id to its controller opener.
+                    _openers = {
+                        "ai_settings":     getattr(self.parent, "open_ai_settings", None),
+                        "settings":        getattr(self.parent, "open_settings", None),
+                        "command_palette": getattr(self.parent, "open_command_palette", None),
+                        "tool_categories": getattr(self.parent, "open_tool_categories", None),
+                    }
+                    opener = _openers.get(payload)
+                    if callable(opener):
+                        try:
+                            opener()
+                        except Exception:
+                            _invalid_action_tooltip(payload)
+                    else:
+                        _invalid_action_tooltip(payload)
                 else:
                     pass
 

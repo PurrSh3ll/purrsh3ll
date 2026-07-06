@@ -8,7 +8,7 @@ Welcome to PurrSh3ll. This guide walks you through the first things to set up af
 
 AI tools (`psask`, `pscmd`, `psnext`, etc.) require an active profile before they work.
 
-Open **AI Settings** from the sidebar and add a profile. Two options:
+Open [**AI Settings**](action://open/window/ai_settings) (or from the sidebar) and add a profile. Two options:
 
 **Option A — Local (fully offline)**
 
@@ -72,7 +72,7 @@ Query the knowledge base (click to run):
 
 To add a new knowledge base or change the embedding model: **AI Settings → RAG**.
 
-**Ask the AI about PurrSh3ll itself:** open **AI Settings → RAG** and click the **Index** button. Once indexing finishes, you can ask `psask`, `pschat`, or `psrag` about the app's entire functionality — every `ps*` tool, option, and workflow — and the LLM answers using the app's own bundled documentation.
+**Ask the AI about PurrSh3ll itself:** open [**AI Settings**](action://open/window/ai_settings) → **RAG** and click the **Index** button. Once indexing finishes, you can ask `psask`, `pschat`, or `psrag` about the app's entire functionality — every `ps*` tool, option, and workflow — and the LLM answers using the app's own bundled documentation.
 
 ---
 
