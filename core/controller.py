@@ -28,6 +28,13 @@ import threading
 import collections
 from pathlib import Path
 
+# Self-hosted local inference runtimes (localhost, OpenAI-compatible). Their
+# unknown-model context window is defaulted conservatively (32k) because these
+# typically run smaller models with limited context — unlike cloud providers
+# (200k) and ollama (its own 4k). Kept in sync with the Profiles → Behavior
+# dialog. See Controller._fallback_ctx_window.
+_LOCAL_HOST_PROVIDERS = frozenset({"llamacpp", "lmstudio", "jan", "koboldcpp"})
+
 class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalManagerMixin):
     widgets = {}
     panel_widgets = {}
@@ -385,13 +392,23 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     @staticmethod
     def _fallback_ctx_window(provider):
         """Default context window when the model's real window is unknown, so the
-        GUI can always render a percentage bar instead of a raw token count:
-        ollama → 4k, every other provider → 32 768 (a conservative safe default —
-        under-estimating is safe, over-estimating risks overflowing the real
-        window). Kept in sync with the Behavior dialog's _CTX_SAFE_DEFAULT so the
-        active-profile tooltip, the live CTX bar and the Profiles → Behavior
-        dialog all show the same value for an unknown model."""
-        return 4000 if (provider or "").lower() == "ollama" else 32_768
+        GUI can always render a percentage bar instead of a raw token count.
+
+        Provider-tiered, because unknown-model risk differs by host:
+          - ollama                                → 4k   (local, often tiny models)
+          - llamacpp / lmstudio / jan / koboldcpp → 32k  (self-hosted local
+            runtimes, typically limited context)
+          - every cloud provider                  → 200k (large modern windows)
+
+        Kept in sync with the Profiles → Behavior dialog so the active-profile
+        tooltip, the live CTX bar and that dialog all show the same value for an
+        unknown model."""
+        p = (provider or "").lower()
+        if p == "ollama":
+            return 4000
+        if p in _LOCAL_HOST_PROVIDERS:
+            return 32_768
+        return 200_000
 
     def _get_active_ctx_window(self):
         """Return context window size for the active profile.

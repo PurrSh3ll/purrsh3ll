@@ -2726,7 +2726,12 @@ def build_menu(main_window):
             bform.setSpacing(8)
 
             from math import log, exp
-            _CTX_SAFE_DEFAULT = 32_768
+            # Provider-aware unknown-model default (cloud 200k / local runtimes
+            # 32k / ollama 4k), kept in sync with the tooltip and live CTX bar.
+            try:
+                _CTX_SAFE_DEFAULT = c._fallback_ctx_window(profile.get("provider", ""))
+            except Exception:
+                _CTX_SAFE_DEFAULT = 32_768
             _CTX_MIN, _CTX_MAX = 512, 2_000_000
             _SLIDER_STEPS = 1000
             _LOG_MIN = log(_CTX_MIN)

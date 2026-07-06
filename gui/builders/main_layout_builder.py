@@ -971,8 +971,14 @@ def build_main_layout(main_window):
             try:
                 fb = c._fallback_ctx_window(provider)
             except Exception:
-                # Mirror _fallback_ctx_window's conservative default (kept in sync)
-                fb = 4000 if provider == "ollama" else 32_768
+                # Mirror _fallback_ctx_window's provider tiers (kept in sync):
+                # ollama 4k / local runtimes 32k / cloud 200k
+                if provider == "ollama":
+                    fb = 4000
+                elif provider in {"llamacpp", "lmstudio", "jan", "koboldcpp"}:
+                    fb = 32_768
+                else:
+                    fb = 200_000
             return fb, True
 
         def _fmt_ctx_for(p):
