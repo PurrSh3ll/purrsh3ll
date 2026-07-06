@@ -6,6 +6,7 @@ Reads the last command entry from terminal_history.db and sends it to AI.
 
 import os
 import platform
+import re
 import sqlite3
 import subprocess
 import sys
@@ -210,11 +211,17 @@ def _clean_command(text: str) -> str:
     return text.strip()
 
 
-# Command → terminal_modules file whose `-h` prints that tool's OWN usage.
-# Only tools whose help lives in the python module are listed; commands whose
-# help lives in the zsh wrapper (psopen, pshelp) or that would surface a
-# different tool's help are intentionally omitted, so we never inject wrong or
-# misleading usage. psask/pschat map to psai.py (same family — generic psai help).
+# ── Failed ps* tool help injection ──────────────────────────────────────────
+# When the failed command is a PurrSh3ll tool, psfix adds that tool's OWN usage
+# text to the prompt so the model knows its real syntax. The help must come from
+# the AUTHORITATIVE source per tool:
+#   • python-module tools → `python <module> -h`  (help printed by the module)
+#   • zsh-function tools  → the help heredoc inside the tool's .zsh wrapper.
+#     psask/pschat forward to `psai ask/chat`, so `psai.py -h` only shows the
+#     generic psai help — their real per-command help lives in psai.zsh; psopen
+#     likewise lives in its wrapper (and psopen has no python module at all).
+# Tools whose name would surface a DIFFERENT tool's help, or that have no static
+# help block (pshelp), are omitted so nothing wrong is ever injected.
 _PSTOOL_MODULE = {
     "psrag":    "psrag_query.py",
     "pscmd":    "pscmd.py",
@@ -222,28 +229,19 @@ _PSTOOL_MODULE = {
     "psview":   "psview.py",
     "psreport": "psreport.py",
     "psai":     "psai.py",
-    "psask":    "psai.py",
-    "pschat":   "psai.py",
+}
+_PSTOOL_ZSH = {
+    "psask":  "psai.zsh",
+    "pschat": "psai.zsh",
+    "psopen": "psopen_dir_change.zsh",
 }
 _PSTOOL_HELP_CAP = 1500   # chars — bound prompt growth (also under psfix --fit)
 
 
-def _pstool_help(cmd: str, base_dir: str) -> str | None:
-    """If the failed command is a ps* tool, return its own `-h` usage text so the
-    model knows the tool's syntax and can propose a valid invocation. Returns None
-    for non-ps* commands or on any failure (fail-safe — never blocks the fix).
-
-    Each ps* tool's `-h` handler is an early sys.exit(0) right after argparse,
-    before any model/network work, so this is just a short Python startup.
-    """
-    try:
-        first = (cmd or "").split()
-        name  = os.path.basename(first[0]) if first else ""
-    except Exception:
-        return None
-    module = _PSTOOL_MODULE.get(name)
-    if not module:
-        return None
+def _module_help(module: str) -> str | None:
+    """Run `python <module> -h` and return its usage text. The tool's `-h` handler
+    is an early sys.exit(0) right after argparse, before any model/network work,
+    so this is just a short Python startup. None on any failure."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), module)
     if not os.path.exists(path):
         return None
@@ -252,11 +250,56 @@ def _pstool_help(cmd: str, base_dir: str) -> str | None:
             [sys.executable, path, "-h"],
             capture_output=True, text=True, timeout=4,
         )
-        text = (result.stdout or "").strip()
-        return text[:_PSTOOL_HELP_CAP] or None
+        return (result.stdout or "").strip() or None
+    except Exception:
+        return None
+
+
+def _zsh_help(name: str, wrapper: str) -> str | None:
+    """Extract a zsh-function tool's help heredoc (`cat <<'MARKER' … MARKER`) from
+    its .zsh wrapper — that is exactly what `<tool> -h` prints. None if not found."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), wrapper)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return None
+    fn = re.search(rf'(?m)^\s*{re.escape(name)}\s*\(\)\s*\{{', text)
+    if not fn:
+        return None
+    body = text[fn.end():]
+    hd = re.search(r"""cat\s*<<-?\s*['"]?(\w+)['"]?[ \t]*\n""", body)
+    if not hd:
+        return None
+    rest   = body[hd.end():]
+    marker = hd.group(1)
+    end = re.search(rf'(?m)^\s*{re.escape(marker)}\s*$', rest)
+    if not end:
+        return None
+    return rest[:end.start()].strip() or None
+
+
+def _pstool_help(cmd: str, base_dir: str) -> str | None:
+    """Return the failed command's own ps* tool usage text (module `-h` or zsh
+    heredoc), capped for prompt size. None for non-ps* commands or any failure —
+    fully fail-safe, never blocks the fix.
+    """
+    try:
+        first = (cmd or "").split()
+        name  = os.path.basename(first[0]) if first else ""
+    except Exception:
+        return None
+    try:
+        if name in _PSTOOL_MODULE:
+            text = _module_help(_PSTOOL_MODULE[name])
+        elif name in _PSTOOL_ZSH:
+            text = _zsh_help(name, _PSTOOL_ZSH[name])
+        else:
+            return None
     except Exception:
         _dbg(f"could not fetch -h for ps* tool '{name}'")
         return None
+    return text[:_PSTOOL_HELP_CAP] if text else None
 
 
 def main():
