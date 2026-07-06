@@ -974,6 +974,7 @@ class ScriptLauncher(QWidget):
         _header_layout.setContentsMargins(0, 0, 0, 0)
         _header_layout.setSpacing(6)
         _header_layout.addLayout(top_row)
+        self._top_row = top_row   # kept so the token button can be moved in/out
 
         buttons_row = QHBoxLayout()
         buttons_row.setContentsMargins(0, 0, 0, 0)
@@ -998,13 +999,20 @@ class ScriptLauncher(QWidget):
         _header_layout.addLayout(buttons_row)
         root_layout.addWidget(self._chrome_header)
 
-        # Back button — shown only in visualization-fullscreen mode.
-        self._vis_back_btn = QPushButton("← Back", parent=self)
+        # Fullscreen bar — shown only in visualization mode: Back + the WebMap
+        # token button (moved here so it keeps its normal behaviour and state).
+        self._fs_bar = QWidget(self)
+        self._fs_bar_layout = QHBoxLayout(self._fs_bar)
+        self._fs_bar_layout.setContentsMargins(0, 0, 0, 0)
+        self._fs_bar_layout.setSpacing(6)
+        self._vis_back_btn = QPushButton("← Back", parent=self._fs_bar)
         self._vis_back_btn.setFixedHeight(28)
         self._vis_back_btn.setToolTip("Return to the scan configuration view")
         self._vis_back_btn.clicked.connect(self._exit_visualization_fullscreen)
-        self._vis_back_btn.setVisible(False)
-        root_layout.addWidget(self._vis_back_btn)
+        self._fs_bar_layout.addWidget(self._vis_back_btn)
+        self._fs_bar_layout.addStretch(1)
+        self._fs_bar.setVisible(False)
+        root_layout.addWidget(self._fs_bar)
 
         self.central_container = QWidget(self)
         self.central_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1212,19 +1220,26 @@ class ScriptLauncher(QWidget):
 
     def _enter_visualization_fullscreen(self):
         """Show the visualization (WebMap page) across the whole loader — hide the
-        top/bottom chrome and reveal only a Back button, so the page gets the full
-        available height."""
+        top/bottom chrome and reveal only the fullscreen bar (Back + the WebMap
+        token button), so the page gets the full available height."""
         self._pre_vis_widget = self.central_stack.currentWidget()
         self.central_stack.setCurrentWidget(self.visualization_field)
+        # Move the WebMap token button into the fullscreen bar (same button, so its
+        # behaviour and visible/hidden state carry over unchanged).
+        self._top_row.removeWidget(self.token_button)
+        self._fs_bar_layout.insertWidget(1, self.token_button)
         self._chrome_header.setVisible(False)
         self._chrome_footer.setVisible(False)
-        self._vis_back_btn.setVisible(True)
+        self._fs_bar.setVisible(True)
 
     def _exit_visualization_fullscreen(self):
         """Restore the normal scan-configuration view from fullscreen mode."""
+        self._fs_bar.setVisible(False)
+        # Return the token button to its original slot in the top row.
+        self._fs_bar_layout.removeWidget(self.token_button)
+        self._top_row.insertWidget(3, self.token_button)
         self._chrome_header.setVisible(True)
         self._chrome_footer.setVisible(True)
-        self._vis_back_btn.setVisible(False)
         self.visualization_button.setChecked(False)
         prev = getattr(self, "_pre_vis_widget", None)
         try:
