@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
         self.c.get_widget("about_licenses_action").triggered.connect(self.c.open_licenses_help)
         self.c.get_widget("author_action").triggered.connect(self.c.open_author_dialog)
         self.c.get_widget("whats_new_action").triggered.connect(self._show_coming_soon)
-        self.c.get_widget("check_updates_action").triggered.connect(self._show_coming_soon)
+        self.c.get_widget("check_updates_action").triggered.connect(self._check_for_updates)
         self.c.get_widget("user_guide_action").triggered.connect(
             lambda: self.c.open_new_tab_for_terminal(file=self.c.user_guide_path))
         self.c.get_widget("manual_action").triggered.connect(
@@ -75,6 +75,69 @@ class MainWindow(QMainWindow):
         msg.setText("This feature will be available in an upcoming version.")
         msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.setStyleSheet(self.c.messagebox_stylesheet)
+        msg.exec()
+
+    def _check_for_updates(self):
+        """Read-only version check against the GitHub tags (never pulls)."""
+        action = self.c.get_widget("check_updates_action")
+        if getattr(self, "_update_worker", None) is not None:
+            return  # a check is already running
+        if action is not None:
+            action.setEnabled(False)
+        from core.update_checker import UpdateCheckWorker
+        worker = UpdateCheckWorker(self.c.base_path, self)
+        self._update_worker = worker
+        worker.result.connect(self._on_update_check_result)
+        worker.finished.connect(self._on_update_worker_done)
+        worker.start()
+
+    def _on_update_worker_done(self):
+        action = self.c.get_widget("check_updates_action")
+        if action is not None:
+            action.setEnabled(True)
+        self._update_worker = None
+
+    def _on_update_check_result(self, info: dict):
+        from core.update_checker import RELEASES_URL
+        status = info.get("status")
+        local = info.get("local") or "?"
+        latest = info.get("latest") or "?"
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Check for Updates")
+        msg.setStyleSheet(self.c.messagebox_stylesheet)
+
+        if status == "update_available":
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(f"A new version is available: <b>v{latest}</b>")
+            msg.setInformativeText(f"You have v{local}.")
+            open_btn = msg.addButton("Open release page", QMessageBox.ButtonRole.AcceptRole)
+            msg.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+            if msg.clickedButton() is open_btn:
+                from PyQt6.QtGui import QDesktopServices
+                from PyQt6.QtCore import QUrl
+                QDesktopServices.openUrl(QUrl(RELEASES_URL))
+            return
+
+        if status == "up_to_date":
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(f"You're on the latest version (v{local}).")
+        elif status == "unknown":
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setText(
+                f"Latest release is v{latest}; your local version is v{local}."
+            )
+            msg.setInformativeText("Couldn't compare them automatically — "
+                                   f"check the releases page: {RELEASES_URL}")
+        else:  # error
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setText("Couldn't check for updates.")
+            msg.setInformativeText(
+                "Check your internet connection, or visit the releases page:\n"
+                f"{RELEASES_URL}"
+            )
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
         msg.exec()
 
     def _on_open_file(self):
