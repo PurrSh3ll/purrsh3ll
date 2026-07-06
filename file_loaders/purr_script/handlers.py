@@ -129,6 +129,12 @@ class HandlersMixin:
         }
 
         if currently_checked:
+            # Remember the tab active before this click, so returning from code
+            # fullscreen restores both its content AND its checked state
+            # (otherwise the previous tab shows unchecked — colour mismatch).
+            self._pre_code_button = next(
+                (b for b in self.buttons
+                 if b.isCheckable() and b.isChecked() and b is not button), None)
             for b in self.buttons:
                 if b is not button and b.isCheckable():
                     b.setChecked(False)
@@ -186,6 +192,11 @@ class HandlersMixin:
         self._chrome_footer.setVisible(True)
         self._code_back_btn.setVisible(False)
         self.code_button.setChecked(False)
+        # Re-check the tab that was active before fullscreen so its button state
+        # matches the restored content.
+        prev_btn = getattr(self, "_pre_code_button", None)
+        if prev_btn is not None and prev_btn.isCheckable():
+            prev_btn.setChecked(True)
         prev = getattr(self, "_pre_code_widget", None)
         try:
             self.central_stack.setCurrentWidget(prev if prev is not None else self.welcome_field)
