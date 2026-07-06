@@ -25,6 +25,22 @@ Security professionals juggle dozens of tools, notes, and context across long en
 
 ---
 
+## Why not just use…?
+
+Most people already do this — with three or four separate tools. PurrSh3ll folds them into one window:
+
+| The usual stack | PurrSh3ll |
+|---|---|
+| Copy-paste between a browser AI and your terminal | AI **in** the terminal, aware of your history and findings |
+| Notes in one app, commands in another | RAG over your own notes, queried straight from the shell |
+| Cloud AI you can't point at client data | Local-first — nothing has to leave the machine |
+| Setting up Claude Code skills & agents by hand | Curated pentest / CTF **skills, subagents, and goal files — one click to power up** |
+| Cleanup = hunting down scattered logs and history | One-click **Erase all data** |
+
+The result is a single place where AI, offensive security, and your workflow actually meet — instead of living in three browser tabs.
+
+---
+
 ## Features
 
 ### Terminal
