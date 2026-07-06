@@ -10,7 +10,7 @@ import logging
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QLineEdit,
-    QPushButton, QScrollArea, QWidget, QMessageBox,
+    QPushButton, QScrollArea, QWidget, QMessageBox, QInputDialog,
 )
 
 from core.data_wipe import build_wipe_items, wipe
@@ -131,6 +131,23 @@ def open_erase_data_dialog(controller, parent):
             pass
         if confirm.exec() != QMessageBox.StandardButton.Yes:
             return
+
+        # Docker needs sudo — obtain the password up front (reusing the cached one
+        # if the session already has it). If not provided, drop docker and go on.
+        if "docker" in selected and not getattr(controller, "sudo_password", None):
+            pw, ok = QInputDialog.getText(
+                dlg, "Root password",
+                "Removing Docker containers requires sudo.\nEnter the root/sudo password:",
+                QLineEdit.EchoMode.Password)
+            if ok and pw:
+                controller.sudo_password = bytearray(pw.encode("utf-8"))
+            else:
+                selected = [s for s in selected if s != "docker"]
+                QMessageBox.information(
+                    dlg, "Docker skipped",
+                    "No password provided — Docker containers were left untouched.")
+                if not selected:
+                    return
 
         report = wipe(base_path, selected, controller)
 

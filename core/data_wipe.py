@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class WipeItem:
       "paths"        — delete each entry in `paths` (files, dirs or globs)
       "dynamic_vars" — clear user-defined variables in dynamic_variables.json
       "credentials"  — delete API keys from the OS keyring + api_keys.json
+      "docker"       — stop & remove all Docker containers (needs sudo password)
     """
     __slots__ = ("id", "label", "description", "default", "kind", "paths")
 
@@ -114,6 +116,12 @@ def build_wipe_items(base_path):
                              "fallback (api_keys.json). Provider profiles stay configured; "
                              "you must re-enter keys afterwards.",
                  kind="credentials"),
+
+        WipeItem("docker", "Docker containers (ALL)", default=False,
+                 description="Stop and remove ALL Docker containers on this host "
+                             "(docker rm -f), including Open WebUI and WebMap. Requires "
+                             "the sudo password.",
+                 kind="docker"),
     ]
 
 
@@ -204,6 +212,46 @@ def _wipe_credentials(base_path):
     return ", ".join(detail)
 
 
+def _run_sudo(args):
+    """Run `sudo -S -- <args>` reading the password from stdin (never argv/shell,
+    so it can't leak via `ps aux`). Returns None if no sudo password is cached."""
+    pw_buf = _run_sudo.password
+    if not pw_buf:
+        return None
+    pw = bytes(pw_buf).decode("utf-8", "replace")
+    return subprocess.run(
+        ["sudo", "-S", "--"] + args,
+        input=pw + "\n",
+        capture_output=True, text=True, timeout=60,
+    )
+
+
+_run_sudo.password = None   # set per-wipe from controller.sudo_password
+
+
+def _wipe_docker():
+    """Stop and force-remove every Docker container on the host. Uses the cached
+    sudo password (Docker needs root here). Never raises the password itself."""
+    ps = _run_sudo(["docker", "ps", "-aq"])
+    if ps is None:
+        return "skipped — no sudo password"
+    err = (ps.stderr or "").lower()
+    if "incorrect password" in err or "sorry, try again" in err:
+        return "skipped — incorrect sudo password"
+    if ps.returncode != 0:
+        if "cannot connect to the docker daemon" in err:
+            return "Docker daemon not reachable"
+        if "not found" in err or "no such file" in err:
+            return "docker not installed"
+        return "docker ps failed"
+    ids = [x for x in (ps.stdout or "").split() if x]
+    if not ids:
+        return "no containers"
+    rm = _run_sudo(["docker", "rm", "-f"] + ids)
+    removed = len([x for x in (rm.stdout or "").split() if x]) if rm else 0
+    return f"removed {removed or len(ids)} container(s)"
+
+
 def wipe(base_path, selected_ids, controller=None):
     """Erase the selected categories. Returns {id: (ok: bool, detail: str)}.
 
@@ -213,6 +261,9 @@ def wipe(base_path, selected_ids, controller=None):
     """
     selected = set(selected_ids)
     report = {}
+
+    # Make the cached sudo password available to the docker step (if selected).
+    _run_sudo.password = getattr(controller, "sudo_password", None) if controller else None
 
     # Close the live history DB before removing its file, then drop the cached
     # handle so the next access re-creates a fresh empty database.
@@ -238,10 +289,14 @@ def wipe(base_path, selected_ids, controller=None):
                 detail = _wipe_dynamic_vars(base_path, controller)
             elif item.kind == "credentials":
                 detail = _wipe_credentials(base_path)
+            elif item.kind == "docker":
+                detail = _wipe_docker()
             else:
                 detail = "unknown category"
             report[wid] = (True, detail)
         except Exception as e:
             logger.error("data_wipe: category '%s' failed", wid, exc_info=True)
             report[wid] = (False, str(e))
+
+    _run_sudo.password = None   # don't retain the sudo password on the module
     return report
