@@ -955,12 +955,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 skills_combo.setCurrentText(saved)
             skills_combo.blockSignals(False)
 
-    def open_qterm_help(self):
-        Controller.widgets["qterminal_dialog"].exec()
-
-    def open_qt_help(self):
-        Controller.widgets["qt_dialog"].exec()
-
     def open_licenses_help(self):
         Controller.widgets["licenses_dialog"].exec()
 

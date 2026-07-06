@@ -55,11 +55,8 @@ class MainWindow(QMainWindow):
         self.c.get_widget("exit_action").triggered.connect(self.close)
         self.c.get_widget("settings_action").triggered.connect(self.c.open_settings)
         self.c.get_widget("ai_settings_action").triggered.connect(self.c.open_ai_settings)
-        self.c.get_widget("about_qterm_action").triggered.connect(self.c.open_qterm_help)
-        self.c.get_widget("about_qt_action").triggered.connect(self.c.open_qt_help)
         self.c.get_widget("about_licenses_action").triggered.connect(self.c.open_licenses_help)
         self.c.get_widget("author_action").triggered.connect(self.c.open_author_dialog)
-        self.c.get_widget("whats_new_action").triggered.connect(self._show_coming_soon)
         self.c.get_widget("check_updates_action").triggered.connect(self._check_for_updates)
         self.c.get_widget("user_guide_action").triggered.connect(
             lambda: self.c.open_new_tab_for_terminal(file=self.c.user_guide_path))
@@ -68,14 +65,6 @@ class MainWindow(QMainWindow):
         for theme_name in self.c.themes:
             self.c.get_widget(f"{theme_name}_theme").triggered.connect(
                 lambda checked, t=theme_name: self.c.change_actual_theme(t))
-
-    def _show_coming_soon(self):
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Coming Soon")
-        msg.setText("This feature will be available in an upcoming version.")
-        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
-        msg.setStyleSheet(self.c.messagebox_stylesheet)
-        msg.exec()
 
     def _check_for_updates(self):
         """Read-only version check against the GitHub tags (never pulls)."""

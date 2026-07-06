@@ -114,28 +114,19 @@ def build_menu(main_window):
 
     user_guide_action = QAction("User Guide", main_window)
     manual_action = QAction("Manual", main_window)
-    whats_new_action = QAction("What's New", main_window)
     check_updates_action = QAction("Check for Updates", main_window)
-    about_qt_action = QAction("About Qt", main_window)
-    about_qterm_action = QAction("About QTerm", main_window)
     about_licenses_action = QAction("Licenses", main_window)
     health_check_action = QAction("Health Check", main_window)
     help_menu.addAction(user_guide_action)
     help_menu.addAction(manual_action)
     help_menu.addSeparator()
-    help_menu.addAction(whats_new_action)
     help_menu.addAction(check_updates_action)
     help_menu.addAction(health_check_action)
     help_menu.addSeparator()
-    help_menu.addAction(about_qt_action)
-    help_menu.addAction(about_qterm_action)
     help_menu.addAction(about_licenses_action)
     c.register_widget("user_guide_action", user_guide_action)
     c.register_widget("manual_action", manual_action)
-    c.register_widget("whats_new_action", whats_new_action)
     c.register_widget("check_updates_action", check_updates_action)
-    c.register_widget("about_qt_action", about_qt_action)
-    c.register_widget("about_qterm_action", about_qterm_action)
     c.register_widget("about_licenses_action", about_licenses_action)
     c.register_widget("health_check_action", health_check_action)
 
@@ -466,35 +457,6 @@ def build_menu(main_window):
         main_layout.setSpacing(6)
         main_layout.addWidget(scroll)
 
-    def create_about_qterm_dialog():
-        qterminal_dialog = QDialog()
-        qterminal_dialog.setWindowTitle("QTerminal Info")
-        qterminal_dialog.setModal(True)
-        layout = QVBoxLayout()
-        qterminal_label = QLabel("""
-        <div style="text-align: center;">
-            <b>QTerminal 2.1.0</b><br><br>
-            A lightweight and powerful multiplatform terminal emulator<br><br>
-            Copyright (C) 2013-2026<br>
-            <a href="https://lxqt-project.org/">LXQt Project</a><br><br>
-            Development:<br>
-            <a href="https://github.com/lxqt/qterminal">
-                https://github.com/lxqt/qterminal
-            </a>
-        </div>
-        """)
-        qterminal_label.setTextFormat(Qt.TextFormat.RichText)
-        qterminal_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        qterminal_label.setOpenExternalLinks(True)
-        layout.addWidget(qterminal_label)
-        qterminal_dialog.setLayout(layout)
-        qterminal_dialog.resize(400, 220)
-        try:
-            c.register_widget("qterminal_dialog", qterminal_dialog)
-            c.register_widget("qterminal_label", qterminal_label)
-        except Exception as e:
-            pass
-
     def create_licenses_dialog():
         licenses_dialog = QDialog()
         licenses_dialog.setWindowTitle("Licenses")
@@ -532,9 +494,9 @@ def build_menu(main_window):
             • <a href="https://pypi.org/project/markdown2/">markdown2 2.5.4</a> – MIT<br>
             • <a href="https://pypi.org/project/Pygments/">Pygments 2.19.2</a> – BSD 2-Clause<br>
             • <a href="https://pypi.org/project/jeepney/">jeepney 0.9.0</a> – MIT<br>
-            • <a href="https://pypi.org/project/pymupdf/">PyMuPDF (fitz)</a> – AGPL v3<br>
-            • <a href="https://pypi.org/project/mutagen/">mutagen</a> – GPL v2<br>
-            • <a href="https://github.com/UKPLab/sentence-transformers">sentence-transformers</a> – Apache 2.0<br><br>
+            • <a href="https://pypi.org/project/pymupdf/">PyMuPDF (fitz) 1.27.2.3</a> – AGPL v3<br>
+            • <a href="https://pypi.org/project/mutagen/">mutagen 1.47.0</a> – GPL v2<br>
+            • <a href="https://pypi.org/project/packaging/">packaging 25.0</a> – Apache 2.0 / BSD<br><br>
 
             <b>Voice &amp; Audio</b><br>
             • <a href="https://github.com/SYSTRAN/faster-whisper">faster-whisper 1.2.1</a> – MIT<br>
@@ -562,8 +524,18 @@ def build_menu(main_window):
             • <a href="https://github.com/0xSteph/pentest-ai-agents">pentest-ai-agents</a> – MIT<br><br>
 
             <hr>
+            <b>Copyright &amp; Trademarks</b><br>
+            • <b>Qt</b> — Copyright © The Qt Company Ltd. and other contributors.
+              Used under GPL v3 via PyQt6. Qt and the Qt logo are trademarks of
+              The Qt Company Ltd. — <a href="https://qt.io/licensing">qt.io/licensing</a><br>
+            • <b>PyQt6</b> — Copyright © <a href="https://riverbankcomputing.com">Riverbank Computing Limited</a>.<br>
+            • <b>QTermWidget</b> — Copyright © 2013–2026 LXQt Project —
+              <a href="https://github.com/lxqt/qtermwidget">github.com/lxqt/qtermwidget</a><br><br>
+
+            <hr>
             <div style="text-align: center; color: gray; font-size: 11px;">
-                Full license texts are available at the respective project links.
+                Full GPL / LGPL license texts are bundled in the <b>LICENSES/</b> folder of
+                this project; per-dependency texts are available at the links above.
             </div>
         </div>
         """)
@@ -582,42 +554,6 @@ def build_menu(main_window):
         try:
             c.register_widget("licenses_dialog", licenses_dialog)
             c.register_widget("licenses_label", licenses_label)
-        except Exception as e:
-            pass
-
-    def create_about_qt_dialog():
-        qt_dialog = QDialog()
-        qt_dialog.setWindowTitle("About Qt")
-        qt_dialog.setModal(True)
-        layout = QVBoxLayout()
-        qt_label = QLabel("""
-        <div style="text-align: center;">
-            <b>Qt version 6.10.2</b><br><br>
-            Qt is a C++ toolkit for cross-platform application development.<br><br>
-            Qt provides single-source portability across all major desktop operating systems.
-            It is also available for embedded Linux and other embedded and mobile operating systems.<br><br>
-            Qt is available under multiple licensing options designed to accommodate the needs of our various users.<br><br>
-            Qt licensed under our commercial license agreement is appropriate for development of proprietary/commercial software
-            where you do not want to share any source code with third parties or otherwise cannot comply with the terms of GNU (L)GPL.<br><br>
-            Qt licensed under GNU (L)GPL is appropriate for the development of Qt applications provided you can comply with the terms
-            and conditions of the respective licenses.<br><br>
-            Please see <a href="https://qt.io/licensing">qt.io/licensing</a> for an overview of Qt licensing.<br><br>
-            Copyright (C) The Qt Company Ltd. and other contributors.<br>
-            Qt and the Qt logo are trademarks of The Qt Company Ltd.<br><br>
-            Qt is The Qt Company Ltd. product developed as an open source project.<br>
-            See <a href="https://qt.io">qt.io</a> for more information.
-        </div>
-        """)
-        qt_label.setTextFormat(Qt.TextFormat.RichText)
-        qt_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        qt_label.setOpenExternalLinks(True)
-        qt_label.setWordWrap(True)
-        layout.addWidget(qt_label)
-        qt_dialog.setLayout(layout)
-        qt_dialog.resize(500, 400)
-        try:
-            c.register_widget("qt_dialog", qt_dialog)
-            c.register_widget("qt_label", qt_label)
         except Exception as e:
             pass
 
@@ -3314,7 +3250,5 @@ def build_menu(main_window):
 
     create_settings_dialog()
     create_ai_settings_dialog()
-    create_about_qterm_dialog()
-    create_about_qt_dialog()
     create_licenses_dialog()
     create_author_dialog()

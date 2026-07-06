@@ -74,8 +74,6 @@ def change_theme(controller):
     btn_add_left = c.widgets.get("btn_add_left")
     btn_plus_menu = c.widgets.get("btn_plus_menu")
     settings_menu = c.widgets.get("settings_dialog")
-    qterminal_dialog = c.widgets.get("qterminal_dialog")
-    qt_dialog = c.widgets.get("qt_dialog")
     licenses_dialog = c.widgets.get("licenses_dialog")
     author_dialog = c.widgets.get("author_dialog")
 
@@ -271,8 +269,6 @@ def change_theme(controller):
             }}
             """
         )
-        qterminal_dialog.setStyleSheet(s["qss_QDialog_global"])
-        qt_dialog.setStyleSheet(s["qss_QDialog_global"])
         licenses_dialog.setStyleSheet(s["qss_QDialog_global"])
         if author_dialog:
             author_dialog.setStyleSheet(s["qss_QDialog_global"])
