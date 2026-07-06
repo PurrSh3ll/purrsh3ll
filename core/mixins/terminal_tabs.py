@@ -50,6 +50,48 @@ _PSTOOL_NAMES = frozenset({
 _PURRSH_NEVER_LOG = frozenset({"psfix", "psnext"})
 
 
+# ── ps* failure diagnostics ─────────────────────────────────────────────────
+# When a ps* tool exits non-zero we record exit code + Python traceback (if the
+# tool printed one) to pstools.log — the ps* modules run as separate processes
+# and don't use the app's logging, so this is the only place their failures can
+# be captured centrally. Only exit code + traceback are logged (never the tool's
+# normal output/prompts), and the pstools logger redacts secrets before writing.
+_pstools_logger = logging.getLogger("purrsh3ll.pstools")
+_TB_MARKER = "Traceback (most recent call last):"
+_DIAG_ANSI_RE = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07')
+
+
+def _extract_traceback(output: str) -> str | None:
+    """Return the last Python traceback in a tool's captured output, ANSI-stripped
+    and length-bounded, or None if the output holds no traceback."""
+    if not output:
+        return None
+    clean = _DIAG_ANSI_RE.sub("", output)
+    idx = clean.rfind(_TB_MARKER)
+    if idx == -1:
+        return None
+    tb = clean[idx:].strip()
+    if len(tb) > 8000:
+        tb = tb[:8000] + "\n… [traceback truncated]"
+    return tb
+
+
+def _log_pstool_diagnostics(name: str, exit_code: int, output: str) -> None:
+    """Record a failed ps* tool's exit code and traceback (if any) to pstools.log.
+    Secret redaction is applied by the logger's handler filter. Never raises."""
+    try:
+        tb = _extract_traceback(output)
+        if tb:
+            _pstools_logger.error("%s failed (exit %s)\n%s", name, exit_code, tb)
+        else:
+            _pstools_logger.warning(
+                "%s failed (exit %s) — no Python traceback in captured output",
+                name, exit_code,
+            )
+    except Exception:
+        pass
+
+
 def _log_target(cmd_name: str) -> str | None:
     """Which table a command should be logged to, or None to skip logging.
 
@@ -326,6 +368,11 @@ class TerminalTabsMixin:
                                                 logger.error("OutputParser failed (terminal)", exc_info=True)
                             except Exception:
                                 logger.error("Failed to write terminal history to DB", exc_info=True)
+                    # ps* tool failed → record exit code + traceback to pstools.log
+                    if exit_code != 0:
+                        _pc_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
+                        if _pc_name in _PSTOOL_NAMES:
+                            _log_pstool_diagnostics(_pc_name, exit_code, entry["output"])
                     # Show or hide error overlay
                     _w = _wrapper_ref[0]
                     if _w is not None:
@@ -1449,6 +1496,11 @@ class TerminalTabsMixin:
                                                 logger.error("OutputParser failed (split)", exc_info=True)
                             except Exception:
                                 logger.error("Failed to write split terminal history to DB", exc_info=True)
+                    # ps* tool failed → record exit code + traceback to pstools.log
+                    if exit_code != 0:
+                        _pc_name = entry["cmd"].split()[0] if entry["cmd"].strip() else ""
+                        if _pc_name in _PSTOOL_NAMES:
+                            _log_pstool_diagnostics(_pc_name, exit_code, entry["output"])
             if _state["cmd"] is not None:
                 # Track alternate-screen mode and skip capture while inside it —
                 # full-screen TUI apps emit endless redraws we don't want stored.

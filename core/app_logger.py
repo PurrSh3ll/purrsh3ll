@@ -1,6 +1,7 @@
 import logging
 import logging.handlers
 import os
+import re
 import sys
 import threading
 
@@ -109,6 +110,93 @@ def setup_logging(base_path: str, debug: bool = False) -> None:
     sh.setLevel(logging.DEBUG if debug else logging.WARNING)
     sh.setFormatter(logging.Formatter("%(levelname)-8s %(name)s — %(message)s"))
     root.addHandler(sh)
+
+
+# ── Secret redaction ────────────────────────────────────────────────────────
+# Applied to pstools.log before anything reaches disk. ps* tools read keys from
+# keyring/config (not argv), so a leak would only ever arrive via an exception
+# message — most realistically a provider key sitting in a URL query param or an
+# Authorization header echoed inside an httpx error. These patterns scrub those
+# forms. Aggressive on purpose: over-redacting a log line is acceptable, leaking
+# a key is not.
+_SECRET_PATTERNS = [
+    # key = value / key: value  (api_key, access_token, auth_token, secret, token, password)
+    (re.compile(r'(?i)\b(api[_-]?key|access[_-]?token|auth[_-]?token|secret|token|password)\b(\s*[=:]\s*)([^\s,;"\'&]+)'),
+     r'\1\2***REDACTED***'),
+    # Authorization: Bearer <token>
+    (re.compile(r'(?i)\b(bearer)\s+([A-Za-z0-9._\-]{8,})'),
+     r'\1 ***REDACTED***'),
+    # Provider-style keys: sk-..., sk-ant-..., etc.
+    (re.compile(r'\bsk-[A-Za-z0-9._\-]{12,}'),
+     '***REDACTED***'),
+    # Keys embedded in URL query params: ?key=...&api_key=...&access_token=...
+    (re.compile(r'(?i)([?&](?:key|api[_-]?key|access[_-]?token|token)=)([^&\s"\']+)'),
+     r'\1***REDACTED***'),
+]
+
+
+def redact_secrets(text: str) -> str:
+    """Scrub anything that looks like an API key / bearer token / secret from text."""
+    if not text:
+        return text
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
+class _SecretRedactingFilter(logging.Filter):
+    """Rewrites the fully-rendered message so secrets never reach the handler's
+    file. Runs before formatting; must never raise (a broken filter would drop
+    the record silently)."""
+    def filter(self, record):  # noqa: A003 - stdlib logging API name
+        try:
+            msg = record.getMessage()
+            red = redact_secrets(msg)
+            if red != msg:
+                record.msg = red
+                record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+def setup_pstools_logging(base_path: str) -> None:
+    """Dedicated rotating log for ps* subprocess failures (exit code + traceback).
+
+    Written ONLY by the main process — the ps* tools run as separate processes in
+    the embedded terminal and never touch this file, so the RotatingFileHandler
+    stays a single writer and rollover is safe. Secrets are scrubbed by the
+    redaction filter before anything hits disk. propagate=False keeps these
+    entries out of app.log and the console. Call after setup_logging().
+    """
+    log_path = os.path.join(base_path, "appdata", "logs", "pstools.log")
+    try:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    except OSError:
+        pass
+
+    plog = logging.getLogger("purrsh3ll.pstools")
+    if plog.handlers:
+        return
+    plog.setLevel(logging.INFO)
+    plog.propagate = False  # keep ps* diagnostics out of app.log / stderr
+
+    try:
+        fh = logging.handlers.RotatingFileHandler(
+            log_path,
+            maxBytes=1 * 1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        )
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(logging.Formatter(
+            fmt="%(asctime)s %(levelname)-8s — %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        fh.addFilter(_SecretRedactingFilter())
+        plog.addHandler(fh)
+    except OSError:
+        plog.addHandler(logging.NullHandler())
 
 
 def install_qt_message_handler() -> None:
