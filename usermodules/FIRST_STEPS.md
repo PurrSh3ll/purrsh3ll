@@ -31,11 +31,7 @@ In AI Settings: provider → paste API key, pick a model, set as active.
 
 ## 2. Verify the Setup
 
-Open a terminal tab and run:
-
-```bash
-psask "what is a reverse shell?"
-```
+Run a quick test — [▶ psask "what is a reverse shell?"](action://run/command/psask%20%22what%20is%20a%20reverse%20shell%3F%22%0A)
 
 If you get a response — you're ready.
 
@@ -67,18 +63,12 @@ If you get a response — you're ready.
 
 RAG lets `psask`, `pschat`, and `psrag` answer questions using your own notes and documents.
 
-```bash
-# Drop your files here — any text, Markdown, or code files
-ls appmodules/BrainDump/
-```
+Drop your files into `appmodules/BrainDump/` — any text, Markdown, or code files ([▶ list the folder](action://run/command/ls%20appmodules%2FBrainDump%2F%0A)). Files are indexed automatically via watchdog — no manual step needed.
 
-Files are indexed automatically via watchdog — no manual step needed.
+Query the knowledge base (click to run):
 
-```bash
-# Query the knowledge base
-psrag "how to enumerate SMB shares"
-psrag --show-sources "common privesc techniques"
-```
+- [▶ psrag "how to enumerate SMB shares"](action://run/command/psrag%20%22how%20to%20enumerate%20SMB%20shares%22%0A)
+- [▶ psrag --show-sources "common privesc techniques"](action://run/command/psrag%20--show-sources%20%22common%20privesc%20techniques%22%0A)
 
 To add a new knowledge base or change the embedding model: **AI Settings → RAG**.
 
