@@ -25,19 +25,15 @@ Security professionals juggle dozens of tools, notes, and context across long en
 
 ---
 
-## Why not just use…?
+## Why not just use ChatGPT, Obsidian, and Claude Code?
 
-Most people already do this — with three or four separate tools. PurrSh3ll folds them into one window:
+That's exactly the stack most people run — in three separate windows. PurrSh3ll folds it into one:
 
-| The usual stack | PurrSh3ll |
+| Instead of… | PurrSh3ll |
 |---|---|
-| Copy-paste between a browser AI and your terminal | AI **in** the terminal, aware of your history and findings |
-| Notes in one app, commands in another | RAG over your own notes, queried straight from the shell |
-| Cloud AI you can't point at client data | Local-first — nothing has to leave the machine |
-| Setting up Claude Code skills & agents by hand | Curated pentest / CTF **skills, subagents, and goal files — one click to power up** |
-| Cleanup = hunting down scattered logs and history | One-click **Erase all data** |
-
-The result is a single place where AI, offensive security, and your workflow actually meet — instead of living in three browser tabs.
+| **ChatGPT** in a browser tab | AI in your terminal, aware of your history — and local, so it works on client data |
+| **Obsidian** for notes | RAG over your own notes, queried straight from the shell |
+| **Claude Code** you wire up yourself | Ready pentest / CTF skills, agents, and goals — one click to power up |
 
 ---
 
