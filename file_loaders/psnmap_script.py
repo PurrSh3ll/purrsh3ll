@@ -967,7 +967,13 @@ class ScriptLauncher(QWidget):
         self.network_button.clicked.connect(self._toggle_network_button)
         top_row.addWidget(self.network_button)
 
-        root_layout.addLayout(top_row)
+        # Chrome (top row + tab buttons) in a container so the visualization view
+        # can hide it and use the full panel height for the page content.
+        self._chrome_header = QWidget(self)
+        _header_layout = QVBoxLayout(self._chrome_header)
+        _header_layout.setContentsMargins(0, 0, 0, 0)
+        _header_layout.setSpacing(6)
+        _header_layout.addLayout(top_row)
 
         buttons_row = QHBoxLayout()
         buttons_row.setContentsMargins(0, 0, 0, 0)
@@ -989,7 +995,16 @@ class ScriptLauncher(QWidget):
 
             buttons_row.addWidget(button)
 
-        root_layout.addLayout(buttons_row)
+        _header_layout.addLayout(buttons_row)
+        root_layout.addWidget(self._chrome_header)
+
+        # Back button — shown only in visualization-fullscreen mode.
+        self._vis_back_btn = QPushButton("← Back", parent=self)
+        self._vis_back_btn.setFixedHeight(28)
+        self._vis_back_btn.setToolTip("Return to the scan configuration view")
+        self._vis_back_btn.clicked.connect(self._exit_visualization_fullscreen)
+        self._vis_back_btn.setVisible(False)
+        root_layout.addWidget(self._vis_back_btn)
 
         self.central_container = QWidget(self)
         self.central_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -1047,13 +1062,18 @@ class ScriptLauncher(QWidget):
         sep1.setFrameShape(QFrame.Shape.HLine)
         sep1.setFrameShadow(QFrame.Shadow.Sunken)
         sep1.setObjectName("line")
-        root_layout.addWidget(sep1)
+        # Footer chrome (all controls below the central view) — hidden in fullscreen.
+        self._chrome_footer = QWidget(self)
+        _footer_layout = QVBoxLayout(self._chrome_footer)
+        _footer_layout.setContentsMargins(0, 0, 0, 0)
+        _footer_layout.setSpacing(6)
+        _footer_layout.addWidget(sep1)
         row1 = QHBoxLayout()
         row1.setContentsMargins(0, 0, 0, 0)
         row1.setSpacing(12)
 
         row1.addStretch(1)
-        root_layout.addLayout(row1)
+        _footer_layout.addLayout(row1)
         row2 = QHBoxLayout()
         row2.setContentsMargins(0, 0, 0, 0)
         row2.setSpacing(12)
@@ -1095,12 +1115,12 @@ class ScriptLauncher(QWidget):
         self.chk_save_result.toggled.connect(lambda _: self._update_terminal_input())
 
         row2.addStretch(1)
-        root_layout.addLayout(row2)
+        _footer_layout.addLayout(row2)
         sep2 = QFrame(self)
         sep2.setFrameShape(QFrame.Shape.HLine)
         sep2.setFrameShadow(QFrame.Shadow.Sunken)
         sep2.setObjectName("line")
-        root_layout.addWidget(sep2)
+        _footer_layout.addWidget(sep2)
         self.advanced_widget = QWidget(parent=self)
         adv_layout = QVBoxLayout(self.advanced_widget)
         adv_layout.setContentsMargins(0, 0, 0, 0)
@@ -1118,7 +1138,7 @@ class ScriptLauncher(QWidget):
         sep3.setObjectName("line")
         adv_layout.addWidget(sep3)
         self.advanced_widget.setVisible(False)
-        root_layout.addWidget(self.advanced_widget)
+        _footer_layout.addWidget(self.advanced_widget)
         bottom_row = QHBoxLayout()
         bottom_row.setContentsMargins(0, 0, 0, 0)
         bottom_row.setSpacing(6)
@@ -1137,7 +1157,8 @@ class ScriptLauncher(QWidget):
         paste_btn.clicked.connect(lambda: self._execute_command(self.terminal_input.toPlainText() or ""))
         bottom_row.addWidget(enter_btn)
         bottom_row.addWidget(paste_btn)
-        root_layout.addLayout(bottom_row)
+        _footer_layout.addLayout(bottom_row)
+        root_layout.addWidget(self._chrome_footer)
 
         self.profile_combo.currentTextChanged.connect(self._update_terminal_input)
         self.target_input.textChanged.connect(self._update_terminal_input)
@@ -1157,6 +1178,12 @@ class ScriptLauncher(QWidget):
             for b in self.buttons:
                 if b is not button and b.isCheckable():
                     b.setChecked(False)
+
+            # Visualization takes over the whole loader: hide all chrome and show
+            # only the page content + a Back button.
+            if name == "visualization":
+                self._enter_visualization_fullscreen()
+                return
 
             target_widget = field_map.get(name)
 
@@ -1182,3 +1209,25 @@ class ScriptLauncher(QWidget):
             any_checked = any(b.isCheckable() and b.isChecked() for b in self.buttons)
             if not any_checked:
                 self.central_stack.setCurrentWidget(self.welcome_field)
+
+    def _enter_visualization_fullscreen(self):
+        """Show the visualization (WebMap page) across the whole loader — hide the
+        top/bottom chrome and reveal only a Back button, so the page gets the full
+        available height."""
+        self._pre_vis_widget = self.central_stack.currentWidget()
+        self.central_stack.setCurrentWidget(self.visualization_field)
+        self._chrome_header.setVisible(False)
+        self._chrome_footer.setVisible(False)
+        self._vis_back_btn.setVisible(True)
+
+    def _exit_visualization_fullscreen(self):
+        """Restore the normal scan-configuration view from fullscreen mode."""
+        self._chrome_header.setVisible(True)
+        self._chrome_footer.setVisible(True)
+        self._vis_back_btn.setVisible(False)
+        self.visualization_button.setChecked(False)
+        prev = getattr(self, "_pre_vis_widget", None)
+        try:
+            self.central_stack.setCurrentWidget(prev if prev is not None else self.welcome_field)
+        except Exception:
+            self.central_stack.setCurrentWidget(self.welcome_field)
