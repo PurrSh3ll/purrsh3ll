@@ -1,7 +1,5 @@
 import os, re, shutil, subprocess, threading, signal, resource, tempfile, time
-import csv
 import logging
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -127,19 +125,6 @@ class ExecutionMixin:
         if self.chk_run_external.isChecked():
             self._execute_external_term(command)
             return
-
-        try:
-            if command.endswith("\n"):
-                cmd_clean = command.rstrip("\n")
-                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                with open(self.script_history_path, "a", encoding="utf-8", newline="") as f:
-                    writer = csv.writer(f)
-                    writer.writerow([cmd_clean, now])
-                    self.history_field.update_data_async()
-
-        except Exception:
-            logger.warning("failed to append command to script history", exc_info=True)
 
         terminal_tabs = self.controller.widgets["terminal_tabs"]
 

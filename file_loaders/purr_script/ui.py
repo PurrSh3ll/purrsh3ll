@@ -11,9 +11,6 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QStackedLayout, QScrollArea, QListView,
 )
 
-from gui.panels.history_script_wdg import HistoryScriptWdg
-from gui.panels.favorites_script_wdg import FavScriptWdg
-
 class UIMixin:
     def _build_ui(self):
 
@@ -67,16 +64,14 @@ class UIMixin:
         buttons_row.setContentsMargins(0, 0, 0, 0)
         buttons_row.setSpacing(6)
 
-        self.favorite_button = QPushButton("favorite", parent=self)
         self.help_button = QPushButton("help", parent=self)
         self.docs_button = QPushButton("docs", parent=self)
         self.readme_button = QPushButton("readme", parent=self)
-        self.history_button = QPushButton("history", parent=self)
         self.notes_button = QPushButton("notes", parent=self)
         self.code_button = QPushButton("code", parent=self)
-        self.buttons = [self.favorite_button, self.help_button, self.docs_button, self.readme_button,
-                         self.history_button, self.notes_button, self.code_button]
-        checkable_names = {"favorite","help", "docs", "readme", "history", "notes", "code"}
+        self.buttons = [self.help_button, self.docs_button, self.readme_button,
+                         self.notes_button, self.code_button]
+        checkable_names = {"help", "docs", "readme", "notes", "code"}
         for button in self.buttons:
             button.setFixedHeight(28)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -131,10 +126,6 @@ class UIMixin:
         self.readme_field.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.readme_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self.favorite_field = FavScriptWdg(fav_path=self.script_favorite_path, parent=self.central_container, main_script = self)
-        self.history_field = HistoryScriptWdg(hist_path= self.script_history_path, fav_path=self.script_favorite_path,
-                                              parent=self.central_container, fav_obj = self.favorite_field)
-
         self.notes_field = QTextEdit()
         self.notes_field.setReadOnly(False)
         self.notes_field.setObjectName("docs")
@@ -146,11 +137,9 @@ class UIMixin:
         self.central_layout.addLayout(self.central_stack, 1)
         root_layout.addWidget(self.central_container, 1)
         self.central_stack.addWidget(self.welcome_field)
-        self.central_stack.addWidget(self.favorite_field)
         self.central_stack.addWidget(self.help_field)
         self.central_stack.addWidget(self.docs_field)
         self.central_stack.addWidget(self.readme_field)
-        self.central_stack.addWidget(self.history_field)
         self.central_stack.addWidget(self.notes_field)
 
         self.central_stack.setCurrentWidget(self.welcome_field)

@@ -14,9 +14,6 @@ import importlib.util
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtCore import QUrl
 
-from gui.panels.history_script_wdg import HistoryScriptWdg
-from gui.panels.favorites_script_wdg import FavScriptWdg
-
 from datetime import datetime
 from pyfiglet import Figlet
 from PyQt6.QtGui import QIntValidator, QFont
@@ -67,8 +64,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self.controller_term_tabs = self.controller.widgets["terminal_tabs"]
 
         self.script_note_path = None
-        self.script_history_path = None
-        self.script_favorite_path = None
 
         self.script_help_path = None
         self.script_docs_path = None
@@ -79,10 +74,8 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self.pip_term_open = False
         self.file_mtime = os.path.getmtime(self.path)
 
-        self.favorite_text = "[-] Your Favorites list is empty. To add a command, go to the History tab and select command"
         self.help_text = "[-] No Help documentation found."
         self.docs_text = "[-] No Docstrings documentation found."
-        self.history_text = "[-] Execution history is empty. The program has not been launched yet."
         self.notes_text = "[-] No notes created yet. You can create and attach notes to the script here."
         self.readme_text = "[-] No readme file found."
 
@@ -96,8 +89,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self._last_processed_out_end = 0
 
         self.get_notes_path()
-        self.get_history_path()
-        self.get_favorite_path()
         self.get_help_path()
         self.get_docs_path()
 
@@ -111,7 +102,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self.update_docs()
         self.update_help()
 
-        self.update_history()
         self.update_notes()
 
         self._build_ui()

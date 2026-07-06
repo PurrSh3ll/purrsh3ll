@@ -126,9 +126,7 @@ class HandlersMixin:
         field_map = {
             "docs": getattr(self, "docs_field", None),
             "help": getattr(self, "help_field", None),
-            "favorite": getattr(self, "favorite_field", None),
             "readme": getattr(self, "readme_field", None),
-            "history": getattr(self, "history_field", None),
             "notes": getattr(self, "notes_field", None),
             "code": getattr(self, "_code_widget", None),
         }

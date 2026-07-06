@@ -24,40 +24,6 @@ class PathsMixin:
             Path(full_note_path).touch(exist_ok=True)
             self.script_note_path = full_note_path
 
-    def get_history_path(self):
-        hash_len = 12
-        p = Path(self.path).expanduser().resolve()
-        base = p.name
-
-        full = str(p)
-        h = hashlib.sha1(full.encode("utf-8")).hexdigest()
-        script_history_folder_path = f"{h[:hash_len]}_{base}_history.csv"
-        full_history_path = os.path.join(self.controller.scripts_history_folder_path, script_history_folder_path)
-        exists = os.path.exists(full_history_path)
-        if exists:
-            self.script_history_path = full_history_path
-        else:
-            Path(self.controller.scripts_history_folder_path).mkdir(parents=True, exist_ok=True)
-            Path(full_history_path).touch(exist_ok=True)
-            self.script_history_path = full_history_path
-
-    def get_favorite_path(self):
-        hash_len = 12
-        p = Path(self.path).expanduser().resolve()
-        base = p.name
-
-        full = str(p)
-        h = hashlib.sha1(full.encode("utf-8")).hexdigest()
-        script_favorite_folder_path = f"{h[:hash_len]}_{base}_favorite.csv"
-        full_favorite_path = os.path.join(self.controller.scripts_favorite_folder_path, script_favorite_folder_path)
-        exists = os.path.exists(full_favorite_path)
-        if exists:
-            self.script_favorite_path = full_favorite_path
-        else:
-            Path(self.controller.scripts_favorite_folder_path).mkdir(parents=True, exist_ok=True)
-            Path(full_favorite_path).touch(exist_ok=True)
-            self.script_favorite_path = full_favorite_path
-
     def get_help_path(self):
         hash_len = 12
         p = Path(self.path).expanduser().resolve()
@@ -111,10 +77,8 @@ class PathsMixin:
     @property
     def detail_texts(self):
         return         {
-            "favorite": self.favorite_text,
             "help": self.help_text,
             "docs": self.docs_text,
             "readme": self.readme_text,
-            "history": self.history_text,
             "notes": self.notes_text,
         }

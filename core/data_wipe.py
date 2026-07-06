@@ -60,11 +60,6 @@ def build_wipe_items(base_path):
                  paths=[logs("terminal_history.db"), logs("terminal_history.db-wal"),
                         logs("terminal_history.db-shm"), logs("testdb")]),
 
-        WipeItem("script_history", "Script & tool run history", default=True,
-                 description="Per-file command history for .py, .purr and psnmap scripts "
-                             "shown in the side panel (scripts_history/).",
-                 paths=[ap("scripts_history")]),
-
         WipeItem("script_notes", "Script notes (.py / .purr)", default=True,
                  description="Notes attached to individual script files in the side panel "
                              "(scripts_notes/).",
@@ -96,10 +91,10 @@ def build_wipe_items(base_path):
                         logs("psai_prompt_stats.json"), logs("psai_tok"),
                         logs("rag_status"), logs(".claude")]),
 
-        WipeItem("script_extras", "Script favorites & generated docs", default=False,
-                 description="Favorite commands and generated docs/help per script "
-                             "(scripts_favorities/, scripts_docs/, scripts_help/).",
-                 paths=[ap("scripts_favorities"), ap("scripts_docs"), ap("scripts_help")]),
+        WipeItem("script_extras", "Script generated docs", default=False,
+                 description="AI-generated docs/help per script (scripts_docs/, "
+                             "scripts_help/).",
+                 paths=[ap("scripts_docs"), ap("scripts_help")]),
 
         WipeItem("system_variables", "Saved system variables", default=False,
                  description="User-defined dynamic variables from the side panel "

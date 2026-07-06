@@ -1,6 +1,5 @@
 import logging
 import os, re, shutil, subprocess, threading, time
-from datetime import datetime
 logger = logging.getLogger(__name__)
 
 from PyQt6.QtGui import QMovie
@@ -206,9 +205,6 @@ class PsnmapOptionsDialog(QDialog):
         ok_button.setFixedWidth(50)
         ok_button.clicked.connect(self.validate_port)
 
-        clear_history_button = QPushButton("Clear history")
-        clear_history_button.clicked.connect(self.clear_history)
-
         clear_profiles_button = QPushButton("Clear profiles")
         clear_profiles_button.clicked.connect(self.clear_profiles)
 
@@ -219,7 +215,6 @@ class PsnmapOptionsDialog(QDialog):
         port_layout.addWidget(label)
         port_layout.addWidget(self.port_input)
         port_layout.addWidget(ok_button)
-        port_layout.addWidget(clear_history_button)
         port_layout.addWidget(clear_profiles_button)
         port_layout.addWidget(add_button)
         port_layout.addStretch()
@@ -317,23 +312,6 @@ class PsnmapOptionsDialog(QDialog):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save changes:\n{e}")
 
-    def clear_history(self):
-        reply = QMessageBox.question(self, "Clear history",
-                                     "Are you sure you want to delete all history entries?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            data["history"] = []
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-            self.parsed_data["history"] = []
-            self.parent._refresh_history_table()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to clear history:\n{e}")
-
     def clear_profiles(self):
         reply = QMessageBox.question(self, "Clear profiles",
                                      "Are you sure you want to delete all profiles?",
@@ -372,7 +350,6 @@ class ScriptLauncher(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.visualization_text = "Enable WebMap using the button aside to see the visualization. Note: This may slow down app performance."
-        self.history_text = "[-] Execution history is empty. The program has not been launched yet."
         self.help_text = "[-] MD HELP HERE"
 
         self._build_ui()
@@ -381,7 +358,6 @@ class ScriptLauncher(QWidget):
     def detail_texts(self):
         return         {
             "visualization": self.visualization_text,
-            "history": self.history_text,
             "help": self.help_text,
         }
 
@@ -540,24 +516,7 @@ class ScriptLauncher(QWidget):
             threading.Thread(target=worker, daemon=True).start()
         open_clean_terminal_nonblocking_paste(command)
 
-    def _append_history(self, command):
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            entry = {
-                "profile_name": self.profile_combo.currentText(),
-                "command": command.strip(),
-                "datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            data.setdefault("history", []).append(entry)
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-        except Exception as e:
-            logger.warning("Failed to append history", exc_info=True)
-
     def _execute_command(self, command):
-        self._append_history(command)
-
         if self.chk_run_external.isChecked():
             self._execute_external_term(command)
             return
@@ -1019,10 +978,9 @@ class ScriptLauncher(QWidget):
         buttons_row.setSpacing(6)
 
         self.visualization_button = QPushButton("visualization", parent=self)
-        self.history_button = QPushButton("history", parent=self)
         self.help_button = QPushButton("help", parent=self)
-        self.buttons = [self.visualization_button, self.history_button, self.help_button]
-        checkable_names = {"visualization", "history", "help"}
+        self.buttons = [self.visualization_button, self.help_button]
+        checkable_names = {"visualization", "help"}
         for button in self.buttons:
             button.setFixedHeight(28)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -1081,25 +1039,10 @@ class ScriptLauncher(QWidget):
 
         self.visualization_layout.addWidget(self.visualization_text_widget)
 
-        self.history_field = QTableWidget()
-        self.history_field.setObjectName("history_table")
-        self.history_field.setColumnCount(4)
-        self.history_field.setHorizontalHeaderLabels(["#", "Profile", "Command", "Date & Time"])
-        self.history_field.horizontalHeader().setStretchLastSection(False)
-        self.history_field.horizontalHeader().setSectionResizeMode(0, self.history_field.horizontalHeader().ResizeMode.ResizeToContents)
-        self.history_field.horizontalHeader().setSectionResizeMode(1, self.history_field.horizontalHeader().ResizeMode.ResizeToContents)
-        self.history_field.horizontalHeader().setSectionResizeMode(2, self.history_field.horizontalHeader().ResizeMode.Stretch)
-        self.history_field.horizontalHeader().setSectionResizeMode(3, self.history_field.horizontalHeader().ResizeMode.ResizeToContents)
-        self.history_field.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.history_field.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.history_field.verticalHeader().setVisible(False)
-        self.history_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
         self.central_layout.addWidget(self.central_stack, 1)
         root_layout.addWidget(self.central_container, 1)
         self.central_stack.addWidget(self.welcome_field)
         self.central_stack.addWidget(self.visualization_field)
-        self.central_stack.addWidget(self.history_field)
         self.central_stack.addWidget(self.help_field)
 
         self.central_stack.setCurrentWidget(self.welcome_field)
@@ -1205,33 +1148,12 @@ class ScriptLauncher(QWidget):
 
         self._update_terminal_input()
 
-    def _refresh_history_table(self):
-        try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            entries = data.get("history", [])
-        except Exception:
-            entries = []
-
-        self.history_field.setRowCount(len(entries))
-        for row, entry in enumerate(reversed(entries)):
-            for col, text in enumerate([
-                str(row + 1),
-                entry.get("profile_name", ""),
-                entry.get("command", ""),
-                entry.get("datetime", ""),
-            ]):
-                lbl = QLabel(text)
-                lbl.setContentsMargins(4, 0, 4, 0)
-                self.history_field.setCellWidget(row, col, lbl)
-
     def _on_checkable_clicked(self, button: QPushButton):
         name = button.text().lower()
         currently_checked = button.isChecked()
 
         field_map = {
             "visualization": getattr(self, "visualization_field", None),
-            "history": getattr(self, "history_field", None),
             "help": getattr(self, "help_field", None),
         }
 
@@ -1243,9 +1165,7 @@ class ScriptLauncher(QWidget):
             target_widget = field_map.get(name)
 
             if target_widget is not None:
-                if name == "history":
-                    self._refresh_history_table()
-                elif name == "help":
+                if name == "help":
                     pass
                 else:
                     text_attr = f"{name}_text"

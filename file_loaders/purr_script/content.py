@@ -923,26 +923,6 @@ class ContentMixin:
 
         self.notes_text = content
 
-    def update_history(self):
-        path = self.script_history_path
-
-        if not os.path.exists(path):
-            self.history_text = "[-] Execution history is empty. The program has not been launched."
-            return
-
-        try:
-            with open(path, "r", encoding="utf-8", newline="") as f:
-                content = f.read()
-        except Exception as e:
-            self.history_text = "[-] Execution history is empty. The program has not been launched."
-            return
-
-        if not content:
-            self.history_text = "[-] Execution history is empty. The program has not been launched."
-            return
-
-        self.history_text = content
-
     def update_docs(self):
 
         NO_DOC = "[-] No Docstrings documentation found."

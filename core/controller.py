@@ -142,8 +142,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.interpreters_json = os.path.join(self.base_path, 'appdata', 'venv_list.json')
             self.imports_map_json = os.path.join(self.base_path, 'appdata', 'imports_map.json')
             self.scripts_notes_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_notes')
-            self.scripts_history_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_history')
-            self.scripts_favorite_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_favorities')
             self.scripts_help_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_help')
             self.scripts_docs_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_docs')
             self.user_guide_path = os.path.join(self.base_path, 'appdata', 'user_guide.md')
@@ -203,8 +201,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.SCRIPT_DATA_FOLDERS = [
                 f"{self.base_path}/appdata/scripts_docs",
                 f"{self.base_path}/appdata/scripts_help",
-                f"{self.base_path}/appdata/scripts_favorities",
-                f"{self.base_path}/appdata/scripts_history",
                 f"{self.base_path}/appdata/scripts_notes",
             ]
 
