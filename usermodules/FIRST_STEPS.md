@@ -12,22 +12,14 @@ Open **AI Settings** from the sidebar and add a profile. Two options:
 
 **Option A — Local (fully offline)**
 
-```bash
-# Install Ollama (included in install_full.sh)
-ollama serve
+Ollama is included in `install_full.sh`. **Click any line below to run it in a terminal:**
 
-# Pull a model — recommended picks:
-ollama pull llama3.2:1b     # ~0.8 GB — very fast, but not very bright (quick tests / weak hardware)
-ollama pull llama3.2        # ~2 GB — balanced starter
+- [▶ ollama serve](action://run/command/ollama%20serve%0A) — start the local Ollama server (run this first)
+- [▶ ollama pull llama3.2:1b](action://run/command/ollama%20pull%20llama3.2%3A1b%0A) — ~0.8 GB, very fast but not very bright (quick tests / weak hardware)
+- [▶ ollama pull fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN](action://run/command/ollama%20pull%20fredrezones55%2FGemma-4-Uncensored-HauhauCS-Aggressive%3Ae2b-SCN%0A) — uncensored + multimodal (understands images too), runs well even on CPU only
+- [▶ ollama pull qwen2.5:7b](action://run/command/ollama%20pull%20qwen2.5%3A7b%0A) — ~4.7 GB, strong all-rounder for a typical 8 GB VRAM GPU
 
-# Uncensored + multimodal (understands images too) — runs well even on CPU only
-ollama pull fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN
-
-# Strong all-rounder for a typical 8 GB VRAM GPU
-ollama pull qwen2.5:7b      # ~4.7 GB
-```
-
-Then in AI Settings: provider → **Ollama**, model → e.g. `llama3.2`, set as active.
+Then in AI Settings: provider → **Ollama**, pick the model you pulled, set as active.
 
 **Option B — Cloud API (no local resources needed)**
 
@@ -59,30 +51,15 @@ If you get a response — you're ready.
 
 ## 3. Learn the ps* Tools
 
-Run these one by one and watch what happens:
+**Click any example to run it in a terminal:**
 
-```bash
-# Generate a shell command from natural language
-pscmd "find all SUID binaries on the system"
-
-# Summarize the output of the last command
-pstldr
-
-# If the last command failed — explain and fix it
-psfix
-
-# Suggest the next pentest step based on your terminal history
-psnext
-
-# Ask a direct question
-psask "explain what /etc/passwd contains"
-
-# Open a persistent chat session
-pschat
-
-# See all available tools
-pshelp
-```
+- [▶ pscmd "find all SUID binaries on the system"](action://run/command/pscmd%20%22find%20all%20SUID%20binaries%20on%20the%20system%22%0A) — generate a shell command from natural language
+- [▶ pstldr](action://run/command/pstldr%0A) — summarize the output of the last command
+- [▶ psfix](action://run/command/psfix%0A) — if the last command failed, explain and fix it
+- [▶ psnext](action://run/command/psnext%0A) — suggest the next pentest step from your terminal history
+- [▶ psask "explain what /etc/passwd contains"](action://run/command/psask%20%22explain%20what%20%2Fetc%2Fpasswd%20contains%22%0A) — ask a direct question
+- [▶ pschat](action://run/command/pschat%0A) — open a persistent chat session
+- [▶ pshelp](action://run/command/pshelp%0A) — see all available tools
 
 ---
 
@@ -111,7 +88,7 @@ To add a new knowledge base or change the embedding model: **AI Settings → RAG
 
 ## 5. Personalize the App
 
-- **Theme** — change from the top menu or sidebar; dozens of built-in themes (Legacy Hacker, Cyberpunk, Red Team, and more)
+- **Theme** — change from the top menu or sidebar; dozens of built-in themes. Click to try one: [Legacy Hacker](action://change/theme/Legacy%20Hacker) · [Cyberpunk](action://change/theme/Cyberpunk) · [Red Team](action://change/theme/Red%20Team) · [Vaporwave](action://change/theme/Vaporwave) · [Default](action://change/theme/default)
 - **Welcome screen** — double-click anywhere on it to edit text, image, or background
 - **Mode Profiles** — save terminal environment presets for different tasks (CTF, recon, reporting)
 - **Snippets** — store reusable commands and code fragments
