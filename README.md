@@ -121,7 +121,7 @@ PurrSh3ll ships with a large collection of built-in color themes and allows full
 <img src="docs/images/cool_themes.png" width="900"/>
 
 ### Cyb3rBreak
-An optional, isolated collection of 13 classic arcade games (breakout, pacman, tetris, snake, pong, and more) for downtime during long scans. On-brand, not a distraction from the real workflow.
+An optional, isolated collection of classic arcade games for downtime during long scans. On-brand, not a distraction from the real workflow.
 
 ---
 
@@ -203,9 +203,7 @@ The core app, Python packages, and QTermWidget are always installed. Optional co
 ollama serve
 
 # Pull a starter model (Full only)
-ollama pull llama3.2:1b     # ~0.8 GB, very fast
-# or, for a typical 8 GB VRAM GPU:
-ollama pull qwen2.5:7b      # ~4.7 GB, strong all-rounder
+ollama pull gemma4:e2b     # light and fast, great for CPU-only
 
 # Launch PurrSh3ll
 purrsh3ll
@@ -265,7 +263,7 @@ purrsh3ll/
 │   └── themes.json            # Theme definitions
 └── appmodules/
     ├── BrainDump/             # Default RAG knowledge base
-    ├── Cyb3rBreak/            # 13 arcade games (downtime)
+    ├── Cyb3rBreak/            # classic arcade games (downtime)
     └── Cyb3rCollector/        # Organized output (listeners, stagers, reports)
 ```
 
@@ -296,16 +294,13 @@ purrsh3ll/
 
 PurrSh3ll is under active development. This is not the final form.
 
-Function calling (tool use) already works for supported models. I have more ideas than time — building this solo alongside a full-time job means progress is steady but not instant. What's coming:
+I have more ideas than time — building this solo alongside a full-time job means progress is steady but not instant. What's coming:
 
-- **Agentic loops** — AI that chains actions and executes multi-step plans, not just single suggestions
-- **MCP client support** — connect to the growing ecosystem of Model Context Protocol servers
-- **Deeper pentest automation** — multi-step agents for recon, enumeration, and reporting
-- **Better multi-agent workflows** — specialized agents collaborating on complex tasks
+- **A custom pentesting / hacking / CTF agent** — my own agent, purpose-built for offensive security and optimized for local models
 
 I'm aware there are still areas that need improvement — some widget colors, a few untested tools, and parts of the UI. These are on my list and will be addressed over time.
 
-> **Note:** End-to-end testing with paid API providers (Anthropic, OpenAI, …) is limited — they are implemented from the official API docs but have not been fully exercised with real keys. If you hit an issue, please open one.
+> **Note:** The app is still under manual testing, and unit tests are on the way. I also haven't tested the paid LLM API providers yet (Anthropic, OpenAI, …) — they are implemented from the official API docs. If you hit an issue, please open one.
 
 If any of this sounds useful — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
 
