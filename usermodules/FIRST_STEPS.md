@@ -16,12 +16,18 @@ Open **AI Settings** from the sidebar and add a profile. Two options:
 # Install Ollama (included in install_full.sh)
 ollama serve
 
-# Pull a model
-ollama pull llama3.2        # ~2 GB, recommended starter
-ollama pull llama3.2:1b     # ~0.8 GB, faster, less capable
+# Pull a model — recommended picks:
+ollama pull llama3.2:1b     # ~0.8 GB — very fast, but not very bright (quick tests / weak hardware)
+ollama pull llama3.2        # ~2 GB — balanced starter
+
+# Uncensored + multimodal (understands images too) — runs well even on CPU only
+ollama pull fredrezones55/Gemma-4-Uncensored-HauhauCS-Aggressive:e2b-SCN
+
+# Strong all-rounder for a typical 8 GB VRAM GPU
+ollama pull qwen2.5:7b      # ~4.7 GB
 ```
 
-Then in AI Settings: provider → **Ollama**, model → `llama3.2`, set as active.
+Then in AI Settings: provider → **Ollama**, model → e.g. `llama3.2`, set as active.
 
 **Option B — Cloud API (no local resources needed)**
 
@@ -98,6 +104,8 @@ psrag --show-sources "common privesc techniques"
 ```
 
 To add a new knowledge base or change the embedding model: **AI Settings → RAG**.
+
+**Ask the AI about PurrSh3ll itself:** open **AI Settings → RAG** and click the **Index** button. Once indexing finishes, you can ask `psask`, `pschat`, or `psrag` about the app's entire functionality — every `ps*` tool, option, and workflow — and the LLM answers using the app's own bundled documentation.
 
 ---
 
