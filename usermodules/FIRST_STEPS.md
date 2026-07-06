@@ -63,7 +63,7 @@ If you get a response — you're ready.
 
 RAG lets `psask`, `pschat`, and `psrag` answer questions using your own notes and documents.
 
-Drop your files into `appmodules/BrainDump/` — any text, Markdown, or code files ([▶ list the folder](action://run/command/ls%20appmodules%2FBrainDump%2F%0A)). Files are indexed automatically via watchdog — no manual step needed.
+Drop your files into `appmodules/BrainDump/` — any text, Markdown, or code files ([▶ list the folder](action://run/command/ls%20%22%24PURRSH_HOME%2Fappmodules%2FBrainDump%2F%22%0A)). Files are indexed automatically via watchdog — no manual step needed.
 
 Query the knowledge base (click to run):
 
