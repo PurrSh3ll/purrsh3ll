@@ -31,9 +31,9 @@ That's exactly the stack most people run — in three separate windows. PurrSh3l
 
 | Instead of… | PurrSh3ll |
 |---|---|
-| **ChatGPT** in a browser tab | AI in your terminal, aware of your history — and local, so it works on client data |
+| Copy-pasting your terminal into **ChatGPT** | AI in your terminal, aware of your history — and local, so it works on client data |
 | **Obsidian** for notes | RAG over your own notes, queried straight from the shell |
-| **Claude Code** you wire up yourself | Ready pentest / CTF skills, agents, and goals — one click to power up |
+| **Claude Code** | Claude Code integration built in — skills, goals, and agent behaviors, launched with one click |
 
 ---
 
