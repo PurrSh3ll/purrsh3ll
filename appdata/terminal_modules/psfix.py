@@ -7,6 +7,7 @@ Reads the last command entry from terminal_history.db and sends it to AI.
 import os
 import platform
 import sqlite3
+import subprocess
 import sys
 
 
@@ -209,6 +210,55 @@ def _clean_command(text: str) -> str:
     return text.strip()
 
 
+# Command → terminal_modules file whose `-h` prints that tool's OWN usage.
+# Only tools whose help lives in the python module are listed; commands whose
+# help lives in the zsh wrapper (psopen, pshelp) or that would surface a
+# different tool's help are intentionally omitted, so we never inject wrong or
+# misleading usage. psask/pschat map to psai.py (same family — generic psai help).
+_PSTOOL_MODULE = {
+    "psrag":    "psrag_query.py",
+    "pscmd":    "pscmd.py",
+    "pstldr":   "pstldr.py",
+    "psview":   "psview.py",
+    "psreport": "psreport.py",
+    "psai":     "psai.py",
+    "psask":    "psai.py",
+    "pschat":   "psai.py",
+}
+_PSTOOL_HELP_CAP = 1500   # chars — bound prompt growth (also under psfix --fit)
+
+
+def _pstool_help(cmd: str, base_dir: str) -> str | None:
+    """If the failed command is a ps* tool, return its own `-h` usage text so the
+    model knows the tool's syntax and can propose a valid invocation. Returns None
+    for non-ps* commands or on any failure (fail-safe — never blocks the fix).
+
+    Each ps* tool's `-h` handler is an early sys.exit(0) right after argparse,
+    before any model/network work, so this is just a short Python startup.
+    """
+    try:
+        first = (cmd or "").split()
+        name  = os.path.basename(first[0]) if first else ""
+    except Exception:
+        return None
+    module = _PSTOOL_MODULE.get(name)
+    if not module:
+        return None
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), module)
+    if not os.path.exists(path):
+        return None
+    try:
+        result = subprocess.run(
+            [sys.executable, path, "-h"],
+            capture_output=True, text=True, timeout=4,
+        )
+        text = (result.stdout or "").strip()
+        return text[:_PSTOOL_HELP_CAP] or None
+    except Exception:
+        _dbg(f"could not fetch -h for ps* tool '{name}'")
+        return None
+
+
 def main():
     import argparse
 
@@ -297,6 +347,10 @@ def main():
         _ai._info("Last command exited successfully (exit 0) — nothing to fix.")
         sys.exit(0)
 
+    # If the failed command is a ps* tool, fetch its own -h so the model knows the
+    # tool's syntax when proposing a corrected invocation (fail-safe: None).
+    pstool_help = _pstool_help(cmd, base_dir)
+
     provider         = profile.get("provider", "ollama")
     url              = profile.get("url", "") or _ai._DEFAULT_URLS.get(provider, "")
     model            = profile.get("model", "")
@@ -383,6 +437,8 @@ def main():
         prompt += f"\nFailed command: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
+        if pstool_help:
+            prompt += f"\nUsage help for '{cmd.split()[0]}':\n{pstool_help}\n"
         if history_text:
             prompt += f"\nRecent terminal session history:\n{history_text}\n"
         # Analyze mode never uses function calling: it must show the full
@@ -420,6 +476,8 @@ def main():
         prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
+        if pstool_help:
+            prompt += f"\nUsage help for '{cmd.split()[0]}':\n{pstool_help}\n"
         if use_tools:
             prompt += (
                 "\nExplain concisely why this command failed and what the error means. "
@@ -478,6 +536,8 @@ def main():
         prompt = f"System: {sys_info}\nCommand: {cmd}\nExit code: {exit_code}\n"
         if output:
             prompt += f"Output:\n{output}\n"
+        if pstool_help:
+            prompt += f"\nUsage help for '{cmd.split()[0]}':\n{pstool_help}\n"
         if use_tools:
             prompt += "\nCall fix_command with the corrected shell command."
         else:
