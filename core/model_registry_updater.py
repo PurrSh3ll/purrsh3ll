@@ -26,6 +26,13 @@ LITELLM_URL = (
     "model_prices_and_context_window.json"
 )
 
+# Providers kept as default-only: their per-model registry ctx is NOT populated,
+# so resolution always falls to the curated `default`. Ollama serves `num_ctx`
+# (default 4096, common on CPU-only / VM setups) regardless of a model's
+# architecture-max context, so the liteLLM per-model maxes would overstate the
+# real window. Users needing more set a per-profile override.
+DEFAULT_ONLY_PROVIDERS = {"ollama"}
+
 # Registry section name -> liteLLM `litellm_provider` value. Identity for all of
 # these today, but kept explicit so a divergence is a one-line change.
 PROVIDER_MAP = {
@@ -66,6 +73,17 @@ def build_registry(litellm_data: dict, existing: dict) -> tuple[dict, dict]:
     stats = {"providers": {}, "total_models": 0}
 
     for section, ll_provider in PROVIDER_MAP.items():
+        if section in DEFAULT_ONLY_PROVIDERS:
+            # Force default-only: clear any per-model ctx so resolution uses the
+            # curated `default` (e.g. Ollama's real 4096 num_ctx).
+            sec = new_reg.get(section)
+            if isinstance(sec, dict):
+                sec["models"] = {}
+                sec["no_tools"] = []
+                sec["ctx_note"] = ("default-only: Ollama serves num_ctx (default 4096) "
+                                   "regardless of model; set a per-profile override for more")
+            continue
+
         models: dict[str, int] = {}
         no_tools: list[str] = []
 

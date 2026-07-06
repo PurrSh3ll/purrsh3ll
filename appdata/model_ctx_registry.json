@@ -402,32 +402,9 @@
     "tools_default": null,
     "tools_user_override": null,
     "tools_note": "Tool calling depends on the loaded model. Confirmed support: llama3.1, llama3.2, llama3.3, qwen2.5 (14B+ recommended for production), qwen3, mistral-small3.x, devstral, command-r, command-r-plus. No native support or unreliable: gemma3, mistral-nemo, codestral.",
-    "models": {
-      "codegeex4": 32768,
-      "deepseek-coder-v2-instruct": 32768,
-      "deepseek-coder-v2-lite-instruct": 32768,
-      "deepseek-v3.1:671b-cloud": 163840,
-      "gpt-oss:120b-cloud": 131072,
-      "gpt-oss:20b-cloud": 131072,
-      "internlm2_5-20b-chat": 32768,
-      "llama2": 4096,
-      "llama2:13b": 4096,
-      "llama2:70b": 4096,
-      "llama2:7b": 4096,
-      "llama3": 8192,
-      "llama3.1": 8192,
-      "llama3:70b": 8192,
-      "llama3:8b": 8192,
-      "mistral-7B-Instruct-v0.1": 8192,
-      "mistral-7B-Instruct-v0.2": 32768,
-      "mistral-large-instruct-2407": 65536,
-      "mixtral-8x22B-Instruct-v0.1": 65536,
-      "mixtral-8x7B-Instruct-v0.1": 32768,
-      "qwen3-coder:480b-cloud": 262144
-    },
-    "no_tools": [
-      "codegeex4"
-    ]
+    "models": {},
+    "no_tools": [],
+    "ctx_note": "default-only: Ollama serves num_ctx (default 4096) regardless of model; set a per-profile override for more"
   },
   "huggingface": {
     "default": null,
@@ -471,5 +448,5 @@
       "openai/gpt-oss-20b": 131072
     }
   },
-  "_last_refreshed": "2026-07-06 18:12:48"
+  "_last_refreshed": "2026-07-06 18:15:12"
 }
