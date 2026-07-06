@@ -41,23 +41,6 @@ class PathsMixin:
             Path(full_help_path).touch(exist_ok=True)
             self.script_help_path = full_help_path
 
-    def get_docs_path(self):
-        hash_len = 12
-        p = Path(self.path).expanduser().resolve()
-        base = p.name
-
-        full = str(p)
-        h = hashlib.sha1(full.encode("utf-8")).hexdigest()
-        script_docs_folder_path = f"{h[:hash_len]}_{base}_docs.txt"
-        full_docs_path = os.path.join(self.controller.scripts_docs_folder_path, script_docs_folder_path)
-        exists = os.path.exists(full_docs_path)
-        if exists:
-            self.script_docs_path = full_docs_path
-        else:
-            Path(self.controller.scripts_docs_folder_path).mkdir(parents=True, exist_ok=True)
-            Path(full_docs_path).touch(exist_ok=True)
-            self.script_docs_path = full_docs_path
-
     def _save_notes_to_file(self):
         try:
             current_text = self.notes_field.toPlainText()
@@ -78,7 +61,6 @@ class PathsMixin:
     def detail_texts(self):
         return         {
             "help": self.help_text,
-            "docs": self.docs_text,
             "readme": self.readme_text,
             "notes": self.notes_text,
         }

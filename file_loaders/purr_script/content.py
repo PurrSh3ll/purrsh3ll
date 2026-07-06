@@ -323,7 +323,6 @@ class ContentMixin:
                 self.file_mtime = mtime
 
                 self.btn_refresh_interpreter.click()
-                self.update_docs()
                 self.update_help()
 
     def _make_ascii_title(self) -> str:
@@ -922,79 +921,3 @@ class ContentMixin:
             return
 
         self.notes_text = content
-
-    def update_docs(self):
-
-        NO_DOC = "[-] No Docstrings documentation found."
-
-        try:
-            if not hasattr(self, "path") or not self.path:
-                return
-
-            if not os.path.isfile(self.path):
-                return
-
-            if self.script_docs_path is not None:
-                if os.path.getsize(self.script_docs_path) != 0:
-                    try:
-                        with open(self.script_docs_path, "r", encoding="utf-8") as f:
-                            source = f.read()
-                            self.docs_text = "[+] Found Documentation Strings (loacl cache) \n\n" + source
-                            return
-                    except Exception as e:
-                        logger.debug("failed to read cached script docs", exc_info=True)
-
-            source = open(self.path, "r", encoding="utf-8").read()
-            tree = ast.parse(source, filename=self.path)
-
-            found_docs = []
-
-            module_doc = ast.get_docstring(tree)
-            if module_doc and module_doc.strip():
-                found_docs.append(f"Module:\n{module_doc.strip()}")
-
-            def visit(node_list, class_prefix=None):
-                for node in node_list:
-
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        name = node.name
-                        doc = ast.get_docstring(node)
-
-                        if doc and doc.strip():
-                            if class_prefix:
-                                label = (
-                                    f"Method {class_prefix}.{name}:"
-                                    if isinstance(node, ast.FunctionDef)
-                                    else f"Async Method {class_prefix}.{name}:"
-                                )
-                            else:
-                                label = (
-                                    f"Function {name}:"
-                                    if isinstance(node, ast.FunctionDef)
-                                    else f"Async Function {name}:"
-                                )
-
-                            found_docs.append(f"{label}\n{doc.strip()}")
-
-                        visit(node.body, class_prefix)
-
-                    elif isinstance(node, ast.ClassDef):
-                        cname = node.name
-                        doc = ast.get_docstring(node)
-
-                        if doc and doc.strip():
-                            found_docs.append(f"Class {cname}:\n{doc.strip()}")
-
-                        for item in node.body:
-                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                                visit([item], class_prefix=cname)
-
-            visit(tree.body)
-
-            if not found_docs:
-                self.docs_text = NO_DOC
-            else:
-                self.docs_text = "[+] Found Documentation Strings \n\n" + "\n\n".join(found_docs)
-
-        except Exception as e:
-            logger.warning("Failed to parse docstrings for %s", self.path, exc_info=True)

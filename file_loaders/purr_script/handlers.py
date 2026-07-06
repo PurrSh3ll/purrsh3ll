@@ -91,7 +91,6 @@ class HandlersMixin:
                 self.file_mtime = os.path.getmtime(path)
             except OSError:
                 pass
-            self.update_docs()
             self.update_help()
 
     def _on_checkable_clicked(self, button: QPushButton):
@@ -109,7 +108,6 @@ class HandlersMixin:
         if mtime is not None and mtime != getattr(self, "file_mtime", None):
             self.file_mtime = mtime
             self.update_help()
-            self.update_docs()
 
         if name == "code" and not hasattr(self, "_code_widget"):
             from file_loaders.python_file import Python_file
@@ -124,7 +122,6 @@ class HandlersMixin:
             self.central_stack.addWidget(self._code_widget)
 
         field_map = {
-            "docs": getattr(self, "docs_field", None),
             "help": getattr(self, "help_field", None),
             "readme": getattr(self, "readme_field", None),
             "notes": getattr(self, "notes_field", None),

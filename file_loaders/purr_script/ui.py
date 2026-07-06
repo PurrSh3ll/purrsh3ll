@@ -65,13 +65,12 @@ class UIMixin:
         buttons_row.setSpacing(6)
 
         self.help_button = QPushButton("help", parent=self)
-        self.docs_button = QPushButton("docs", parent=self)
         self.readme_button = QPushButton("readme", parent=self)
         self.notes_button = QPushButton("notes", parent=self)
         self.code_button = QPushButton("code", parent=self)
-        self.buttons = [self.help_button, self.docs_button, self.readme_button,
+        self.buttons = [self.help_button, self.readme_button,
                          self.notes_button, self.code_button]
-        checkable_names = {"help", "docs", "readme", "notes", "code"}
+        checkable_names = {"help", "readme", "notes", "code"}
         for button in self.buttons:
             button.setFixedHeight(28)
             button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -114,12 +113,6 @@ class UIMixin:
         self.help_field.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self.help_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        self.docs_field = QTextEdit()
-        self.docs_field.setReadOnly(True)
-        self.docs_field.setObjectName("docs")
-        self.docs_field.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
-        self.docs_field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
         self.readme_field = QTextEdit()
         self.readme_field.setReadOnly(True)
         self.readme_field.setObjectName("docs")
@@ -138,7 +131,6 @@ class UIMixin:
         root_layout.addWidget(self.central_container, 1)
         self.central_stack.addWidget(self.welcome_field)
         self.central_stack.addWidget(self.help_field)
-        self.central_stack.addWidget(self.docs_field)
         self.central_stack.addWidget(self.readme_field)
         self.central_stack.addWidget(self.notes_field)
 

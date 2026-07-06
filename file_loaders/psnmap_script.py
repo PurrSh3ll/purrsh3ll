@@ -245,12 +245,18 @@ class PsnmapOptionsDialog(QDialog):
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             data["port"] = port
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
+            self._write_purr(data)
             self.parsed_data["port"] = port
             QMessageBox.information(self, "OK", f"Saved port number: {port}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Can't save:\n{e}")
+
+    def _write_purr(self, data):
+        """Persist the .purr JSON, dropping the obsolete per-scan `history` key so
+        existing files are cleaned of it the next time they are saved."""
+        data.pop("history", None)
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
 
     def load_data(self):
         profiles = self.parsed_data.get("profiles", [])
@@ -284,8 +290,7 @@ class PsnmapOptionsDialog(QDialog):
                 with open(self.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 data["profiles"] = profiles
-                with open(self.path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=4, ensure_ascii=False)
+                self._write_purr(data)
                 self.load_data()
                 self.parent.refresh_profiles()
             except Exception as e:
@@ -305,8 +310,7 @@ class PsnmapOptionsDialog(QDialog):
                 with open(self.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 data["profiles"] = profiles
-                with open(self.path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=4, ensure_ascii=False)
+                self._write_purr(data)
                 self.load_data()
                 self.parent.refresh_profiles()
             except Exception as e:
@@ -322,8 +326,7 @@ class PsnmapOptionsDialog(QDialog):
             with open(self.path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             data["profiles"] = []
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
+            self._write_purr(data)
             self.parsed_data["profiles"] = []
             self.load_data()
             self.parent.refresh_profiles()

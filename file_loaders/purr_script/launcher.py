@@ -66,7 +66,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self.script_note_path = None
 
         self.script_help_path = None
-        self.script_docs_path = None
 
         self.name = os.path.splitext(os.path.basename(self.path))[0]
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -75,7 +74,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self.file_mtime = os.path.getmtime(self.path)
 
         self.help_text = "[-] No Help documentation found."
-        self.docs_text = "[-] No Docstrings documentation found."
         self.notes_text = "[-] No notes created yet. You can create and attach notes to the script here."
         self.readme_text = "[-] No readme file found."
 
@@ -90,7 +88,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
 
         self.get_notes_path()
         self.get_help_path()
-        self.get_docs_path()
 
         self._notes_save_timer = QTimer(self)
         self._notes_save_timer.setSingleShot(True)
@@ -99,7 +96,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self._last_saved_notes = None
 
         self.update_readme()
-        self.update_docs()
         self.update_help()
 
         self.update_notes()
