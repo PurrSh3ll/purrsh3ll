@@ -28,7 +28,10 @@ os.environ["TOKENIZERS_PARALLELISM"]    = "false"  # silences HuggingFace fork w
 # Silence Qt category noise on the launching console: the FFmpeg backend dumps
 # every video's stream metadata ("Input #0 …") and the "Using Qt multimedia …"
 # banner under qt.multimedia.ffmpeg, and QImageReader's 256 MB allocation-limit
-# rejections under qt.gui.imageio. Both are routed through Qt's logging categories.
+# rejections under qt.gui.imageio. These are routed through Qt's logging
+# categories on most builds. On some Qt/FFmpeg builds the "Input #0 …" dump is
+# written by libav straight to fd 2 and bypasses these rules — file_loaders/
+# video_file.py redirects fd 2 during media load to catch that case too.
 os.environ["QT_LOGGING_RULES"] = (
     "qt.multimedia.ffmpeg=false;"
     "qt.gui.imageio.warning=false"

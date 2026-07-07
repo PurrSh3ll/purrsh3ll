@@ -32,6 +32,52 @@ try:
 except ImportError:
     _QT_MEDIA_OK = False
 
+# ── Native stderr silencing during media load ─────────────────────────────────
+# QtMultimedia's FFmpeg backend dumps every file's container/stream metadata
+# ("Input #0, mov,mp4 …") via libav's default log callback, which writes straight
+# to file descriptor 2. On some Qt builds that bypasses both QT_LOGGING_RULES and
+# Qt's installed message handler, so the only reliable way to keep the launching
+# console clean is to redirect fd 2 for the brief window while the demuxer probes
+# the file. Reference-counted so overlapping video tabs nest safely; Python's
+# sys.stderr is untouched, so app logging and tracebacks are unaffected.
+_stderr_lock = threading.Lock()
+_stderr_depth = 0
+_stderr_saved_fd = None
+_stderr_devnull_fd = None
+
+
+def _silence_native_stderr_begin():
+    global _stderr_depth, _stderr_saved_fd, _stderr_devnull_fd
+    with _stderr_lock:
+        if _stderr_depth == 0:
+            try:
+                _stderr_saved_fd = os.dup(2)
+                _stderr_devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(_stderr_devnull_fd, 2)
+            except OSError:
+                logger.debug("could not redirect fd 2 for media load", exc_info=True)
+                _stderr_saved_fd = None
+                _stderr_devnull_fd = None
+                return
+        _stderr_depth += 1
+
+
+def _silence_native_stderr_end():
+    global _stderr_depth, _stderr_saved_fd, _stderr_devnull_fd
+    with _stderr_lock:
+        if _stderr_depth == 0:
+            return
+        _stderr_depth -= 1
+        if _stderr_depth == 0 and _stderr_saved_fd is not None:
+            try:
+                os.dup2(_stderr_saved_fd, 2)
+            finally:
+                os.close(_stderr_saved_fd)
+                if _stderr_devnull_fd is not None:
+                    os.close(_stderr_devnull_fd)
+                _stderr_saved_fd = None
+                _stderr_devnull_fd = None
+
 # exiftool: available on Kali, handles all video container formats and extracts
 # GPS, encoder, device info, timestamps — essential for OSINT analysis.
 _EXIFTOOL = None
@@ -132,12 +178,25 @@ class Video_file:
         return outer
 
     def cleanup(self, timeout_ms=100):
+        self._restore_native_stderr()
         try:
             if self._player is not None:
                 self._player.stop()
                 self._player.setSource(QUrl())
         except Exception:
             pass
+
+    def _on_media_status_for_silence(self, status):
+        # Once the demuxer has finished probing (loaded, or failed) the metadata
+        # dump is done — restore stderr. Anything past LoadingMedia qualifies.
+        if status != QMediaPlayer.MediaStatus.LoadingMedia:
+            self._restore_native_stderr()
+
+    def _restore_native_stderr(self):
+        # Idempotent: both mediaStatusChanged and the safety timer may call this.
+        if getattr(self, "_stderr_silenced", False):
+            self._stderr_silenced = False
+            _silence_native_stderr_end()
 
     # ------------------------------------------------------------------
     # UI construction — tab contains only video player
@@ -203,7 +262,16 @@ class Video_file:
             self._audio_output.setVolume(self._volume_slider.value() / 100.0)
             self._player.setAudioOutput(self._audio_output)
             self._player.setVideoOutput(self._video_widget)
+
+            # Suppress the FFmpeg backend's "Input #0 …" stderr dump emitted while
+            # it probes the container. Restored once the media status settles, with
+            # a safety timer so fd 2 is never left redirected if that never fires.
+            self._stderr_silenced = False
+            self._player.mediaStatusChanged.connect(self._on_media_status_for_silence)
+            _silence_native_stderr_begin()
+            self._stderr_silenced = True
             self._player.setSource(QUrl.fromLocalFile(path))
+            QTimer.singleShot(4000, self._restore_native_stderr)
 
             self._player.durationChanged.connect(self._on_duration_changed)
             self._player.positionChanged.connect(self._on_position_changed)
