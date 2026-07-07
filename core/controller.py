@@ -459,6 +459,23 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         except Exception:
             return self._fallback_ctx_window(provider)
 
+    def _get_active_provider(self):
+        """Provider name of the active API profile (lowercase), or '' if none.
+        Used to annotate the activity-log panel; kept off the compact label."""
+        try:
+            with open(self.api_profiles_path, encoding="utf-8") as f:
+                data = json.load(f)
+            active_name = data.get("active", "")
+            profile = next(
+                (p for p in data.get("profiles", []) if p.get("name") == active_name),
+                None,
+            )
+            if profile is None:
+                return ""
+            return (profile.get("provider", "") or "").lower()
+        except Exception:
+            return ""
+
     @staticmethod
     def _fmt_ctx(n):
         if n >= 1_000_000:
@@ -472,14 +489,18 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         return (f"color: {self.actual_theme.get('foreground', {}).get('text', '#ffffff')};"
                 f" font-size: 11px; background: transparent;")
 
-    def flash_status(self, text):
+    def flash_status(self, text, log_text=None):
         """Show a transient message in the bottom-left status label for 10s.
 
         Single gateway for every source (CTX estimate, RAG index progress,
         model-loading notices…). Last message wins: any new call overrides the
         previous text and restarts the 10s timer, after which the label falls
         back to "PurrSh3ll". The text color is always the uniform theme text
-        color — no per-message coloring."""
+        color — no per-message coloring.
+
+        `log_text` lets the activity-log panel carry more than the compact label:
+        when given, the label still shows `text` but the panel records `log_text`
+        (e.g. the CTX bar in the label, CTX bar + provider in the panel)."""
         lbl = self.widgets.get("prompt_token_label")
         if lbl is None:
             return
@@ -488,7 +509,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         self._psai_tok_hide.stop()
         self._psai_tok_hide.start(10_000)
         # Record into the in-memory activity log and live-refresh the popup if open.
-        self._status_log.append((time.strftime("%H:%M:%S"), text))
+        self._status_log.append((time.strftime("%H:%M:%S"), log_text if log_text is not None else text))
         popup = self.widgets.get("status_log_popup")
         if popup is not None and popup.isVisible():
             self._populate_status_log()
@@ -562,16 +583,19 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             pct = round(n / ctx * 100, 1)
             if n > ctx:
                 pct_str = f"{pct:.0f}%"
-                self.flash_status(f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}")
+                label = f"⛔ CTX_OVER ▓▓▓▓▓▓▓▓▓▓ {pct_str}"
             else:
                 steps  = max(1, round(pct / 5))   # 20 steps, each = 5%
                 full   = steps // 2
                 half   = steps % 2
                 bar    = "▓" * full + "▒" * half + "░" * (10 - full - half)
                 pct_str = f"{pct:.0f}%" if pct >= 1 else "<1%"
-                self.flash_status(f"{bar} {pct_str}")
+                label = f"{bar} {pct_str}"
         else:
-            self.flash_status(f"{prompt_str} tok")
+            label = f"{prompt_str} tok"
+        # Provider goes only to the activity-log panel, never the compact label.
+        prov = self._get_active_provider()
+        self.flash_status(label, log_text=f"{label}  ·  {prov}" if prov else None)
 
     def _hide_tok_label(self):
         lbl = self.widgets.get("prompt_token_label")
