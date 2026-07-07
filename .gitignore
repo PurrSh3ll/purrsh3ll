@@ -50,6 +50,10 @@ appmodules/BrainDump/*
 # Nie są to submoduły ani vendored — dzięki temu goły `git clone` jest czysty.
 appdata/agent_modes/skills/
 
+# Ukryty workspace agenta Claude Code (cwd + kopie CLAUDE.md/goal/skills, oraz
+# zagnieżdżone repo git izolujące agenta od źródeł aplikacji). Poza qtree.
+appdata/agent_workspace/
+
 # Pliki audio
 *.wav
 

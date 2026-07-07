@@ -612,7 +612,7 @@ class TerminalTabsMixin:
             self.refresh_terminal_paused_colors()
 
     def _open_agent_ai_tab(self):
-        _logs_path = os.path.join(self.base_path, "appdata", "logs")
+        _logs_path = self._ensure_agent_workspace()
         self._add_new_terminal_tab(**self.console_args)
         _tid = f"terminal_{type(self).terminal_idx}"
         _tabs = self.widgets.get("terminal_tabs")

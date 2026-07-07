@@ -148,6 +148,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.home_dir = os.path.expanduser("~")
             self.app_modules_path = os.path.join(self.base_path, "appmodules")
             self.user_modules_path = os.path.join(self.base_path, "usermodules")
+            # Hidden Claude Code workspace: outside the qtree roots (appmodules/,
+            # usermodules/) so it never shows in the file tree, and gitignored.
+            self.agent_workspace_path = os.path.join(self.base_path, "appdata", "agent_workspace")
             # Cyb3rCollector holds tool output (reports/webmap/stagers). It is
             # created here at startup so the folder always exists on a fresh
             # install without needing a tracked .gitkeep placeholder.
@@ -778,12 +781,35 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
 
+    def _ensure_agent_workspace(self):
+        """Return the hidden Claude Code workspace, creating it on demand.
+
+        Lives at appdata/agent_workspace — outside the qtree roots (appmodules/,
+        usermodules/) so it stays hidden from the file tree, and gitignored by the
+        parent repo. A nested git repo is initialised so Claude Code treats this
+        folder as its project root instead of the whole PurrSh3ll repo; the parent
+        .gitignore covers it, so the nested .git never touches the app repo."""
+        import shutil
+        ws = self.agent_workspace_path
+        os.makedirs(ws, exist_ok=True)
+        if not os.path.isdir(os.path.join(ws, ".git")):
+            git = shutil.which("git")
+            if git:
+                try:
+                    subprocess.run(
+                        [git, "init", "-q"], cwd=ws,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=10, check=False,
+                    )
+                except Exception:
+                    logger.debug("git init for agent workspace failed", exc_info=True)
+        return ws
+
     def apply_agent_files(self, agent_role: str, skills_set: str, goal: str = ""):
         import shutil
-        logs_dir = os.path.join(self.base_path, "appdata", "logs")
-        os.makedirs(logs_dir, exist_ok=True)
+        ws = self._ensure_agent_workspace()
 
-        dst_claude = os.path.join(logs_dir, "CLAUDE.md")
+        dst_claude = os.path.join(ws, "CLAUDE.md")
         if os.path.exists(dst_claude):
             try:
                 os.remove(dst_claude)
@@ -799,7 +825,7 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 except Exception as ex:
                     logger.warning("Failed to copy agent CLAUDE.md from %s", src_claude, exc_info=True)
 
-        dst_goal = os.path.join(logs_dir, "goal.md")
+        dst_goal = os.path.join(ws, "goal.md")
         if os.path.exists(dst_goal):
             try:
                 os.remove(dst_goal)
@@ -815,8 +841,8 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 except Exception:
                     logger.warning("Failed to copy goal from %s", src_goal, exc_info=True)
 
-        dst_skills_root = os.path.join(logs_dir, ".claude", "skills")
-        dst_agents_root = os.path.join(logs_dir, ".claude", "agents")
+        dst_skills_root = os.path.join(ws, ".claude", "skills")
+        dst_agents_root = os.path.join(ws, ".claude", "agents")
         for _dst in (dst_skills_root, dst_agents_root):
             if os.path.isdir(_dst):
                 try:
