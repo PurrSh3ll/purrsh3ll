@@ -74,6 +74,12 @@ def build_wipe_items(base_path):
                              "(chat_sessions/).",
                  paths=[ap("chat_sessions")]),
 
+        WipeItem("agent_workspace", "Claude Code agent workspace", default=True,
+                 description="The hidden Claude Code workspace: agent-created files, the "
+                             "copied CLAUDE.md / goal / skills, its .claude state and the "
+                             "nested git repo (agent_workspace/).",
+                 paths=[ap("agent_workspace")]),
+
         WipeItem("rag_index", "RAG knowledge-base index", default=True,
                  description="Documents and snippets indexed into the vector database "
                              "(rag/chroma_db, index metadata).",
