@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
         self._start_watchers()
         self._load_state()
         self._install_filters()
+        self._trim_history_on_start()
 
     def _setup_window(self):
         self.setWindowTitle("PurrSh3ll v.1.2.0 — Early Access")
@@ -416,6 +417,23 @@ class MainWindow(QMainWindow):
             pass
         self.c.save_session()
 
+    def _trim_history_on_start(self):
+        """Enforce the configured history cap on the persisted DB at startup, so a
+        set limit is honoured across sessions — not only the moment it is changed
+        in Settings. No-op when the previous session cleared its logs on close."""
+        max_entries = getattr(self.c, "terminal_history_max_entries", None)
+        if not isinstance(max_entries, int) or max_entries <= 0:
+            return
+        try:
+            db = self.c._get_term_db() if hasattr(self.c, "_get_term_db") else None
+            if db is not None:
+                deleted = db.trim_to_limit(max_entries)
+                if deleted:
+                    logger.info("history: trimmed %d entry(ies) over cap %d on startup",
+                                deleted, max_entries)
+        except Exception:
+            logger.debug("history trim on startup failed", exc_info=True)
+
     def _stop_watchers(self):
         self.watcher_thread.requestInterruption()
         self.c.watchdog.stop()
@@ -458,6 +476,14 @@ class MainWindow(QMainWindow):
             if db is not None:
                 if getattr(self.c, "delete_logs_at_close", True):
                     db.clear()
+                else:
+                    # Keep the persisted history at or below the configured cap.
+                    max_entries = getattr(self.c, "terminal_history_max_entries", None)
+                    if isinstance(max_entries, int) and max_entries > 0:
+                        try:
+                            db.trim_to_limit(max_entries)
+                        except Exception:
+                            logger.debug("history trim on close failed", exc_info=True)
                 # Checkpoint the WAL into the main db and close the connection so
                 # a clean exit does not leave an ever-growing -wal file behind.
                 db.close()
