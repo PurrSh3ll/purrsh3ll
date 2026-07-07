@@ -549,12 +549,12 @@ Configurable in **File → Settings**:
 | Restore session at start | Re-open terminal tabs from the previous session |
 | Save environment variables at close | Persist env vars between sessions |
 | Apply env vars to all terminals | Sync variables across all open tabs |
-| Clear terminal history on exit | Wipe the SQLite history database on a clean exit |
+| Clear DB history on exit | Wipe the SQLite command-history database on a clean exit |
 | Clear notes on exit | Clear the notes panel on exit |
-| Disable terminal history | Stop recording commands to the history database |
-| Max history entries | Maximum number of entries kept in history |
+| Disable DB history | Stop recording commands to the database |
+| Max DB history entries | Maximum number of entries kept in the database (enforced at startup and on close) |
 
-> **Note:** "Clear terminal history on exit" only runs on a clean shutdown (confirm-exit → Yes). For a guaranteed wipe regardless of how the app closes, use **Edit → Erase all data…**.
+> **Note:** "DB history" is the persistent SQLite command log (`terminal_history.db`) — separate from the terminals' arrow-key shell history, which is ephemeral and never saved. "Clear DB history on exit" only runs on a clean shutdown (confirm-exit → Yes). For a guaranteed wipe regardless of how the app closes, use **Edit → Erase all data…**.
 
 ---
 

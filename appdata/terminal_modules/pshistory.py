@@ -255,7 +255,7 @@ def cmd_stats(conn):
     n_tgt  = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
     n_ports = conn.execute("SELECT COUNT(*) FROM target_ports").fetchone()[0]
 
-    print("PurrSh3ll terminal history DB stats")
+    print("PurrSh3ll DB history stats")
     print(f"  Commands : {n_cmd}")
     print(f"  Findings : {n_find}")
     print(f"  Tags     : {n_tags}")
@@ -341,7 +341,7 @@ def cmd_clear(conn, yes):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Query PurrSh3ll terminal history DB")
+    ap = argparse.ArgumentParser(description="Query PurrSh3ll DB history")
     ap.add_argument("-n", type=int, default=20, help="Number of results (default 20)")
     ap.add_argument("-q", "--search", metavar="PATTERN", help="Search commands and output")
     ap.add_argument("--all", dest="show_all", action="store_true", help="Show full history")

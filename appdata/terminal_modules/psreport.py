@@ -1917,7 +1917,7 @@ Generate the complete {fmt_name} report below using exactly this template:
 
         conn_m = _db_connect(base_dir)
         if not conn_m:
-            _ai._err("No terminal history database found.")
+            _ai._err("No DB history found.")
             sys.exit(1)
 
         try:

@@ -309,7 +309,7 @@ def main():
     parser.add_argument("-e", "--explain", action="store_true",
                         help="Explain why the command failed")
     parser.add_argument("-a", "--analyze", action="store_true",
-                        help="Deep analysis using terminal history and working directory")
+                        help="Deep analysis using DB history and working directory")
     parser.add_argument("--fit", action="store_true",
                         help="Used with -a: auto-fit history to model context window (fill-down: "
                              "50%% failed output / 30%% recent / remaining broad)")
@@ -337,7 +337,7 @@ def main():
             "Usage:\n"
             "  psfix                      Paste the corrected command at the prompt\n"
             "  psfix -e, --explain        Explain why the last command failed\n"
-            "  psfix -a, --analyze        Deep analysis with terminal history and cwd context\n"
+            "  psfix -a, --analyze        Deep analysis with DB history and cwd context\n"
             "  psfix --fit                Auto-fit output to model ctx window (head+tail trim)\n"
             "  psfix -a --fit             Analyze: auto-fit output + history (fill-down)\n"
             "  psfix -p, --profile        Use a specific saved profile\n\n"
@@ -380,7 +380,7 @@ def main():
     else:
         entry = _last_terminal_entry(base_dir, terminal=term_id)
         if not entry:
-            _ai._err("No terminal history found — run a command first.")
+            _ai._err("No DB history found — run a command first.")
             sys.exit(1)
         cmd       = entry.get("cmd", "")
         exit_code = entry.get("exit_code", 0)

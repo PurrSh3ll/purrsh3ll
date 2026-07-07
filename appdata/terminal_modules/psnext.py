@@ -307,7 +307,7 @@ def main():
         print(
             "psnext — AI pentest next-step advisor\n\n"
             "Usage:\n"
-            "  psnext                               Suggest next steps based on terminal history\n"
+            "  psnext                               Suggest next steps based on DB history\n"
             "  psnext -c, --cmd                     Output only the best command (no analysis)\n"
             "  psnext -t, --target 192.168.1.0/24  Include target context\n"
             "  psnext -r, --rag                    Enrich with knowledge base context\n"
@@ -384,7 +384,7 @@ def main():
         base_dir, target, _ai._TERMINAL_HIST_LIMIT, ctx_window=ctx_window_fit
     )
     if not has_data:
-        _ai._err("No terminal history found — run some commands first.")
+        _ai._err("No DB history found — run some commands first.")
         sys.exit(1)
 
     sys_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
@@ -449,7 +449,7 @@ def main():
 
     if _ai._SHOW_QUERYING:
         _ai._info(f"Querying {model} via {provider}…\n")
-    _ai._info("Analyzing terminal history for next pentest steps...\n")
+    _ai._info("Analyzing DB history for next pentest steps...\n")
     messages = [{"role": "user", "content": prompt}]
 
     if args.cmd and use_tools:

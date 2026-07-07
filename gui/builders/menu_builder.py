@@ -264,7 +264,7 @@ def build_menu(main_window):
         save_sys_checkbox.setChecked(c.save_system_vars)
         form_behavior.addRow(save_sys_checkbox)
 
-        delete_logs_checkbox = QCheckBox("Clear terminal history on exit", grp_behavior)
+        delete_logs_checkbox = QCheckBox("Clear DB history on exit", grp_behavior)
         delete_logs_checkbox.setChecked(c.delete_logs_at_close)
         form_behavior.addRow(delete_logs_checkbox)
 
@@ -272,7 +272,7 @@ def build_menu(main_window):
         delete_notes_checkbox.setChecked(c.delete_notes_at_close)
         form_behavior.addRow(delete_notes_checkbox)
 
-        disable_history_checkbox = QCheckBox("Disable terminal history", grp_behavior)
+        disable_history_checkbox = QCheckBox("Disable DB history", grp_behavior)
         disable_history_checkbox.setChecked(getattr(c, "terminal_history_disabled", False))
         form_behavior.addRow(disable_history_checkbox)
 
@@ -289,7 +289,7 @@ def build_menu(main_window):
         history_max_row.addWidget(history_max_spin)
         history_max_row.addWidget(history_max_set_btn)
         history_max_row.addWidget(history_max_reset_btn)
-        form_behavior.addRow("Max history entries:", history_max_row)
+        form_behavior.addRow("Max DB history entries:", history_max_row)
 
         # ── Signal handlers ───────────────────────────────────────────────────
         def _save_behavior_key(key, value):
@@ -329,9 +329,9 @@ def build_menu(main_window):
             new_val = history_max_spin.value()
             current = getattr(c, "terminal_history_max_entries", _HISTORY_MAX_DEFAULT)
             msg = QMessageBox(dlg)
-            msg.setWindowTitle("Change history limit")
+            msg.setWindowTitle("Change DB history limit")
             msg.setText(
-                f"Set max history entries to <b>{new_val}</b>?<br><br>"
+                f"Set max DB history entries to <b>{new_val}</b>?<br><br>"
                 "Commands exceeding the limit will be deleted oldest-first.<br>"
                 "This cannot be undone."
             )
@@ -809,7 +809,7 @@ def build_menu(main_window):
         term_history_col.setSpacing(2)
         term_history_col.addLayout(term_history_row)
         term_history_col.addWidget(term_history_hint)
-        form_pstools.addRow("Max terminal turns:", term_history_col)
+        form_pstools.addRow("Max DB history turns:", term_history_col)
 
         def _on_term_history_changed(value):
             _save_llama_key("terminal_history_limit", value)

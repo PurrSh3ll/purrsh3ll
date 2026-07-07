@@ -167,7 +167,7 @@ def main():
             "  psview -p, --profile <name> <image>     Use a specific saved profile\n\n"
             "Supported formats: PNG, JPG, JPEG, WebP, GIF\n\n"
             "Requires a vision-capable model (Claude, GPT-4o, llava, moondream, etc.).\n"
-            "The analysis is saved to terminal history so psnext/psreport can use it.\n"
+            "The analysis is saved to DB history so psnext/psreport can use it.\n"
             "If the model detects security-relevant findings, the entry is tagged 'findings'.\n"
         )
         sys.exit(0)
@@ -239,7 +239,7 @@ def main():
     # ── Save full clean analysis to history ────────────────────────────────────
     _save_to_history(base_dir, filename, clean_analysis, cwd, has_findings)
     findings_note = " [findings tagged]" if has_findings else ""
-    _ai._info(f"\nSaved to terminal history as [psscreenshot: {filename}]{findings_note}\n")
+    _ai._info(f"\nSaved to DB history as [psscreenshot: {filename}]{findings_note}\n")
 
 
 if __name__ == "__main__":
