@@ -105,9 +105,8 @@ class MainWindow(QMainWindow):
             msg.addButton("Later", QMessageBox.ButtonRole.RejectRole)
             msg.exec()
             if msg.clickedButton() is open_btn:
-                from PyQt6.QtGui import QDesktopServices
-                from PyQt6.QtCore import QUrl
-                QDesktopServices.openUrl(QUrl(RELEASES_URL))
+                from core.external_open import open_url
+                open_url(RELEASES_URL)
             return
 
         if status == "up_to_date":
@@ -256,7 +255,8 @@ class MainWindow(QMainWindow):
 
         if action == open_action:
             if path:
-                subprocess.Popen(["xdg-open", path])
+                from core.external_open import open_path
+                open_path(path)
         elif action == copy_path_action:
             if path:
                 QApplication.clipboard().setText(path)

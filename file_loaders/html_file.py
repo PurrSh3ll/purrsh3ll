@@ -5,7 +5,6 @@ import threading
 import tempfile
 import stat
 import re
-import webbrowser
 from PyQt6.sip import isdeleted
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QHBoxLayout, QVBoxLayout, QSizePolicy,
@@ -420,7 +419,8 @@ class Html_file(ChunkedFileLoader):
                     user_response = msg.exec()
 
                     if user_response == QMessageBox.StandardButton.Yes:
-                        webbrowser.open(f"file://{path}")
+                        from core.external_open import open_path
+                        open_path(path)
 
                         confirm = QMessageBox(parent= self.parent.widgets['execution_tabs'])
                         confirm.setStyleSheet(self.qss_QMessagebox_style)

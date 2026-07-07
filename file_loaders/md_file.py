@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QMenu, QMessageBox, QToolTip
 )
 from PyQt6.QtCore import Qt, QObject, QThread, QTimer, QUrl, QRegularExpression, QEvent, QSizeF
-from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QDesktopServices, QAction, QTextImageFormat, QImage
+from PyQt6.QtGui import QTextCharFormat, QColor, QTextCursor, QCursor, QAction, QTextImageFormat, QImage
 
 from gui.widgets.custom_line_edit import ExpandingLineEdit
 from file_loaders.viewer_widgets import Worker, LineNumberArea, TextEditWithLineNumbers
@@ -674,7 +674,8 @@ class Markdown_file(ChunkedFileLoader):
                     return
 
                 if scheme in ("http", "https"):
-                    QDesktopServices.openUrl(url)
+                    from core.external_open import open_url
+                    open_url(url_str)
                     return
 
                 if scheme == "file" or url.isLocalFile():
@@ -682,7 +683,8 @@ class Markdown_file(ChunkedFileLoader):
 
                     if local_path.exists():
                         if local_path.is_dir():
-                            QDesktopServices.openUrl(QUrl.fromLocalFile(str(local_path)))
+                            from core.external_open import open_path
+                            open_path(str(local_path))
                         else:
                             self.parent.open_new_tab_for_terminal(file = str(local_path))
 
@@ -695,7 +697,8 @@ class Markdown_file(ChunkedFileLoader):
 
                 if resolved_path.exists():
                     if resolved_path.is_dir():
-                        QDesktopServices.openUrl(QUrl.fromLocalFile(str(resolved_path)))
+                        from core.external_open import open_path
+                        open_path(str(resolved_path))
                     else:
                         self.parent.open_new_tab_for_terminal(file=str(resolved_path))
                     return

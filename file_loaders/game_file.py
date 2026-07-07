@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import sys
-import webbrowser
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -320,7 +319,8 @@ class Game_file:
             last_run_lbl.setText(_format_last_run(now_ts))
 
             if html_game:
-                webbrowser.open(f"file://{os.path.abspath(path)}")
+                from core.external_open import open_path
+                open_path(os.path.abspath(path))
                 info_edit.append("Opened in system browser.")
                 if logs_frame.isHidden():
                     _toggle_logs()

@@ -256,7 +256,8 @@ class Audio_file:
         open_btn.setFixedHeight(28)
         open_btn.setMinimumWidth(0)
         open_btn.setToolTip("Open with the system default audio player (xdg-open)")
-        open_btn.clicked.connect(lambda: subprocess.Popen(['xdg-open', path]))
+        from core.external_open import open_path
+        open_btn.clicked.connect(lambda: open_path(path))
         title_layout.addWidget(open_btn)
 
         layout.addWidget(title_bar)
