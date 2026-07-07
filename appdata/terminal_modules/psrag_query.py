@@ -823,6 +823,19 @@ def _model_load_status(model_name: str, cache_dir: str, label: str, kind: str = 
     return f"⟳ Loading {label}…"
 
 
+def _model_short(name: str) -> str:
+    """Short, human-friendly model name for status messages: last path segment,
+    with any 'local:' / 'hf:' prefix stripped."""
+    if not name:
+        return "model"
+    n = name
+    if n.startswith("local:"):
+        n = n[6:]
+    elif n.startswith("hf:"):
+        n = n[3:].split(":", 1)[0]
+    return n.rstrip("/").split("/")[-1] or "model"
+
+
 # ── Index listing ─────────────────────────────────────────────────────────────
 
 def _list_index(base_dir: str, preview: int = 100) -> None:
@@ -1029,22 +1042,28 @@ def main():
     rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
 
     _info("Embedding query…")
-    _write_rag_status(_model_load_status(embed_model, cache_dir, "embedding model", "embed"))
+    _write_rag_status(_model_load_status(embed_model, cache_dir, f"embedder {_model_short(embed_model)}", "embed"))
     vec = _embed(query, embed_model, cache_dir)
 
     _info("Searching knowledge base…")
+    _write_rag_status("⟳ Searching knowledge base…")
     pool_n = max(_RERANK_POOL, args.top_n) if rerank_enabled else args.top_n
     chunks = _search(base_dir, vec, pool_n)
 
     if not chunks:
+        _write_rag_status("⚠ RAG: no relevant chunks")
         _err("No relevant chunks found.")
         sys.exit(1)
 
+    _found = len(chunks)
     if rerank_enabled:
         _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
-        _write_rag_status(_model_load_status(rerank_model, cache_dir, "re-ranker model", "rerank"))
+        _write_rag_status(_model_load_status(rerank_model, cache_dir, f"re-ranker {_model_short(rerank_model)}", "rerank"))
+        _write_rag_status(f"⟳ Re-ranking {_found} results…")
         chunks = _rerank(chunks, query, rerank_model, cache_dir)
         chunks = chunks[:args.top_n]
+
+    _write_rag_status(f"✔ RAG: {len(chunks[:args.top_n])}/{_found} chunks")
 
     if args.show_sources:
         _info("Sources:")

@@ -17,7 +17,8 @@ def _rag_fetch_chunks(query: str, base_dir: str, config: dict, top_n: int = 5) -
     sys.path.insert(0, os.path.dirname(__file__))
     try:
         from psrag_query import (_embed, _search, _embedding_model,
-                                  _rerank, _RERANK_POOL, _RERANK_MODEL_DEFAULT)
+                                  _rerank, _RERANK_POOL, _RERANK_MODEL_DEFAULT,
+                                  _write_rag_status, _model_load_status, _model_short)
     except ImportError as e:
         _err(f"RAG unavailable: {e}")
         return None
@@ -30,6 +31,7 @@ def _rag_fetch_chunks(query: str, base_dir: str, config: dict, top_n: int = 5) -
     rerank_model   = _rag_cfg.get("rerank_model", _RERANK_MODEL_DEFAULT)
 
     _info("Embedding query…")
+    _write_rag_status(_model_load_status(embed_model, cache_dir, f"embedder {_model_short(embed_model)}", "embed"))
     try:
         vec = _embed(query, embed_model, cache_dir)
     except Exception as e:
@@ -37,6 +39,7 @@ def _rag_fetch_chunks(query: str, base_dir: str, config: dict, top_n: int = 5) -
         return None
 
     _info("Searching knowledge base…")
+    _write_rag_status("⟳ Searching knowledge base…")
     try:
         pool_n = max(_RERANK_POOL, top_n) if rerank_enabled else top_n
         chunks = _search(base_dir, vec, pool_n)
@@ -45,15 +48,21 @@ def _rag_fetch_chunks(query: str, base_dir: str, config: dict, top_n: int = 5) -
         return None
 
     if not chunks:
+        _write_rag_status("⚠ RAG: no relevant chunks")
         _info("No relevant chunks found — querying without RAG context.")
         return None
 
+    _found = len(chunks)
     if rerank_enabled:
         _info(f"Re-ranking results with {rerank_model.split('/')[-1]}…")
+        _write_rag_status(_model_load_status(rerank_model, cache_dir, f"re-ranker {_model_short(rerank_model)}", "rerank"))
+        _write_rag_status(f"⟳ Re-ranking {_found} results…")
         chunks = _rerank(chunks, query, rerank_model, cache_dir)
 
+    result = chunks[:top_n]
+    _write_rag_status(f"✔ RAG: {len(result)}/{_found} chunks")
     gc.collect()
-    return chunks[:top_n]
+    return result
 
 
 def _rag_build_context(query: str, base_dir: str, config: dict, top_n: int = 5) -> str | None:
