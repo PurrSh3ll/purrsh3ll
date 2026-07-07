@@ -2,7 +2,19 @@
 
 ## Overview
 
-Psnmap is a module for running Nmap scans directly from the application interface. It integrates with **WebMap**, a web-based Nmap results visualizer running inside a Docker container, allowing you to view scan reports in an interactive map.
+Psnmap is a module for running Nmap scans directly from the application interface. It integrates with **WebMap**, a web-based Nmap results visualizer running inside a Docker container, so you can view scan reports in an interactive map.
+
+---
+
+## Controls
+
+Toolbar buttons:
+
+- **⚙ Settings** — configure scan **profiles** (add, edit, delete, clear) and the WebMap **port**.
+- **🔑 Token** — retrieve the WebMap access token; copy it with one click to log in to the WebMap interface.
+- **🌐 / ⛔ Network** — start the WebMap Docker container (**🌐**); the icon turns to **⛔** while it is running, and pressing it again lets you stop it.
+- **visualization** — switch the central view to the WebMap report; use **← Back** to return to the scan configuration.
+- **help** — show this page.
 
 ---
 
@@ -11,9 +23,9 @@ Psnmap is a module for running Nmap scans directly from the application interfac
 **WebMap** is an open-source web application that visualizes Nmap XML scan results in a browser-based interface. It displays host details, open ports, services, and OS information in a clear, readable format.
 
 - WebMap runs as a **Docker container** (`reborntc/webmap`) and is managed automatically by the application.
-- Pressing the **network button** starts the container if it is not already running.
-- WebMap loads XML files from the `appmodules/Cyb3rCollector/webmap/` folder — place your Nmap XML output there to have it appear in the interface.
-- Access to WebMap is protected by a token. Use the **🔑 token button** to retrieve it. The token can be copied with a single click and used to log in to the WebMap interface.
+- Pressing the **🌐 network button** starts the container if it is not already running.
+- WebMap loads XML files from the `appmodules/Cyb3rCollector/webmap/` folder. Enable **WebMap Export** (see below) so scan results are written there and appear in the interface.
+- Access is protected by a token — use the **🔑 token button** to retrieve and copy it.
 
 ---
 
@@ -21,31 +33,27 @@ Psnmap is a module for running Nmap scans directly from the application interfac
 
 1. Select a scan **profile** from the dropdown list.
 2. Enter the **target** (IP address, hostname, or range) in the target field.
-3. Press **Enter** to run the command in the terminal, or **Paste** to insert it without executing.
-4. Optionally, check **external terminal** to open the command in a standalone terminal window.
+3. The command is assembled in the input line at the bottom. Press **⏎** to run it, or **⧉** to paste it into the terminal without executing.
+4. Adjust behaviour with the checkboxes:
+   - **External Terminal** — run the command in a separate, standalone terminal window.
+   - **Keep Session** — reuse the current terminal session instead of opening a new tab. (Mutually exclusive with External Terminal.)
+   - **WebMap Export** — also save the scan's XML output to the WebMap folder so it shows up in the visualizer. (Not available while External Terminal is on.)
 
 ---
 
 ## Profiles
 
-You can manage scan profiles directly in the module:
+Manage scan profiles from the **⚙ settings button**:
 
-- **Add** your own custom Nmap commands to the profile list using the profile manager.
-- **Edit** or **delete** existing profiles at any time.
-- All profiles are stored inside the `.psnmap` file itself — no external configuration needed.
-
----
-
-## History
-
-Every executed command is automatically logged. Open the **history** tab to see a table of past runs, including the profile name, full command, and timestamp. The history is stored inside the `.psnmap` file alongside the profiles.
+- **Add** your own custom Nmap commands to the profile list.
+- **Edit** or **delete** existing profiles, or **Clear profiles** to remove them all.
+- Profiles are stored inside the `.purr` file itself — no external configuration needed.
 
 ---
 
-## .psnmap File
+## The .purr File
 
-The `.psnmap` file is a JSON file that holds all persistent data for this module:
+The `psnmap.purr` file is a JSON file that holds all persistent data for this module:
 
-- `profiles` — list of saved scan profiles with name, command, and description
-- `history` — log of all executed commands
-- `port` — the port on which WebMap is served
+- `profiles` — list of saved scan profiles (name, command, description)
+- `port` — the host port on which WebMap is served
