@@ -514,18 +514,7 @@ def build_menu(main_window):
 
             <hr>
             <b>External Tools &amp; Resources</b><br>
-            • <a href="https://exiftool.org">ExifTool</a> – Artistic / GPL<br>
-            • <a href="https://github.com/ollama/ollama">Ollama</a> – MIT<br>
-            • <a href="https://github.com/sigoden/aichat">aichat</a> – MIT<br>
-            • <a href="https://github.com/SabyasachiRana/WebMap">WebMap</a> – MIT<br>
-            • <a href="https://github.com/open-webui/open-webui">Open WebUI</a> – BSD 3-Clause<br>
-            • <a href="https://github.com/cr-gpt/awesome-claude-code-skills-security">awesome-claude-skills-security</a> – MIT<br>
-            • <a href="https://github.com/anthropics/claude-code">claude-code-pentest skills</a> – MIT<br>
-            • <a href="https://github.com/trilwu/secskills">secskills</a> – MIT<br>
-            • <a href="https://github.com/mahmutka/cybersecurity-claude-skills">cybersecurity-claude-skills</a> – MIT<br>
-            • <a href="https://github.com/transilienceai/communitytools">communitytools</a> – MIT<br>
-            • <a href="https://github.com/agamm/claude-code-owasp">claude-code-owasp</a> – MIT<br>
-            • <a href="https://github.com/0xSteph/pentest-ai-agents">pentest-ai-agents</a> – MIT<br><br>
+            • <a href="https://exiftool.org">ExifTool</a> – Artistic / GPL<br><br>
 
             <hr>
             <b>Copyright &amp; Trademarks</b><br>

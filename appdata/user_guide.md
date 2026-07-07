@@ -25,6 +25,7 @@
 15. [Model Database](#model-database)
 16. [Session & Behavior](#session--behavior)
 17. [Maintenance & Data](#maintenance--data)
+18. [Optional Third-Party Tools](#optional-third-party-tools)
 
 ---
 
@@ -569,6 +570,32 @@ Configurable in **File → Settings**:
 Type-to-confirm and a second confirmation guard the action. Stored credentials are removed from the system keyring and the local fallback file.
 
 > **Privacy:** PurrSh3ll is local-first. API keys are kept in the system keyring (never in logs or history), `ps*` command output is isolated from reports, and secrets are redacted before anything is written to the tool log.
+
+---
+
+## Optional Third-Party Tools
+
+Several integrations are **optional** and **not bundled** with PurrSh3ll. When you enable them, the installer downloads each one on request **directly from its upstream project**, and every tool remains under **its own license**. Because they run as separate programs (subprocess or local HTTP API) — not as parts of PurrSh3ll — they are listed here rather than in **Help → Licenses**.
+
+| Tool | Purpose | License | Source |
+| --- | --- | --- | --- |
+| **Ollama** | Local LLM runtime for offline models | MIT | [github.com/ollama/ollama](https://github.com/ollama/ollama) |
+| **aichat** | CLI LLM client used by some AI commands | MIT | [github.com/sigoden/aichat](https://github.com/sigoden/aichat) |
+| **Open WebUI** | Browser-based chat front-end | BSD 3-Clause | [github.com/open-webui/open-webui](https://github.com/open-webui/open-webui) |
+| **WebMap** | Nmap HTML reporting dashboard | MIT | [github.com/SabyasachiRana/WebMap](https://github.com/SabyasachiRana/WebMap) |
+| **AI skill packs** | Community pentest/security skills for the agent | MIT (each) | see below |
+
+**AI skill packs** are cloned on demand into `appdata/agent_modes/skills/` and are never vendored into the app:
+
+- [awesome-claude-code-skills-security](https://github.com/cr-gpt/awesome-claude-code-skills-security)
+- [claude-code (pentest skills)](https://github.com/anthropics/claude-code)
+- [secskills](https://github.com/trilwu/secskills)
+- [cybersecurity-claude-skills](https://github.com/mahmutka/cybersecurity-claude-skills)
+- [communitytools](https://github.com/transilienceai/communitytools)
+- [claude-code-owasp](https://github.com/agamm/claude-code-owasp)
+- [pentest-ai-agents](https://github.com/0xSteph/pentest-ai-agents)
+
+> **Note:** *Ollama*, *Open WebUI* and other project names are trademarks of their respective owners. PurrSh3ll only integrates with these tools; it does not distribute or modify them. Refer to each upstream repository for its full license terms.
 
 ---
 
