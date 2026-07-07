@@ -758,7 +758,7 @@ def build_menu(main_window):
         chat_history_col.setSpacing(2)
         chat_history_col.addLayout(chat_history_row)
         chat_history_col.addWidget(chat_history_hint)
-        form_pstools.addRow("Max pschat turns:", chat_history_col)
+        form_pstools.addRow("pschat history limit:", chat_history_col)
 
         def _on_chat_history_changed(value):
             _save_llama_key("chat_max_history", value)
@@ -809,7 +809,7 @@ def build_menu(main_window):
         term_history_col.setSpacing(2)
         term_history_col.addLayout(term_history_row)
         term_history_col.addWidget(term_history_hint)
-        form_pstools.addRow("Max DB history turns:", term_history_col)
+        form_pstools.addRow("psfix DB history limit:", term_history_col)
 
         def _on_term_history_changed(value):
             _save_llama_key("terminal_history_limit", value)
