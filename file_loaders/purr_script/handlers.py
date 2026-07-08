@@ -1,7 +1,11 @@
 import os
 import re
+import logging
 
 from PyQt6.QtWidgets import QPushButton
+
+logger = logging.getLogger(__name__)
+
 
 class HandlersMixin:
     def term_recived_data(self, data):
@@ -118,6 +122,10 @@ class HandlersMixin:
                 target_widget=None,
                 threads_list=self.controller.threads
             )
+            # load_file returns the scroll container; keep the loader itself too so
+            # Back can read the editor text and flush edits to disk (the editor's
+            # text_widget/_chunks/save API live on the loader, not the scroll).
+            self._code_loader = loader
             self._code_widget.setParent(self.central_container)
             self.central_stack.addWidget(self._code_widget)
 
@@ -185,6 +193,15 @@ class HandlersMixin:
         self._chrome_header.setVisible(False)
         self._chrome_footer.setVisible(False)
         self._code_back_btn.setVisible(True)
+        # Snapshot the editor text so Back can tell whether the code was edited
+        # (the editor saves asynchronously and preserves the file mtime, so an
+        # mtime check can't detect a change — compare the text instead).
+        loader = getattr(self, "_code_loader", None)
+        self._code_text_on_enter = (
+            loader.text_widget.toPlainText()
+            if loader is not None and getattr(loader, "text_widget", None) is not None
+            else None
+        )
 
     def _exit_code_fullscreen(self):
         """Restore the normal script view from code-fullscreen mode."""
@@ -192,6 +209,32 @@ class HandlersMixin:
         self._chrome_footer.setVisible(True)
         self._code_back_btn.setVisible(False)
         self.code_button.setChecked(False)
+        # If the code was edited in the fullscreen editor, flush it to disk
+        # synchronously (the editor saves on a background thread and preserves the
+        # file mtime), then refresh the interpreter list so the "Missing Python
+        # libraries" detection re-runs against the new contents, and refresh help.
+        loader = getattr(self, "_code_loader", None)
+        edited = (
+            loader is not None
+            and getattr(loader, "text_widget", None) is not None
+            and loader.text_widget.toPlainText() != getattr(self, "_code_text_on_enter", None)
+        )
+        if edited:
+            try:
+                if getattr(loader, "save_timer", None) is not None:
+                    loader.save_timer.stop()
+                loader._save_current_chunk()        # merge editor text into chunks
+                # Synchronous write so check_imports (which reads the file) sees the
+                # new content immediately, without racing the async save thread.
+                loader._write_chunks_to_disk(list(loader._chunks), loader._current_path)
+            except Exception:
+                logger.debug("failed to flush edited code before refresh", exc_info=True)
+            try:
+                self.file_mtime = os.path.getmtime(self.path)
+                self.btn_refresh_interpreter.click()
+                self.update_help()
+            except Exception:
+                logger.debug("failed to refresh interpreter after code edit", exc_info=True)
         # Re-check the tab that was active before fullscreen so its button state
         # matches the restored content.
         prev_btn = getattr(self, "_pre_code_button", None)
