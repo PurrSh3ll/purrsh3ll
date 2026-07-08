@@ -152,7 +152,9 @@ class ObserverRow:
             w.setStyleSheet(self.panel.observable_panel_stylesheet)
         self.row.style().unpolish(self.row)
         self.row.style().polish(self.row)
-        self.remove_button.setEnabled(not confirmed)
+        # Delete stays available even while injected — remove() unsets the
+        # variable from the terminals before dropping the row.
+        self.remove_button.setEnabled(True)
 
     def _apply_refresh_style(self, confirmed: bool):
         value = True if confirmed else None
@@ -163,7 +165,9 @@ class ObserverRow:
         self.row.setProperty("confirmed", value)
         self.row.style().unpolish(self.row)
         self.row.style().polish(self.row)
-        self.remove_button.setEnabled(not confirmed)
+        # Delete stays available even while injected — remove() unsets the
+        # variable from the terminals before dropping the row.
+        self.remove_button.setEnabled(True)
 
     def remove(self):
         row_type = self.type_combo.currentText()
@@ -587,6 +591,25 @@ class ObserverPanel(QWidget):
         else:
             cmd = f'unset {name} 2>/dev/null'
         self._write_to_fifos(cmd, target)
+
+    def unset_all_injected(self):
+        """Unset every currently-injected variable/alias from the running
+        terminals and clear the managed env-vars file, so nothing survives a
+        'Remove all variables'. Must be called before the rows are torn down,
+        because it reads the live row state via _get_confirmed_entries()."""
+        try:
+            entries = self._get_confirmed_entries()
+        except Exception:
+            entries = []
+        for name, _value, row_type in entries:
+            try:
+                self._unset_silently(name, row_type, "all")
+            except Exception:
+                logger.warning("failed to unset '%s' from terminals", name, exc_info=True)
+        try:
+            self._rebuild_env_vars_file([])
+        except Exception:
+            logger.warning("failed to clear managed env-vars file", exc_info=True)
 
     def get_all_rows_data(self):
         data = []

@@ -285,6 +285,13 @@ class PanelManagerMixin:
         self.widgets["op_rows_panel"].create_row()
 
     def delete_all_observer_rows(self):
+        # Unset injected variables/aliases from the terminals (and clear the
+        # managed env-vars file) before tearing the rows down — otherwise the
+        # values keep living in the running shells.
+        panel = self.widgets.get("op_rows_panel")
+        if panel is not None:
+            panel.unset_all_injected()
+
         keys_to_remove = [k for k in self.panel_widgets if k.startswith("observer_row_")]
         for key in keys_to_remove:
             widget = self.panel_widgets.pop(key, None)
