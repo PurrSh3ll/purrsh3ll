@@ -65,8 +65,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
 
         self.script_note_path = None
 
-        self.script_help_path = None
-
         self.name = os.path.splitext(os.path.basename(self.path))[0]
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.missing_libs = None
@@ -87,7 +85,6 @@ class ScriptLauncher(PathsMixin, ContentMixin, ExecutionMixin, UIMixin, Handlers
         self._last_processed_out_end = 0
 
         self.get_notes_path()
-        self.get_help_path()
 
         self._notes_save_timer = QTimer(self)
         self._notes_save_timer.setSingleShot(True)

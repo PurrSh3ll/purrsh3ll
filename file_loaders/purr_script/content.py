@@ -580,16 +580,6 @@ class ContentMixin:
             self.help_text = NO_HELP
             return
 
-        if self.script_help_path is not None:
-            if os.path.getsize(self.script_help_path) != 0:
-                try:
-                    with open(self.script_help_path, "r", encoding="utf-8") as f:
-                        source = f.read()
-                        self.help_text = "[+] Help documentation found (local cache)\n\n" + source
-                        return
-                except Exception as e:
-                    logger.debug("failed to read cached script help", exc_info=True)
-
         try:
             with open(self.path, "r", encoding="utf-8") as f:
                 source = f.read()

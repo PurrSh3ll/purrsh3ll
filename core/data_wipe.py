@@ -97,10 +97,6 @@ def build_wipe_items(base_path):
                         logs("psai_prompt_stats.json"), logs("psai_tok"),
                         logs("rag_status"), logs(".claude")]),
 
-        WipeItem("script_extras", "Script generated help", default=False,
-                 description="AI-generated help text per script (scripts_help/).",
-                 paths=[ap("scripts_help")]),
-
         WipeItem("system_variables", "Saved system variables", default=False,
                  description="User-defined dynamic variables from the side panel "
                              "(dynamic_variables.json). Built-in variables are kept.",

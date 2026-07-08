@@ -142,7 +142,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.interpreters_json = os.path.join(self.base_path, 'appdata', 'venv_list.json')
             self.imports_map_json = os.path.join(self.base_path, 'appdata', 'imports_map.json')
             self.scripts_notes_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_notes')
-            self.scripts_help_folder_path = os.path.join(self.base_path, 'appdata', 'scripts_help')
             self.user_guide_path = os.path.join(self.base_path, 'appdata', 'user_guide.md')
             self.manual_path = os.path.join(self.base_path, 'appdata', 'manual.md')
             self.home_dir = os.path.expanduser("~")
@@ -201,7 +200,6 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self._click_outside_filter = None
 
             self.SCRIPT_DATA_FOLDERS = [
-                f"{self.base_path}/appdata/scripts_help",
                 f"{self.base_path}/appdata/scripts_notes",
             ]
 
