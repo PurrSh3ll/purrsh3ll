@@ -15,6 +15,7 @@ def build_menu_styles(bg, fg, bd, gl) -> dict:
            QMenu {{
                background-color: {bg.get("main_window", "#2B2D30")};
                border: {bd.get("default", "#555")};
+               menu-scrollable: 1;
            }}
            QMenu::item {{
                background-color: 'transparent';
