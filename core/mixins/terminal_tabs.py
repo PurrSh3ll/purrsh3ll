@@ -42,7 +42,7 @@ def _force_term_repaint(term):
 # only psfix sees them — it can then fix a failed ps* command, while normal
 # history/reports (which read `commands`) never show them.
 _PSTOOL_NAMES = frozenset({
-    "psreport", "psrag", "pshistory", "pshelp", "pstldr",
+    "psreport", "psrag", "pshistory", "pshelp", "pstldr", "pshealth",
     "psai", "psask", "pschat", "pscmd", "psopen", "psview",
 })
 # Never logged at all: the fix/suggest meta-tools would create self-referential
