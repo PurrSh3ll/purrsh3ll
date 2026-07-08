@@ -279,6 +279,10 @@ def build_chat_panel(main_window):
         QTimer.singleShot(3000, _fallback)
 
     def _start_web_session():
+        # 'connect' only opens the URL in the embedded browser — it must not run
+        # any launch command nor pop the Info window. 'run' keeps launching the
+        # web-chat command and auto-showing the Info window.
+        is_connect = chat_btn_run.text() == "connect"
         dlg = QDialog(chat_panel)
         dlg.setWindowTitle("Open URL")
         dlg.setMinimumWidth(360)
@@ -320,19 +324,20 @@ def build_chat_panel(main_window):
         if not raw.startswith(("http://", "https://", "file://")):
             raw = "https://" + raw
 
-        # Capture the command before UI state changes
-        _web_launch_cmd = cmd_preview_edit.toPlainText().strip()
-
-        # Remember the container name (--name X) so stop can `docker rm -f` it and
-        # free the RAM it uses. Only when the launch command is genuinely a
-        # `docker run` with a --name — otherwise leave it None so a non-docker
-        # command (or one without --name) triggers no stop command at all.
-        _name_match = re.search(r"--name[= ]+(\S+)", _web_launch_cmd)
-        _web_container_name[0] = (
-            _name_match.group(1)
-            if (_name_match and re.search(r"\bdocker\s+run\b", _web_launch_cmd))
-            else None
-        )
+        # 'run' only: capture the launch command and the container name (--name X)
+        # so stop can `docker rm -f` it and free its RAM — only when the command is
+        # genuinely a `docker run` with a --name. In 'connect' no command runs, so
+        # there is nothing to launch or later stop.
+        if not is_connect:
+            _web_launch_cmd = cmd_preview_edit.toPlainText().strip()
+            _name_match = re.search(r"--name[= ]+(\S+)", _web_launch_cmd)
+            _web_container_name[0] = (
+                _name_match.group(1)
+                if (_name_match and re.search(r"\bdocker\s+run\b", _web_launch_cmd))
+                else None
+            )
+        else:
+            _web_container_name[0] = None
 
         from PyQt6.QtCore import QUrl
         webview = WebPreview(parent=_term_container)
@@ -340,13 +345,13 @@ def build_chat_panel(main_window):
         _term_layout.addWidget(webview)
         _chat_webview[0] = webview
         _enter_running_state()
-        chat_btn_info.setEnabled(True)
+        chat_btn_info.setEnabled(not is_connect)
 
-        # Populate info dialog with a terminal running the launch command
-        _launch_info_terminal(_web_launch_cmd)
-
-        # Show the Info window automatically — exactly as if the user clicked ℹ.
-        _on_info_clicked()
+        # 'run' only: launch the web-chat command in the Info terminal and show the
+        # Info window automatically. 'connect' just displays the URL, no command.
+        if not is_connect:
+            _launch_info_terminal(_web_launch_cmd)
+            _on_info_clicked()
 
     def _launch_info_terminal(command):
         chat_info_dialog.setMinimumSize(520, 380)
