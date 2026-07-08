@@ -27,10 +27,12 @@ class WipeItem:
     """One user-selectable erase category.
 
     kind:
-      "paths"        — delete each entry in `paths` (files, dirs or globs)
-      "dynamic_vars" — clear user-defined variables in dynamic_variables.json
-      "credentials"  — delete API keys from the OS keyring + api_keys.json
-      "docker"       — stop & remove all Docker containers (needs sudo password)
+      "paths"          — delete each entry in `paths` (files, dirs or globs)
+      "dynamic_vars"   — clear user-defined variables in dynamic_variables.json
+      "credentials"    — delete API keys from the OS keyring + api_keys.json
+      "docker"         — stop & remove all Docker containers (needs sudo password)
+      "close_terminals"— close every open terminal tab (live session, not a file)
+      "clear_activity" — clear the in-memory AI-activity log (not a file)
     """
     __slots__ = ("id", "label", "description", "default", "kind", "paths")
 
@@ -51,6 +53,7 @@ def build_wipe_items(base_path):
     """
     def ap(*p):   return os.path.join(base_path, "appdata", *p)
     def logs(*p): return os.path.join(base_path, "appdata", "logs", *p)
+    def am(*p):   return os.path.join(base_path, "appmodules", *p)
 
     return [
         WipeItem("history_db", "Command history database", default=True,
@@ -60,7 +63,7 @@ def build_wipe_items(base_path):
                  paths=[logs("terminal_history.db"), logs("terminal_history.db-wal"),
                         logs("terminal_history.db-shm"), logs("testdb")]),
 
-        WipeItem("script_notes", "Script notes (.py / .purr)", default=True,
+        WipeItem("script_notes", ".py notes", default=True,
                  description="Notes attached to individual script files in the side panel "
                              "(scripts_notes/).",
                  paths=[ap("scripts_notes")]),
@@ -86,9 +89,11 @@ def build_wipe_items(base_path):
                  paths=[ap("rag", "chroma_db"), ap("rag", "index_meta.json"),
                         ap("rag", "excluded_files.json")]),
 
-        WipeItem("images", "Analyzed images / screenshots", default=True,
-                 description="Images collected or analyzed by psview (images/).",
-                 paths=[ap("images")]),
+        WipeItem("cyb3r_collector", "Cyb3rCollector data (scans & reports)", default=True,
+                 description="Nmap/WebMap scan results and generated pentest reports "
+                             "collected by the Cyb3rCollector module "
+                             "(appmodules/Cyb3rCollector/webmap and reports).",
+                 paths=[am("Cyb3rCollector", "webmap"), am("Cyb3rCollector", "reports")]),
 
         WipeItem("logs", "Application logs", default=True,
                  description="Diagnostic logs and crumbs: app.log, pstools.log, prompt "
@@ -96,6 +101,17 @@ def build_wipe_items(base_path):
                  paths=[logs("app.log*"), logs("pstools.log*"),
                         logs("psai_prompt_stats.json"), logs("psai_tok"),
                         logs("rag_status"), logs(".claude")]),
+
+        WipeItem("close_terminals", "Close all terminal tabs", default=True,
+                 description="Close every open terminal tab, discarding their live "
+                             "scrollback and sessions (a fresh empty terminal is kept). "
+                             "This clears in-memory session state, not a file on disk.",
+                 kind="close_terminals"),
+
+        WipeItem("ai_activity", "AI activity log", default=True,
+                 description="Clear the recent AI-activity messages shown in the "
+                             "bottom-left status popup. In-memory only, not a file on disk.",
+                 kind="clear_activity"),
 
         WipeItem("system_variables", "Saved system variables", default=False,
                  description="User-defined dynamic variables from the side panel "
@@ -248,6 +264,32 @@ def _wipe_docker():
     return f"removed {removed or len(ids)} container(s)"
 
 
+def _close_terminals(controller):
+    """Close every open terminal tab via the controller (a GUI action — delegated
+    so this module stays PyQt-free). Returns a human-readable detail string."""
+    if controller is None or not hasattr(controller, "close_all_terminals"):
+        return "no terminals to close"
+    try:
+        n = controller.close_all_terminals()
+        return f"closed {n} terminal tab(s)"
+    except Exception as e:
+        logger.warning("data_wipe: closing terminals failed", exc_info=True)
+        return f"failed: {e}"
+
+
+def _clear_activity(controller):
+    """Clear the in-memory AI-activity log via the controller (a GUI action —
+    delegated so this module stays PyQt-free)."""
+    if controller is None or not hasattr(controller, "clear_activity_log"):
+        return "no activity log"
+    try:
+        n = controller.clear_activity_log()
+        return f"cleared {n} entr{'y' if n == 1 else 'ies'}"
+    except Exception as e:
+        logger.warning("data_wipe: clearing activity log failed", exc_info=True)
+        return f"failed: {e}"
+
+
 def wipe(base_path, selected_ids, controller=None):
     """Erase the selected categories. Returns {id: (ok: bool, detail: str)}.
 
@@ -287,6 +329,10 @@ def wipe(base_path, selected_ids, controller=None):
                 detail = _wipe_credentials(base_path)
             elif item.kind == "docker":
                 detail = _wipe_docker()
+            elif item.kind == "close_terminals":
+                detail = _close_terminals(controller)
+            elif item.kind == "clear_activity":
+                detail = _clear_activity(controller)
             else:
                 detail = "unknown category"
             report[wid] = (True, detail)

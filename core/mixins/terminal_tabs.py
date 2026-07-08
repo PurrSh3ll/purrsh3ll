@@ -1104,6 +1104,25 @@ class TerminalTabsMixin:
         self.update_dropdown_terminals()
         self.update_dropdown_menu_terminals()
 
+    def close_all_terminals(self):
+        """Close every open terminal tab, tearing down their live sessions and
+        scrollback. The app always keeps one terminal, so the last close spawns a
+        fresh empty one (via _close_terminal_tab's guard). Returns the number of
+        tabs that were closed."""
+        tabs = self.widgets.get("terminal_tabs")
+        if tabs is None:
+            return 0
+        closed = 0
+        # Close extra tabs from the end down…
+        while tabs.count() > 1:
+            self._close_terminal_tab(tabs.count() - 1)
+            closed += 1
+        # …then replace the final one with a fresh terminal to drop its scrollback.
+        if tabs.count() == 1:
+            self._close_terminal_tab(0)
+            closed += 1
+        return closed
+
     def refresh_terminal_paused_colors(self):
         tabs = self.widgets.get("terminal_tabs")
         if tabs is None:

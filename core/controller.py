@@ -525,6 +525,19 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         for ts, text in reversed(self._status_log):
             lst.addItem(f"{ts}  {text}")
 
+    def clear_activity_log(self):
+        """Clear the in-memory AI-activity log (the bottom-left status popup) and
+        refresh it if it is currently open. Returns the number of entries removed."""
+        n = len(self._status_log)
+        self._status_log.clear()
+        try:
+            popup = self.widgets.get("status_log_popup")
+            if popup is not None and popup.isVisible():
+                self._populate_status_log()
+        except Exception:
+            logger.debug("failed to refresh activity-log popup after clear", exc_info=True)
+        return n
+
     def toggle_status_log_popup(self):
         popup = self.widgets.get("status_log_popup")
         if popup is None:
