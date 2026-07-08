@@ -28,7 +28,9 @@ def open_erase_data_dialog(controller, parent):
     dlg.resize(560, 640)
     dlg.setSizeGripEnabled(True)
     try:
-        dlg.setStyleSheet(controller.messagebox_stylesheet)
+        # Full theme dialog stylesheet (matches the current theme's window
+        # background); messagebox_stylesheet doesn't paint the QDialog itself.
+        dlg.setStyleSheet(controller.dialog_stylesheet)
     except Exception:
         pass
 
@@ -76,14 +78,18 @@ def open_erase_data_dialog(controller, parent):
         checks[it.id] = cb
     form.addStretch(1)
     scroll.setWidget(inner)
+    try:
+        # Theme the scrollbar and make the scroll area / viewport / inner widget
+        # transparent so they inherit the themed QDialog background instead of the
+        # default palette colour.
+        scroll.setStyleSheet(
+            controller.scroll_stylesheet +
+            "QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
+        inner.setStyleSheet("background: transparent;")
+    except Exception:
+        pass
     root.addWidget(scroll, 1)
-
-    confirm_lbl = QLabel("Type ERASE to confirm:")
-    confirm_lbl.setStyleSheet("font-size: 11px;")
-    root.addWidget(confirm_lbl)
-    confirm_edit = QLineEdit()
-    confirm_edit.setPlaceholderText("ERASE")
-    root.addWidget(confirm_edit)
 
     btn_row = QHBoxLayout()
     btn_row.addStretch(1)
@@ -98,11 +104,11 @@ def open_erase_data_dialog(controller, parent):
         return any(cb.isChecked() for cb in checks.values())
 
     def _update_enabled():
-        erase_btn.setEnabled(confirm_edit.text().strip() == "ERASE" and _any_checked())
+        erase_btn.setEnabled(_any_checked())
 
     for cb in checks.values():
         cb.stateChanged.connect(lambda *_: _update_enabled())
-    confirm_edit.textChanged.connect(lambda *_: _update_enabled())
+    _update_enabled()
 
     def _set_all(state):
         for cb in checks.values():
