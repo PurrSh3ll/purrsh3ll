@@ -364,6 +364,14 @@ def build_menu(main_window):
             c.height = h
             c.start_x = x
             c.start_y = y
+            # Apply the new geometry to the live window immediately (same call the
+            # main window uses at startup) so changes don't wait for a restart.
+            # Skipped while maximized — Full window overrides explicit geometry.
+            try:
+                if not main_window.isMaximized():
+                    main_window.setGeometry(x, y, w, h)
+            except Exception:
+                logger.debug("failed to apply window geometry live", exc_info=True)
             if not os.path.exists(c.config_path):
                 return
             try:
