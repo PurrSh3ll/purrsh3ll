@@ -2878,6 +2878,53 @@ def build_menu(main_window):
             temp_row.addWidget(temp_reset_btn)
             temp_widget.setVisible(is_temp)
 
+            # System prompt — plain-text model role/behaviour, saved to
+            # custom_system and prepended as a system message (psask/pschat/ai_chat).
+            # Mutually exclusive with Custom parameters, whose JSON can carry its
+            # own "system" key.
+            saved_system = profile.get("custom_system", "")
+            is_system    = bool(saved_system) and not is_custom
+            cb_system    = QCheckBox("System prompt  (model role / behavior)")
+            cb_system.setChecked(is_system)
+
+            _SYS_PLACEHOLDER = (
+                "You are a senior penetration tester assisting on an authorized "
+                "engagement. Be concise, precise, and practical."
+            )
+            system_edit = QTextEdit()
+            system_edit.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+            system_edit.setMinimumHeight(72)
+            system_edit.setVisible(is_system)
+
+            def _set_sys_placeholder():
+                system_edit.setPlainText(_SYS_PLACEHOLDER)
+                system_edit.setStyleSheet("color: gray;")
+
+            def _clear_sys_placeholder():
+                if system_edit.toPlainText() == _SYS_PLACEHOLDER:
+                    system_edit.clear()
+                    system_edit.setStyleSheet("")
+
+            def _restore_sys_placeholder_if_empty():
+                if not system_edit.toPlainText().strip():
+                    _set_sys_placeholder()
+
+            if saved_system:
+                system_edit.setPlainText(saved_system)
+            else:
+                _set_sys_placeholder()
+
+            def _sys_focus_in(e):
+                _clear_sys_placeholder()
+                QTextEdit.focusInEvent(system_edit, e)
+
+            def _sys_focus_out(e):
+                _restore_sys_placeholder_if_empty()
+                QTextEdit.focusOutEvent(system_edit, e)
+
+            system_edit.focusInEvent  = _sys_focus_in
+            system_edit.focusOutEvent = _sys_focus_out
+
             _PLACEHOLDER = (
                 '{"temperature": 0.7,\n'
                 '"thinking": {"type": "disabled"},\n'
@@ -2927,6 +2974,15 @@ def build_menu(main_window):
                 bdlg.adjustSize()
                 bdlg.resize(w, bdlg.height())
 
+            def _on_system_toggled():
+                _is = cb_system.isChecked()
+                if _is and cb_custom.isChecked():
+                    cb_custom.setChecked(False)
+                system_edit.setVisible(_is)
+                w = bdlg.width()
+                bdlg.adjustSize()
+                bdlg.resize(w, bdlg.height())
+
             def _on_custom_toggled():
                 _is = cb_custom.isChecked()
                 if _is:
@@ -2934,6 +2990,7 @@ def build_menu(main_window):
                     cb_hide_think.setChecked(False)
                     cb_fast.setChecked(False)
                     cb_temp.setChecked(False)
+                    cb_system.setChecked(False)
                 custom_edit.setVisible(_is)
                 bdlg.adjustSize()
 
@@ -2945,6 +3002,7 @@ def build_menu(main_window):
             cb_hide_think.stateChanged.connect(_on_other_checkbox_checked)
             cb_fast.stateChanged.connect(_on_other_checkbox_checked)
             cb_temp.stateChanged.connect(_on_temp_toggled)
+            cb_system.stateChanged.connect(_on_system_toggled)
             cb_custom.stateChanged.connect(_on_custom_toggled)
 
             bform.addWidget(cb_think)
@@ -2952,6 +3010,8 @@ def build_menu(main_window):
             bform.addWidget(cb_fast)
             bform.addWidget(cb_temp)
             bform.addWidget(temp_widget)
+            bform.addWidget(cb_system)
+            bform.addWidget(system_edit, stretch=1)
             bform.addWidget(cb_custom)
             bform.addWidget(custom_edit, stretch=1)
 
@@ -2976,6 +3036,8 @@ def build_menu(main_window):
             profile["temperature"]      = round(sb_temp.value(), 2) if cb_temp.isChecked() else ""
             _raw = custom_edit.toPlainText().strip()
             profile["custom_params"]    = (_raw if _raw != _PLACEHOLDER.strip() else "") if cb_custom.isChecked() else ""
+            _raw_sys = system_edit.toPlainText().strip()
+            profile["custom_system"]    = (_raw_sys if _raw_sys != _SYS_PLACEHOLDER else "") if cb_system.isChecked() else ""
             _set_row_meta(row, profile)
             _persist()
 
