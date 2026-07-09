@@ -192,6 +192,7 @@ The core app, Python packages, and QTermWidget are always installed. Optional co
 | **WebMap** | Nmap result visualizer (Docker image) |
 | **Voice support** | Microphone, portaudio, Faster-Whisper |
 | **AI Skills** | Cybersecurity skill/agent sets for Claude Code |
+| **cyber games** | Hacker-style mini-games for the Cyb3rBreak module |
 
 > ☕ **Note:** A full installation with all components may take **15–40 minutes** depending on your internet speed. Ollama and Docker images are downloaded during the process. Grab a big coffee — you'll need it.
 
