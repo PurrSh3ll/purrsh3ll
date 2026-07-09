@@ -166,13 +166,9 @@ def main():
             sys.stderr.write(cmd + "\n")
             sys.stderr.flush()
             print(cmd)
-        else:
-            # Fallback to text path if the tool call fails
-            response = _run_text()
-            if response:
-                cmd = _clean_command(response)
-                if cmd:
-                    print(cmd)
+        # No text fallback: if the tool call fails (e.g. the model has no function
+        # calling), the error from _run_llm_tool_call is surfaced as-is so the user
+        # can fix the profile's tools setting, instead of silently degrading.
     else:
         response = _run_text()
         if response:

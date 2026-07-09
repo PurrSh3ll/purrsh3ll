@@ -939,6 +939,8 @@ def _call_openai_compat_tool(model: str, messages: list, tool_def: dict,
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception as e:
         _err(f"Tool call failed: {e}")
+        _err("If this model has no function calling, turn OFF tools for this "
+             "profile in AI Settings → API Providers (or pick a model that supports it).")
         return None
 
     try:
@@ -999,6 +1001,8 @@ def _call_anthropic_tool(model: str, messages: list, tool_def: dict,
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
     except Exception as e:
         _err(f"Tool call failed: {e}")
+        _err("If this model has no function calling, turn OFF tools for this "
+             "profile in AI Settings → API Providers (or pick a model that supports it).")
         return None
 
     try:

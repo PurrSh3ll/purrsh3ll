@@ -597,11 +597,9 @@ def main():
             fix = _ai._run_llm_tool_call(provider, model, messages, _FIX_TOOL, url, api_key)
             if fix:
                 print(fix)
-            else:
-                # Fallback to text path if tool call fails
-                response = _ai._run_llm(provider, model, messages, url, api_key, disable_thinking, custom_params, hide_thinking, temperature)
-                if response:
-                    print(_clean_command(response))
+            # No text fallback: a failed tool call (e.g. model without function
+            # calling) surfaces its error as-is so the user can fix the profile,
+            # instead of silently retrying via the text path.
         elif args.paste_mode:
             import io
             _buf = io.StringIO()
