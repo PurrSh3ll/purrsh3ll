@@ -133,35 +133,91 @@ def _print_stats(out_tok: int, elapsed: float, tps: float, in_tok: int = 0):
     sys.stderr.flush()
 
 
-def _debug_format_content(content) -> str:
-    """Format a message content for --debug output.
-    Strings are returned as-is; multimodal lists replace image data with a
-    size summary so megabytes of base64 don't flood the terminal."""
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content)
-    parts = []
-    for part in content:
-        ptype = part.get("type", "")
-        if ptype == "text":
-            parts.append(part.get("text", ""))
-        elif ptype == "image_url":
-            url_val = part.get("image_url", {}).get("url", "")
-            if ";base64," in url_val:
-                media   = url_val.split("data:", 1)[-1].split(";base64,")[0]
-                size_kb = len(url_val.split(";base64,", 1)[1]) * 3 // 4 // 1024
-                parts.append(f"[image: {media}, ~{size_kb} KB]")
-            else:
-                parts.append(f"[image_url: {url_val[:80]}]")
-        elif ptype == "image":
-            src     = part.get("source", {})
-            media   = src.get("media_type", "?")
-            size_kb = len(src.get("data", "")) * 3 // 4 // 1024
-            parts.append(f"[image: {media}, ~{size_kb} KB]")
+# ── Request debug dump (--debug) ──────────────────────────────────────────────
+
+def _mask_secret(s: str) -> str:
+    """Redact a secret, revealing only its length and last 4 chars so the user
+    can confirm the right key/profile is used without exposing it."""
+    if not s:
+        return "<empty>"
+    if len(s) <= 4:
+        return "****"
+    return f"****{s[-4:]} (len {len(s)})"
+
+
+def _mask_headers(headers: dict) -> dict:
+    """Return a copy of headers with any API-key-bearing value redacted."""
+    masked = {}
+    for k, v in (headers or {}).items():
+        kl = k.lower()
+        if kl == "authorization":
+            parts = str(v).split(" ", 1)
+            masked[k] = f"{parts[0]} {_mask_secret(parts[1])}" if len(parts) == 2 else _mask_secret(str(v))
+        elif kl in ("x-api-key", "api-key"):
+            masked[k] = _mask_secret(str(v))
         else:
-            parts.append(f"[{ptype}]")
-    return "\n".join(parts)
+            masked[k] = v
+    return masked
+
+
+def _sanitize_body_for_debug(body: dict) -> dict:
+    """Deep-copy the request body and replace image payloads with size summaries
+    so a --debug dump doesn't flood the terminal with megabytes of base64."""
+    import copy
+    b = copy.deepcopy(body)
+    msgs = b.get("messages")
+    if isinstance(msgs, list):
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            content = m.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    ptype = part.get("type", "")
+                    if ptype == "image_url":
+                        url_val = part.get("image_url", {}).get("url", "")
+                        if ";base64," in url_val:
+                            media   = url_val.split("data:", 1)[-1].split(";base64,")[0]
+                            size_kb = len(url_val.split(";base64,", 1)[1]) * 3 // 4 // 1024
+                            part["image_url"]["url"] = f"[image: {media}, ~{size_kb} KB]"
+                    elif ptype == "image":
+                        src = part.get("source", {})
+                        if src.get("data"):
+                            media   = src.get("media_type", "?")
+                            size_kb = len(src.get("data", "")) * 3 // 4 // 1024
+                            src["data"] = f"[image: {media}, ~{size_kb} KB]"
+            # Ollama native carries images as a message-level base64 list
+            imgs = m.get("images")
+            if isinstance(imgs, list):
+                m["images"] = [f"[image ~{len(str(x)) * 3 // 4 // 1024} KB]" for x in imgs]
+    return b
+
+
+def _debug_dump_request(provider: str, url: str, method: str, headers: dict, body: dict):
+    """Under --debug, print the actual on-the-wire request: endpoint, masked
+    headers (API key redacted) and the full JSON body with image data replaced
+    by size summaries — so you can see exactly what lands in which field.
+    stderr only; never prints the raw API key."""
+    if not _DEBUG_PROMPT:
+        return
+    try:
+        safe_body    = _sanitize_body_for_debug(body)
+        safe_headers = _mask_headers(headers)
+        w = sys.stderr.write
+        # Opening/closing separators in bright cyan so the block boundaries stand
+        # out; inner labels stay yellow, the JSON body is left uncoloured.
+        w("\033[96m[debug] ── HTTP request ─────────────────────────────────\033[0m\n")
+        w(f"\033[33m[debug] {method} {url}  (provider={provider})\033[0m\n")
+        for k, v in safe_headers.items():
+            w(f"\033[33m[debug]   {k}: {v}\033[0m\n")
+        w("\033[33m[debug] body:\033[0m\n")
+        w(json.dumps(safe_body, indent=2, ensure_ascii=False) + "\n")
+        w("\033[96m[debug] ─────────────────────────────────────────────────\033[0m\n")
+        sys.stderr.flush()
+    except Exception:
+        _dbg("failed to dump debug request")
 
 
 # ── Context window helper ─────────────────────────────────────────────────────
@@ -341,8 +397,10 @@ def _stream_ollama_native(model: str, messages: list, base_url: str,
     if temperature is not None:
         body.setdefault("options", {})["temperature"] = temperature
 
+    _hdrs = {"Content-Type": "application/json"}
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"}, method="POST")
+                                 headers=_hdrs, method="POST")
+    _debug_dump_request("ollama", url, "POST", _hdrs, body)
     collected = []
     _in_thinking = [False]
     _spin_idx    = [0]
@@ -457,6 +515,7 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         "User-Agent":    "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    _debug_dump_request(provider, url, "POST", headers, body)
 
     collected        = []
     _in_thinking     = [False]
@@ -631,6 +690,7 @@ def _stream_anthropic(model: str, messages: list, base_url: str, api_key: str,
         "User-Agent":        "Mozilla/5.0",
     }
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    _debug_dump_request("anthropic", url, "POST", headers, body)
 
     collected = []
     _in_thinking = [False]
@@ -796,13 +856,8 @@ def _run_llm(provider: str, model: str, messages: list, url: str, api_key: str,
              disable_thinking: bool = False, custom_params: dict = None,
              hide_thinking: bool = False, temperature: float = None) -> str:
     """Dispatch to correct runner. Returns full assistant response text."""
-    if _DEBUG_PROMPT:
-        sys.stderr.write("\033[33m[debug] ── prompt messages ──────────────────────────────\033[0m\n")
-        for i, m in enumerate(messages):
-            role = m.get("role", "?")
-            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{_debug_format_content(m.get('content', ''))}\n")
-        sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
-        sys.stderr.flush()
+    # The prompt messages are shown by _debug_dump_request as part of the actual
+    # request body (with images sanitized), so no separate dump is needed here.
     try:
         import time as _time
         _tok  = _estimate_prompt_tokens(messages)
@@ -875,19 +930,14 @@ def _tools_enabled(profile: dict, base_dir: str) -> bool:
 def _run_llm_tool_call(provider: str, model: str, messages: list,
                        tool_def: dict, url: str, api_key: str) -> str | None:
     """Call the model with a single forced tool and return the value of the first
-    string argument.  Returns None on any error (caller falls back to text path).
+    string argument.  Returns None on any error (no fallback — the caller surfaces
+    the error instead of silently degrading to the text path).
 
     tool_def must be an OpenAI-style function dict:
         {"name": "...", "description": "...", "parameters": {"type": "object", ...}}
     """
-    if _DEBUG_PROMPT:
-        sys.stderr.write("\033[33m[debug] ── prompt messages (tool call) ──────────────────\033[0m\n")
-        for i, m in enumerate(messages):
-            role = m.get("role", "?")
-            sys.stderr.write(f"\033[33m[debug] [{i}] role={role}\033[0m\n{_debug_format_content(m.get('content', ''))}\n")
-        sys.stderr.write(f"\033[33m[debug] tool: {tool_def.get('name')}\033[0m\n")
-        sys.stderr.write("\033[33m[debug] ─────────────────────────────────────────────────\033[0m\n")
-        sys.stderr.flush()
+    # The prompt messages and tool schema are shown by _debug_dump_request as part
+    # of the actual request body, so no separate dump is needed here.
     import time as _time
 
     # Emit prompt-token estimate so the GUI ctx indicator updates on the
@@ -933,6 +983,7 @@ def _call_openai_compat_tool(model: str, messages: list, tool_def: dict,
     req = urllib.request.Request(
         endpoint, data=json.dumps(body).encode(), headers=headers, method="POST"
     )
+    _debug_dump_request("openai-compat (tool)", endpoint, "POST", headers, body)
     t0 = _time.time()
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -995,6 +1046,7 @@ def _call_anthropic_tool(model: str, messages: list, tool_def: dict,
     req = urllib.request.Request(
         endpoint, data=json.dumps(body).encode(), headers=headers, method="POST"
     )
+    _debug_dump_request("anthropic (tool)", endpoint, "POST", headers, body)
     t0 = _time.time()
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
