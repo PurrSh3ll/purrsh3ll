@@ -316,17 +316,24 @@ GAMES_DIR="$INSTALL_DIR/appmodules/Cyb3rBreak"
 
 if [[ "$INSTALL_GAMES" == true ]]; then
     info "Cloning Cyb3rBreak games..."
-    if [[ -d "$GAMES_DIR/.git" ]]; then
+    if compgen -G "$GAMES_DIR/*.game" >/dev/null 2>&1; then
         GAMES_OK=true
         info "  Cyb3rBreak already present — skipping"
     else
-        rm -rf "$GAMES_DIR"
-        if git clone --depth 1 "$GAMES_REPO" "$GAMES_DIR" >/dev/null 2>&1; then
+        # Clone to a temp dir and copy only the .game files into place, so the
+        # installed folder holds the games alone (no .git, README, LICENSE, …).
+        _games_tmp=$(mktemp -d)
+        if git clone --depth 1 "$GAMES_REPO" "$_games_tmp" >/dev/null 2>&1 \
+           && compgen -G "$_games_tmp/*.game" >/dev/null 2>&1; then
+            rm -rf "$GAMES_DIR"
+            mkdir -p "$GAMES_DIR"
+            cp "$_games_tmp"/*.game "$GAMES_DIR"/
             GAMES_OK=true
             success "Cyb3rBreak games ready"
         else
             warn "Cyb3rBreak games (clone failed: $GAMES_REPO)"
         fi
+        rm -rf "$_games_tmp"
     fi
 fi
 
