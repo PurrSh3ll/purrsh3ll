@@ -1,15 +1,13 @@
 
-import json
 import logging
 import os
 import sys
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QScrollArea, QWidget, QVBoxLayout, QLabel, QHBoxLayout,
-    QSizePolicy, QTextEdit, QPushButton, QFrame
+    QSizePolicy, QTextEdit, QPushButton, QFrame, QDialog
 )
 from PyQt6.QtGui import QFont, QCursor
 from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment
@@ -27,40 +25,33 @@ def _is_html_game(path: str) -> bool:
         return False
 
 
-def _load_last_run(config_path: str, game_path: str) -> int | None:
+def _render_ascii_title(text: str) -> str:
+    """Render an ANSI-shadow banner on a single row (no wrapping) with every
+    line padded to a uniform width, so a centre-aligned QLabel keeps the block
+    vertically aligned. A wide render width prevents pyfiglet from wrapping long
+    names into a second, offset block of glyphs."""
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data.get("game_last_run", {}).get(game_path)
+        raw = Figlet(font="ansi_shadow", width=400).renderText(text)
     except Exception:
-        return None
+        return f"== {text} =="
+    lines = raw.rstrip("\n").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return f"== {text} =="
+    width = max(len(line) for line in lines)
+    return "\n".join(line.ljust(width) for line in lines)
 
 
-def _save_last_run(config_path: str, game_path: str, ts: int):
-    try:
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            data = {}
-        data.setdefault("game_last_run", {})[game_path] = ts
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        logger.warning("failed to persist game_last_run to config", exc_info=True)
-
-
-def _format_last_run(ts: int | None) -> str:
-    if ts is None:
-        return "Never run"
-    diff = int(datetime.now().timestamp()) - ts
-    if diff < 60:
-        return "Last run: just now"
-    if diff < 3600:
-        return f"Last run: {diff // 60} min ago"
-    if diff < 86400:
-        return f"Last run: {diff // 3600}h ago"
-    return f"Last run: {datetime.fromtimestamp(ts).strftime('%Y-%m-%d')}"
+def _mono_font(size: int = 10) -> QFont:
+    """A guaranteed-monospace font (Courier New is often absent on Linux and
+    silently substituted with a proportional face, which breaks ASCII art)."""
+    font = QFont("DejaVu Sans Mono", size)
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    font.setFixedPitch(True)
+    return font
 
 
 class Game_file:
@@ -75,7 +66,6 @@ class Game_file:
     # ── public entry point ────────────────────────────────────────────────────
     def load_file(self, path, parent=None, target_widget=None, threads_list=None):
         self._controller = parent
-        config_path      = self._controller.config_path
         html_game        = _is_html_game(path)
         script_base      = os.path.splitext(os.path.basename(path))[0]
 
@@ -123,13 +113,10 @@ class Game_file:
         outer_layout.addStretch(2)
 
         # ── ASCII title ───────────────────────────────────────────────────────
-        try:
-            ascii_title = Figlet(font="ansi_shadow").renderText(script_base)
-        except Exception:
-            ascii_title = f"== {script_base} =="
+        ascii_title = _render_ascii_title(script_base)
 
         title_label = QLabel(ascii_title)
-        title_label.setFont(QFont("Courier New", 10))
+        title_label.setFont(_mono_font(10))
         title_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         title_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         title_label.setWordWrap(False)
@@ -150,7 +137,7 @@ class Game_file:
         outer_layout.addWidget(title_scroll)
         outer_layout.addSpacing(10)
 
-        # ── badge row (type + last run) ───────────────────────────────────────
+        # ── badge row (type) ──────────────────────────────────────────────────
         badge_row = QHBoxLayout()
         badge_row.setContentsMargins(0, 0, 0, 0)
         badge_row.setSpacing(8)
@@ -165,30 +152,9 @@ class Game_file:
         badge_lbl.setFixedHeight(20)
         badge_row.addWidget(badge_lbl)
 
-        last_run_ts  = _load_last_run(config_path, path)
-        last_run_lbl = QLabel(_format_last_run(last_run_ts))
-        last_run_lbl.setStyleSheet("color: #888; font-size: 11px;")
-        badge_row.addWidget(last_run_lbl)
-
         badge_row.addStretch(1)
         outer_layout.addLayout(badge_row)
-        outer_layout.addSpacing(14)
-
-        # ── status indicator ──────────────────────────────────────────────────
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.addStretch(1)
-
-        dot_lbl  = QLabel("●")
-        text_lbl = QLabel("Ready")
-        dot_lbl.setStyleSheet("color: #888; font-size: 14px;")
-        text_lbl.setStyleSheet("color: #888; font-size: 12px;")
-        status_row.addWidget(dot_lbl)
-        status_row.addSpacing(4)
-        status_row.addWidget(text_lbl)
-        status_row.addStretch(1)
-        outer_layout.addLayout(status_row)
-        outer_layout.addSpacing(14)
+        outer_layout.addSpacing(18)
 
         # ── buttons ───────────────────────────────────────────────────────────
         btn_run = QPushButton("Open in browser" if html_game else "▶  Run Game")
@@ -217,37 +183,37 @@ class Game_file:
         # ── bottom stretch ────────────────────────────────────────────────────
         outer_layout.addStretch(2)
 
-        # ── collapsible logs ──────────────────────────────────────────────────
-        logs_toggle = QPushButton("▼  Show logs")
-        logs_toggle.setFixedHeight(24)
+        # ── logs (opened in a separate window) ────────────────────────────────
+        logs_toggle = QPushButton("Show logs")
+        logs_toggle.setFixedHeight(26)
+        logs_toggle.setMinimumWidth(96)
         logs_toggle.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        logs_toggle.setStyleSheet("text-align:left; padding-left:4px;")
 
-        logs_frame = QFrame(outer)
-        logs_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        logs_frame_layout = QVBoxLayout(logs_frame)
-        logs_frame_layout.setContentsMargins(0, 0, 0, 0)
-        logs_frame_layout.setSpacing(0)
+        # Parented to `outer` so the window is destroyed together with the tab.
+        logs_window = QDialog(outer)
+        logs_window.setWindowTitle(f"{script_base} — logs")
+        logs_window.resize(720, 420)
+        logs_win_layout = QVBoxLayout(logs_window)
+        logs_win_layout.setContentsMargins(6, 6, 6, 6)
 
         info_edit = QTextEdit()
         info_edit.setReadOnly(True)
         info_edit.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
-        info_edit.setFont(QFont("Courier New", 10))
-        info_edit.setFixedHeight(160)
-        logs_frame_layout.addWidget(info_edit)
-        logs_frame.hide()
+        info_edit.setFont(_mono_font(10))
+        logs_win_layout.addWidget(info_edit)
 
-        def _toggle_logs():
-            if logs_frame.isHidden():
-                logs_frame.show()
-                logs_toggle.setText("▲  Hide logs")
-            else:
-                logs_frame.hide()
-                logs_toggle.setText("▼  Show logs")
-        logs_toggle.clicked.connect(_toggle_logs)
+        def _show_logs():
+            logs_window.show()
+            logs_window.raise_()
+            logs_window.activateWindow()
+        logs_toggle.clicked.connect(_show_logs)
 
-        outer_layout.addWidget(logs_toggle)
-        outer_layout.addWidget(logs_frame)
+        # tucked into the bottom-left corner — a subtle link, not a real button
+        logs_row = QHBoxLayout()
+        logs_row.setContentsMargins(0, 0, 0, 0)
+        logs_row.addWidget(logs_toggle)
+        logs_row.addStretch(1)
+        outer_layout.addLayout(logs_row)
 
         outer.setLayout(outer_layout)
         self.target_widget = outer if target_widget is None else target_widget
@@ -258,25 +224,16 @@ class Game_file:
         self._process = process
 
         def _set_idle():
-            dot_lbl.setStyleSheet("color: #888; font-size: 14px;")
-            text_lbl.setStyleSheet("color: #888; font-size: 12px;")
-            text_lbl.setText("Ready")
             btn_run.show()
             btn_stop.hide()
             btn_restart.hide()
 
         def _set_running():
-            dot_lbl.setStyleSheet("color: #2ecc71; font-size: 14px;")
-            text_lbl.setStyleSheet("color: #2ecc71; font-size: 12px;")
-            text_lbl.setText("Running")
             btn_run.hide()
             btn_stop.show()
             btn_restart.show()
 
         def _set_error():
-            dot_lbl.setStyleSheet("color: #e74c3c; font-size: 14px;")
-            text_lbl.setStyleSheet("color: #e74c3c; font-size: 12px;")
-            text_lbl.setText("Error")
             btn_run.show()
             btn_stop.hide()
             btn_restart.hide()
@@ -310,20 +267,13 @@ class Game_file:
         def _launch():
             if not os.path.exists(path):
                 info_edit.append("File not found: " + path)
-                if logs_frame.isHidden():
-                    _toggle_logs()
+                _show_logs()
                 return
-
-            now_ts = int(datetime.now().timestamp())
-            _save_last_run(config_path, path, now_ts)
-            last_run_lbl.setText(_format_last_run(now_ts))
 
             if html_game:
                 from core.external_open import open_path
                 open_path(os.path.abspath(path))
                 info_edit.append("Opened in system browser.")
-                if logs_frame.isHidden():
-                    _toggle_logs()
                 return
 
             if process.state() != QProcess.ProcessState.NotRunning:
@@ -342,8 +292,7 @@ class Game_file:
             else:
                 info_edit.append("Failed to launch game.")
                 _set_error()
-                if logs_frame.isHidden():
-                    _toggle_logs()
+                _show_logs()
 
         def _stop():
             if process.state() != QProcess.ProcessState.NotRunning:
@@ -362,7 +311,7 @@ class Game_file:
 
         self._display   = info_edit
         self._container = outer
-        self._scroll    = logs_frame
+        self._scroll    = logs_window
 
         return outer
 
