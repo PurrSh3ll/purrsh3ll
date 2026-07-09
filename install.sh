@@ -66,6 +66,7 @@ print_plan() {
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
     [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~15 MB  — 7 git repos)"          || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
+    [[ "$INSTALL_GAMES"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Cyb3rBreak games     (~1 MB   — git repo)"             || echo -e "    ${YELLOW}–${NC}  Cyb3rBreak games                        (skipped)"
     [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model          (~220 MB — multilingual MiniLM)" || echo -e "    ${YELLOW}–${NC}  Embed model                             (skipped)"
@@ -120,6 +121,7 @@ success "Python $PY_VERSION"
 
 INSTALL_VOICE=false
 INSTALL_SKILLS=false
+INSTALL_GAMES=false
 INSTALL_OLLAMA=false
 INSTALL_AICHAT=false
 INSTALL_DOCKER=false
@@ -130,6 +132,7 @@ INSTALL_EMBED_MODEL=false
 # Actual install results (set to true only on success)
 VOICE_OK=false
 SKILLS_OK=false
+GAMES_OK=false
 OLLAMA_OK=false
 AICHAT_OK=false
 DOCKER_OK=false
@@ -141,6 +144,7 @@ if [[ "$AUTO" == true ]]; then
 
     INSTALL_VOICE=true
     INSTALL_SKILLS=true
+    INSTALL_GAMES=true
     INSTALL_OLLAMA=true
     INSTALL_AICHAT=true
     INSTALL_DOCKER=true
@@ -163,9 +167,10 @@ Core app, Python packages and QTermWidget
 are always installed regardless of selection.
 
 SPACE = toggle   |   ENTER = confirm" \
-        22 68 8 \
+        23 68 9 \
         "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
         "skills"     "AI Skills       ~15 MB   (7 git repos)"           ON \
+        "games"      "Cyb3rBreak games ~1 MB   (git repo)"              ON \
         "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "embedmodel" "Embed model     ~220 MB  (multilingual MiniLM)"   ON \
@@ -176,6 +181,7 @@ SPACE = toggle   |   ENTER = confirm" \
 
     [[ "$CHOICES" == *'"voice"'*       ]] && INSTALL_VOICE=true
     [[ "$CHOICES" == *'"skills"'*      ]] && INSTALL_SKILLS=true
+    [[ "$CHOICES" == *'"games"'*       ]] && INSTALL_GAMES=true
     [[ "$CHOICES" == *'"ollama"'*      ]] && INSTALL_OLLAMA=true
     [[ "$CHOICES" == *'"aichat"'*      ]] && INSTALL_AICHAT=true
     [[ "$CHOICES" == *'"docker"'*      ]] && INSTALL_DOCKER=true
@@ -298,6 +304,29 @@ if [[ "$INSTALL_SKILLS" == true ]]; then
         success "AI Skills ready (${#SKILL_REPOS[@]} skill sets)"
     else
         warn "AI Skills: $_skills_failed of ${#SKILL_REPOS[@]} sets failed to clone"
+    fi
+fi
+
+# ── Cyb3rBreak games — cloned on demand from its own repo ──────────────────────
+# The games are NOT vendored in the main repo (appmodules/Cyb3rBreak is
+# gitignored), so a plain `git clone` leaves it absent. The installer clones the
+# games repo here only when the games component is selected. GPL-3.0, upstream.
+GAMES_REPO="https://github.com/PurrSh3ll/cyb3rbreak-games.git"
+GAMES_DIR="$INSTALL_DIR/appmodules/Cyb3rBreak"
+
+if [[ "$INSTALL_GAMES" == true ]]; then
+    info "Cloning Cyb3rBreak games..."
+    if [[ -d "$GAMES_DIR/.git" ]]; then
+        GAMES_OK=true
+        info "  Cyb3rBreak already present — skipping"
+    else
+        rm -rf "$GAMES_DIR"
+        if git clone --depth 1 "$GAMES_REPO" "$GAMES_DIR" >/dev/null 2>&1; then
+            GAMES_OK=true
+            success "Cyb3rBreak games ready"
+        else
+            warn "Cyb3rBreak games (clone failed: $GAMES_REPO)"
+        fi
     fi
 fi
 
@@ -673,6 +702,7 @@ _summary_row() {
 echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB)"
 _summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
 _summary_row "AI Skills           " "(~15 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
+_summary_row "Cyb3rBreak games    " "(~1 MB)  " "$INSTALL_GAMES"       "$GAMES_OK"     "(skipped)"
 _summary_row "Ollama              " "(~1.5 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
 _summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
 _summary_row "Embedding model     " "(~220 MB)" "$INSTALL_EMBED_MODEL" "$EMBED_OK"     "(skipped — downloaded on first use)"

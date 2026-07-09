@@ -49,6 +49,11 @@ appmodules/BrainDump/*
 # Nie są to submoduły ani vendored — dzięki temu goły `git clone` jest czysty.
 appdata/agent_modes/skills/
 
+# Cyb3rBreak — gry klonowane na żądanie przez installer z repo cyb3rbreak-games
+# (opcja domyślnie zaznaczona). Nie vendorujemy — goły `git clone` nie ma folderu,
+# a aplikacja startuje bez niego (nie jest tworzony przy starcie).
+appmodules/Cyb3rBreak/
+
 # Ukryty workspace agenta Claude Code (cwd + kopie CLAUDE.md/goal/skills, oraz
 # zagnieżdżone repo git izolujące agenta od źródeł aplikacji). Poza qtree.
 appdata/agent_workspace/
