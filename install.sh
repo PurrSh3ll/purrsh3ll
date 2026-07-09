@@ -171,9 +171,9 @@ SPACE = toggle   |   ENTER = confirm" \
         "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
         "skills"     "AI Skills       ~15 MB   (7 git repos)"           ON \
         "games"      "cyber games     ~1 MB   (git repo)"              ON \
-        "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  ON \
         "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "embedmodel" "Embed model     ~220 MB  (multilingual MiniLM)"   ON \
+        "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  OFF \
         "docker"     "Docker          ~300 MB  (container runtime)"     OFF \
         "openwebui"  "Open WebUI      ~4.8 GB  (Docker image)"          OFF \
         "webmap"     "WebMap          ~1.5 GB  (Docker image)"          OFF \
