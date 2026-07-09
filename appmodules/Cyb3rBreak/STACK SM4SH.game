@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STACK SM4SH // Cyb3rBreak</title>
+<style>
+/* STACK SM4SH // Cyb3rBreak — hacker/phosphor terminal theme */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --green: #00ff41;
+  --bg:    #050805;
+  --dim:   #0c150c;
+  --line:  rgba(0,255,65,0.12);
+}
+
+html, body {
+  height: 100%;
+  background: #000;
+  color: var(--green);
+  font-family: "Courier New", "DejaVu Sans Mono", monospace;
+  overflow: hidden;
+}
+
+/* CRT wrapper: subtle scanlines + vignette */
+.crt {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #071007 0%, #000 100%);
+  position: relative;
+}
+.crt::after {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0) 0px,
+    rgba(0,0,0,0) 2px,
+    rgba(0,0,0,0.28) 3px,
+    rgba(0,0,0,0) 4px
+  );
+  mix-blend-mode: multiply;
+}
+
+.wrap { padding: 18px 22px; transform-origin: center center; }
+
+.hdr { margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.hdr h1 {
+  font-size: 30px; letter-spacing: 6px; font-weight: 700;
+  text-shadow: 0 0 10px var(--green), 0 0 22px rgba(0,255,65,0.5);
+}
+.rules-btn {
+  font-family: inherit; cursor: pointer;
+  color: var(--green); background: rgba(0,255,65,0.06);
+  border: 1px solid rgba(0,255,65,0.5); border-radius: 4px;
+  padding: 6px 12px; font-size: 12px; letter-spacing: 2px;
+  text-shadow: 0 0 6px rgba(0,255,65,0.5);
+  box-shadow: 0 0 8px rgba(0,255,65,0.15);
+}
+.rules-btn:hover { background: rgba(0,255,65,0.14); box-shadow: 0 0 12px rgba(0,255,65,0.35); }
+
+/* Rules overlay */
+.rules-ov { z-index: 5; }
+.rules-box { text-align: left; max-width: 88%; }
+.rules-title { font-size: 22px; letter-spacing: 4px; color: var(--green); text-shadow: 0 0 10px var(--green); margin-bottom: 12px; text-align: center; }
+.rules-box ul { list-style: none; font-size: 12.5px; line-height: 1.7; color: #9fe8b6; }
+.rules-box li { margin: 6px 0; padding-left: 16px; position: relative; }
+.rules-box li::before { content: ">"; position: absolute; left: 0; color: var(--green); }
+.rules-close { margin-top: 16px; text-align: center; font-size: 11px; color: #57c97e; }
+
+.stage { display: flex; gap: 18px; align-items: flex-start; }
+
+/* Playfield */
+.field { position: relative; }
+#board {
+  display: block;
+  border: 2px solid rgba(0,255,65,0.5);
+  box-shadow: 0 0 18px rgba(0,255,65,0.25), inset 0 0 30px rgba(0,255,65,0.05);
+  background: var(--bg);
+}
+.overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  background: rgba(0,8,0,0.86);
+  opacity: 0; visibility: hidden; transition: opacity .18s;
+}
+.overlay.show { opacity: 1; visibility: visible; }
+.ov-title {
+  font-size: 34px; letter-spacing: 4px; font-weight: 700;
+  color: #ff2e88; text-shadow: 0 0 14px rgba(255,46,136,0.8);
+}
+.ov-sub { margin-top: 14px; font-size: 13px; color: #9fe8b6; line-height: 1.6; }
+
+/* HUD */
+.hud { width: 200px; display: flex; flex-direction: column; gap: 12px; }
+.panel {
+  border: 1px solid rgba(0,255,65,0.28);
+  background: rgba(0,255,65,0.03);
+  padding: 10px 12px;
+}
+.cap { font-size: 10px; letter-spacing: 2px; color: #57c97e; margin-bottom: 8px; }
+
+.stat { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0; }
+.stat span { font-size: 10px; color: #57c97e; letter-spacing: 1px; }
+.stat b { font-size: 18px; text-shadow: 0 0 8px rgba(0,255,65,0.5); }
+.stat b.danger { color: #ff2e88; text-shadow: 0 0 8px rgba(255,46,136,0.6); }
+
+#next { display: block; margin: 0 auto; background: var(--bg); border: 1px solid rgba(0,255,65,0.18); }
+
+.meter { height: 14px; border: 1px solid rgba(0,255,65,0.35); background: #030603; }
+.meter-fill { height: 100%; width: 0%; background: currentColor; color: var(--green); transition: width .12s, color .2s; box-shadow: 0 0 10px currentColor; }
+.meter-pct { text-align: right; font-size: 11px; margin-top: 4px; }
+
+.legend { list-style: none; font-size: 11px; line-height: 1.9; }
+.legend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px; background: var(--c); box-shadow: 0 0 8px var(--c); vertical-align: middle; }
+.legend i.mal { border: 1px solid #b026ff; box-shadow: 0 0 8px #b026ff; }
+.legend code { color: #9fe8b6; }
+
+.keys { font-size: 11px; line-height: 1.7; color: #86e0a2; }
+.keys div { color: #86e0a2; }
+kbd {
+  border: 1px solid rgba(0,255,65,0.4); border-radius: 3px;
+  padding: 0 5px; font-size: 10px; background: rgba(0,255,65,0.06);
+}
+
+.status { min-height: 18px; font-size: 11px; color: #ffb300; text-shadow: 0 0 8px rgba(255,179,0,0.6); }
+</style>
+</head>
+<body>
+<div class="crt">
+  <div class="wrap">
+
+    <header class="hdr">
+      <h1>STACK&nbsp;SM4SH</h1>
+      <button id="rulesBtn" class="rules-btn">? RULES</button>
+    </header>
+
+    <main class="stage">
+      <!-- Playfield -->
+      <section class="field">
+        <canvas id="board" width="300" height="600"></canvas>
+        <div id="overlay" class="overlay">
+          <div id="ovTitle" class="ov-title">STACK&nbsp;SM4SH</div>
+          <div id="ovSub" class="ov-sub">
+            clear rows for points &mdash; shellcode survives clears,<br>
+            only a <b>return addr</b> dropped on it neutralizes it<br><br>
+            press <b>ENTER</b> to inject payload
+          </div>
+        </div>
+        <div id="rules" class="overlay rules-ov">
+          <div class="rules-box">
+            <div class="rules-title">RULES</div>
+            <ul>
+              <li>Fill a whole row to clear blocks &amp; score.</li>
+              <li>NOP &amp; instruction blocks clear on a full row.</li>
+              <li>Shellcode survives row clears &mdash; it can't be cleared.</li>
+              <li>A ret addr touching shellcode wipes the whole cluster.</li>
+              <li>After a clear, blocks cascade down &mdash; chain for combos.</li>
+              <li>Let the stack top out &rarr; SIGSEGV = game over.</li>
+            </ul>
+            <div class="rules-close">click / any key to close</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- HUD -->
+      <aside class="hud">
+        <div class="panel">
+          <div class="stat"><span>BYTES WRITTEN</span><b id="bytes">000000</b></div>
+          <div class="stat"><span>BUFFER ROWS</span><b id="lines">0</b></div>
+          <div class="stat"><span>LEVEL</span><b id="level">1</b></div>
+          <div class="stat"><span>SHELLCODE</span><b id="shell" class="danger">0</b></div>
+        </div>
+
+        <div class="panel">
+          <div class="cap">NEXT SEGMENT</div>
+          <canvas id="next" width="132" height="92"></canvas>
+        </div>
+
+        <div class="panel">
+          <div class="cap">STACK CORRUPTION</div>
+          <div class="meter"><div id="meterFill" class="meter-fill"></div></div>
+          <div class="meter-pct"><span id="meterPct">0%</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="cap">SEGMENTS</div>
+          <ul class="legend">
+            <li><i style="--c:#00ff41"></i> NOP <code>0x90</code></li>
+            <li><i style="--c:#ffb300"></i> instruction</li>
+            <li><i class="mal" style="--c:#ff2e88"></i> shellcode</li>
+            <li><i class="mal" style="--c:#22d3ee"></i> ret addr</li>
+          </ul>
+        </div>
+
+        <div class="panel keys">
+          <div class="cap">KEYS</div>
+          <div>&larr; &rarr; &nbsp;move</div>
+          <div>&uarr; &nbsp;rotate</div>
+          <div>&darr; &nbsp;soft drop</div>
+          <div><kbd>SPACE</kbd> hard drop</div>
+          <div><kbd>P</kbd> pause &middot; <kbd>R</kbd> restart</div>
+        </div>
+
+        <div id="status" class="status">&nbsp;</div>
+      </aside>
+    </main>
+
+  </div>
+</div>
+<script>
+'use strict';
+/* STACK SM4SH // Cyb3rBreak
+ * Hacker-styled block game. Segment types:
+ *   NOP    — single 1x1 block (0x90), clears on a full row.
+ *   INSTR  — random "instruction" tetrominoes, clear on a full row.
+ *   SHELL  — complex shellcode pieces. A full row clears the other cells and
+ *            scores, but shellcode SURVIVES. The ONLY way to remove it is to
+ *            drop a return-address block directly on top of it.
+ *   RET    — single 1x1 return address (0xC3). If it lands on a shellcode
+ *            cell, both are destroyed (shellcode neutralized). Otherwise it
+ *            behaves like a normal clearable block.
+ * After any clear, gravity cascades: floating cells fall onto lower cells.
+ * Educational simulation only — the "bytes" are labels, nothing is executed. */
+
+const COLS = 10, ROWS = 20, CELL = 30;
+
+const board_c = document.getElementById('board');
+const ctx     = board_c.getContext('2d');
+const next_c  = document.getElementById('next');
+const nctx    = next_c.getContext('2d');
+
+const bytesEl  = document.getElementById('bytes');
+const linesEl  = document.getElementById('lines');
+const levelEl  = document.getElementById('level');
+const shellEl  = document.getElementById('shell');
+const meterFill= document.getElementById('meterFill');
+const meterPct = document.getElementById('meterPct');
+const statusEl = document.getElementById('status');
+const overlay  = document.getElementById('overlay');
+const ovTitle  = document.getElementById('ovTitle');
+const ovSub    = document.getElementById('ovSub');
+const rulesEl  = document.getElementById('rules');
+const rulesBtn = document.getElementById('rulesBtn');
+
+const rndHex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase();
+
+// ── Tetromino shapes ──
+const SHAPES = {
+  I: [[1, 1, 1, 1]],
+  O: [[1, 1], [1, 1]],
+  T: [[0, 1, 0], [1, 1, 1]],
+  S: [[0, 1, 1], [1, 1, 0]],
+  Z: [[1, 1, 0], [0, 1, 1]],
+  J: [[1, 0, 0], [1, 1, 1]],
+  L: [[0, 0, 1], [1, 1, 1]],
+};
+
+// ── Segment types ──
+const TYPES = {
+  NOP:   { color: '#00ff41', shapes: ['1x1'],                             byte: () => '90'      },
+  INSTR: { color: '#ffb300', shapes: ['I', 'O', 'T', 'S', 'Z', 'J', 'L'], byte: () => rndHex()  },
+  SHELL: { color: '#ff2e88', shapes: ['T', 'S', 'Z', 'J', 'L', 'I'],      byte: () => rndHex()  },
+  RET:   { color: '#22d3ee', shapes: ['1x1'],                             byte: () => 'C3'      },
+};
+
+// Malicious segments get a red "danger" frame so they read as hostile payload.
+const MALICIOUS = { SHELL: true, RET: true };
+
+let board, current, nextPiece, score, lines, level, dropInterval,
+    dropCounter, lastTime, paused, gameOver, loopStarted = false, rulesOpen = false;
+
+function toggleRules(show) {
+  rulesOpen = (show === undefined) ? !rulesOpen : show;
+  rulesEl.classList.toggle('show', rulesOpen);
+  if (!rulesOpen) lastTime = performance.now();
+}
+
+const rnd = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const emptyBoard = () => Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+
+function pickType() {
+  const roll = Math.random() * 100;
+  if (roll < 20) return 'NOP';    // 20%
+  if (roll < 38) return 'RET';    // 18%
+  if (roll < 55) return 'SHELL';  // 17%
+  return 'INSTR';                 // 45%
+}
+
+function makePiece() {
+  const t   = pickType();
+  const def = TYPES[t];
+  const key = rnd(def.shapes);
+  const base = key === '1x1' ? [[1]] : SHAPES[key];
+  const m = base.map(row => row.map(v => (v ? { color: def.color, byte: def.byte(), type: t } : null)));
+  return { m, x: Math.floor((COLS - m[0].length) / 2), y: 0, type: t };
+}
+
+function rotateCW(mat) {
+  const R = mat.length, C = mat[0].length;
+  const res = Array.from({ length: C }, () => Array(R).fill(null));
+  for (let r = 0; r < R; r++)
+    for (let c = 0; c < C; c++)
+      res[c][R - 1 - r] = mat[r][c];
+  return res;
+}
+
+function collide(offX, offY, mat) {
+  const M = mat || current.m;
+  for (let r = 0; r < M.length; r++) {
+    for (let c = 0; c < M[r].length; c++) {
+      if (!M[r][c]) continue;
+      const x = current.x + c + offX;
+      const y = current.y + r + offY;
+      if (x < 0 || x >= COLS || y >= ROWS) return true;
+      if (y >= 0 && board[y][x]) return true;
+    }
+  }
+  return false;
+}
+
+function merge() {
+  for (let r = 0; r < current.m.length; r++)
+    for (let c = 0; c < current.m[r].length; c++)
+      if (current.m[r][c]) {
+        const y = current.y + r, x = current.x + c;
+        if (y >= 0) board[y][x] = current.m[r][c];
+      }
+}
+
+// Column-wise cascade: every cell drops onto the cells below it.
+function applyGravity() {
+  let moved = false;
+  for (let c = 0; c < COLS; c++) {
+    let write = ROWS - 1;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (board[r][c]) {
+        if (r !== write) { board[write][c] = board[r][c]; board[r][c] = null; moved = true; }
+        write--;
+      }
+    }
+  }
+  return moved;
+}
+
+// Flood-fill: remove the whole cluster of shellcode cells connected (4-dir) to
+// the hit cell. Returns how many were destroyed.
+function killShellCluster(sr, sc) {
+  const stack = [[sr, sc]];
+  let removed = 0;
+  while (stack.length) {
+    const [r, c] = stack.pop();
+    if (r < 0 || r >= ROWS || c < 0 || c >= COLS) continue;
+    const cell = board[r][c];
+    if (!cell || cell.type !== 'SHELL') continue;
+    board[r][c] = null;
+    removed++;
+    stack.push([r - 1, c], [r + 1, c], [r, c - 1], [r, c + 1]);
+  }
+  return removed;
+}
+
+// Resolve full rows: clear non-shellcode cells (shellcode survives), then let
+// gravity cascade and re-check for chain clears.
+function resolveBoard() {
+  let totalRows = 0, totalCells = 0, passes = 0;
+  while (true) {
+    let rowsThisPass = 0, cellsThisPass = 0;
+    for (let r = 0; r < ROWS; r++) {
+      if (board[r].every(cell => cell)) {
+        let removed = 0;
+        for (let c = 0; c < COLS; c++) {
+          if (board[r][c] && board[r][c].type !== 'SHELL') { board[r][c] = null; removed++; }
+        }
+        if (removed > 0) { rowsThisPass++; cellsThisPass += removed; }
+      }
+    }
+    if (rowsThisPass > 0) {
+      totalRows += rowsThisPass; totalCells += cellsThisPass; passes++;
+      applyGravity();
+    } else break;
+  }
+  if (totalRows > 0) {
+    score += totalCells * 10 * level + (passes > 1 ? passes * 50 * level : 0);
+    lines += totalRows;
+    const nl = Math.floor(lines / 10) + 1;
+    if (nl !== level) { level = nl; dropInterval = Math.max(90, 800 - (level - 1) * 70); }
+    setStatus(passes > 1 ? `cascade x${passes} — payload aligned` : 'buffer row filled — payload aligned');
+  }
+}
+
+function spawn() {
+  current = nextPiece || makePiece();
+  nextPiece = makePiece();
+  current.x = Math.floor((COLS - current.m[0].length) / 2);
+  current.y = 0;
+  drawNext();
+  if (collide(0, 0)) endGame();
+}
+
+function lockPiece() {
+  // Return address: if it comes to rest directly on a shellcode cell, both are
+  // destroyed instead of the RET being placed.
+  if (current.type === 'RET') {
+    // Any shellcode the ret addr comes to rest *touching* (up/down/left/right)
+    // gets its whole connected cluster wiped.
+    const rx = current.x, ry = current.y;
+    const neighbours = [[ry - 1, rx], [ry + 1, rx], [ry, rx - 1], [ry, rx + 1]];
+    let removed = 0;
+    for (const [nr, nc] of neighbours) {
+      if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS &&
+          board[nr][nc] && board[nr][nc].type === 'SHELL') {
+        removed += killShellCluster(nr, nc);
+      }
+    }
+    if (removed > 0) {
+      score += removed * 60 * level;
+      setStatus(`shellcode cluster wiped (${removed})`);
+      applyGravity();
+      resolveBoard();
+      spawn();
+      updateHUD();
+      return;
+    }
+  }
+  merge();
+  resolveBoard();
+  spawn();
+  updateHUD();
+}
+
+function drop() {
+  if (collide(0, 1)) lockPiece();
+  else current.y++;
+  dropCounter = 0;
+}
+
+function hardDrop() {
+  let d = 0;
+  while (!collide(0, 1)) { current.y++; d++; }
+  score += d * 2;
+  lockPiece();
+}
+
+function move(dir) { if (!collide(dir, 0)) current.x += dir; }
+
+function softDrop() {
+  if (!collide(0, 1)) { current.y++; score += 1; updateHUD(); }
+  else lockPiece();
+  dropCounter = 0;
+}
+
+function tryRotate() {
+  const rot = rotateCW(current.m);
+  for (const k of [0, -1, 1, -2, 2]) {
+    if (!collide(k, 0, rot)) { current.m = rot; current.x += k; return; }
+  }
+}
+
+// ── Rendering ──
+
+// Pseudo-random ±amp offset per (segment, phase) — reshuffles as the phase
+// changes, giving a torn look rather than a marching one.
+function _hash(i, ph) {
+  let x = (i * 374761393 + ph * 668265263) | 0;
+  x = ((x ^ (x >>> 13)) * 1274126177) | 0;
+  return x >>> 0;
+}
+function _obit(i, ph, amp) {
+  const base = ((i + ph) & 1) ? amp : -amp;   // guaranteed alternating tooth (clear square wave)
+  return base + ((_hash(i, ph) % 3) - 1);       // + torn ±1px jitter that reshuffles per frame
+}
+
+// Stroke a rectangle border as a jagged square wave (crenellations step in/out
+// by ±amp). Small amplitude; advance `ph` per frame to make it flicker fast.
+function strokeGlitchRect(g, x, y, w, h, amp, seg, ph) {
+  g.beginPath();
+  let i = 0;
+  function edge(sx, sy, fx, fy, nx, ny, L, first) {
+    let d = 0, o = _obit(i, ph, amp);
+    const p0x = sx + nx * o, p0y = sy + ny * o;
+    if (first) g.moveTo(p0x, p0y); else g.lineTo(p0x, p0y);
+    while (d < L) {
+      d += Math.min(seg, L - d);
+      g.lineTo(sx + fx * d + nx * o, sy + fy * d + ny * o); // run at current offset
+      i++;
+      o = _obit(i, ph, amp);
+      g.lineTo(sx + fx * d + nx * o, sy + fy * d + ny * o); // rectangular step to new offset
+    }
+  }
+  edge(x,     y,     1,  0,  0, -1, w, true);
+  edge(x + w, y,     0,  1,  1,  0, h, false);
+  edge(x + w, y + h, -1, 0,  0,  1, w, false);
+  edge(x,     y + h, 0, -1, -1,  0, h, false);
+  g.stroke();
+}
+
+function paintCell(g, px, py, cell, size) {
+  g.fillStyle = '#0a0f0a';
+  g.fillRect(px, py, size, size);
+
+  const mal = cell.type && MALICIOUS[cell.type];
+  if (mal) {
+    // jagged, fast-flickering square-wave frame — marks hostile payload
+    // (shellcode / ret addr). Phase advances with time (per-cell seeded) so it
+    // reshuffles violently; small amplitude keeps it subtle.
+    const ph = (Math.floor(performance.now() / 50) + ((px * 13 + py * 7) | 0)) | 0;
+    g.strokeStyle = '#c04dff';
+    g.lineWidth = 2;
+    g.shadowColor = '#b026ff';
+    g.shadowBlur = 10;
+    strokeGlitchRect(g, px + 3, py + 3, size - 6, size - 6, 2, 4, ph);
+    g.shadowBlur = 0;
+  }
+
+  // base type border (inner for malicious cells, so both colours are visible)
+  const inset = mal ? 4 : 1.5;
+  g.strokeStyle = cell.color;
+  g.lineWidth = mal ? 1.5 : 2;
+  g.shadowColor = cell.color;
+  g.shadowBlur = mal ? 4 : 8;
+  g.strokeRect(px + inset, py + inset, size - inset * 2, size - inset * 2);
+  g.shadowBlur = 0;
+
+  g.fillStyle = cell.color;
+  g.font = `${Math.floor(size * 0.34)}px "Courier New", monospace`;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(cell.byte, px + size / 2, py + size / 2 + 1);
+}
+
+function draw() {
+  ctx.fillStyle = '#050805';
+  ctx.fillRect(0, 0, board_c.width, board_c.height);
+
+  ctx.strokeStyle = 'rgba(0,255,65,0.06)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, ROWS * CELL); ctx.stroke(); }
+  for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(COLS * CELL, y * CELL); ctx.stroke(); }
+
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c]) paintCell(ctx, c * CELL, r * CELL, board[r][c], CELL);
+
+  if (current && !gameOver) {
+    let gy = 0;
+    while (!collide(0, gy + 1)) gy++;
+    ctx.globalAlpha = 0.22;
+    for (let r = 0; r < current.m.length; r++)
+      for (let c = 0; c < current.m[r].length; c++)
+        if (current.m[r][c]) paintCell(ctx, (current.x + c) * CELL, (current.y + r + gy) * CELL, current.m[r][c], CELL);
+    ctx.globalAlpha = 1;
+
+    for (let r = 0; r < current.m.length; r++)
+      for (let c = 0; c < current.m[r].length; c++)
+        if (current.m[r][c]) {
+          const y = current.y + r;
+          if (y >= 0) paintCell(ctx, (current.x + c) * CELL, y * CELL, current.m[r][c], CELL);
+        }
+  }
+}
+
+function drawNext() {
+  nctx.fillStyle = '#050805';
+  nctx.fillRect(0, 0, next_c.width, next_c.height);
+  if (!nextPiece) return;
+  const m = nextPiece.m, s = 22;
+  const w = m[0].length, h = m.length;
+  const ox = Math.floor((next_c.width - w * s) / 2);
+  const oy = Math.floor((next_c.height - h * s) / 2);
+  for (let r = 0; r < h; r++)
+    for (let c = 0; c < w; c++)
+      if (m[r][c]) paintCell(nctx, ox + c * s, oy + r * s, m[r][c], s);
+}
+
+// ── HUD ──
+function updateHUD() {
+  bytesEl.textContent = String(score).padStart(6, '0');
+  linesEl.textContent = lines;
+  levelEl.textContent = level;
+
+  let top = ROWS, shell = 0;
+  for (let r = 0; r < ROWS; r++) {
+    if (board[r].some(x => x) && r < top) top = r;
+    for (let c = 0; c < COLS; c++) if (board[r][c] && board[r][c].type === 'SHELL') shell++;
+  }
+  shellEl.textContent = shell;
+
+  const fill = Math.round(((ROWS - top) / ROWS) * 100);
+  meterFill.style.width = fill + '%';
+  meterFill.style.color = fill > 80 ? '#ff2e88' : fill > 55 ? '#ffb300' : '#00ff41';
+  meterPct.textContent = fill + '%';
+}
+
+let statusTimer = null;
+function setStatus(msg) {
+  statusEl.textContent = msg;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { statusEl.innerHTML = '&nbsp;'; }, 1600);
+}
+
+// ── State control ──
+function resetState() {
+  board = emptyBoard();
+  score = 0; lines = 0; level = 1;
+  dropInterval = 800; dropCounter = 0;
+  paused = false; gameOver = false; nextPiece = null;
+  overlay.classList.remove('show');
+  spawn();
+  updateHUD();
+  draw();
+}
+
+function endGame() {
+  gameOver = true;
+  ovTitle.textContent = 'SIGSEGV';
+  ovSub.innerHTML =
+    '*** stack smashing detected ***<br>' +
+    'uncontrolled overflow &mdash; EIP corrupted<br><br>' +
+    `bytes written: <b>${score}</b><br><br>` +
+    'press <b>R</b> to re-exploit';
+  overlay.classList.add('show');
+}
+
+function togglePause() {
+  if (gameOver) return;
+  paused = !paused;
+  if (paused) {
+    ovTitle.textContent = 'PAUSED';
+    ovSub.innerHTML = 'session frozen<br><br>press <b>P</b> to resume';
+    overlay.classList.add('show');
+  } else {
+    overlay.classList.remove('show');
+    lastTime = performance.now();
+  }
+}
+
+function update(time = 0) {
+  const dt = time - lastTime;
+  lastTime = time;
+  if (!paused && !gameOver && !rulesOpen) {
+    dropCounter += dt;
+    if (dropCounter > dropInterval) drop();
+  }
+  draw();
+  requestAnimationFrame(update);
+}
+
+// ── Input ──
+rulesBtn.addEventListener('click', () => { toggleRules(); rulesBtn.blur(); });
+rulesEl.addEventListener('click', () => toggleRules(false));
+
+document.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (rulesOpen) { toggleRules(false); e.preventDefault(); return; }
+  if (k === 'r' || k === 'R') { resetState(); return; }
+  if (gameOver) return;
+
+  // Start / resume from the intro overlay
+  if ((k === 'Enter') && paused) {
+    paused = false;
+    overlay.classList.remove('show');
+    lastTime = performance.now();
+    return;
+  }
+
+  if (k === 'p' || k === 'P') { togglePause(); return; }
+  if (paused) return;
+
+  switch (k) {
+    case 'ArrowLeft':  move(-1); e.preventDefault(); break;
+    case 'ArrowRight': move(1);  e.preventDefault(); break;
+    case 'ArrowDown':  softDrop(); e.preventDefault(); break;
+    case 'ArrowUp':    tryRotate(); e.preventDefault(); break;
+    case ' ':          hardDrop(); e.preventDefault(); break;
+  }
+});
+
+// ── Boot ──
+function boot() {
+  resetState();
+  ovTitle.textContent = 'STACK SM4SH';
+  ovSub.innerHTML =
+    'clear rows for points &mdash; shellcode survives clears,<br>' +
+    'only a <b>return addr</b> dropped on it neutralizes it<br><br>' +
+    'press <b>ENTER</b> to inject payload';
+  overlay.classList.add('show');
+  paused = true; // freeze gravity until ENTER
+  if (!loopStarted) { loopStarted = true; lastTime = performance.now(); requestAnimationFrame(update); }
+}
+
+// Scale the whole board+HUD uniformly to fill the window (keeps aspect).
+function fitToWindow() {
+  const wrap = document.querySelector('.wrap');
+  wrap.style.transform = 'none';
+  const r = wrap.getBoundingClientRect();
+  if (r.width && r.height) {
+    const s = Math.min(window.innerWidth / r.width, window.innerHeight / r.height);
+    wrap.style.transform = 'scale(' + s + ')';
+  }
+}
+window.addEventListener('resize', fitToWindow);
+
+boot();
+fitToWindow();
+</script>
+</body>
+</html>

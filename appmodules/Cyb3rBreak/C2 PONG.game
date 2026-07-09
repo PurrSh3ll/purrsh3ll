@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C2 PONG // Cyb3rBreak</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --green:#00ff41; --red:#ff2e88; --blue:#22d3ee; --amber:#ffb300; --bg:#050805; }
+html, body { height:100%; background:#000; color:var(--green); font-family:"Courier New","DejaVu Sans Mono",monospace; overflow:hidden; }
+.crt { height:100%; display:flex; align-items:center; justify-content:center; background:radial-gradient(ellipse at center,#071007 0%,#000 100%); position:relative; }
+.crt::after { content:""; position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0,rgba(0,0,0,0) 2px,rgba(0,0,0,0.28) 3px,rgba(0,0,0,0) 4px); mix-blend-mode:multiply; }
+.wrap { padding:16px 20px; transform-origin:center center; }
+.hdr { margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:16px; }
+.hdr h1 { font-size:26px; letter-spacing:5px; text-shadow:0 0 10px var(--green),0 0 22px rgba(0,255,65,0.5); }
+.rules-btn { font-family:inherit; cursor:pointer; color:var(--green); background:rgba(0,255,65,0.06);
+  border:1px solid rgba(0,255,65,0.5); border-radius:4px; padding:6px 12px; font-size:12px; letter-spacing:2px;
+  text-shadow:0 0 6px rgba(0,255,65,0.5); box-shadow:0 0 8px rgba(0,255,65,0.15); }
+.rules-btn:hover { background:rgba(0,255,65,0.14); box-shadow:0 0 12px rgba(0,255,65,0.35); }
+.field { position:relative; }
+#board { display:block; border:2px solid rgba(0,255,65,0.5);
+  box-shadow:0 0 18px rgba(0,255,65,0.25), inset 0 0 30px rgba(0,255,65,0.05); background:var(--bg); }
+.exbar { margin-top:10px; display:flex; justify-content:space-between; font-size:11px; letter-spacing:1px; }
+.exbar .blue { color:var(--blue); }
+.exbar .red  { color:var(--red); }
+.exbar b { color:#fff; }
+.you { text-align:center; font-size:11px; color:var(--amber); margin-top:6px; min-height:14px; }
+
+.overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; background:rgba(0,8,0,0.9); opacity:0; visibility:hidden; transition:opacity .18s; }
+.overlay.show { opacity:1; visibility:visible; }
+.ov-title { font-size:30px; letter-spacing:4px; font-weight:700; color:var(--green); text-shadow:0 0 14px rgba(0,255,65,0.7); }
+.ov-title.red { color:var(--red); text-shadow:0 0 14px rgba(255,46,136,0.8); }
+.ov-sub { margin-top:14px; font-size:13px; color:#9fe8b6; line-height:1.6; max-width:90%; }
+.ov-sub b.b { color:var(--blue); } .ov-sub b.r { color:var(--red); }
+.rules-ov { z-index:6; }
+.rules-box { text-align:left; max-width:92%; }
+.rules-title { font-size:20px; letter-spacing:4px; color:var(--green); text-shadow:0 0 10px var(--green); margin-bottom:10px; text-align:center; }
+.rules-box ul { list-style:none; font-size:12px; line-height:1.6; color:#9fe8b6; }
+.rules-box li { margin:5px 0; padding-left:16px; position:relative; }
+.rules-box li::before { content:">"; position:absolute; left:0; color:var(--green); }
+.rules-box .r { color:var(--red); } .rules-box .b { color:var(--blue); }
+.rules-close { margin-top:14px; text-align:center; font-size:11px; color:#57c97e; }
+kbd { border:1px solid rgba(0,255,65,0.4); border-radius:3px; padding:0 5px; font-size:10px; background:rgba(0,255,65,0.06); }
+</style>
+</head>
+<body>
+<div class="crt">
+  <div class="wrap">
+    <header class="hdr">
+      <h1>C2&nbsp;PONG</h1>
+      <button id="rulesBtn" class="rules-btn">? RULES</button>
+    </header>
+
+    <div class="field">
+      <canvas id="board" width="820" height="520"></canvas>
+
+      <div id="overlay" class="overlay">
+        <div id="ovTitle" class="ov-title">C2 PONG</div>
+        <div id="ovSub" class="ov-sub">
+          asymmetric packet warfare<br><br>
+          select mode:<br>
+          <b class="b">[1] PLAYER vs CPU</b><br>
+          <b class="r">[2] 2 PLAYERS</b>
+        </div>
+      </div>
+
+      <div id="rules" class="overlay rules-ov">
+        <div class="rules-box">
+          <div class="rules-title">RULES</div>
+          <ul>
+            <li>Bounce the payload packet past the enemy firewall.</li>
+            <li>Miss on <b class="b">BLUE</b> = data breach &rarr; server loses HP.</li>
+            <li>Miss on <b class="r">RED</b> = botnet drop &rarr; C2 loses HP.</li>
+            <li>Every bounce mutates the packet and speeds it up.</li>
+            <li>Bounces charge ENERGY &mdash; spend it on exploits (Q/W/E).</li>
+            <li><b class="r">RED</b>: Q Ransomware (speed up) &middot; W IP&nbsp;Spoof (cloak) &middot; E SYN&nbsp;Flood (3 balls).</li>
+            <li><b class="b">BLUE</b>: Q Rate&nbsp;Limit (slow ball) &middot; W DPI (show path) &middot; E Air&nbsp;Gap (rescue wall 2s).</li>
+            <li><b>1P</b>: move <kbd>&uarr;</kbd><kbd>&darr;</kbd> &middot; exploits <kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd>.</li>
+            <li><b>2P</b> &mdash; <b class="b">BLUE</b>: <kbd>W</kbd><kbd>S</kbd> + <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> &middot; <b class="r">RED</b>: <kbd>&uarr;</kbd><kbd>&darr;</kbd> + <kbd>,</kbd><kbd>.</kbd><kbd>/</kbd>.</li>
+            <li>Pause <kbd>P</kbd> &middot; restart <kbd>R</kbd></li>
+          </ul>
+          <div class="rules-close">click / any key to close</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="exbar">
+      <div class="blue">BLUE Q <b>Rate-Limit</b> · W <b>DPI</b> · E <b>Air-Gap</b></div>
+      <div class="red">Q <b>Ransomware</b> · W <b>IP-Spoof</b> · E <b>SYN-Flood</b> RED</div>
+    </div>
+    <div id="you" class="you">&nbsp;</div>
+  </div>
+</div>
+<script>
+'use strict';
+/* C2 PONG // Cyb3rBreak — asymmetric hacker pong.
+ * BLUE (left) = WAF defender, RED (right) = C2 attacker. Bounce the payload
+ * packet; a miss costs HP. Bounces charge energy for Q/W/E exploits.
+ * Player vs CPU or 2 players; educational-flavoured, nothing is executed. */
+
+const W = 820, H = 520;
+const PW = 12, PH = 92;
+const BLUE_X = 24, RED_X = W - 24 - PW;   // paddle left-edge x
+const BW = 20, BH = 16;                    // packet hitbox
+const BASE = 5.2, SPEED_INC = 1.045, VX_CAP = 12.5, SPIN = 6.5;
+const MAXHP = 5, MAXE = 5, GAIN = 1, AIRGAP_X = 12;   // energy = 5 discrete levels
+
+const PAYLOADS = ['GET /admin', '0xDEADC0DE', 'POST /login', 'DROP TABLE', 'rm -rf /',
+  '<script>', "' OR 1=1--", '/etc/passwd', 'nc -e sh', '0xC0FFEE', 'SELECT *',
+  '../../../', 'cmd.exe', 'eval(atob', '0x41414141', 'sudo su', 'whoami'];
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const ovTitle = document.getElementById('ovTitle');
+const ovSub = document.getElementById('ovSub');
+const rulesEl = document.getElementById('rules');
+const rulesBtn = document.getElementById('rulesBtn');
+const youEl = document.getElementById('you');
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const rndPayload = () => PAYLOADS[Math.floor(Math.random() * PAYLOADS.length)];
+
+let balls, pktFx, paddles, blueHP, redHP, blueE, redE,
+    mode, started, humanSide, botSide, running, paused, gameOver, rulesOpen,
+    now, lastT, prevT, keys, flashMsg, flashUntil, botNextExploit, botWant,
+    rateLimitUntil, dpiUntil, airGapUntil, ransomUntil, loopStarted = false;
+
+// ── Exploit implementations ──────────────────────────────────────────────
+function synFlood() {                       // RED Q — 3 balls
+  if (balls.length >= 5) return false;
+  const src = balls.find(b => b.vx < 0) || balls[0];
+  if (!src) return false;
+  balls.push({ ...src, vy: src.vy + 2.4 }, { ...src, vy: src.vy - 2.4 });
+  return true;
+}
+function ipSpoof() {                         // RED W — cloak toward blue
+  const b = balls.find(b => b.vx < 0 && !b.spoof);
+  if (!b) return false;
+  b.spoof = true;
+  return true;
+}
+function ransomwareArm() {                   // RED E — encrypt & accelerate the payload
+  if (now < ransomUntil) return false;
+  ransomUntil = now + 1000;
+  return true;
+}
+function rateLimit() { rateLimitUntil = now + 1000; return true; }   // BLUE Q
+function dpi()       { dpiUntil = now + 3000; return true; }         // BLUE W
+function airGap()    { airGapUntil = now + 2000; return true; }      // BLUE E
+
+const EXPLOITS = {         // costs measured in energy levels (max 5)
+  red: {                   // Q speed-up · W cloak · E 3 balls
+    q: { name: 'Ransomware', cost: 2, fn: ransomwareArm },
+    w: { name: 'IP Spoof',   cost: 3, fn: ipSpoof },
+    e: { name: 'SYN Flood',  cost: 4, fn: synFlood },
+  },
+  blue: {                  // Q slow · W show path · E air gap
+    q: { name: 'Rate Limit', cost: 2, fn: rateLimit },
+    w: { name: 'DPI',        cost: 3, fn: dpi },
+    e: { name: 'Air Gap',    cost: 4, fn: airGap },
+  },
+};
+
+function flash(msg) { flashMsg = msg; flashUntil = now + 1200; }
+
+function useExploit(side, key) {
+  const ex = EXPLOITS[side][key];
+  const e = side === 'red' ? redE : blueE;
+  if (e < ex.cost) { flash('not enough energy'); return; }
+  if (ex.fn() === false) return;
+  if (side === 'red') redE -= ex.cost; else blueE -= ex.cost;
+  flash(`${side.toUpperCase()}: ${ex.name}`);
+}
+
+// ── Ball / round management ──────────────────────────────────────────────
+function serve(dir) {
+  balls = [{ x: W / 2, y: H / 2, vx: dir * BASE, vy: (Math.random() * 2 - 1) * 2.5,
+             text: rndPayload(), spoof: false }];
+}
+
+function paddleHit(b, side) {
+  const p = paddles[side];
+  b.vx = (side === 'blue' ? 1 : -1) * Math.min(Math.abs(b.vx) * SPEED_INC, VX_CAP);
+  const rel = clamp((b.y - p.y) / (PH / 2), -1, 1);
+  b.vy = rel * SPIN;
+  b.x = side === 'blue' ? BLUE_X + PW + BW / 2 : RED_X - BW / 2;
+  // reveal the payload the packet was carrying, then let it dissolve
+  pktFx.push({ x: b.x, y: b.y, text: b.text, col: side === 'blue' ? '#ff2e88' : '#00ff41', born: now });
+  b.text = rndPayload();
+  b.spoof = false;
+  if (side === 'blue') { blueE = Math.min(MAXE, blueE + GAIN); }
+  else { redE = Math.min(MAXE, redE + GAIN); }
+}
+
+// ── AI bot ───────────────────────────────────────────────────────────────
+function botTargetY(side) {
+  const heading = balls.filter(b => (side === 'red' ? b.vx > 0 : b.vx < 0));
+  if (!heading.length) return H / 2;
+  // nearest approaching ball
+  heading.sort((a, b) => (side === 'red' ? (RED_X - a.x) - (RED_X - b.x) : (a.x - b.x)));
+  const b = heading[0];
+  return b.y + (Math.random() * 40 - 20);   // slight aim error
+}
+
+function botExploits(side) {
+  if (now < botNextExploit) return;
+  const e = side === 'red' ? redE : blueE;
+  // commit to a random target exploit and save energy up for it (incl. the 4-cost one)
+  if (!botWant) botWant = ['q', 'w', 'e'][Math.floor(Math.random() * 3)];
+  const want = EXPLOITS[side][botWant];
+  if (e < want.cost) { botNextExploit = now + 400; return; }   // still saving up
+  if (Math.random() < 0.7) {
+    useExploit(side, botWant);
+    botWant = null;
+    botNextExploit = now + 1400;
+  } else {
+    botNextExploit = now + 500;                                // hold and re-decide soon
+  }
+}
+
+// returns movement dir for a side, or null if that side is a bot
+function paddleDir(side) {
+  if (mode === 'cpu' && side === botSide) return null;
+  if (mode === '2p') {
+    return side === 'blue'
+      ? (keys.has('w') ? -1 : 0) + (keys.has('s') ? 1 : 0)
+      : (keys.has('ArrowUp') ? -1 : 0) + (keys.has('ArrowDown') ? 1 : 0);
+  }
+  // cpu mode, human side → arrows
+  return (keys.has('ArrowUp') ? -1 : 0) + (keys.has('ArrowDown') ? 1 : 0);
+}
+
+// ── Update ───────────────────────────────────────────────────────────────
+function update(dt) {
+  const f = Math.min(dt, 50) / 16.67;
+  if (pktFx.length) pktFx = pktFx.filter(p => now - p.born < 700);
+
+  // paddles — each side is either human-controlled or bot-controlled
+  for (const side of ['blue', 'red']) {
+    const p = paddles[side];
+    const dir = paddleDir(side);              // -1 up / +1 down / 0 hold / null = bot
+    if (dir === null) {
+      const bSpeed = 5.6;
+      const ty = botTargetY(side);
+      if (Math.abs(ty - p.y) > bSpeed) p.y += Math.sign(ty - p.y) * bSpeed * f;
+    } else {
+      p.y += dir * 6.4 * f;
+    }
+    p.y = clamp(p.y, PH / 2, H - PH / 2);
+  }
+  if (mode === 'cpu') botExploits(botSide);
+
+  // balls
+  const speedMul = (now < rateLimitUntil ? 0.4 : 1) * (now < ransomUntil ? 1.6 : 1);
+  for (let i = balls.length - 1; i >= 0; i--) {
+    const b = balls[i];
+    b.x += b.vx * speedMul * f;
+    b.y += b.vy * speedMul * f;
+
+    if (b.y < BH / 2) { b.y = BH / 2; b.vy = Math.abs(b.vy); }
+    if (b.y > H - BH / 2) { b.y = H - BH / 2; b.vy = -Math.abs(b.vy); }
+
+    // blue paddle
+    if (b.vx < 0 && b.x - BW / 2 <= BLUE_X + PW && b.x - BW / 2 >= BLUE_X - 6 &&
+        Math.abs(b.y - paddles.blue.y) <= PH / 2 + BH / 2) {
+      paddleHit(b, 'blue');
+    }
+    // red paddle
+    if (b.vx > 0 && b.x + BW / 2 >= RED_X && b.x + BW / 2 <= RED_X + PW + 6 &&
+        Math.abs(b.y - paddles.red.y) <= PH / 2 + BH / 2) {
+      paddleHit(b, 'red');
+    }
+    // air gap rescue wall (blue only)
+    if (b.vx < 0 && now < airGapUntil && b.x - BW / 2 <= AIRGAP_X) {
+      b.x = AIRGAP_X + BW / 2; b.vx = Math.abs(b.vx); flash('AIR GAP block');
+    }
+
+    // scoring
+    if (b.x < -30) { balls.splice(i, 1); blueHP--; flash('DATA BREACH'); }
+    else if (b.x > W + 30) { balls.splice(i, 1); redHP--; flash('BOTNET DROP'); }
+  }
+
+  if (balls.length === 0 && !gameOver) serve(Math.random() < 0.5 ? -1 : 1);
+  if (blueHP <= 0 || redHP <= 0) endGame();
+}
+
+// ── Rendering ────────────────────────────────────────────────────────────
+function drawHP(x, hp, col, right) {
+  ctx.fillStyle = col;
+  for (let i = 0; i < MAXHP; i++) {
+    const bx = right ? x - i * 16 : x + i * 16;
+    ctx.globalAlpha = i < hp ? 1 : 0.18;
+    ctx.fillRect(bx, 16, 11, 11);
+  }
+  ctx.globalAlpha = 1;
+}
+function drawEnergy(x, e, col, right) {
+  const seg = 14, gap = 3, h = 8;
+  for (let i = 0; i < MAXE; i++) {
+    const bx = right ? x - (i + 1) * (seg + gap) + gap : x + i * (seg + gap);
+    ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.strokeRect(bx, 34, seg, h);
+    if (i < e) { ctx.fillStyle = col; ctx.globalAlpha = 0.85; ctx.fillRect(bx + 1, 35, seg - 2, h - 2); ctx.globalAlpha = 1; }
+  }
+}
+
+function predictPath() {
+  const b = balls.find(bb => bb.vx < 0);
+  if (!b) return;
+  let x = b.x, y = b.y, vx = b.vx, vy = b.vy, guard = 0;
+  ctx.strokeStyle = 'rgba(34,211,238,0.5)'; ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 6]); ctx.beginPath(); ctx.moveTo(x, y);
+  while (x > BLUE_X + PW && guard++ < 400) {
+    x += vx; y += vy;
+    if (y < BH / 2) { y = BH / 2; vy = Math.abs(vy); }
+    if (y > H - BH / 2) { y = H - BH / 2; vy = -Math.abs(vy); }
+    ctx.lineTo(x, y);
+  }
+  ctx.stroke(); ctx.setLineDash([]);
+}
+
+function draw() {
+  ctx.fillStyle = '#050805'; ctx.fillRect(0, 0, W, H);
+
+  // net
+  ctx.strokeStyle = 'rgba(0,255,65,0.15)'; ctx.lineWidth = 2; ctx.setLineDash([8, 12]);
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke(); ctx.setLineDash([]);
+
+  // DPI predicted path
+  if (now < dpiUntil) predictPath();
+
+  // air gap wall
+  if (now < airGapUntil) {
+    ctx.fillStyle = 'rgba(34,211,238,0.25)';
+    ctx.fillRect(AIRGAP_X - 3, 0, 4, H);
+  }
+
+  // paddles
+  ctx.fillStyle = '#22d3ee'; ctx.shadowColor = '#22d3ee'; ctx.shadowBlur = 12;
+  ctx.fillRect(BLUE_X, paddles.blue.y - PH / 2, PW, PH);
+  ctx.fillStyle = '#ff2e88'; ctx.shadowColor = '#ff2e88';
+  ctx.fillRect(RED_X, paddles.red.y - PH / 2, PW, PH);
+  ctx.shadowBlur = 0;
+
+  // rate-limit tint
+  if (now < rateLimitUntil) { ctx.fillStyle = 'rgba(34,211,238,0.05)'; ctx.fillRect(0, 0, W, H); }
+
+  // payload readouts — text revealed on bounce, dissolving away
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const p of pktFx) {
+    const t = clamp((now - p.born) / 700, 0, 1);
+    ctx.globalAlpha = 1 - t;
+    ctx.fillStyle = p.col; ctx.shadowColor = p.col; ctx.shadowBlur = 4 + t * 18;
+    ctx.font = 'bold ' + (16 + t * 7).toFixed(1) + 'px "Courier New", monospace';
+    ctx.fillText(`[${p.text}]`, p.x, p.y - t * 26);
+  }
+  ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+
+  // balls — square hacker packets
+  const S = 16;
+  for (const b of balls) {
+    if (b.spoof && b.vx < 0 && b.x > 170) continue;   // IP spoof: cloaked mid-flight
+    const col = b.vx < 0 ? '#ff2e88' : '#00ff41';
+    ctx.shadowColor = col; ctx.shadowBlur = 14;
+    ctx.fillStyle = col;
+    ctx.fillRect(b.x - S / 2, b.y - S / 2, S, S);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#050805';                         // hollow core → chip look
+    ctx.fillRect(b.x - S / 2 + 4, b.y - S / 2 + 4, S - 8, S - 8);
+    ctx.fillStyle = col;
+    ctx.fillRect(b.x - 2, b.y - 2, 4, 4);
+  }
+
+  // HUD
+  drawHP(20, blueHP, '#22d3ee', false);
+  drawHP(W - 31, redHP, '#ff2e88', true);
+  drawEnergy(20, blueE, '#22d3ee', false);
+  drawEnergy(W - 20, redE, '#ff2e88', true);
+  ctx.font = '10px "Courier New", monospace'; ctx.textAlign = 'left';
+  ctx.fillStyle = '#22d3ee'; ctx.fillText('WAF · BLUE', 20, 55);
+  ctx.textAlign = 'right'; ctx.fillStyle = '#ff2e88'; ctx.fillText('C2 · RED', W - 20, 55);
+
+  // armed / effect badges
+  ctx.textAlign = 'center'; ctx.font = '11px "Courier New", monospace';
+  if (now < ransomUntil) { ctx.fillStyle = '#ff2e88'; ctx.fillText('RANSOMWARE // PAYLOAD ACCELERATED', W / 2, 20); }
+  if (now < flashUntil && flashMsg) { ctx.fillStyle = '#ffb300'; ctx.fillText(flashMsg, W / 2, H - 16); }
+}
+
+// ── State control ────────────────────────────────────────────────────────
+function reset() {
+  paddles = { blue: { y: H / 2 }, red: { y: H / 2 } };
+  balls = []; pktFx = [];
+  blueHP = redHP = MAXHP; blueE = redE = 0;
+  paused = true; gameOver = false; rulesOpen = false;
+  keys = new Set();
+  flashMsg = ''; flashUntil = 0; botNextExploit = 0; botWant = null;
+  rateLimitUntil = dpiUntil = airGapUntil = ransomUntil = 0;
+  mode = null; started = false; humanSide = null; botSide = null;
+  overlay.classList.remove('show'); rulesEl.classList.remove('show');
+  showModeSelect();
+  youEl.innerHTML = '&nbsp;';
+  draw();
+}
+
+function showModeSelect() {
+  ovTitle.className = 'ov-title';
+  ovTitle.textContent = 'C2 PONG';
+  ovSub.innerHTML =
+    'asymmetric packet warfare<br><br>select mode:<br>' +
+    '<b class="b">[1] PLAYER vs CPU</b><br>' +
+    '<b class="r">[2] 2 PLAYERS</b>';
+  overlay.classList.add('show');
+  paused = true;
+}
+
+function chooseMode(m) {
+  mode = m;
+  if (m === 'cpu') showSideSelect();
+  else startTwoPlayer();
+}
+
+function showSideSelect() {
+  ovTitle.className = 'ov-title';
+  ovTitle.textContent = 'C2 PONG';
+  ovSub.innerHTML =
+    'choose your side:<br><br>' +
+    '<b class="b">[1] BLUE TEAM — WAF (defender, left)</b><br>' +
+    '<b class="r">[2] RED TEAM — C2 (attacker, right)</b>';
+  overlay.classList.add('show');
+  paused = true;
+}
+
+function chooseSide(s) {
+  humanSide = s; botSide = s === 'blue' ? 'red' : 'blue';
+  started = true;
+  youEl.innerHTML = `YOU: <b>${s === 'blue' ? 'BLUE — WAF (defender)' : 'RED — C2 (attacker)'}</b> &nbsp;|&nbsp; bot: ${botSide.toUpperCase()}`;
+  overlay.classList.remove('show');
+  paused = false;
+  serve(Math.random() < 0.5 ? -1 : 1);
+  lastT = performance.now();
+}
+
+function startTwoPlayer() {
+  humanSide = null; botSide = null; started = true;
+  youEl.innerHTML =
+    '<b class="b" style="color:#22d3ee">BLUE</b>: W/S · 1 2 3 &nbsp;|&nbsp; ' +
+    '<b class="r" style="color:#ff2e88">RED</b>: ↑/↓ · , . /';
+  overlay.classList.remove('show');
+  paused = false;
+  serve(Math.random() < 0.5 ? -1 : 1);
+  lastT = performance.now();
+}
+
+function endGame() {
+  gameOver = true;
+  const blueWon = redHP <= 0;
+  ovTitle.className = 'ov-title ' + (blueWon ? '' : 'red');
+  ovTitle.textContent = blueWon ? 'BREACH CONTAINED' : 'SERVER PWNED';
+  const outcome = (mode === '2p')
+    ? `<br><br>winner: ${blueWon ? '<b class="b">BLUE / WAF</b>' : '<b class="r">RED / C2</b>'}`
+    : (() => {
+        const humanWon = (blueWon && humanSide === 'blue') || (!blueWon && humanSide === 'red');
+        return `<br><br>you ${humanWon ? '<b class="b">WIN</b>' : '<b class="r">LOSE</b>'}`;
+      })();
+  ovSub.innerHTML =
+    (blueWon ? 'BLUE / WAF held the line.' : 'RED / C2 exfiltrated the data.') +
+    outcome + '<br><br>press <b>R</b> to re-engage';
+  overlay.classList.add('show');
+}
+
+function togglePause() {
+  if (gameOver || !started) return;
+  paused = !paused;
+  if (paused) { ovTitle.className = 'ov-title'; ovTitle.textContent = 'PAUSED'; ovSub.innerHTML = 'press <b>P</b> to resume'; overlay.classList.add('show'); }
+  else { overlay.classList.remove('show'); lastT = performance.now(); }
+}
+
+function toggleRules(show) {
+  rulesOpen = (show === undefined) ? !rulesOpen : show;
+  rulesEl.classList.toggle('show', rulesOpen);
+  if (!rulesOpen) lastT = performance.now();
+}
+
+function loop(t = 0) {
+  now = t;
+  const dt = t - lastT; lastT = t;
+  if (!paused && !gameOver && !rulesOpen && started) {
+    try { update(dt); } catch (err) { flash('err: ' + err.message); }
+  }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ── Input ────────────────────────────────────────────────────────────────
+rulesBtn.addEventListener('click', () => { toggleRules(); rulesBtn.blur(); });
+rulesEl.addEventListener('click', () => toggleRules(false));
+
+document.addEventListener('keydown', (e) => {
+  const k = e.key;
+  const lk = k.length === 1 ? k.toLowerCase() : k;
+  if (rulesOpen) { toggleRules(false); e.preventDefault(); return; }
+  if (lk === 'r') { reset(); return; }
+  if (!mode) {                            // mode select
+    if (k === '1') chooseMode('cpu');
+    else if (k === '2') chooseMode('2p');
+    return;
+  }
+  if (mode === 'cpu' && !started) {       // side select
+    if (k === '1') chooseSide('blue');
+    else if (k === '2') chooseSide('red');
+    return;
+  }
+  if (gameOver) return;
+  if (lk === 'p') { togglePause(); return; }
+  if (paused) return;
+
+  if (mode === 'cpu') {
+    if (k === 'ArrowUp' || k === 'ArrowDown') { keys.add(k); e.preventDefault(); return; }
+    if (lk === 'q' || lk === 'w' || lk === 'e') { useExploit(humanSide, lk); e.preventDefault(); }
+    return;
+  }
+  // 2-player controls
+  if (lk === 'w' || lk === 's') { keys.add(lk); e.preventDefault(); return; }
+  if (k === 'ArrowUp' || k === 'ArrowDown') { keys.add(k); e.preventDefault(); return; }
+  if (k === '1') { useExploit('blue', 'q'); e.preventDefault(); return; }
+  if (k === '2') { useExploit('blue', 'w'); e.preventDefault(); return; }
+  if (k === '3') { useExploit('blue', 'e'); e.preventDefault(); return; }
+  if (k === ',') { useExploit('red', 'q'); e.preventDefault(); return; }
+  if (k === '.') { useExploit('red', 'w'); e.preventDefault(); return; }
+  if (k === '/') { useExploit('red', 'e'); e.preventDefault(); return; }
+});
+document.addEventListener('keyup', (e) => {
+  keys.delete(e.key);
+  if (e.key.length === 1) keys.delete(e.key.toLowerCase());
+});
+
+// ── Boot ─────────────────────────────────────────────────────────────────
+function fitToWindow() {
+  const wrap = document.querySelector('.wrap');
+  wrap.style.transform = 'none';
+  const r = wrap.getBoundingClientRect();
+  if (r.width && r.height) {
+    const s = Math.min(window.innerWidth / r.width, window.innerHeight / r.height);
+    wrap.style.transform = 'scale(' + s + ')';
+  }
+}
+window.addEventListener('resize', fitToWindow);
+
+function boot() {
+  now = performance.now(); lastT = now;
+  reset();
+  if (!loopStarted) { loopStarted = true; requestAnimationFrame(loop); }
+  fitToWindow();
+}
+boot();
+</script>
+</body>
+</html>

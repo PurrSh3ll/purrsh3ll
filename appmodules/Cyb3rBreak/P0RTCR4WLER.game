@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P0RTCR4WLER // Cyb3rBreak</title>
+<style>
+/* P0RTCR4WLER // Cyb3rBreak — hacker/phosphor terminal theme */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root { --green: #00ff41; --amber: #ffb300; --bg: #050805; }
+
+html, body {
+  height: 100%;
+  background: #000;
+  color: var(--green);
+  font-family: "Courier New", "DejaVu Sans Mono", monospace;
+  overflow: hidden;
+}
+
+.crt {
+  height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, #071007 0%, #000 100%);
+  position: relative;
+}
+.crt::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(to bottom,
+    rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px, rgba(0,0,0,0.28) 3px, rgba(0,0,0,0) 4px);
+  mix-blend-mode: multiply;
+}
+
+.wrap { padding: 18px 22px; transform-origin: center center; }
+
+.hdr { margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.hdr h1 {
+  font-size: 28px; letter-spacing: 5px; font-weight: 700;
+  text-shadow: 0 0 10px var(--green), 0 0 22px rgba(0,255,65,0.5);
+}
+.rules-btn {
+  font-family: inherit; cursor: pointer;
+  color: var(--green); background: rgba(0,255,65,0.06);
+  border: 1px solid rgba(0,255,65,0.5); border-radius: 4px;
+  padding: 6px 12px; font-size: 12px; letter-spacing: 2px;
+  text-shadow: 0 0 6px rgba(0,255,65,0.5); box-shadow: 0 0 8px rgba(0,255,65,0.15);
+}
+.rules-btn:hover { background: rgba(0,255,65,0.14); box-shadow: 0 0 12px rgba(0,255,65,0.35); }
+
+.stage { display: flex; gap: 18px; align-items: flex-start; }
+
+.field { position: relative; }
+#board {
+  display: block;
+  border: 2px solid rgba(0,255,65,0.5);
+  box-shadow: 0 0 18px rgba(0,255,65,0.25), inset 0 0 30px rgba(0,255,65,0.05);
+  background: var(--bg);
+}
+
+.overlay {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+  background: rgba(0,8,0,0.88); opacity: 0; visibility: hidden; transition: opacity .18s;
+}
+.overlay.show { opacity: 1; visibility: visible; }
+.ov-title { font-size: 30px; letter-spacing: 4px; font-weight: 700; color: #ff2e88; text-shadow: 0 0 14px rgba(255,46,136,0.8); }
+.ov-sub { margin-top: 14px; font-size: 13px; color: #9fe8b6; line-height: 1.6; max-width: 88%; }
+.ov-hint { margin-top: 16px; font-size: 12px; color: #57c97e; }
+.recap-h { margin-top: 14px; color: var(--amber); font-size: 12px; letter-spacing: 1px; }
+.recap { list-style: none; margin-top: 8px; font-size: 13px; line-height: 1.6; color: #ffd27a; }
+
+/* Escalation modal (pauses the scan) */
+.esc-ov { z-index: 5; }
+.esc-title { font-size: 20px; letter-spacing: 3px; color: var(--amber); text-shadow: 0 0 12px rgba(255,179,0,0.8); }
+.esc-sub { margin: 8px 0 16px; font-size: 12px; color: #9fe8b6; line-height: 1.5; }
+.esc-foot { margin-top: 14px; font-size: 11px; color: #57c97e; letter-spacing: 1px; }
+.esc-list { display: flex; flex-direction: column; gap: 10px; width: 240px; }
+.esc-opt {
+  font-family: inherit; cursor: pointer; text-align: left;
+  color: var(--green); background: rgba(0,255,65,0.06);
+  border: 1px solid rgba(0,255,65,0.5); border-radius: 4px;
+  padding: 10px 14px; font-size: 15px; letter-spacing: 1px;
+}
+.esc-opt:hover { background: rgba(0,255,65,0.16); box-shadow: 0 0 12px rgba(0,255,65,0.4); }
+
+/* Rules overlay */
+.rules-ov { z-index: 6; }
+.rules-box { text-align: left; max-width: 90%; }
+.rules-title { font-size: 20px; letter-spacing: 4px; color: var(--green); text-shadow: 0 0 10px var(--green); margin-bottom: 12px; text-align: center; }
+.rules-box ul { list-style: none; font-size: 12.5px; line-height: 1.7; color: #9fe8b6; }
+.rules-box li { margin: 6px 0; padding-left: 16px; position: relative; }
+.rules-box li::before { content: ">"; position: absolute; left: 0; color: var(--green); }
+.rules-close { margin-top: 16px; text-align: center; font-size: 11px; color: #57c97e; }
+
+/* HUD */
+.hud { width: 210px; display: flex; flex-direction: column; gap: 12px; }
+.panel { border: 1px solid rgba(0,255,65,0.28); background: rgba(0,255,65,0.03); padding: 10px 12px; }
+.cap { font-size: 10px; letter-spacing: 2px; color: #57c97e; margin-bottom: 8px; }
+.stat { display: flex; justify-content: space-between; align-items: baseline; margin: 4px 0; }
+.stat span { font-size: 10px; color: #57c97e; letter-spacing: 1px; }
+.stat b { font-size: 18px; text-shadow: 0 0 8px rgba(0,255,65,0.5); }
+
+.svc { list-style: none; font-size: 13px; line-height: 1.7; max-height: 180px; overflow-y: auto; }
+.svc li { padding-left: 14px; position: relative; color: #9fe8b6; }
+.svc li::before { content: "▸"; position: absolute; left: 0; color: var(--green); }
+.svc-empty { color: #666; font-size: 11px; }
+
+.keys { font-size: 11px; line-height: 1.7; color: #86e0a2; }
+kbd { border: 1px solid rgba(0,255,65,0.4); border-radius: 3px; padding: 0 5px; font-size: 10px; background: rgba(0,255,65,0.06); }
+
+.status { min-height: 18px; font-size: 12px; letter-spacing: 1px; }
+.status.ok  { color: var(--green);  text-shadow: 0 0 8px rgba(0,255,65,0.6); }
+.status.bad { color: #ff2e88; text-shadow: 0 0 8px rgba(255,46,136,0.6); }
+</style>
+</head>
+<body>
+<div class="crt">
+  <div class="wrap">
+
+    <header class="hdr">
+      <h1>P0RTCR4WLER</h1>
+      <button id="rulesBtn" class="rules-btn">? RULES</button>
+    </header>
+
+    <main class="stage">
+      <section class="field">
+        <canvas id="board" width="728" height="624"></canvas>
+
+        <div id="overlay" class="overlay">
+          <div id="ovTitle" class="ov-title">P0RTCR4WLER</div>
+          <div id="ovSub" class="ov-sub">
+            eat only the ports for your <b>unlocked services</b><br>
+            eat a locked port &rarr; downgrade (lose length + a service)<br><br>
+            press <b>ENTER</b> to start the scan
+          </div>
+        </div>
+
+        <div id="esc" class="overlay esc-ov">
+          <div class="esc-title">PRIVILEGE ESCALATION</div>
+          <div class="esc-sub">scan paused &mdash; choose a service to unlock,<br>then eat its port number</div>
+          <div id="escList" class="esc-list"></div>
+          <div class="esc-foot">press 1 / 2 / 3</div>
+        </div>
+
+        <div id="rules" class="overlay rules-ov">
+          <div class="rules-box">
+            <div class="rules-title">RULES</div>
+            <ul>
+              <li>Steer the scanner to eat port numbers.</li>
+              <li>You may only eat ports for your UNLOCKED services.</li>
+              <li>Eat a locked port &rarr; downgrade: lose length + last service.</li>
+              <li>Every few good ports, unlock a new service (name only).</li>
+              <li>Know your ports! HUD lists names, the board shows numbers.</li>
+              <li>You pass through walls &mdash; only hitting yourself ends the scan.</li>
+            </ul>
+            <div class="rules-close">click / any key to close</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="hud">
+        <div class="panel">
+          <div class="stat"><span>SCORE</span><b id="score">000000</b></div>
+          <div class="stat"><span>LENGTH</span><b id="len">3</b></div>
+          <div class="stat"><span>LEVEL</span><b id="level">1</b></div>
+          <div class="stat"><span>PORTS SCANNED</span><b id="scanned">0</b></div>
+        </div>
+
+        <div class="panel">
+          <div class="cap">UNLOCKED SERVICES</div>
+          <ul id="svc" class="svc"></ul>
+        </div>
+
+        <div class="panel keys">
+          <div class="cap">KEYS</div>
+          <div>&larr; &uarr; &rarr; &darr; / WASD &nbsp;steer</div>
+          <div><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> unlock choice</div>
+          <div><kbd>P</kbd> pause &middot; <kbd>R</kbd> restart</div>
+        </div>
+
+        <div id="status" class="status ok">&nbsp;</div>
+      </aside>
+    </main>
+
+  </div>
+</div>
+<script>
+'use strict';
+/* P0RTCR4WLER // Cyb3rBreak
+ * Port-scanning Snake. Eat port NUMBERS on the board, but only the ones that
+ * map to a service you've UNLOCKED. Every few good ports you pick a new service
+ * to unlock — shown by NAME only, so you must know the port. Eat a locked port
+ * and you downgrade: lose length and your last acquired service.
+ * Educational: teaches the well-known port <-> service mapping. */
+
+const COLS = 28, ROWS = 24, CELL = 26;
+const FOOD_COUNT = 5, ESCALATE_EVERY = 4;
+
+const PORTS = [
+  { p: 21, n: 'FTP' },   { p: 22, n: 'SSH' },   { p: 23, n: 'Telnet' }, { p: 25, n: 'SMTP' },
+  { p: 53, n: 'DNS' },   { p: 80, n: 'HTTP' },  { p: 110, n: 'POP3' },  { p: 139, n: 'NetBIOS' },
+  { p: 143, n: 'IMAP' }, { p: 161, n: 'SNMP' }, { p: 389, n: 'LDAP' },  { p: 443, n: 'HTTPS' },
+  { p: 445, n: 'SMB' },  { p: 3306, n: 'MySQL' }, { p: 3389, n: 'RDP' }, { p: 5432, n: 'PostgreSQL' },
+  { p: 5900, n: 'VNC' }, { p: 6379, n: 'Redis' }, { p: 8080, n: 'HTTP-alt' }, { p: 27017, n: 'MongoDB' },
+];
+const nameOf = (p) => { const d = PORTS.find(x => x.p === p); return d ? d.n : String(p); };
+
+const board_c = document.getElementById('board');
+const ctx     = board_c.getContext('2d');
+const scoreEl = document.getElementById('score');
+const lenEl   = document.getElementById('len');
+const levelEl = document.getElementById('level');
+const scanEl  = document.getElementById('scanned');
+const svcEl   = document.getElementById('svc');
+const statusEl= document.getElementById('status');
+const overlay = document.getElementById('overlay');
+const ovTitle = document.getElementById('ovTitle');
+const ovSub   = document.getElementById('ovSub');
+const escEl     = document.getElementById('esc');
+const escListEl = document.getElementById('escList');
+const rulesEl = document.getElementById('rules');
+const rulesBtn= document.getElementById('rulesBtn');
+
+let snake, dir, nextDir, foods, unlocked, misses,
+    score, correct, level, stepMs, lastStep = 0, prevT = 0,
+    effects = [], damageFlash = 0,
+    paused, gameOver, escPending = false, rulesOpen = false, escChoices = [], loopStarted = false;
+
+const STALE_CYCLES = 3;   // a packet left uncollected for this many captures is recycled
+
+function addEffect(x, y, kind) { effects.push({ x, y, kind, t: 0 }); }
+
+// Every capture is a "cycle": age all packets, drop the stale ones, top back up.
+function ageAndRefill() {
+  for (const f of foods) f.survived = (f.survived || 0) + 1;
+  foods = foods.filter(f => f.survived < STALE_CYCLES);
+  while (foods.length < FOOD_COUNT) spawnFood();
+  ensureEatableFood();
+}
+
+const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+function randCell() {
+  let x, y, tries = 0;
+  do {
+    x = Math.floor(Math.random() * COLS);
+    y = Math.floor(Math.random() * ROWS);
+    tries++;
+  } while ((snake.some(s => s.x === x && s.y === y) || foods.some(f => f.x === x && f.y === y)) && tries < 300);
+  return { x, y };
+}
+
+// Always returns a valid PORTS entry for a currently-unlocked service.
+// Filters PORTS directly (never `find` on a possibly-stale value), with a
+// guaranteed fallback, so it can never yield undefined.
+function randUnlockedPort() {
+  const pool = PORTS.filter(x => unlocked.includes(x.p));
+  return (pool.length ? pool : PORTS)[Math.floor(Math.random() * (pool.length ? pool.length : PORTS.length))];
+}
+
+function spawnFood() {
+  const cell = randCell();
+  const pd = (Math.random() < 0.6 && unlocked.length)
+    ? randUnlockedPort()
+    : PORTS[Math.floor(Math.random() * PORTS.length)];
+  foods.push({ x: cell.x, y: cell.y, p: pd.p, n: pd.n, survived: 0 });
+}
+
+// Guarantee at least a couple of currently-eatable (unlocked) ports on the board,
+// so you're never stranded with only locked packets (e.g. right after a downgrade).
+function ensureEatableFood() {
+  if (!unlocked.length || !foods.length) return;
+  const need = Math.min(2, foods.length);
+  let guard = 0;
+  while (foods.filter(f => unlocked.includes(f.p)).length < need && guard++ < foods.length) {
+    const locked = foods.filter(f => !unlocked.includes(f.p));
+    if (!locked.length) break;
+    const t  = locked[Math.floor(Math.random() * locked.length)];
+    const pd = randUnlockedPort();
+    t.p = pd.p; t.n = pd.n;
+  }
+}
+
+function setStatus(msg, kind) {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + (kind || 'ok');
+}
+
+function recordMiss(f) { if (!misses.some(m => m.p === f.p)) misses.push({ p: f.p, n: f.n }); }
+
+function updateHUD() {
+  scoreEl.textContent = String(score).padStart(6, '0');
+  lenEl.textContent   = snake.length;
+  levelEl.textContent = level;
+  scanEl.textContent  = correct;
+  if (unlocked.length) {
+    svcEl.innerHTML = unlocked.map(p => `<li>${nameOf(p)}</li>`).join('');
+  } else {
+    svcEl.innerHTML = '<li class="svc-empty">none</li>';
+  }
+}
+
+// ── Escalation menu ──
+function openEscalation() {
+  const locked = PORTS.filter(x => !unlocked.includes(x.p));
+  if (locked.length === 0) return;
+  escChoices = shuffle(locked).slice(0, 3);
+  escListEl.innerHTML = '';
+  escChoices.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.className = 'esc-opt';
+    b.textContent = `[${i + 1}]  ${c.n}`;
+    b.addEventListener('click', () => chooseEsc(i));
+    escListEl.appendChild(b);
+  });
+  escPending = true;
+  escEl.classList.add('show');
+}
+
+function chooseEsc(i) {
+  if (!escPending) return;
+  const c = escChoices[i];
+  if (!c) return;
+  unlocked.push(c.p);
+  escPending = false;
+  escEl.classList.remove('show');
+  lastStep = performance.now();
+  setStatus(`unlocked ${c.n}`, 'ok');
+  // put its port on the board right away so you can practise it
+  if (foods.length) { const idx = Math.floor(Math.random() * foods.length); foods[idx].p = c.p; foods[idx].n = c.n; }
+  updateHUD();
+}
+
+// ── Core step ──
+function step() {
+  dir = nextDir;
+  const head = snake[0];
+  let nx = head.x + dir.x, ny = head.y + dir.y;
+  nx = (nx + COLS) % COLS;              // walls wrap around
+  ny = (ny + ROWS) % ROWS;
+  if (snake.some((s, i) => i > 0 && s.x === nx && s.y === ny)) { endGame('self collision'); return; }
+
+  snake.unshift({ x: nx, y: ny });
+  const fi = foods.findIndex(f => f.x === nx && f.y === ny);
+
+  if (fi >= 0) {
+    const f = foods[fi];
+    foods.splice(fi, 1);
+    if (unlocked.includes(f.p)) {
+      score += 10 * level;
+      correct++;
+      setStatus(`port ${f.p} captured  ✓`, 'ok');
+      addEffect(nx, ny, 'ok');
+      ageAndRefill();
+      const nl = Math.floor(correct / 8) + 1;
+      if (nl !== level) { level = nl; stepMs = Math.max(70, 160 - (level - 1) * 12); }
+      if (correct % ESCALATE_EVERY === 0 && !escPending) openEscalation();
+      updateHUD();
+      // ate a good port → grow (no tail pop)
+    } else {
+      recordMiss(f);
+      setStatus(`port ${f.p}  ✗ LOCKED — downgrade`, 'bad');
+      addEffect(nx, ny, 'bad');
+      damageFlash = 300;
+      if (unlocked.length > 1) unlocked.pop();
+      snake.pop();                 // undo the growth from this move
+      let pen = 3;
+      while (pen-- > 0 && snake.length > 1) snake.pop();
+      ageAndRefill();
+      updateHUD();
+      if (snake.length <= 1) { endGame('downgraded to nothing'); return; }
+    }
+  } else {
+    snake.pop();                   // normal move
+  }
+}
+
+// ── Rendering ──
+function draw() {
+  ctx.fillStyle = '#050805';
+  ctx.fillRect(0, 0, board_c.width, board_c.height);
+
+  ctx.strokeStyle = 'rgba(0,255,65,0.06)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= COLS; x++) { ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, ROWS * CELL); ctx.stroke(); }
+  for (let y = 0; y <= ROWS; y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(COLS * CELL, y * CELL); ctx.stroke(); }
+
+  // foods — uniform amber "port" tiles (you must KNOW which are safe)
+  for (const f of foods) {
+    const px = f.x * CELL, py = f.y * CELL;
+    ctx.fillStyle = 'rgba(255,179,0,0.10)';
+    ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
+    ctx.strokeStyle = '#ffb300';
+    ctx.lineWidth = 1.5;
+    ctx.shadowColor = '#ffb300'; ctx.shadowBlur = 7;
+    ctx.strokeRect(px + 2.5, py + 2.5, CELL - 5, CELL - 5);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#ffd27a';
+    const lbl = String(f.p);
+    ctx.font = `${lbl.length >= 5 ? 9 : lbl.length >= 4 ? 11 : 13}px "Courier New", monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(lbl, px + CELL / 2, py + CELL / 2 + 1);
+  }
+
+  // snake
+  for (let i = snake.length - 1; i >= 0; i--) {
+    const s = snake[i];
+    const px = s.x * CELL, py = s.y * CELL;
+    const head = i === 0;
+    ctx.fillStyle = head ? '#c9ffdd' : '#00ff41';
+    ctx.shadowColor = '#00ff41';
+    ctx.shadowBlur = head ? 12 : 6;
+    ctx.fillRect(px + 2, py + 2, CELL - 4, CELL - 4);
+    ctx.shadowBlur = 0;
+  }
+
+  // capture / downgrade animations — expanding fading ring at the eaten cell
+  for (const e of effects) {
+    const cx = e.x * CELL + CELL / 2, cy = e.y * CELL + CELL / 2;
+    const p = e.t / 360;
+    const r = CELL * 0.35 + p * CELL * 1.5;
+    const a = 1 - p;
+    ctx.strokeStyle = e.kind === 'ok' ? `rgba(0,255,65,${a})` : `rgba(255,46,136,${a})`;
+    ctx.lineWidth = 3 * (1 - p) + 1;
+    ctx.shadowColor = e.kind === 'ok' ? '#00ff41' : '#ff2e88';
+    ctx.shadowBlur = 12 * (1 - p);
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // brief red wash on downgrade
+  if (damageFlash > 0) {
+    ctx.fillStyle = `rgba(255,46,136,${0.22 * (damageFlash / 300)})`;
+    ctx.fillRect(0, 0, board_c.width, board_c.height);
+  }
+}
+
+// ── State ──
+function reset() {
+  snake = [{ x: 12, y: 12 }, { x: 11, y: 12 }, { x: 10, y: 12 }];
+  dir = { x: 1, y: 0 }; nextDir = { x: 1, y: 0 };
+  score = 0; correct = 0; level = 1; stepMs = 160;
+  effects = []; damageFlash = 0;
+  unlocked = [80]; misses = [];
+  foods = [];
+  for (let i = 0; i < FOOD_COUNT; i++) spawnFood();
+  ensureEatableFood();
+  paused = false; gameOver = false; escPending = false;
+  overlay.classList.remove('show');
+  escEl.classList.remove('show');
+  setStatus(' ', 'ok');
+  updateHUD();
+  draw();
+}
+
+function endGame(reason) {
+  gameOver = true;
+  ovTitle.textContent = 'CONNECTION RESET';
+  let html = `<div>${reason}</div>`;
+  if (misses.length) {
+    html += '<div class="recap-h">ports you got wrong:</div><ul class="recap">';
+    html += misses.map(m => `<li>${m.p} = ${m.n}</li>`).join('');
+    html += '</ul>';
+  } else {
+    html += '<div class="recap-h">clean scan — no wrong ports!</div>';
+  }
+  html += '<div class="ov-hint">press <b>R</b> to rescan</div>';
+  ovSub.innerHTML = html;
+  overlay.classList.add('show');
+}
+
+function togglePause() {
+  if (gameOver) return;
+  paused = !paused;
+  if (paused) {
+    ovTitle.textContent = 'PAUSED';
+    ovSub.innerHTML = 'scan frozen<br><br>press <b>P</b> to resume';
+    overlay.classList.add('show');
+  } else {
+    overlay.classList.remove('show');
+    lastStep = performance.now();
+  }
+}
+
+function toggleRules(show) {
+  rulesOpen = (show === undefined) ? !rulesOpen : show;
+  rulesEl.classList.toggle('show', rulesOpen);
+  if (!rulesOpen) lastStep = performance.now();
+}
+
+function loop(t = 0) {
+  const dt = t - prevT;
+  prevT = t;
+  if (!paused && !gameOver && !rulesOpen && !escPending) {
+    // one step per interval, capped at one per frame — no accumulator drift/stutter
+    if (t - lastStep >= stepMs) {
+      try { step(); } catch (err) { setStatus('err: ' + err.message, 'bad'); }
+      lastStep = t;
+    }
+  } else {
+    lastStep = t;   // don't bank a huge gap while a menu/pause is open
+  }
+  for (const e of effects) e.t += dt;
+  effects = effects.filter(e => e.t < 360);
+  if (damageFlash > 0) damageFlash = Math.max(0, damageFlash - dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ── Input ──
+rulesBtn.addEventListener('click', () => { toggleRules(); rulesBtn.blur(); });
+rulesEl.addEventListener('click', () => toggleRules(false));
+
+document.addEventListener('keydown', (e) => {
+  const k = e.key;
+  if (rulesOpen) { toggleRules(false); e.preventDefault(); return; }
+  if (escPending) {
+    if (k === '1' || k === '2' || k === '3') { chooseEsc(+k - 1); e.preventDefault(); }
+    else if (k === 'r' || k === 'R') reset();
+    return;   // scan paused for the choice — block movement/pause until picked
+  }
+  if (k === 'r' || k === 'R') { reset(); return; }
+  if (gameOver) return;
+  if (k === 'Enter' && paused) { paused = false; overlay.classList.remove('show'); lastStep = performance.now(); return; }
+  if (k === 'p' || k === 'P') { togglePause(); return; }
+  if (paused) return;
+
+  let nd = null;
+  if (k === 'ArrowUp'    || k === 'w' || k === 'W') nd = { x: 0, y: -1 };
+  else if (k === 'ArrowDown'  || k === 's' || k === 'S') nd = { x: 0, y: 1 };
+  else if (k === 'ArrowLeft'  || k === 'a' || k === 'A') nd = { x: -1, y: 0 };
+  else if (k === 'ArrowRight' || k === 'd' || k === 'D') nd = { x: 1, y: 0 };
+  if (nd) {
+    e.preventDefault();
+    if (!(nd.x === -dir.x && nd.y === -dir.y)) nextDir = nd;
+  }
+});
+
+// ── Boot ──
+function fitToWindow() {
+  const wrap = document.querySelector('.wrap');
+  wrap.style.transform = 'none';
+  const r = wrap.getBoundingClientRect();
+  if (r.width && r.height) {
+    const s = Math.min(window.innerWidth / r.width, window.innerHeight / r.height);
+    wrap.style.transform = 'scale(' + s + ')';
+  }
+}
+window.addEventListener('resize', fitToWindow);
+
+function boot() {
+  reset();
+  ovTitle.textContent = 'P0RTCR4WLER';
+  ovSub.innerHTML =
+    'eat only the ports for your <b>unlocked services</b><br>' +
+    'eat a locked port &rarr; downgrade (lose length + a service)<br><br>' +
+    'press <b>ENTER</b> to start the scan';
+  overlay.classList.add('show');
+  paused = true;
+  if (!loopStarted) { loopStarted = true; lastStep = performance.now(); requestAnimationFrame(loop); }
+}
+
+boot();
+fitToWindow();
+</script>
+</body>
+</html>
