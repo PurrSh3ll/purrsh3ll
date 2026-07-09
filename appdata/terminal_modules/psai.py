@@ -520,16 +520,18 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
     collected        = []
     _in_thinking     = [False]
     _spin_idx        = [0]
-    _thought_buf     = [""]    # partial tag buffer for <thought>/<thought> detection
-    _in_thought_tag  = [False] # True while inside <thought>…</thought> in content stream
+    _thought_buf     = [""]    # partial tag buffer for reasoning-tag detection
+    _in_thought_tag  = [False] # True while inside a reasoning tag in the content stream
     import time as _time
     _t_start     = _time.time()
     _t_first     = [None]
     _compl_tok   = [0]
     _prompt_tok  = [0]
 
-    _OPEN_TAG  = "<thought>"
-    _CLOSE_TAG = "</thought>"
+    # Providers that inline reasoning in the content stream use different tags:
+    # Qwen emits <think>…</think>, Gemini <thought>…</thought>. Recognise both.
+    _REASON_OPENS = ("<think>", "<thought>")
+    _close_tag    = [""]   # close tag matching the currently-open reasoning tag
 
     def _tag_prefix_len(s: str, tag: str) -> int:
         """Return length of longest suffix of s that is a prefix of tag (0 if none)."""
@@ -539,10 +541,20 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                 return i
         return 0
 
+    def _find_open(buf: str):
+        """Return (start_index, open_tag) for the earliest reasoning open tag in
+        buf, or (-1, None) if none is present."""
+        best, best_tag = -1, None
+        for tag in _REASON_OPENS:
+            i = buf.find(tag)
+            if i >= 0 and (best < 0 or i < best):
+                best, best_tag = i, tag
+        return best, best_tag
+
     def _split_thought(text: str):
-        """Extract <thought>…</thought> from a content chunk.
-        Only buffers trailing chars that are an actual prefix of a tag —
-        so normal tokens flush immediately with zero latency.
+        """Extract a reasoning block (<think>…</think> or <thought>…</thought>)
+        from a content chunk. Only buffers trailing chars that are an actual
+        prefix of a tag — so normal tokens flush immediately with zero latency.
         Returns (thinking_text, normal_text).
         """
         buf          = _thought_buf[0] + (text or "")
@@ -550,24 +562,26 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
         normal_parts = []
         while buf:
             if _in_thought_tag[0]:
-                end = buf.find(_CLOSE_TAG)
+                close = _close_tag[0]
+                end = buf.find(close)
                 if end >= 0:
                     think_parts.append(buf[:end])
                     _in_thought_tag[0] = False
-                    buf = buf[end + len(_CLOSE_TAG):]
+                    buf = buf[end + len(close):]
                 else:
-                    hold = _tag_prefix_len(buf, _CLOSE_TAG)
+                    hold = _tag_prefix_len(buf, close)
                     think_parts.append(buf[:len(buf) - hold])
                     _thought_buf[0] = buf[len(buf) - hold:]
                     return "".join(think_parts), "".join(normal_parts)
             else:
-                start = buf.find(_OPEN_TAG)
+                start, open_tag = _find_open(buf)
                 if start >= 0:
                     normal_parts.append(buf[:start])
                     _in_thought_tag[0] = True
-                    buf = buf[start + len(_OPEN_TAG):]
+                    _close_tag[0] = "</" + open_tag[1:]   # "<think>" -> "</think>"
+                    buf = buf[start + len(open_tag):]
                 else:
-                    hold = _tag_prefix_len(buf, _OPEN_TAG)
+                    hold = max((_tag_prefix_len(buf, t) for t in _REASON_OPENS), default=0)
                     normal_parts.append(buf[:len(buf) - hold])
                     _thought_buf[0] = buf[len(buf) - hold:]
                     return "".join(think_parts), "".join(normal_parts)
@@ -594,9 +608,12 @@ def _stream_openai_compat(model: str, messages: list, base_url: str, api_key: st
                     if not d.get("choices"):
                         continue
                     delta    = d["choices"][0]["delta"]
-                    thinking = delta.get("reasoning", "") or ""
+                    # Providers name the separate reasoning field differently:
+                    # OpenRouter/OpenAI use "reasoning", DeepSeek-direct/SiliconFlow
+                    # and some vLLM deployments use "reasoning_content".
+                    thinking = delta.get("reasoning") or delta.get("reasoning_content") or ""
                     content  = delta.get("content",   "") or ""
-                    # Fallback: extract <thought>…</thought> from content stream (e.g. Gemini)
+                    # Fallback: extract <think>…</think> / <thought>…</thought> from content stream
                     if not thinking and (content or _thought_buf[0] or _in_thought_tag[0]):
                         thinking, content = _split_thought(content)
                     if thinking and not hide_thinking:
