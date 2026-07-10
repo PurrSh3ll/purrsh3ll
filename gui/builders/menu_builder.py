@@ -2507,6 +2507,8 @@ def build_menu(main_window):
                 "temperature":        meta.get("temperature", ""),
                 "context_tokens":     meta.get("context_tokens", 0),
                 "tools_user_override": meta.get("tools_user_override"),
+                "vision_user_override": meta.get("vision_user_override"),
+                "audio_user_override":  meta.get("audio_user_override"),
             }
 
         def _set_row_meta(row, profile):
@@ -2522,6 +2524,8 @@ def build_menu(main_window):
                     "temperature":       profile.get("temperature", ""),
                     "context_tokens":    int(profile.get("context_tokens", 0)),
                     "tools_user_override": profile.get("tools_user_override"),
+                    "vision_user_override": profile.get("vision_user_override"),
+                    "audio_user_override":  profile.get("audio_user_override"),
                 })
 
         def _insert_table_row(row_idx, profile):
@@ -2656,6 +2660,34 @@ def build_menu(main_window):
             profile_ov = profile.get("tools_user_override")    # True, False, or None/missing
             final_ov = profile_ov if profile_ov is not None else user_ov
             return eff, final_ov
+
+        def _lookup_multimodal(profile):
+            """Return (vision_default: bool, audio_default: bool) — whether the
+            profile's model appears on the registry vision/audio (multimodal
+            input) capability lists."""
+            try:
+                _reg_path = os.path.join(
+                    getattr(c, "base_path", _base_dir_prov), "appdata", "model_ctx_registry.json"
+                )
+                with open(_reg_path, encoding="utf-8") as _f:
+                    _reg = json.load(_f)
+            except Exception:
+                return False, False
+            provider = profile.get("provider", "").lower()
+            model    = profile.get("model", "")
+            if model.lower().startswith("models/"):
+                model = model[7:]
+            if ":" in model:
+                model = model.split(":")[0]
+            section = _reg.get(provider, {})
+            if not section:
+                return False, False
+            ml = model.lower()
+            vision_list = section.get("vision", []) or []
+            audio_list  = section.get("audio", []) or []
+            vision_def = model in vision_list or ml in [m.lower() for m in vision_list]
+            audio_def  = model in audio_list  or ml in [m.lower() for m in audio_list]
+            return vision_def, audio_def
 
         def _on_behavior(row):
             profile = _table_row_to_dict(row)
@@ -2830,6 +2862,64 @@ def build_menu(main_window):
             _fc_row.addWidget(tools_default_btn)
             bform.addLayout(_fc_row)
             # --- end Function calling ---
+
+            # --- Vision / Audio (multimodal input) checkboxes ---
+            _vision_eff_default, _audio_eff_default = _lookup_multimodal(profile)
+            _vision_saved_override = profile.get("vision_user_override")
+            _audio_saved_override  = profile.get("audio_user_override")
+            _vision_override_val = [_vision_saved_override]
+            _audio_override_val  = [_audio_saved_override]
+
+            _vis_row = QHBoxLayout()
+            cb_vision = QCheckBox(
+                f"Vision  (default: {'yes' if _vision_eff_default else 'no'})"
+            )
+            cb_vision.setChecked(bool(
+                _vision_saved_override if _vision_saved_override is not None else _vision_eff_default
+            ))
+            vision_default_btn = QPushButton("Default")
+            vision_default_btn.setFixedWidth(62)
+            vision_default_btn.setToolTip("Reset to auto-detected default")
+
+            def _on_vision_default():
+                _vision_override_val[0] = None
+                cb_vision.setChecked(bool(_vision_eff_default))
+
+            def _on_vision_toggled(checked):
+                _vision_override_val[0] = checked
+
+            vision_default_btn.clicked.connect(_on_vision_default)
+            cb_vision.toggled.connect(_on_vision_toggled)
+            _vis_row.addWidget(cb_vision)
+            _vis_row.addStretch(1)
+            _vis_row.addWidget(vision_default_btn)
+            bform.addLayout(_vis_row)
+
+            _aud_row = QHBoxLayout()
+            cb_audio = QCheckBox(
+                f"Audio  (default: {'yes' if _audio_eff_default else 'no'})"
+            )
+            cb_audio.setChecked(bool(
+                _audio_saved_override if _audio_saved_override is not None else _audio_eff_default
+            ))
+            audio_default_btn = QPushButton("Default")
+            audio_default_btn.setFixedWidth(62)
+            audio_default_btn.setToolTip("Reset to auto-detected default")
+
+            def _on_audio_default():
+                _audio_override_val[0] = None
+                cb_audio.setChecked(bool(_audio_eff_default))
+
+            def _on_audio_toggled(checked):
+                _audio_override_val[0] = checked
+
+            audio_default_btn.clicked.connect(_on_audio_default)
+            cb_audio.toggled.connect(_on_audio_toggled)
+            _aud_row.addWidget(cb_audio)
+            _aud_row.addStretch(1)
+            _aud_row.addWidget(audio_default_btn)
+            bform.addLayout(_aud_row)
+            # --- end Vision / Audio ---
 
             saved_custom = profile.get("custom_params", "")
             is_custom    = bool(saved_custom)
@@ -3030,6 +3120,8 @@ def build_menu(main_window):
                 return
             profile["context_tokens"]      = sb_ctx.value() if cb_ctx_override.isChecked() else 0
             profile["tools_user_override"] = _tools_override_val[0]
+            profile["vision_user_override"] = _vision_override_val[0]
+            profile["audio_user_override"]  = _audio_override_val[0]
             profile["disable_thinking"] = cb_think.isChecked()
             profile["hide_thinking"]    = cb_hide_think.isChecked()
             profile["fast_answers"]     = cb_fast.isChecked()

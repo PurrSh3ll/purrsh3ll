@@ -173,17 +173,26 @@ class MainWindow(QMainWindow):
             total = info.get("total_models", 0)
             providers = info.get("providers", {})
             lines = "\n".join(
-                f"  • {p}: {s['count']} models (+{s['added']})"
+                f"  • {p}: {s['count']} models (+{s['added']}) — "
+                f"vision {s.get('vision', 0)}, audio {s.get('audio', 0)}"
                 for p, s in sorted(providers.items())
             )
             msg.setText(f"Model database updated — {total} models across "
                         f"{len(providers)} providers.")
             msg.setInformativeText(lines or "")
+            srcs = info.get("sources", {})
+            src_line = ", ".join(
+                name for name, ok in
+                (("liteLLM", srcs.get("litellm")),
+                 ("models.dev", srcs.get("modelsdev")),
+                 ("OpenRouter", srcs.get("openrouter")))
+                if ok
+            ) or "liteLLM"
             msg.setDetailedText(
-                "Source: liteLLM model_prices_and_context_window.json\n"
+                f"Sources: {src_line}\n"
                 f"Backup: {info.get('backup') or '(none)'}\n\n"
-                "New values apply to context-window and function-calling display; "
-                "restart AI Settings to see refreshed model lists."
+                "New values apply to context-window, function-calling and "
+                "vision/audio display; restart AI Settings to see refreshed model lists."
             )
         else:
             msg.setIcon(QMessageBox.Icon.Warning)
