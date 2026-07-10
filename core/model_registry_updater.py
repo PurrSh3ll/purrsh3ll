@@ -150,6 +150,12 @@ def build_registry(litellm_data: dict, existing: dict,
             if val is not None and name not in tools_map:
                 tools_map[name] = bool(val)
 
+        def _norm(name: str) -> str:
+            # ctx-skip providers (Ollama) key capabilities by base model name so a
+            # profile's `gemma3:27b` (the lookup strips ":27b") matches the pulled
+            # `gemma3` entry — tags are size variants, not distinct capabilities.
+            return name.split(":")[0] if ctx_skip else name
+
         # ── Source 1: liteLLM ──────────────────────────────────────────────
         for raw_key, entry in (litellm_data or {}).items():
             if not isinstance(entry, dict):
@@ -164,7 +170,7 @@ def build_registry(litellm_data: dict, existing: dict,
             # even without a ctx value.
             if not ctx_skip and not isinstance(ctx, int):
                 continue
-            name = _strip_provider_prefix(raw_key, ll_provider)
+            name = _norm(_strip_provider_prefix(raw_key, ll_provider))
             _ctx(name, ctx)
             _tools(name, entry.get("supports_function_calling"))
             if entry.get("supports_vision") is True:
@@ -183,13 +189,14 @@ def build_registry(litellm_data: dict, existing: dict,
                 out = mods.get("output") or []
                 if out and "text" not in out:
                     continue  # skip tts / image-gen / embedding-only models
-                _ctx(mid, (m.get("limit") or {}).get("context"))
-                _tools(mid, m.get("tool_call"))
+                key = _norm(mid)
+                _ctx(key, (m.get("limit") or {}).get("context"))
+                _tools(key, m.get("tool_call"))
                 inp = mods.get("input") or []
                 if "image" in inp:
-                    vision.add(mid)
+                    vision.add(key)
                 if "audio" in inp:
-                    audio.add(mid)
+                    audio.add(key)
 
         # ── Source 3: OpenRouter (its own catalog → the openrouter section) ─
         if section == "openrouter":

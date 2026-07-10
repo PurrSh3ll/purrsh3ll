@@ -995,13 +995,7 @@ def build_main_layout(main_window):
             # exactly: true when checked, false when unchecked.
             return "true" if p.get("hide_thinking") else "false"
 
-        def _fmt_function_calling(p):
-            # Mirrors psai._tools_enabled: explicit tools_user_override wins,
-            # otherwise the model default from model_ctx_registry.json (provider
-            # tools_default minus its no_tools list), shown with "(default)".
-            override = p.get("tools_user_override")
-            if override is not None:
-                return "true" if override else "false"
+        def _load_registry_section(p):
             provider = (p.get("provider") or "").lower()
             model = p.get("model", "") or ""
             if model.lower().startswith("models/"):
@@ -1015,14 +1009,34 @@ def build_main_layout(main_window):
                     reg = json.load(f)
             except Exception:
                 reg = {}
-            section = reg.get(provider, {})
+            return reg.get(provider, {}), model.lower()
+
+        def _fmt_function_calling(p):
+            # Mirrors psai._tools_enabled: explicit tools_user_override wins,
+            # otherwise the model default from model_ctx_registry.json (no_tools,
+            # then positive tools opt-in, then provider tools_default).
+            override = p.get("tools_user_override")
+            if override is not None:
+                return "true" if override else "false"
+            section, ml = _load_registry_section(p)
+            if ml in [m.lower() for m in section.get("no_tools", [])]:
+                return "false (default)"
+            if ml in [m.lower() for m in section.get("tools", [])]:
+                return "true (default)"
             tools_default = section.get("tools_default")
             if tools_default is None:
                 return "false (default)"
-            no_tools_lower = [m.lower() for m in section.get("no_tools", [])]
-            if model.lower() in no_tools_lower:
-                return "false (default)"
             return f"{'true' if tools_default else 'false'} (default)"
+
+        def _fmt_multimodal(p, kind):
+            # kind is "vision" or "audio". Explicit override wins; otherwise the
+            # model appears (or not) on the registry opt-in capability list.
+            override = p.get(f"{kind}_user_override")
+            if override is not None:
+                return "true" if override else "false"
+            section, ml = _load_registry_section(p)
+            on = ml in [m.lower() for m in section.get(kind, [])]
+            return f"{'true' if on else 'false'} (default)"
 
         def _profile_fields(p):
             provider = p.get("provider", "—")
@@ -1032,7 +1046,9 @@ def build_main_layout(main_window):
                 f"{'Model:':<17}{model}\n"
                 f"{'Context:':<17}{_fmt_ctx_for(p)}\n"
                 f"{'Hide thinking:':<17}{_fmt_thinking(p)}\n"
-                f"{'Function calling:':<17}{_fmt_function_calling(p)}"
+                f"{'Function calling:':<17}{_fmt_function_calling(p)}\n"
+                f"{'Vision:':<17}{_fmt_multimodal(p, 'vision')}\n"
+                f"{'Audio:':<17}{_fmt_multimodal(p, 'audio')}"
             )
 
         def _update_tooltip():
