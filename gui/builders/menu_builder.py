@@ -2648,11 +2648,16 @@ def build_menu(main_window):
                 return None, None
             tools_default = section.get("tools_default")       # True, False, or None
             no_tools      = section.get("no_tools", [])
-            in_no_tools   = model in no_tools or model.lower() in [m.lower() for m in no_tools]
-            if tools_default is None:
-                eff = None
-            elif in_no_tools:
+            yes_tools     = section.get("tools", [])            # positive opt-in (e.g. Ollama)
+            ml            = model.lower()
+            in_no_tools   = model in no_tools or ml in [m.lower() for m in no_tools]
+            in_yes_tools  = model in yes_tools or ml in [m.lower() for m in yes_tools]
+            if in_no_tools:
                 eff = False
+            elif in_yes_tools:
+                eff = True
+            elif tools_default is None:
+                eff = None
             else:
                 eff = tools_default
             user_ov = section.get("tools_user_override")       # read provider-level stored override

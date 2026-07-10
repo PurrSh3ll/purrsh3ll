@@ -33,12 +33,13 @@ LITELLM_URL = (
 MODELSDEV_URL  = "https://models.dev/api.json"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 
-# Providers kept as default-only: their per-model registry ctx is NOT populated,
-# so resolution always falls to the curated `default`. Ollama serves `num_ctx`
-# (default 4096, common on CPU-only / VM setups) regardless of a model's
-# architecture-max context, so the liteLLM per-model maxes would overstate the
-# real window. Users needing more set a per-profile override.
-DEFAULT_ONLY_PROVIDERS = {"ollama"}
+# Providers whose per-model registry ctx is NOT populated, so ctx resolution
+# always falls to the curated `default`. Ollama serves `num_ctx` (default 4096,
+# common on CPU-only / VM setups) regardless of a model's architecture-max
+# context, so per-model maxes would overstate the real window. Function-calling,
+# vision and audio ARE still collected for these providers — only ctx is skipped.
+# Users needing more ctx set a per-profile override.
+CTX_SKIP_PROVIDERS = {"ollama"}
 
 # Registry section name -> liteLLM `litellm_provider` value. Identity for all of
 # these today, but kept explicit so a divergence is a one-line change.
@@ -65,6 +66,7 @@ MODELSDEV_MAP = {
     "mistral":     "mistral",
     "together_ai": "togetherai",
     "huggingface": "huggingface",
+    "ollama":      "ollama-cloud",
 }
 
 _HTTP_TIMEOUT = 25
@@ -130,18 +132,10 @@ def build_registry(litellm_data: dict, existing: dict,
     }
 
     for section, ll_provider in PROVIDER_MAP.items():
-        if section in DEFAULT_ONLY_PROVIDERS:
-            # Force default-only: clear any per-model ctx so resolution uses the
-            # curated `default` (e.g. Ollama's real 4096 num_ctx).
-            sec = new_reg.get(section)
-            if isinstance(sec, dict):
-                sec["models"] = {}
-                sec["no_tools"] = []
-                sec["vision"] = []
-                sec["audio"] = []
-                sec["ctx_note"] = ("default-only: Ollama serves num_ctx (default 4096) "
-                                   "regardless of model; set a per-profile override for more")
-            continue
+        # ctx_skip providers (Ollama) still collect tool-calling / vision / audio,
+        # but their per-model ctx is left empty so resolution uses the curated
+        # `default` (Ollama's real num_ctx, ~4096).
+        ctx_skip = section in CTX_SKIP_PROVIDERS
 
         ctx_map: dict[str, int] = {}     # name -> ctx (first source wins)
         tools_map: dict[str, bool] = {}  # name -> tool-calling (first definitive wins)
@@ -149,7 +143,7 @@ def build_registry(litellm_data: dict, existing: dict,
         audio: set[str] = set()
 
         def _ctx(name: str, val) -> None:
-            if isinstance(val, int) and val > 0 and name not in ctx_map:
+            if not ctx_skip and isinstance(val, int) and val > 0 and name not in ctx_map:
                 ctx_map[name] = val
 
         def _tools(name: str, val) -> None:
@@ -165,7 +159,10 @@ def build_registry(litellm_data: dict, existing: dict,
             if entry.get("mode") != "chat":
                 continue
             ctx = entry.get("max_input_tokens")
-            if not isinstance(ctx, int):
+            # Non-ctx-skip providers keep the original rule: an entry must carry a
+            # real ctx to contribute. ctx-skip providers contribute capabilities
+            # even without a ctx value.
+            if not ctx_skip and not isinstance(ctx, int):
                 continue
             name = _strip_provider_prefix(raw_key, ll_provider)
             _ctx(name, ctx)
@@ -234,6 +231,10 @@ def build_registry(litellm_data: dict, existing: dict,
         section_data["no_tools"] = no_tools
         section_data["vision"]   = sorted(vision)
         section_data["audio"]    = sorted(audio)
+        # ctx-skip providers (Ollama) have tools_default=None, so a positive
+        # opt-in list is the only way pulled tool-calling data can read as "yes".
+        if ctx_skip:
+            section_data["tools"] = sorted(n for n, v in tools_map.items() if v is True)
 
         stats["providers"][section] = {
             "count": len(ctx_map),

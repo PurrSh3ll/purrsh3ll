@@ -934,12 +934,17 @@ def _tools_enabled(profile: dict, base_dir: str) -> bool:
     if not section:
         return False
 
-    tools_default = section.get("tools_default")
-    if tools_default is None:      # unknown (e.g. Ollama)
+    model_lower = model.lower()
+    no_tools_lower = [m.lower() for m in section.get("no_tools", [])]
+    if model_lower in no_tools_lower:
         return False
-    no_tools = section.get("no_tools", [])
-    no_tools_lower = [m.lower() for m in no_tools]
-    if model.lower() in no_tools_lower:
+    # Positive opt-in list (present for providers with no provider-level default,
+    # e.g. Ollama): an explicit "this model supports tools" signal.
+    yes_tools_lower = [m.lower() for m in section.get("tools", [])]
+    if model_lower in yes_tools_lower:
+        return True
+    tools_default = section.get("tools_default")
+    if tools_default is None:      # unknown (e.g. Ollama model not on either list)
         return False
     return bool(tools_default)
 

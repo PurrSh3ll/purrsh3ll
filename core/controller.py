@@ -390,19 +390,17 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
         GUI can always render a percentage bar instead of a raw token count.
 
         Provider-tiered, because unknown-model risk differs by host:
-          - ollama                                → 4k   (local, often tiny models)
-          - llamacpp / lmstudio / jan / koboldcpp → 32k  (self-hosted local
-            runtimes, typically limited context)
-          - every cloud provider                  → 200k (large modern windows)
+          - ollama / llamacpp / lmstudio / jan / koboldcpp → 4k  (self-hosted
+            local runtimes; small default context, num_ctx-limited)
+          - every cloud provider                           → 200k (large modern
+            windows)
 
         Kept in sync with the Profiles → Behavior dialog so the active-profile
         tooltip, the live CTX bar and that dialog all show the same value for an
         unknown model."""
         p = (provider or "").lower()
-        if p == "ollama":
-            return 4000
-        if p in _LOCAL_HOST_PROVIDERS:
-            return 32_768
+        if p == "ollama" or p in _LOCAL_HOST_PROVIDERS:
+            return 4096
         return 200_000
 
     def _get_active_ctx_window(self):
