@@ -30,7 +30,7 @@ class MainWindow(QMainWindow):
         self._trim_history_on_start()
 
     def _setup_window(self):
-        self.setWindowTitle("PurrSh3ll v.1.2.0 — Early Access")
+        self.setWindowTitle("PurrSh3ll v.1.3.0 — Early Access")
         self.setGeometry(self.c.start_x, self.c.start_y, self.c.width, self.c.height)
         self.c.register_widget("main_window", self)
         self._resize_timer = QTimer(self)

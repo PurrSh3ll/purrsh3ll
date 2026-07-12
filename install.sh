@@ -225,6 +225,10 @@ APT_PACKAGES=(
     curl
     ca-certificates
     gnupg
+    # Recon: nmap (host/OS discovery) + masscan (fast sweep of large networks).
+    # Both need raw sockets, so PURRCON's recon tool is launched with sudo.
+    nmap
+    masscan
     # Python build tools
     python3-dev
     python3-venv

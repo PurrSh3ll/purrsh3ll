@@ -20,6 +20,33 @@ from gui.widgets.terminal_wrapper import TerminalWrapper
 _ANSI_RE = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07')
 _PROMPT_RE = re.compile(r'[$%#]\s*$')
 _PSOPEN_RE = re.compile(r'\x1b\]1337;PSOPEN=(\{[^\x07]*\})\x07')
+# pshunter asks to open a report terminal replaying a saved scan. The marker
+# carries ONLY an integer job id (never a command): the id is looked up in
+# pshunter.db and the command/output are read from there, so untrusted scan
+# output travelling on this same channel can't inject a command to execute.
+_PSSPAWN_RE = re.compile(r'\x1b\]777;psspawn;(\d+)\x07')
+
+# Only the prompt is coloured — like a real Kali session (the typed command and
+# nmap's output stay default). This mirrors the stock Kali prompt for a normal user:
+# the frame is green and NOT bold, while user㉿host and the $ are bold blue. Colours
+# are ANSI palette indices, so QTermWidget maps them through the user's active theme.
+_E = "\033"
+_PH = {"rs": f"{_E}[0m", "grn": f"{_E}[32m", "bblu": f"{_E}[1;34m", "lblu": f"{_E}[94m"}
+
+
+def _ph_prompt(command: str) -> str:
+    """A stock-Kali two-line prompt followed by the command. Frame green (non-bold),
+    user㉿host and $ bold-blue, ~ default (like the output), command light-blue. The
+    resets after user㉿host clear the bold so the frame doesn't inherit it."""
+    import getpass
+    import socket
+    try:
+        user, host = getpass.getuser(), socket.gethostname()
+    except Exception:
+        user, host = "kali", "kali"
+    p = _PH
+    return (f"{p['grn']}┌──({p['bblu']}{user}㉿{host}{p['rs']}{p['grn']})-[{p['rs']}~{p['grn']}]{p['rs']}\n"
+            f"{p['grn']}└─{p['bblu']}${p['rs']} {p['lblu']}{command}{p['rs']}")
 
 
 
@@ -209,6 +236,52 @@ class TerminalTabsMixin:
                     self.open_new_tab_for_terminal(file=filepath, mode=mode)
             except Exception:
                 logger.debug("failed to handle psopen OSC payload", exc_info=True)
+        for m in _PSSPAWN_RE.finditer(data):
+            try:
+                self._spawn_pshunter_report(int(m.group(1)))
+            except Exception:
+                logger.debug("failed to handle psspawn OSC payload", exc_info=True)
+
+    def _spawn_pshunter_report(self, job_id: int):
+        """Open a fresh terminal replaying a pshunter scan's command + output (for a
+        report screenshot). The command/output are read from pshunter.db by id — the
+        OSC marker only ever carries the id, so nothing from scan output is executed.
+        The replay text is written to a temp file only for the moment it is displayed:
+        the spawned command cats it then deletes it, and any stale leftovers (e.g. a
+        tab closed mid-cat) are purged here, so the app keeps nothing on disk — the
+        source of record stays only in pshunter.db."""
+        db_path = os.path.join(self.base_path, "appdata", "pshunter.db")
+        if not os.path.exists(db_path):
+            return
+        import sqlite3
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            row = conn.execute("SELECT command, output FROM jobs WHERE id = ?",
+                               (job_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return
+        command, output = row[0] or "", row[1] or "(no output captured)"
+        # Build the replay: coloured Kali-style prompt + plain command, then nmap's
+        # plain output — exactly how a real, executed session looks.
+        session = f"{_ph_prompt(command)}\n{output}\n"
+        report_dir = os.path.join(self.base_path, "appdata", "pshunter_reports")
+        os.makedirs(report_dir, exist_ok=True)
+        for stale in os.listdir(report_dir):          # purge leftovers from crashes
+            try:
+                os.unlink(os.path.join(report_dir, stale))
+            except OSError:
+                pass
+        report_path = os.path.join(report_dir, f"job_{job_id}.txt")
+        with open(report_path, "w", encoding="utf-8") as fh:
+            fh.write(session)
+        # clear so the screenshot shows only the replayed session; cat renders it,
+        # then rm deletes the file right away — the app keeps nothing on disk (the
+        # source of record stays only in pshunter.db). Trailing newline auto-runs it.
+        quoted = shlex.quote(report_path)
+        self._add_new_terminal_tab(name=f"nmap #{job_id}",
+                                   command=f"clear; cat {quoted}; rm -f {quoted}\n")
 
     def _add_new_terminal_tab(self, name=None, command=None, workdir=None):
         type(self).terminal_idx += 1

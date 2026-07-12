@@ -54,6 +54,12 @@ appdata/agent_modes/skills/
 # a aplikacja startuje bez niego (nie jest tworzony przy starcie).
 appmodules/Cyb3rBreak/
 
+# PURRCON recon tool — script + runtime SQLite DB, kept out of commits entirely.
+purrideas/
+
+# pshunter — runtime SQLite DB (discovered hosts), not source.
+appdata/pshunter.db*
+
 # Ukryty workspace agenta Claude Code (cwd + kopie CLAUDE.md/goal/skills, oraz
 # zagnieżdżone repo git izolujące agenta od źródeł aplikacji). Poza qtree.
 appdata/agent_workspace/
@@ -72,3 +78,6 @@ install_full_old.sh
 
 # Old / superseded reference files
 requirements_old.txt
+
+# pshunter report replays (runtime, for screenshots)
+appdata/pshunter_reports/

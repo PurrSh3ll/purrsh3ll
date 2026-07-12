@@ -115,6 +115,11 @@ Per-profile controls: **function calling** (tool use), **temperature**, disable/
 - WebMap visualization via Docker, with a **full-screen visualization view** (Back + WebMap token button)
 - Runs scans in the embedded terminal or an external one
 
+### pshunter — guided recon workflow
+- Phase-driven recon runner in the terminal (`pshunter`, help via `pshunter -h`): **host discovery** and **port enumeration** wired, service detection / vuln scan / CVE lookup / exploitation to come
+- Runs multiple nmap scans **concurrently** (fast + full TCP split + UDP) streaming to its own SQLite store; browse hosts and per-host ports/services under `[d] database`
+- `v <n>` replays a scan's command + real output in a spawned terminal for report screenshots; `[u] upgrade` re-runs under `sudo` for SYN/UDP without losing progress
+
 ### AI Chat Panel
 - Embedded web panel for Open WebUI or any OpenAI-compatible frontend
 - Launch and manage Docker-based LLM containers from the app (auto-cleanup on stop)

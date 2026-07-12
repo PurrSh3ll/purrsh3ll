@@ -8,6 +8,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-12
+
+### Added
+
+- **pshunter — guided recon / port-enum workflow**: a new `ps*` terminal tool (`appdata/terminal_modules/pshunter.py` + `.zsh`, launched by typing `pshunter`, help via `pshunter -h`) that walks a target through the offensive phases — **host discovery** and **port enumeration** are wired, with service detection / vuln scan / CVE lookup / exploitation to follow. Runs several nmap scans **concurrently**, streaming results to its own SQLite store (`appdata/pshunter.db`): host discovery does a fast default sweep plus a thorough multi-probe pass (ICMP + TCP SYN/ACK + UDP); port enumeration runs a fast top-1000 (`-T4`) for an immediate working set alongside a full 65535-port TCP sweep split in two halves (`-T3`, reliability over speed) and a top-100 UDP scan (root only), leaving `-sV/-sC` to the service phase. Never records loopback or the scanner's own interface addresses (self-IP guard, refreshed each scan)
+- **pshunter — status, database & report replay**: `[s] status` keeps a persistent command history (state + found yes/no; survives restarts, `stop <n>` aborts a running scan); `[d] database` lists hosts (IP / MAC / vendor / OS / hostname / port count), and typing a host number opens its ports/services table; `[n] new session` wipes everything. `v <n>` in status **spawns a terminal** replaying that scan's command + captured output for a report screenshot — a stock-Kali coloured prompt over the real output — either as a QTermWidget tab inside PurrSh3ll (via a job-id-only OSC marker the host app resolves against the DB, so scan output can't inject a command) or, run standalone, in an external terminal emulator
+- **pshunter — root upgrade in place**: `[u] upgrade` re-launches the tool under `sudo` (for SYN/UDP raw sockets) after `sudo` itself takes the password; progress lives in the DB so nothing is lost, and a cancelled prompt keeps the current unprivileged session. While running as root via sudo the DB and its WAL sidecar files are handed back to the invoking user on every connection, so a crash or closed terminal never leaves a root-owned database
+
 ## [1.2.0] — 2026-07-10
 
 ### Added

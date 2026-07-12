@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Fallback local version used only when the install has no git metadata.
 # Keep this in step with the window title / release tags.
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 REPO_OWNER = "PurrSh3ll"
 REPO_NAME = "purrsh3ll"
