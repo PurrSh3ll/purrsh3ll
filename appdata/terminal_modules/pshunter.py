@@ -269,7 +269,7 @@ def _prompt_minutes(module: str, title: str, detail: str) -> "int | None":
     budget. Enter accepts the default; a number is validated to 1–1440."""
     print(f"\n{GREEN}✓{RESET} {BOLD}{title}{RESET} · {detail} · {DIM}⏱ {DEFAULT_MINUTES}m{RESET}")
     while True:
-        v = _ctx_ask(module, f"minutes · Enter = {DEFAULT_MINUTES} · {MIN_MINUTES}-{MAX_MINUTES} · b back")
+        v = _ctx_ask(module, f"<minutes {MIN_MINUTES}-{MAX_MINUTES}, Enter={DEFAULT_MINUTES}> · [h] help · [b] back")
         if v is None or v.lower() in _BACK_WORDS:
             return None
         if v.lower() in _HELP_WORDS:
@@ -285,7 +285,7 @@ def _prompt_minutes(module: str, title: str, detail: str) -> "int | None":
 def _handle_host_discovery() -> None:
     """Phase 1 flow: read + validate the scope, then the time, then launch."""
     while True:
-        value = _ctx_ask("discovery", "subnet / range · help · b back")
+        value = _ctx_ask("discovery", "<subnet / range> · [h] help · [b] back")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -309,7 +309,7 @@ def _handle_port_enum() -> None:
     """Phase 2 flow: read + validate a single target IP, then the time, then launch
     the concurrent port scans."""
     while True:
-        value = _ctx_ask("ports", "single IP · help · b back")
+        value = _ctx_ask("ports", "<single IP> · [h] help · [b] back")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -333,7 +333,7 @@ def _handle_service_detection() -> None:
     """Phase 3 flow: read a target IP, then the time, then launch -sV -sC (+ OS) on the
     open ports discovered in phase 2."""
     while True:
-        value = _ctx_ask("service", "single IP · help · b back")
+        value = _ctx_ask("service", "<single IP> · [h] help · [b] back")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -360,7 +360,7 @@ def _handle_vuln_scan() -> None:
     """Phase 4 flow: read a target IP, then the time, then launch targeted vuln/auth
     NSE scans mapped to the host's detected services."""
     while True:
-        value = _ctx_ask("vuln", "single IP · help · b back")
+        value = _ctx_ask("vuln", "<single IP> · [h] help · [b] back")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -1660,7 +1660,7 @@ def _port_scripts_view(ip: str, ports: list, n: int) -> None:
         print(f"{RED}✗ no port {n}{RESET}")
         return
     port, proto, _state = ports[n - 1]
-    _run_view(f"{ip}:{port}/{proto}", "enter refresh · b back",
+    _run_view(f"{ip}:{port}/{proto}", "[Enter] refresh · [b] back",
               lambda: _render_port_scripts(ip, port, proto),
               lambda _c, v: "refresh" if v == "" else "stay")
 
@@ -1682,7 +1682,7 @@ def _host_ports_view(rows: list, n: int) -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · b · enter{RESET}")
         return "stay"
 
-    _run_view(ip, "enter refresh · <n> scripts · b back",
+    _run_view(ip, "[Enter] refresh · <n> scripts · [b] back",
               lambda: _render_host_ports(ip), _handle)
 
 
@@ -1916,7 +1916,7 @@ def _run_view(module: str, options: str, render, handle=None) -> None:
             # 'stay' → re-prompt (bare), screen not redrawn
 
 
-def _view(render, module: str, options: str = "b back") -> None:
+def _view(render, module: str, options: str = "[b] back") -> None:
     """Static screen (e.g. help): drawn once, kept open until the user goes back."""
     _run_view(module, options, render)
 
@@ -1950,7 +1950,7 @@ def _status_view() -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— v <n> · stop <n> · c · b · enter{RESET}")
         return "stay"
 
-    _run_view("status", "enter refresh · v <n> view · stop <n> · c clear · b back",
+    _run_view("status", "[Enter] refresh · v <n> view · stop <n> abort · [c] clear · [b] back",
               show_status, _handle)
 
 
@@ -1976,7 +1976,7 @@ def _database_view() -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · r <n> · c · b · enter{RESET}")
         return "stay"
 
-    _run_view("database", "enter refresh · <n> ports · r <n> remove · c clear · b back",
+    _run_view("database", "[Enter] refresh · <n> ports · r <n> remove · [c] clear · [b] back",
               show_database, _handle)
 
 
@@ -1994,7 +1994,7 @@ def main() -> int:
         while True:
             print_menu()
             try:
-                choice = input(f"{CYAN}[menu]{RESET}{DIM} ›{RESET} ").strip().lower()
+                choice = input(f"{BOLD}{CYAN}[menu]{RESET}{DIM} ›{RESET} ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print(f"\n{DIM}bye.{RESET}")
                 return 0
