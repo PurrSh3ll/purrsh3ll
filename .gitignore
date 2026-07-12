@@ -60,6 +60,9 @@ purrideas/
 # pshunter — runtime SQLite DB (discovered hosts), not source.
 appdata/pshunter.db*
 
+# pshunter — seeded sample database for local UI testing, not source.
+pshunter_test/
+
 # Ukryty workspace agenta Claude Code (cwd + kopie CLAUDE.md/goal/skills, oraz
 # zagnieżdżone repo git izolujące agenta od źródeł aplikacji). Poza qtree.
 appdata/agent_workspace/

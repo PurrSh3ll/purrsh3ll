@@ -27,17 +27,22 @@ _PSOPEN_RE = re.compile(r'\x1b\]1337;PSOPEN=(\{[^\x07]*\})\x07')
 _PSSPAWN_RE = re.compile(r'\x1b\]777;psspawn;(\d+)\x07')
 
 # Only the prompt is coloured — like a real Kali session (the typed command and
-# nmap's output stay default). This mirrors the stock Kali prompt for a normal user:
-# the frame is green and NOT bold, while user㉿host and the $ are bold blue. Colours
-# are ANSI palette indices, so QTermWidget maps them through the user's active theme.
+# nmap's output stay default). Stock-Kali prompt for a normal user: frame green and
+# NOT bold, user㉿host and $ bold-blue, ~ white; only the command's first word (the
+# program) is highlighted, in light-blue. Colours are ANSI palette indices, so
+# QTermWidget maps them through the user's active theme.
 _E = "\033"
-_PH = {"rs": f"{_E}[0m", "grn": f"{_E}[32m", "bblu": f"{_E}[1;34m", "lblu": f"{_E}[94m"}
+# cmd1 is the turquoise from QTermWidget's "Linux" scheme (Color6 = 24,178,178),
+# emitted as 24-bit truecolor so it stays that shade regardless of the active theme.
+_PH = {"rs": f"{_E}[0m", "grn": f"{_E}[32m", "bblu": f"{_E}[1;34m",
+       "cmd1": f"{_E}[38;2;24;178;178m", "wht": f"{_E}[1;37m"}
 
 
 def _ph_prompt(command: str) -> str:
     """A stock-Kali two-line prompt followed by the command. Frame green (non-bold),
-    user㉿host and $ bold-blue, ~ default (like the output), command light-blue. The
-    resets after user㉿host clear the bold so the frame doesn't inherit it."""
+    user㉿host and $ bold-blue, ~ white; only the first command word is highlighted
+    (greenish, like the terminal's command colour), the rest plain. The resets after
+    user㉿host clear the bold so the frame doesn't inherit it."""
     import getpass
     import socket
     try:
@@ -45,8 +50,11 @@ def _ph_prompt(command: str) -> str:
     except Exception:
         user, host = "kali", "kali"
     p = _PH
-    return (f"{p['grn']}┌──({p['bblu']}{user}㉿{host}{p['rs']}{p['grn']})-[{p['rs']}~{p['grn']}]{p['rs']}\n"
-            f"{p['grn']}└─{p['bblu']}${p['rs']} {p['lblu']}{command}{p['rs']}")
+    first, _, rest = command.partition(" ")
+    cmd = f"{p['cmd1']}{first}{p['rs']}" + (f" {rest}" if rest else "")
+    return (f"{p['grn']}┌──({p['bblu']}{user}㉿{host}{p['rs']}{p['grn']})-[{p['wht']}~{p['rs']}"
+            f"{p['grn']}]{p['rs']}\n"
+            f"{p['grn']}└─{p['bblu']}${p['rs']} {cmd}")
 
 
 

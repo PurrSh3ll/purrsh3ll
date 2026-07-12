@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -47,6 +48,7 @@ GREEN   = _c("\033[32m")
 RED     = _c("\033[31m")
 YELLOW  = _c("\033[33m")
 MAGENTA = _c("\033[35m")
+BROWN   = _c("\033[38;2;205;133;63m")   # 24-bit brown (peru) for the options hint line
 
 
 APP_NAME    = "pshunter"
@@ -189,11 +191,17 @@ def _ask(label: str) -> "str | None":
 
 def _ctx_ask(module: str, options: str = "") -> "str | None":
     """Prompt tagged with the module you're in (coloured, for readability) and, one
-    line above, a short hint of what you can type — tinted (dim cyan) so it reads as
+    line above, a short hint of what you can type — tinted brown so it reads as
     interactive options, distinct from normal output."""
     if options:
-        print(f"  {DIM}{CYAN}{options}{RESET}")
+        print(f"  {BROWN}{options}{RESET}")
     return _ask(f"{CYAN}[{module}]{RESET}{DIM} ›{RESET}")
+
+
+def _hr() -> None:
+    """Thin divider used inside interactive views to separate one chosen action's
+    output from the next."""
+    print(f"{DIM}{'─' * 56}{RESET}")
 
 
 # ── host discovery (phase 1) ──────────────────────────────────────────────────
@@ -321,6 +329,63 @@ def _handle_port_enum() -> None:
         return
 
 
+def _handle_service_detection() -> None:
+    """Phase 3 flow: read a target IP, then the time, then launch -sV -sC (+ OS) on the
+    open ports discovered in phase 2."""
+    while True:
+        value = _ctx_ask("service", "single IP · help · b back")
+        if value is None or value.lower() in _BACK_WORDS:
+            return
+        if value.lower() in _HELP_WORDS:
+            print_help()
+            continue
+        try:
+            ip = str(ipaddress.ip_address(value))
+        except ValueError:
+            print(f"{RED}✗ give one valid IP address{RESET}")
+            continue
+        if not fetch_ports(ip):
+            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+                  f"enumeration{RESET}{DIM} first (OS scan still runs if root){RESET}")
+        minutes = _prompt_minutes("service", "Service detection", ip)
+        if minutes is None:
+            return
+        _start_service_detection(ip, minutes)
+        print(f"\n{GREEN}▶ service detection running in the background{RESET} "
+              f"{DIM}({ip} · -sV -sC + OS, ⏱ {minutes}m) — check {BOLD}[s] status{RESET}")
+        return
+
+
+def _handle_vuln_scan() -> None:
+    """Phase 4 flow: read a target IP, then the time, then launch targeted vuln/auth
+    NSE scans mapped to the host's detected services."""
+    while True:
+        value = _ctx_ask("vuln", "single IP · help · b back")
+        if value is None or value.lower() in _BACK_WORDS:
+            return
+        if value.lower() in _HELP_WORDS:
+            print_help()
+            continue
+        try:
+            ip = str(ipaddress.ip_address(value))
+        except ValueError:
+            print(f"{RED}✗ give one valid IP address{RESET}")
+            continue
+        if not fetch_ports(ip):
+            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+                  f"enumeration{RESET}{DIM} (and {BOLD}[3] Service detection{RESET}{DIM}) first{RESET}")
+            continue
+        print(f"{YELLOW}⚠ vuln scan is active/detectable; some auth checks make a small "
+              f"login attempt (no brute-force).{RESET}")
+        minutes = _prompt_minutes("vuln", "Vuln scan", ip)
+        if minutes is None:
+            return
+        _start_vuln_scan(ip, minutes)
+        print(f"\n{GREEN}▶ vuln scan running in the background{RESET} "
+              f"{DIM}({ip} · targeted NSE vuln+auth, ⏱ {minutes}m) — check {BOLD}[s] status{RESET}")
+        return
+
+
 # ── host-discovery nmap engine ────────────────────────────────────────────────
 # Two passes, per OSCP/HTB practice. Pass 1 is a fast default sweep: as root, -sn
 # already fires ICMP echo + TCP SYN 443 + TCP ACK 80 + ICMP timestamp, and ARP on
@@ -390,6 +455,43 @@ def _host_ports_from_elem(elem) -> "dict | None":
         rows.append({"port": int(port.get("portid")), "proto": port.get("protocol") or "tcp",
                      "state": state, "service": service})
     return {"ip": ip, "ports": rows} if rows else None
+
+
+def _host_detail_from_elem(elem) -> "dict | None":
+    """Extract service-detection results from one nmap ``<host>`` element: probed
+    services (name/product/version/cpe), NSE (-sC) script output per port (plus any
+    host-level scripts under port 0), and the best OS match."""
+    ip = None
+    for addr in elem.findall("address"):
+        if addr.get("addrtype") == "ipv4":
+            ip = addr.get("addr")
+    if not ip:
+        return None
+    services, scripts = [], []
+    for port in elem.findall("ports/port"):
+        portid = int(port.get("portid"))
+        proto = port.get("protocol") or "tcp"
+        svc = port.find("service")
+        if svc is not None and svc.get("method") == "probed":
+            cpe = None
+            for c in svc.findall("cpe"):
+                txt = (c.text or "").strip()
+                if txt and (cpe is None or txt.startswith("cpe:/a")):
+                    cpe = txt                       # prefer the application CPE
+            services.append({"port": portid, "proto": proto, "name": svc.get("name"),
+                             "product": svc.get("product"), "version": svc.get("version"),
+                             "cpe": cpe})
+        for scr in port.findall("script"):
+            scripts.append({"port": portid, "proto": proto,
+                            "id": scr.get("id"), "output": scr.get("output")})
+    for scr in elem.findall("hostscript/script"):   # host-level scripts (port 0)
+        scripts.append({"port": 0, "proto": "", "id": scr.get("id"),
+                        "output": scr.get("output")})
+    om = elem.find("os/osmatch")
+    os_name = om.get("name") if om is not None else None
+    if not (services or scripts or os_name):
+        return None
+    return {"ip": ip, "services": services, "scripts": scripts, "os": os_name}
 
 
 def _run_nmap(args: list, targets: list, on_items, deadline: "float | None" = None,
@@ -568,6 +670,29 @@ CREATE TABLE IF NOT EXISTS services (
     last_seen   TEXT,
     PRIMARY KEY (ip, port, proto)
 );
+CREATE TABLE IF NOT EXISTS scripts (
+    ip          TEXT,
+    port        INTEGER,
+    proto       TEXT,
+    script      TEXT,
+    output      TEXT,
+    first_seen  TEXT,
+    last_seen   TEXT,
+    PRIMARY KEY (ip, port, proto, script)
+);
+CREATE TABLE IF NOT EXISTS vulns (
+    ip          TEXT,
+    port        INTEGER,
+    proto       TEXT,
+    script      TEXT,
+    state       TEXT,
+    cve         TEXT,
+    risk        TEXT,
+    summary     TEXT,
+    first_seen  TEXT,
+    last_seen   TEXT,
+    PRIMARY KEY (ip, port, proto, script)
+);
 """
 
 
@@ -727,6 +852,113 @@ def fetch_services(ip: str) -> dict:
     """{(port, proto): (name, product, version)} for a host."""
     rows = _fetch("SELECT port, proto, name, product, version FROM services WHERE ip = ?", (ip,))
     return {(p, pr): (n, prod, ver) for p, pr, n, prod, ver in rows}
+
+
+def save_services(ip: str, rows: list) -> int:
+    """Upsert probed service data (-sV) by (ip, port, proto), overwriting the earlier
+    port-enum guess with the real name/product/version/cpe."""
+    if not ip or not rows or _is_self_ip(ip):
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            for r in rows:
+                conn.execute(
+                    "INSERT INTO services (ip, port, proto, name, product, version, cpe, "
+                    "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(ip, port, proto) DO UPDATE SET "
+                    "  name     = COALESCE(excluded.name, name), "
+                    "  product  = COALESCE(excluded.product, product), "
+                    "  version  = COALESCE(excluded.version, version), "
+                    "  cpe      = COALESCE(excluded.cpe, cpe), "
+                    "  last_seen = excluded.last_seen",
+                    (ip, r["port"], r["proto"], r.get("name"), r.get("product"),
+                     r.get("version"), r.get("cpe"), now, now),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+    return len(rows)
+
+
+def save_scripts(ip: str, rows: list) -> int:
+    """Upsert NSE script output by (ip, port, proto, script) — port 0 = host-level —
+    and, in the same transaction, extract any finding from each script into the vulns
+    table (so both -sC and vuln-scan output feed the findings summary, no re-scan)."""
+    if not ip or not rows or _is_self_ip(ip):
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            for r in rows:
+                sid = r.get("id")
+                if not sid:
+                    continue
+                port, proto, output = int(r.get("port") or 0), r.get("proto") or "", r.get("output")
+                conn.execute(
+                    "INSERT INTO scripts (ip, port, proto, script, output, first_seen, last_seen) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(ip, port, proto, script) DO UPDATE SET "
+                    "  output = excluded.output, last_seen = excluded.last_seen",
+                    (ip, port, proto, sid, output, now, now),
+                )
+                f = _extract_finding(sid, output or "")
+                if f:
+                    conn.execute(
+                        "INSERT INTO vulns (ip, port, proto, script, state, cve, risk, summary, "
+                        "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(ip, port, proto, script) DO UPDATE SET "
+                        "  state = excluded.state, cve = excluded.cve, risk = excluded.risk, "
+                        "  summary = excluded.summary, last_seen = excluded.last_seen",
+                        (ip, port, proto, sid, f["state"], f["cve"], f["risk"], f["summary"], now, now),
+                    )
+            conn.commit()
+        finally:
+            conn.close()
+    return len(rows)
+
+
+def save_os(ip: str, os_name: str) -> None:
+    """Store the detected OS on the host row (overwrites a previous guess)."""
+    if not ip or not os_name or _is_self_ip(ip):
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            conn.execute(
+                "INSERT INTO hosts (ip, os, first_seen, last_seen) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(ip) DO UPDATE SET os = excluded.os, last_seen = excluded.last_seen",
+                (ip, os_name, now, now))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def fetch_host_os(ip: str) -> "str | None":
+    rows = _fetch("SELECT os FROM hosts WHERE ip = ?", (ip,))
+    return rows[0][0] if rows and rows[0][0] else None
+
+
+def fetch_scripts(ip: str, port: int, proto: str) -> list:
+    """(script, output) rows for one port (proto '' + port 0 = host-level scripts)."""
+    return _fetch("SELECT script, output FROM scripts WHERE ip = ? AND port = ? AND proto = ?",
+                  (ip, port, proto))
+
+
+def fetch_scripted_ports(ip: str) -> set:
+    """{(port, proto)} that carry per-port NSE script output — i.e. the ports where
+    there's more to see (from service detection / vuln scan)."""
+    rows = _fetch("SELECT DISTINCT port, proto FROM scripts WHERE ip = ? AND port != 0", (ip,))
+    return {(p, pr) for p, pr in rows}
+
+
+def fetch_vulns(ip: str) -> list:
+    """(port, proto, script, state, cve, risk, summary) findings for a host."""
+    rows = _fetch("SELECT port, proto, script, state, cve, risk, summary FROM vulns WHERE ip = ?", (ip,))
+    return sorted(rows, key=lambda r: (r[0], r[2]))
 
 
 # ── background jobs (feed [s] status) ─────────────────────────────────────────
@@ -938,6 +1170,303 @@ def _start_port_enum(ip: str, minutes: int) -> None:
     threading.Thread(target=_run_port_enum, args=(ip, minutes), daemon=True).start()
 
 
+# ── service detection (phase 3) ───────────────────────────────────────────────
+# Deep identification on the open ports from phase 2: -sV probes real versions and
+# -sC runs the default NSE scripts (titles, certs, SMB/SSH/HTTP info) — the payload
+# of this phase. OS detection runs as its OWN scan (`-O --osscan-guess`, root only)
+# because -O needs an open AND a closed port, so it must not be pinned to the open-
+# port list (that yields nmap's "OS detection unreliable" warning). -A is avoided for
+# the same reason (its bundled -O would be unreliable) plus its traceroute noise.
+def _service_scan_specs(ip: str) -> list:
+    """(label, nmap-args) for service detection on ``ip``'s known-open ports. TCP gets
+    -sV -sC; UDP (root) gets -sU -sV; OS (root) gets its own unrestricted -O scan."""
+    ports = fetch_ports(ip)
+    tcp = [str(p) for p, proto, _s in ports if proto == "tcp"]
+    udp = [str(p) for p, proto, _s in ports if proto == "udp"]
+    specs = []
+    if tcp:
+        specs.append(("service", ["-sV", "-sC", "-Pn", "-n", "-T4", "-p", ",".join(tcp)]))
+    if udp and _is_root():
+        specs.append(("service-udp", ["-sU", "-sV", "-Pn", "-n", "-T4", "-p", ",".join(udp)]))
+    if _is_root():
+        specs.append(("os", ["-O", "--osscan-guess", "-Pn", "-n", "-T4"]))
+    return specs
+
+
+def _run_service_pass(job: dict, args: list, ip: str, deadline: float) -> None:
+    """Run one service-detection scan, streaming probed services / NSE output / OS to
+    the DB. Honours job['cancel']; persists progress and captured output."""
+    counter = [0]
+
+    def _on_items(batch):
+        for h in batch:
+            if _is_self_ip(h["ip"]):
+                continue
+            svc, scr, os_name = h.get("services") or [], h.get("scripts") or [], h.get("os")
+            if svc:
+                save_services(h["ip"], svc)
+            if scr:
+                save_scripts(h["ip"], scr)
+            if os_name:
+                save_os(h["ip"], os_name)
+            counter[0] += len(svc) + len(scr) + (1 if os_name else 0)
+            job["hosts"] = counter[0]
+            _job_update(job)
+
+    try:
+        items, output = _run_nmap(args, [ip], _on_items, deadline=deadline,
+                                  should_stop=job["cancel"].is_set,
+                                  parse_elem=_host_detail_from_elem)
+        job["output"] = output
+        if items is None:
+            job["state"], job["error"] = "error", "nmap not found"
+        elif job["cancel"].is_set():
+            job["state"] = "aborted"
+        else:
+            job["state"] = "done"
+    except Exception as exc:
+        job["state"], job["error"] = "error", str(exc)
+    finally:
+        _job_update(job)
+
+
+def _run_service_detection(ip: str, minutes: int) -> None:
+    """Concurrent service-detection scans on one host, sharing one time budget."""
+    _refresh_own_addresses()
+    save_hosts([{"ip": ip}])
+    deadline = max(1, minutes * 60)
+    name = _PHASES["3"][0]
+    threads = []
+    for _label, args in _service_scan_specs(ip):
+        command = " ".join(["nmap"] + args + [ip])
+        job = _new_job("3", name, command)
+        t = threading.Thread(target=_run_service_pass, args=(job, args, ip, deadline), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+
+def _start_service_detection(ip: str, minutes: int) -> None:
+    """Launch service detection in the background; the menu stays free."""
+    threading.Thread(target=_run_service_detection, args=(ip, minutes), daemon=True).start()
+
+
+# ── vuln scan (phase 4) ───────────────────────────────────────────────────────
+# Targeted NSE, driven by the services already in the DB — not a blind --script vuln.
+# For each open port we look up its service and fire only the relevant checks: active
+# CVE tests (vuln category) plus auth-weakness checks (anonymous / empty / default
+# creds — the auth category, never brute). All script names are verified to ship with
+# nmap. brute / dos / exploit are excluded; rdp-vuln-ms12-020 (can crash a host) is
+# left out by default. SSL scripts run on any TLS-wrapped port. Findings in the
+# standard NSE `vuln` format (State: VULNERABLE) are parsed into the vulns table.
+_SSL = "ssl-heartbleed,ssl-poodle,ssl-ccs-injection,ssl-dh-params"
+_VULN_SCRIPTS = {
+    "microsoft-ds": "smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2017-7494,"
+                    "smb-vuln-ms10-061,smb-vuln-cve2009-3103,smb-double-pulsar-backdoor,"
+                    "smb-security-mode,smb2-security-mode,smb-enum-users",
+    "netbios-ssn":  "smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2017-7494,"
+                    "smb-security-mode,smb-enum-users",
+    "http":         "http-shellshock,http-vuln-cve2017-5638,http-vuln-cve2015-1635,"
+                    "http-vuln-cve2014-3704,http-vuln-cve2012-1823,http-vuln-cve2017-1001000,"
+                    "http-vuln-misfortune-cookie,http-default-accounts,http-auth-finder,"
+                    "http-config-backup,http-git,http-webdav-scan",
+    "ms-wbt-server": "rdp-ntlm-info",
+    "ftp":          "ftp-vsftpd-backdoor,ftp-vuln-cve2010-4221,ftp-anon",
+    "ssh":          "ssh-auth-methods,ssh-publickey-acceptance",
+    "telnet":       "telnet-encryption",
+    "smtp":         "smtp-vuln-cve2010-4344,smtp-vuln-cve2011-1720,smtp-vuln-cve2011-1764",
+    "mysql":        "mysql-vuln-cve2012-2122,mysql-empty-password",
+    "ms-sql":       "ms-sql-empty-password",
+    "oracle":       "oracle-enum-users",
+    "mongodb":      "mongodb-databases",
+    "redis":        "redis-info",
+    "vnc":          "realvnc-auth-bypass,vnc-info,vnc-title",
+    "snmp":         "snmp-info",
+    "x11":          "x11-access",
+    "rmi":          "rmi-vuln-classloader",
+    "rsync":        "rsync-list-modules",
+    "distcc":       "distcc-cve2004-2687",
+    "clamav":       "clamav-exec",
+    "irc":          "irc-unrealircd-backdoor",
+}
+_VULN_PORT_FALLBACK = {
+    445: "microsoft-ds", 139: "netbios-ssn", 80: "http", 443: "http", 8080: "http",
+    8443: "http", 3389: "ms-wbt-server", 21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp",
+    465: "smtp", 587: "smtp", 3306: "mysql", 1433: "ms-sql", 1521: "oracle",
+    27017: "mongodb", 6379: "redis", 5900: "vnc", 161: "snmp", 1099: "rmi", 873: "rsync",
+    3632: "distcc", 3310: "clamav", 6667: "irc", 6000: "x11", 6001: "x11",
+}
+_TLS_PORTS = {443, 465, 563, 636, 853, 990, 992, 993, 995, 8443}
+# auth-category scripts that only emit output when they actually find a weakness, so
+# any output is a finding (anonymous / empty / default creds, unauth access).
+_AUTH_FINDING = {"ftp-anon", "mysql-empty-password", "ms-sql-empty-password",
+                 "http-default-accounts", "x11-access", "redis-info",
+                 "mongodb-databases", "rsync-list-modules", "snmp-info"}
+
+
+def _vuln_key(name: "str | None", port: int) -> "str | None":
+    if name:
+        low = name.lower()
+        for key in _VULN_SCRIPTS:
+            if key in low:
+                return key
+    return _VULN_PORT_FALLBACK.get(port)
+
+
+def _vuln_families(ip: str) -> list:
+    """Group the host's open ports into (label, scripts, [ports]) families so each
+    family runs one targeted scan. SSL scripts are added for TLS-wrapped ports."""
+    services = fetch_services(ip)
+    groups: dict = {}    # key -> [scripts, set(ports)]
+    for port, proto, _state in fetch_ports(ip):
+        name = (services.get((port, proto)) or (None, None, None))[0]
+        key = _vuln_key(name, port)
+        if key:
+            groups.setdefault(key, [_VULN_SCRIPTS[key], set()])[1].add(port)
+        low = (name or "").lower()
+        if port in _TLS_PORTS or "ssl" in low or "https" in low or "tls" in low:
+            groups.setdefault("ssl", [_SSL, set()])[1].add(port)
+    return [(k, sc, sorted(ps)) for k, (sc, ps) in groups.items() if ps]
+
+
+# Auth-category scripts whose mere output is a weakness → a one-line title each.
+_AUTH_TITLE = {
+    "ftp-anon": "anonymous FTP login allowed",
+    "mysql-empty-password": "MySQL account with empty password",
+    "ms-sql-empty-password": "MSSQL account with empty password",
+    "http-default-accounts": "default web credentials found",
+    "x11-access": "X11 server open (no auth)",
+    "redis-info": "Redis reachable without auth",
+    "mongodb-databases": "MongoDB reachable without auth",
+    "rsync-list-modules": "rsync modules listable",
+    "snmp-info": "SNMP readable (default community)",
+}
+
+
+def _extract_finding(sid: str, output: str) -> "dict | None":
+    """Turn one NSE script result into a finding, or None. Covers three sources with
+    no re-scan (the output is already in the DB): the standard `vuln` library format
+    (State: VULNERABLE / LIKELY), auth scripts whose output implies a weakness, and a
+    few info rules over -sC output (exposed .git, weak TLS, SMB signing, …)."""
+    if not output:
+        return None
+    cves = sorted(set(re.findall(r"CVE-\d{4}-\d{3,7}", output)))
+    cve = ",".join(cves) or None
+
+    # 1) standard vuln library format
+    if re.search(r"State:\s*VULNERABLE", output):
+        state = "VULNERABLE"
+    elif re.search(r"State:\s*LIKELY VULNERABLE", output):
+        state = "LIKELY"
+    else:
+        state = None
+    if state:
+        m = re.search(r"Risk factor:\s*([A-Za-z]+)", output)
+        risk = (m.group(1).upper() if m else "HIGH")
+        # title = the line right after "VULNERABLE:" (the human name), if it isn't a
+        # structured field; otherwise fall back to the script id.
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        summary = sid
+        for i, ln in enumerate(lines):
+            if re.match(r"(LIKELY )?VULNERABLE:?$", ln, re.I) and i + 1 < len(lines):
+                nxt = lines[i + 1]
+                if not re.match(r"(State|IDs|Risk|Disclosure|References|Description|Extra)\b", nxt):
+                    summary = nxt
+                break
+        return {"state": state, "cve": cve, "risk": risk, "summary": summary[:140]}
+
+    # 2) auth-category scripts: any output = weakness
+    if sid in _AUTH_TITLE:
+        return {"state": "FINDING", "cve": cve, "risk": "HIGH", "summary": _AUTH_TITLE[sid]}
+
+    # 3) info rules over -sC output
+    low = output.lower()
+    info = None
+    if sid == "http-git":
+        info = ("exposed .git repository", "MEDIUM")
+    elif sid == "http-config-backup":
+        info = ("exposed config/backup file", "MEDIUM")
+    elif sid == "http-methods" and re.search(r"\b(PUT|DELETE|TRACE|CONNECT)\b", output):
+        info = ("risky HTTP methods enabled", "LOW")
+    elif sid in ("http-title", "http-ls") and "index of /" in low:
+        info = ("directory listing enabled", "LOW")
+    elif sid == "ssl-cert" and ("self-signed" in low or "self signed" in low):
+        info = ("self-signed TLS certificate", "LOW")
+    elif sid == "ssl-enum-ciphers" and re.search(r"least strength:\s*[C-F]", output):
+        info = ("weak TLS ciphers", "MEDIUM")
+    elif sid in ("smb-security-mode", "smb2-security-mode") and "not required" in low:
+        info = ("SMB message signing not required", "MEDIUM")
+    elif sid == "ssh-auth-methods" and "password" in low:
+        info = ("SSH password authentication enabled", "INFO")
+    if info:
+        return {"state": "INFO", "cve": cve, "risk": info[1], "summary": info[0]}
+    return None
+
+
+def _run_vuln_pass(job: dict, scripts: str, ports: list, ip: str, deadline: float) -> None:
+    """Run one family's targeted vuln/auth scan, streaming script output (to scripts)
+    and parsed findings (to vulns) to the DB. Honours job['cancel']."""
+    args = ["-sV", "--script", scripts, "-Pn", "-n", "-T3",
+            "--script-timeout", "120s", "-p", ",".join(str(p) for p in ports)]
+
+    def _on_items(batch):
+        for h in batch:
+            if _is_self_ip(h["ip"]):
+                continue
+            if h.get("scripts"):
+                save_scripts(h["ip"], h["scripts"])     # also extracts findings -> vulns
+            if h.get("services"):
+                save_services(h["ip"], h["services"])
+            job["hosts"] = len(fetch_vulns(h["ip"]))     # count of findings so far
+            _job_update(job)
+
+    try:
+        items, output = _run_nmap(args, [ip], _on_items, deadline=deadline,
+                                  should_stop=job["cancel"].is_set,
+                                  parse_elem=_host_detail_from_elem)
+        job["output"] = output
+        if items is None:
+            job["state"], job["error"] = "error", "nmap not found"
+        elif job["cancel"].is_set():
+            job["state"] = "aborted"
+        else:
+            job["state"] = "done"
+    except Exception as exc:
+        job["state"], job["error"] = "error", str(exc)
+    finally:
+        _job_update(job)
+
+
+def _run_vuln_scan(ip: str, minutes: int) -> None:
+    """One concurrent targeted scan per service family, sharing one time budget."""
+    _refresh_own_addresses()
+    save_hosts([{"ip": ip}])
+    deadline = max(1, minutes * 60)
+    name = _PHASES["4"][0]
+    families = _vuln_families(ip)
+    if not families:
+        job = _new_job("4", name, f"nmap (no known services on {ip})")
+        job["state"] = "done"
+        _job_update(job)
+        return
+    threads = []
+    for label, scripts, ports in families:
+        command = f"nmap -sV --script {scripts} -T3 -p {','.join(str(p) for p in ports)} {ip}"
+        job = _new_job("4", f"{name} · {label}", command)
+        t = threading.Thread(target=_run_vuln_pass, args=(job, scripts, ports, ip, deadline),
+                             daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+
+def _start_vuln_scan(ip: str, minutes: int) -> None:
+    """Launch the vuln scan in the background; the menu stays free."""
+    threading.Thread(target=_run_vuln_scan, args=(ip, minutes), daemon=True).start()
+
+
 # ── placeholder handlers (skeleton — nothing is wired yet) ────────────────────
 def _todo(title: str) -> None:
     """Uniform 'not implemented yet' notice for a skeleton screen."""
@@ -984,6 +1513,41 @@ def _cell(value: "str | None", width: int) -> str:
     return s if len(s) <= width else s[:width - 1] + "…"
 
 
+def _vwidth(s: str) -> int:
+    """Visible width of a string — ANSI colour codes don't count."""
+    return len(re.sub(r"\x1b\[[0-9;]*m", "", s))
+
+
+def _box_table(headers: list, rows: list, aligns: "list | None" = None,
+               indent: str = "  ") -> str:
+    """Render a box-drawing table. Cells may contain ANSI colour codes — column widths
+    and padding use the visible width so the borders stay aligned. ``aligns`` is 'l'/'r'
+    per column (default left)."""
+    n = len(headers)
+    aligns = aligns or ["l"] * n
+    w = [_vwidth(h) for h in headers]
+    for r in rows:
+        for i in range(n):
+            w[i] = max(w[i], _vwidth(r[i]) if i < len(r) else 0)
+
+    def pad(s, i):
+        gap = " " * max(0, w[i] - _vwidth(s))
+        return gap + s if aligns[i] == "r" else s + gap
+
+    bar = f"{DIM}│{RESET}"
+
+    def rule(left, mid, right):
+        return f"{indent}{DIM}{left}" + mid.join("─" * (w[i] + 2) for i in range(n)) + f"{right}{RESET}"
+
+    out = [rule("┌", "┬", "┐"),
+           indent + bar + bar.join(f" {BOLD}{pad(headers[i], i)}{RESET} " for i in range(n)) + bar,
+           rule("├", "┼", "┤")]
+    for r in rows:
+        out.append(indent + bar + bar.join(f" {pad(r[i] if i < len(r) else '', i)} " for i in range(n)) + bar)
+    out.append(rule("└", "┴", "┘"))
+    return "\n".join(out)
+
+
 def show_database() -> list:
     """Discovered hosts: IP / MAC / vendor / OS / hostname where known. Long values
     are truncated so the table stays aligned. Returns the ordered rows so the caller
@@ -993,12 +1557,11 @@ def show_database() -> list:
     if not rows:
         print(f"  {DIM}empty — no hosts discovered yet{RESET}")
         return rows
-    print(f"  {BOLD}{'#':>3}  {'IP':<16}{'MAC':<19}{'VENDOR':<15}{'OS':<16}"
-          f"{'HOSTNAME':<20}PORTS{RESET}")
-    for i, (ip, mac, vendor, hostname, os_, nports) in enumerate(rows, 1):
-        print(f"  {i:>3}  {(ip or '—'):<16}{_cell(mac, 17):<19}{_cell(vendor, 13):<15}"
-              f"{_cell(os_, 14):<16}{_cell(hostname, 18):<20}{str(nports) if nports else '—'}")
-    print(f"\n  {DIM}{len(rows)} host(s){RESET}")
+    trows = [[str(i), ip or "—", _cell(mac, 17), _cell(vendor, 16), _cell(os_, 20),
+              _cell(hostname, 24), str(nports) if nports else "—"]
+             for i, (ip, mac, vendor, hostname, os_, nports) in enumerate(rows, 1)]
+    print(_box_table(["#", "IP", "MAC", "VENDOR", "OS", "HOSTNAME", "PORTS"], trows,
+                     aligns=["r", "l", "l", "l", "l", "l", "r"]))
     return rows
 
 
@@ -1011,7 +1574,7 @@ def _delete_host(rows: list, n: int) -> None:
     with _DB_LOCK:
         conn = _db_connect()
         try:
-            for table in ("hosts", "ports", "services"):
+            for table in ("hosts", "ports", "services", "scripts", "vulns"):
                 conn.execute(f"DELETE FROM {table} WHERE ip = ?", (ip,))
             conn.commit()
         finally:
@@ -1019,35 +1582,108 @@ def _delete_host(rows: list, n: int) -> None:
     print(f"{GREEN}✓ removed {ip}{RESET}")
 
 
-def _render_host_ports(ip: str) -> None:
-    """Print one host's open ports / protocol / state / service. Fed by port
-    enumeration (and later service detection)."""
+def _render_host_ports(ip: str) -> list:
+    """Print one host's numbered open ports / protocol / state / service / version
+    (plus its OS when detected). Returns the ordered ports so the caller can open a
+    port's NSE (-sC) output by number."""
     ports = fetch_ports(ip)
     services = fetch_services(ip)
-    print(f"\n{BOLD}{ip} — ports{RESET}")
+    os_ = fetch_host_os(ip)
+    head = f"\n{BOLD}{ip} — ports{RESET}"
+    if os_:
+        head += f"  {DIM}· OS:{RESET} {os_}"
+    print(head)
     if not ports:
         print(f"  {DIM}no open ports recorded yet — run {BOLD}[2] Port enumeration{RESET}")
-        return
-    print(f"  {BOLD}{'PORT':>6}  {'PROTO':<6}{'STATE':<14}{'SERVICE':<16}VERSION{RESET}")
-    for port, proto, state in ports:
+        return ports
+    vulns = fetch_vulns(ip)
+    flagged = {(v[0], v[1]) for v in vulns}          # (port, proto) with a finding
+    scripted = fetch_scripted_ports(ip)              # (port, proto) that have script output
+    trows = []
+    for i, (port, proto, state) in enumerate(ports, 1):
         name, product, version = services.get((port, proto), (None, None, None))
         ver = " ".join(x for x in (product, version) if x) or "—"
-        print(f"  {port:>6}  {proto:<6}{(state or '—'):<14}{_cell(name, 15):<16}{_cell(ver, 28)}")
-    print(f"\n  {DIM}{len(ports)} open port(s){RESET}")
+        verlen = 48 if (port, proto) in flagged else 28   # ports with findings show fuller VERSION
+        more = "›" if (port, proto) in scripted else "—"  # is there more to see for this port?
+        trows.append([str(i), str(port), proto, state or "—",
+                      _cell(name, 15), _cell(ver, verlen), more])
+    print(_box_table(["#", "PORT", "PROTO", "STATE", "SERVICE", "VERSION", "MORE"], trows,
+                     aligns=["r", "r", "l", "l", "l", "l", "l"]))
+    if vulns:
+        print(f"\n  {BOLD}Findings — {len(vulns)}{RESET}")
+        for port, proto, script, state, cve, risk, summary in vulns:
+            col = RED if state in ("VULNERABLE", "LIKELY") else \
+                (YELLOW if state == "FINDING" else DIM)
+            extra = " ".join(x for x in (risk, cve) if x)
+            print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
+                  f"{_cell(summary or script, 34):<35}{DIM}{extra}{RESET}")
+    host_scripts = fetch_scripts(ip, 0, "")          # host-level NSE output (e.g. smb-os-discovery)
+    if host_scripts:
+        print(f"\n  {BOLD}host scripts{RESET}")
+        for script, output in host_scripts:
+            print(f"    {CYAN}{script}{RESET}")
+            for line in (output or "").strip().split("\n"):
+                print(f"        {line.rstrip()}")
+    return ports
+
+
+def _render_port_scripts(ip: str, port: int, proto: str) -> None:
+    """Print the NSE script output for one port (plus host-level scripts), then a
+    Findings summary for that port with the CVE(s) listed under each finding."""
+    rows = fetch_scripts(ip, port, proto)          # port-specific only (host-level shown at host level)
+    print(f"\n{BOLD}{ip}:{port}/{proto} — scripts (-sC){RESET}")
+    if not rows:
+        print(f"  {DIM}None{RESET}")
+        return
+    for script, output in rows:
+        print(f"  {CYAN}{script}{RESET}")
+        for line in (output or "").strip().split("\n"):
+            print(f"      {line.rstrip()}")
+
+    findings = [f for f in fetch_vulns(ip) if f[0] == port and f[1] == proto]
+    if findings:
+        print(f"\n  {BOLD}Findings{RESET}")
+        for _p, _pr, script, state, cve, risk, summary in findings:
+            col = RED if state in ("VULNERABLE", "LIKELY") else \
+                (YELLOW if state == "FINDING" else DIM)
+            label = summary or script
+            tail = f" · {script}" if summary and summary != script else ""
+            print(f"    {col}⚠ {label}{RESET}  {DIM}[{risk or state}]{tail}{RESET}")
+            if cve:
+                print(f"        {DIM}CVE:{RESET} {cve}")
+
+
+def _port_scripts_view(ip: str, ports: list, n: int) -> None:
+    """Sub-view for one port's -sC output: stays open (the ports table is NOT redrawn)
+    until the user goes back."""
+    if not 1 <= n <= len(ports):
+        print(f"{RED}✗ no port {n}{RESET}")
+        return
+    port, proto, _state = ports[n - 1]
+    _run_view(f"{ip}:{port}/{proto}", "enter refresh · b back",
+              lambda: _render_port_scripts(ip, port, proto),
+              lambda _c, v: "refresh" if v == "" else "stay")
 
 
 def _host_ports_view(rows: list, n: int) -> None:
     """Sub-view for one host's ports: stays open (the host list is NOT redrawn) until
-    the user goes back, so a picked host shows only its ports."""
+    the user goes back. Typing a port number opens that port's -sC script output."""
     if not 1 <= n <= len(rows):
         print(f"{RED}✗ no host {n}{RESET}")
         return
     ip = rows[n - 1][0]
-    while True:
-        _render_host_ports(ip)
-        v = _ctx_ask(ip, "enter refresh · b back")
-        if v is None or v.lower() in _BACK_WORDS:
-            return
+
+    def _handle(ports, v):
+        if v == "":
+            return "refresh"
+        if v.isdigit():
+            _port_scripts_view(ip, ports, int(v))
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · b · enter{RESET}")
+        return "stay"
+
+    _run_view(ip, "enter refresh · <n> scripts · b back",
+              lambda: _render_host_ports(ip), _handle)
 
 
 def clear_database() -> None:
@@ -1062,7 +1698,7 @@ def clear_database() -> None:
     with _DB_LOCK:
         conn = _db_connect()
         try:
-            for table in ("hosts", "ports", "services"):
+            for table in ("hosts", "ports", "services", "scripts", "vulns"):
                 conn.execute(f"DELETE FROM {table}")
             conn.commit()
         finally:
@@ -1089,7 +1725,7 @@ def new_session() -> None:
         with _DB_LOCK:
             conn = _db_connect()
             try:
-                for table in ("hosts", "jobs", "ports", "services"):
+                for table in ("hosts", "jobs", "ports", "services", "scripts", "vulns"):
                     conn.execute(f"DELETE FROM {table}")
                 conn.commit()
             finally:
@@ -1158,18 +1794,24 @@ _TERM_EMULATORS = [
 
 def _render_report_session(command: str, output: "str | None") -> str:
     """Build the coloured replay text: stock-Kali prompt (frame green/non-bold,
-    user㉿host and $ bold-blue, ~ default) + light-blue command + plain output. Kept
-    in sync with the host app's in-tab renderer so both spawn paths look identical."""
+    user㉿host and $ bold-blue, ~ white) + greenish first command word (rest plain)
+    + plain output. Kept in sync with the host app's in-tab renderer so both spawn
+    paths look identical."""
     E = "\033"
-    grn, bblu, lblu, rs = f"{E}[32m", f"{E}[1;34m", f"{E}[94m", f"{E}[0m"
+    # cmd1 is the turquoise from QTermWidget's "Linux" scheme (Color6 = 24,178,178),
+    # as 24-bit truecolor so the shade is stable across themes.
+    grn, bblu, cmd1, wht, rs = (f"{E}[32m", f"{E}[1;34m", f"{E}[38;2;24;178;178m",
+                                f"{E}[1;37m", f"{E}[0m")
     import getpass
     import socket
     try:
         user, host = getpass.getuser(), socket.gethostname()
     except Exception:
         user, host = "kali", "kali"
-    prompt = (f"{grn}┌──({bblu}{user}㉿{host}{rs}{grn})-[{rs}~{grn}]{rs}\n"
-              f"{grn}└─{bblu}${rs} {lblu}{command}{rs}")
+    first, _, rest = command.partition(" ")
+    cmd = f"{cmd1}{first}{rs}" + (f" {rest}" if rest else "")
+    prompt = (f"{grn}┌──({bblu}{user}㉿{host}{rs}{grn})-[{wht}~{rs}{grn}]{rs}\n"
+              f"{grn}└─{bblu}${rs} {cmd}")
     return f"{prompt}\n{output or '(no output captured)'}\n"
 
 
@@ -1250,70 +1892,92 @@ def _clear_status() -> None:
 
 
 # ── action views (stay open until the user goes back) ─────────────────────────
-def _view(render, module: str, options: str = "b back") -> None:
-    """Show a screen (e.g. help) and keep it open until the user goes back, using the
-    context-tagged prompt so the current module and options are obvious."""
+def _run_view(module: str, options: str, render, handle=None) -> None:
+    """Keep an interactive screen open. ``render()`` draws the content and may return a
+    context passed to ``handle``. ``handle(ctx, v)`` returns 'refresh' to redraw the
+    screen or 'stay' to just re-prompt WITHOUT redrawing — so an invalid option / typo
+    doesn't reprint the whole view, only the bare prompt shows again. b / back / /exit
+    leave. The options hint shows on the first prompt after a redraw, then bare."""
+    first = True
     while True:
-        render()
-        v = _ctx_ask(module, options)
-        if v is None or v.lower() in _BACK_WORDS:
-            return
+        if not first:
+            _hr()
+        first = False
+        ctx = render()
+        with_opts = True
+        while True:
+            v = _ctx_ask(module, options if with_opts else "")
+            with_opts = False
+            if v is None or v.lower() in _BACK_WORDS:
+                return
+            action = handle(ctx, v.strip().lower()) if handle else "stay"
+            if action == "refresh":
+                break                             # redraw the screen
+            # 'stay' → re-prompt (bare), screen not redrawn
+
+
+def _view(render, module: str, options: str = "b back") -> None:
+    """Static screen (e.g. help): drawn once, kept open until the user goes back."""
+    _run_view(module, options, render)
 
 
 def _status_view() -> None:
     """Status screen: refresh, view a scan's command + output in a spawned terminal
     (``v <n>``), stop a running scan (``stop <n>``), or clear finished history."""
-    while True:
-        jobs = show_status()
-        v = _ctx_ask("status", "enter refresh · v <n> view · stop <n> · c clear · b back")
-        if v is None or v.lower() in _BACK_WORDS:
-            return
-        v = v.strip().lower()
+    def _handle(jobs, v):
         if v == "":
-            continue                              # enter = refresh (re-render)
-        elif v == "c":
+            return "refresh"
+        if v == "c":
             _clear_status()
-        elif v.startswith("stop"):
+            return "refresh"
+        if v.startswith("stop"):
             rest = v[len("stop"):].strip()
             if rest.isdigit():
                 _stop_job(jobs, int(rest))
-            else:
-                print(f"{RED}✗ use: stop <n>{RESET}")
-        elif v.startswith("v"):
+                return "refresh"
+            print(f"{RED}✗ use: stop <n>{RESET}")
+            return "stay"
+        if v.startswith("v"):
             rest = v[1:].strip()
             if rest.isdigit():
                 _view_command(jobs, int(rest))
             else:
                 print(f"{RED}✗ use: v <n>{RESET}")
-        elif v.isdigit():
+            return "stay"
+        if v.isdigit():
             _stop_job(jobs, int(v))
-        else:
-            print(f"{RED}✗ unknown option{RESET} {DIM}— v <n> · stop <n> · c · b · enter{RESET}")
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— v <n> · stop <n> · c · b · enter{RESET}")
+        return "stay"
+
+    _run_view("status", "enter refresh · v <n> view · stop <n> · c clear · b back",
+              show_status, _handle)
 
 
 def _database_view() -> None:
     """Database screen: host list; type a host number to see its ports/services,
     ``r <n>`` to remove a host, ``c`` to clear, ``b`` to go back."""
-    while True:
-        rows = show_database()
-        v = _ctx_ask("database", "enter refresh · <n> ports · r <n> remove · c clear · b back")
-        if v is None or v.lower() in _BACK_WORDS:
-            return
-        v = v.strip().lower()
+    def _handle(rows, v):
         if v == "":
-            continue                              # enter = refresh (re-render)
-        elif v == "c":
+            return "refresh"
+        if v == "c":
             clear_database()
-        elif v.startswith("r"):
+            return "refresh"
+        if v.startswith("r"):
             rest = v[1:].strip()
             if rest.isdigit():
                 _delete_host(rows, int(rest))
-            else:
-                print(f"{RED}✗ use: r <n>{RESET}")
-        elif v.isdigit():
+                return "refresh"
+            print(f"{RED}✗ use: r <n>{RESET}")
+            return "stay"
+        if v.isdigit():
             _host_ports_view(rows, int(v))
-        else:
-            print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · r <n> · c · b · enter{RESET}")
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · r <n> · c · b · enter{RESET}")
+        return "stay"
+
+    _run_view("database", "enter refresh · <n> ports · r <n> remove · c clear · b back",
+              show_database, _handle)
 
 
 # ── main loop ─────────────────────────────────────────────────────────────────
@@ -1344,6 +2008,10 @@ def main() -> int:
                 _handle_host_discovery()
             elif choice == "2":
                 _handle_port_enum()
+            elif choice == "3":
+                _handle_service_detection()
+            elif choice == "4":
+                _handle_vuln_scan()
             elif choice in _PHASES:
                 run_phase(choice)
             elif choice in ("s", "status"):
