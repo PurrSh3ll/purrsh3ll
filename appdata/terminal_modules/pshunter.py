@@ -123,12 +123,12 @@ def print_menu() -> None:
         print(f"  {CYAN}[{key}]{RESET} {BOLD}{name}{RESET}")
     print()
     print(f"  {DIM}actions{RESET}")
-    print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}      {DIM}command history · stop / clear scans{RESET}")
-    print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}    {DIM}discovered hosts · clear{RESET}")
-    print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET} {DIM}wipe the whole database{RESET}")
+    print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}")
+    print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}")
+    print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET}")
     if not _is_root():
-        print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}     {DIM}re-run as root (sudo) — needed for SYN/UDP{RESET}")
-    print(f"  {CYAN}[h]{RESET} {BOLD}help{RESET}        {DIM}usage & input formats{RESET}")
+        print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}")
+    print(f"  {CYAN}[h]{RESET} {BOLD}help{RESET}")
     print()
     print(f"  {DIM}/exit  quit{RESET}")
 
