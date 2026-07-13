@@ -1478,16 +1478,22 @@ def _start_vuln_scan(ip: str, minutes: int) -> None:
 _CVE_STORE_CAP = 20        # newest CVEs kept per service (keeps findings readable)
 
 # The same product often carries a different CPE vendor/product in nmap output than
-# the one NVD files its CVEs under. Map the alternate pair to the canonical NVD pair
-# that actually holds the CVEs, so the lookup doesn't silently miss them.
+# the one(s) NVD files its CVEs under. Map the nmap pair to the canonical NVD pair(s)
+# that actually hold the CVEs; the lookup queries the original AND every alias and
+# unions the results, so nothing is silently missed (some products span two vendors,
+# e.g. rabbitmq under pivotal_software and broadcom).
 _CPE_ALIAS = {
-    ("mysql", "mysql"):                 ("oracle", "mysql"),
-    ("nginx", "nginx"):                 ("f5", "nginx"),
-    ("igor_sysoev", "nginx"):           ("f5", "nginx"),
-    ("elasticsearch", "elasticsearch"): ("elastic", "elasticsearch"),
-    ("squid", "squid"):                 ("squid-cache", "squid"),
-    ("isc", "bind9"):                   ("isc", "bind"),
-    ("pureftpd", "pureftpd"):           ("pureftpd", "pure-ftpd"),
+    ("mysql", "mysql"):                 [("oracle", "mysql")],
+    ("nginx", "nginx"):                 [("f5", "nginx")],
+    ("igor_sysoev", "nginx"):           [("f5", "nginx")],
+    ("elasticsearch", "elasticsearch"): [("elastic", "elasticsearch")],
+    ("squid", "squid"):                 [("squid-cache", "squid")],
+    ("isc", "bind9"):                   [("isc", "bind")],
+    ("vsftpd", "vsftpd"):               [("redhat", "vsftpd")],
+    ("proftpd", "proftpd"):             [("proftpd_project", "proftpd")],
+    ("rabbitmq", "rabbitmq"):           [("pivotal_software", "rabbitmq"),
+                                         ("broadcom", "rabbitmq_server")],
+    ("pureftpd", "pureftpd"):           [("pureftpd", "pure-ftpd")],
 }
 
 
@@ -1556,17 +1562,20 @@ def _ver_in_match(version: str, exact, vsi, vse, vei, vee) -> bool:
 
 def _cve_lookup(vendor: str, product: str, version: str) -> "list | None":
     """Matching CVE ids (newest first) for one vendor/product/version, or None when
-    the index is missing/unreadable."""
+    the index is missing/unreadable. Queries the CPE pair plus any aliases (some
+    products file CVEs under several NVD vendors) and unions the results."""
     if not os.path.exists(CVE_INDEX_PATH):
         return None
-    vendor, product = _CPE_ALIAS.get((vendor, product), (vendor, product))
+    targets = [(vendor, product)] + _CPE_ALIAS.get((vendor, product), [])
     try:
         con = sqlite3.connect(CVE_INDEX_PATH)
         try:
-            rows = con.execute(
-                "SELECT m.exact_ver, m.vsi, m.vse, m.vei, m.vee, m.cve "
-                "FROM cve_match m JOIN product p ON p.id = m.product_id "
-                "WHERE p.vendor = ? AND p.product = ?", (vendor, product)).fetchall()
+            rows = []
+            for v, p in targets:
+                rows += con.execute(
+                    "SELECT m.exact_ver, m.vsi, m.vse, m.vei, m.vee, m.cve "
+                    "FROM cve_match m JOIN product p ON p.id = m.product_id "
+                    "WHERE p.vendor = ? AND p.product = ?", (v, p)).fetchall()
         finally:
             con.close()
     except sqlite3.Error:
