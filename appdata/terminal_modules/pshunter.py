@@ -1841,12 +1841,15 @@ def _render_host_findings(ip: str) -> None:
         print(f"  {DIM}none — run {BOLD}[3] Service detection{RESET}{DIM}, {BOLD}[4] Vuln scan{RESET}"
               f"{DIM} or {BOLD}[5] CVE lookup{RESET}")
         return
-    if vulns:
+    # cve-lookup rows (state 'CVE') are the CPE→CVE mapping — shown in the CVE section
+    # below, so they're kept out of FINDINGS to avoid listing the same CVEs twice.
+    findings = [v for v in vulns if v[3] != "CVE"]
+    if findings:
         print(f"\n  {BOLD}FINDINGS{RESET}")
-        for port, proto, script, state, cve, risk, summary in vulns:
+        for port, proto, script, state, cve, risk, summary in findings:
             col = RED if state in ("VULNERABLE", "LIKELY") else \
                 (YELLOW if state == "EXPOSED" else DIM)
-            ids = cve.split(",") if cve else []       # collapse long CVE lists (cve-lookup)
+            ids = cve.split(",") if cve else []
             cve_disp = cve if len(ids) <= 2 else f"{len(ids)}× CVE"
             extra = " ".join(x for x in (risk, cve_disp) if x)
             print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
