@@ -849,9 +849,9 @@ def fetch_ports(ip: str) -> list:
 
 
 def fetch_services(ip: str) -> dict:
-    """{(port, proto): (name, product, version)} for a host."""
-    rows = _fetch("SELECT port, proto, name, product, version FROM services WHERE ip = ?", (ip,))
-    return {(p, pr): (n, prod, ver) for p, pr, n, prod, ver in rows}
+    """{(port, proto): (name, product, version, cpe)} for a host."""
+    rows = _fetch("SELECT port, proto, name, product, version, cpe FROM services WHERE ip = ?", (ip,))
+    return {(p, pr): (n, prod, ver, cpe) for p, pr, n, prod, ver, cpe in rows}
 
 
 def save_services(ip: str, rows: list) -> int:
@@ -1601,7 +1601,7 @@ def _render_host_ports(ip: str) -> list:
     scripted = fetch_scripted_ports(ip)              # (port, proto) that have script output
     trows = []
     for i, (port, proto, state) in enumerate(ports, 1):
-        name, product, version = services.get((port, proto), (None, None, None))
+        name, product, version, _cpe = services.get((port, proto), (None, None, None, None))
         ver = " ".join(x for x in (product, version) if x) or "—"
         verlen = 48 if (port, proto) in flagged else 28   # ports with findings show fuller VERSION
         more = "›" if (port, proto) in scripted else "—"  # is there more to see for this port?
@@ -1610,16 +1610,27 @@ def _render_host_ports(ip: str) -> list:
     print(_box_table(["#", "PORT", "PROTO", "STATE", "SERVICE", "VERSION", "MORE"], trows,
                      aligns=["r", "r", "l", "l", "l", "l", "l"]))
     if vulns:
-        print(f"\n  {BOLD}Findings — {len(vulns)}{RESET}")
+        print(f"\n  {BOLD}FINDINGS{RESET}")
         for port, proto, script, state, cve, risk, summary in vulns:
             col = RED if state in ("VULNERABLE", "LIKELY") else \
                 (YELLOW if state == "FINDING" else DIM)
             extra = " ".join(x for x in (risk, cve) if x)
             print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
                   f"{_cell(summary or script, 34):<35}{DIM}{extra}{RESET}")
+    cve_map = {}                                     # CVE → set of "port/proto" it was seen on
+    for port, proto, _script, _state, cve, _risk, _summary in vulns:
+        for c in (cve or "").split(","):
+            c = c.strip()
+            if c:
+                cve_map.setdefault(c, set()).add(f"{port}/{proto}")
+    if cve_map:
+        print(f"\n  {BOLD}CVE{RESET}")
+        for c in sorted(cve_map):
+            where = ", ".join(sorted(cve_map[c]))
+            print(f"    {RED}{c}{RESET}  {DIM}{where}{RESET}")
     host_scripts = fetch_scripts(ip, 0, "")          # host-level NSE output (e.g. smb-os-discovery)
     if host_scripts:
-        print(f"\n  {BOLD}host scripts{RESET}")
+        print(f"\n  {BOLD}HOST FINDINGS{RESET}")
         for script, output in host_scripts:
             print(f"    {CYAN}{script}{RESET}")
             for line in (output or "").strip().split("\n"):
@@ -1628,10 +1639,16 @@ def _render_host_ports(ip: str) -> list:
 
 
 def _render_port_scripts(ip: str, port: int, proto: str) -> None:
-    """Print the NSE script output for one port (plus host-level scripts), then a
-    Findings summary for that port with the CVE(s) listed under each finding."""
+    """Print just the raw NSE script output for one port (Findings are summarised at
+    the host level in the ports table, not repeated here)."""
     rows = fetch_scripts(ip, port, proto)          # port-specific only (host-level shown at host level)
     print(f"\n{BOLD}{ip}:{port}/{proto} — scripts (-sC){RESET}")
+    name, product, version, cpe = fetch_services(ip).get((port, proto), (None, None, None, None))
+    svc = " ".join(x for x in (name, product, version) if x)
+    if svc:
+        print(f"  {DIM}service:{RESET} {svc}")
+    if cpe:
+        print(f"  {DIM}CPE:{RESET} {cpe}")
     if not rows:
         print(f"  {DIM}None{RESET}")
         return
@@ -1639,18 +1656,6 @@ def _render_port_scripts(ip: str, port: int, proto: str) -> None:
         print(f"  {CYAN}{script}{RESET}")
         for line in (output or "").strip().split("\n"):
             print(f"      {line.rstrip()}")
-
-    findings = [f for f in fetch_vulns(ip) if f[0] == port and f[1] == proto]
-    if findings:
-        print(f"\n  {BOLD}Findings{RESET}")
-        for _p, _pr, script, state, cve, risk, summary in findings:
-            col = RED if state in ("VULNERABLE", "LIKELY") else \
-                (YELLOW if state == "FINDING" else DIM)
-            label = summary or script
-            tail = f" · {script}" if summary and summary != script else ""
-            print(f"    {col}⚠ {label}{RESET}  {DIM}[{risk or state}]{tail}{RESET}")
-            if cve:
-                print(f"        {DIM}CVE:{RESET} {cve}")
 
 
 def _port_scripts_view(ip: str, ports: list, n: int) -> None:
@@ -1682,7 +1687,7 @@ def _host_ports_view(rows: list, n: int) -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · b · enter{RESET}")
         return "stay"
 
-    _run_view(ip, "[Enter] refresh · <n> scripts · [b] back",
+    _run_view(ip, "[Enter] refresh · <n> select · [b] back",
               lambda: _render_host_ports(ip), _handle)
 
 
@@ -1976,7 +1981,7 @@ def _database_view() -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · r <n> · c · b · enter{RESET}")
         return "stay"
 
-    _run_view("database", "[Enter] refresh · <n> ports · r <n> remove · [c] clear · [b] back",
+    _run_view("database", "[Enter] refresh · <n> select · r <n> remove · [c] clear · [b] back",
               show_database, _handle)
 
 
