@@ -26,6 +26,10 @@ WHEEL_NAME="qtermwidget-2.2.0-cp39-abi3-manylinux_2_28_x86_64.whl"
 AICHAT_VERSION="0.27.0"
 AICHAT_URL="https://github.com/sigoden/aichat/releases/download/v${AICHAT_VERSION}/aichat-v${AICHAT_VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
+# pshunter CVE index — offline CPE→CVE database (phase 5), hosted in its own repo
+# so a plain `git clone` of the app stays small (appdata/cve_index.db is gitignored).
+CVE_INDEX_URL="https://raw.githubusercontent.com/PurrSh3ll/cve-index/main/cve_index.db"
+
 
 OPENWEBUI_IMAGE="ghcr.io/open-webui/open-webui:main"
 WEBMAP_IMAGE="reborntc/webmap"
@@ -64,6 +68,7 @@ run_with_spinner() {
 print_plan() {
     echo -e "${BOLD}  Installation plan:${NC}"
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
+    echo -e "    ${GREEN}✓${NC}  CVE index            (~10 MB  — offline CPE→CVE for pshunter)"
     [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
     [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~15 MB  — 7 git repos)"          || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
     [[ "$INSTALL_GAMES"       == true ]]  && echo -e "    ${GREEN}✓${NC}  cyber games          (~1 MB   — git repo)"             || echo -e "    ${YELLOW}–${NC}  cyber games                             (skipped)"
@@ -338,6 +343,34 @@ if [[ "$INSTALL_GAMES" == true ]]; then
             warn "Cyb3rBreak games (clone failed: $GAMES_REPO)"
         fi
         rm -rf "$_games_tmp"
+    fi
+fi
+
+# ── pshunter CVE index — offline CPE→CVE database (phase 5) ────────────────────
+# Downloaded from its own repo (not vendored; appdata/cve_index.db is gitignored).
+# Non-fatal: pshunter's CVE lookup just reports the index as missing if this fails,
+# and every other feature still works.
+CVE_INDEX_DEST="$INSTALL_DIR/appdata/cve_index.db"
+
+info "Downloading pshunter CVE index (offline CPE→CVE)..."
+if [[ -s "$CVE_INDEX_DEST" ]] && head -c 15 "$CVE_INDEX_DEST" | grep -q "SQLite format 3"; then
+    info "  CVE index already present — skipping"
+else
+    _cve_tmp=$(mktemp)
+    _cve_ok=false
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$CVE_INDEX_URL" -o "$_cve_tmp" && _cve_ok=true
+    elif command -v wget &>/dev/null; then
+        wget -q "$CVE_INDEX_URL" -O "$_cve_tmp" && _cve_ok=true
+    fi
+    # Verify it's a real SQLite file (magic header) before putting it in place.
+    if [[ "$_cve_ok" == true ]] && head -c 15 "$_cve_tmp" | grep -q "SQLite format 3"; then
+        mkdir -p "$(dirname "$CVE_INDEX_DEST")"
+        mv "$_cve_tmp" "$CVE_INDEX_DEST"
+        success "CVE index ready ($(du -h "$CVE_INDEX_DEST" | cut -f1))"
+    else
+        rm -f "$_cve_tmp"
+        warn "CVE index download failed — pshunter phase 5 (CVE lookup) unavailable until fetched"
     fi
 fi
 

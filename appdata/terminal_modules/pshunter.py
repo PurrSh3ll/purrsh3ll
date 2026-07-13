@@ -627,6 +627,8 @@ def _is_self_ip(ip: str) -> bool:
 # This script lives in appdata/terminal_modules/; keep the runtime DB up in appdata/
 # (a data location) rather than next to the code.
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pshunter.db")
+# Offline CPE→CVE index (built by the installer from NVD; see build_cve_index). Read-only.
+CVE_INDEX_PATH = os.path.join(os.path.dirname(DB_PATH), "cve_index.db")
 _DB_LOCK = threading.Lock()
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosts (
@@ -1378,7 +1380,7 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
 
     # 2) auth-category scripts: any output = weakness
     if sid in _AUTH_TITLE:
-        return {"state": "FINDING", "cve": cve, "risk": "HIGH", "summary": _AUTH_TITLE[sid]}
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH", "summary": _AUTH_TITLE[sid]}
 
     # 3) info rules over -sC output
     low = output.lower()
@@ -1465,6 +1467,212 @@ def _run_vuln_scan(ip: str, minutes: int) -> None:
 def _start_vuln_scan(ip: str, minutes: int) -> None:
     """Launch the vuln scan in the background; the menu stays free."""
     threading.Thread(target=_run_vuln_scan, args=(ip, minutes), daemon=True).start()
+
+
+# ── CVE lookup (phase 5) ──────────────────────────────────────────────────────
+# Offline enrichment: the service-detection phase stores a CPE per port; here we
+# match that CPE (vendor/product + version) against the local NVD-derived index
+# (appdata/cve_index.db) and record the known CVE numbers as findings. No network,
+# no scanning — pure lookup. Only versioned CPEs are used (a general CPE without a
+# version can't be mapped precisely and would produce false positives).
+_CVE_STORE_CAP = 20        # newest CVEs kept per service (keeps findings readable)
+
+# The same product often carries a different CPE vendor/product in nmap output than
+# the one NVD files its CVEs under. Map the alternate pair to the canonical NVD pair
+# that actually holds the CVEs, so the lookup doesn't silently miss them.
+_CPE_ALIAS = {
+    ("mysql", "mysql"):                 ("oracle", "mysql"),
+    ("nginx", "nginx"):                 ("f5", "nginx"),
+    ("igor_sysoev", "nginx"):           ("f5", "nginx"),
+    ("elasticsearch", "elasticsearch"): ("elastic", "elasticsearch"),
+    ("squid", "squid"):                 ("squid-cache", "squid"),
+    ("isc", "bind9"):                   ("isc", "bind"),
+    ("pureftpd", "pureftpd"):           ("pureftpd", "pure-ftpd"),
+}
+
+
+def _ver_key(v: "str | None") -> tuple:
+    """Version as a tuple of its numeric components, e.g. '8.2p1' → (8, 2, 1).
+    Good enough to order/compare the version strings NVD uses in its ranges."""
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+def _ver_cmp(a: "str | None", b: "str | None") -> int:
+    """-1 / 0 / 1 comparing two version strings by their numeric components."""
+    ta, tb = _ver_key(a), _ver_key(b)
+    n = max(len(ta), len(tb))
+    ta += (0,) * (n - len(ta))
+    tb += (0,) * (n - len(tb))
+    return (ta > tb) - (ta < tb)
+
+
+def _cve_sort_key(cve: str) -> tuple:
+    """Sort CVE ids newest-first (by year, then sequence)."""
+    m = re.match(r"CVE-(\d+)-(\d+)", cve)
+    return (-int(m.group(1)), -int(m.group(2))) if m else (0, 0)
+
+
+def _cpe_parts(cpe: "str | None") -> "tuple | None":
+    """(vendor, product, version) from a CPE 2.2 (cpe:/a:v:p:ver) or 2.3
+    (cpe:2.3:a:v:p:ver:…) URI. version is None when absent/any ('*'/'-')."""
+    if not cpe or not cpe.startswith("cpe:"):
+        return None
+    body = cpe[4:]
+    if body.startswith("/"):                       # 2.2
+        f = body[1:].split(":")
+    elif body.startswith("2.3:"):                  # 2.3
+        f = body[4:].split(":")
+    else:
+        return None
+    if len(f) < 3:
+        return None
+    vendor, product = f[1], f[2]
+    version = f[3] if len(f) > 3 else None
+    version = None if version in ("", "*", "-") else version
+    if not vendor or not product:
+        return None
+    return vendor, product, version
+
+
+def _ver_in_match(version: str, exact, vsi, vse, vei, vee) -> bool:
+    """True when ``version`` satisfies one NVD cpeMatch row: an exact version, or the
+    open/closed start/end bounds (start-incl/excl, end-incl/excl). A row with neither
+    an exact version nor any bound is an 'all versions' match — too weak a signal
+    (matches every version), so it is filtered out to cut false positives."""
+    if exact:
+        return _ver_cmp(version, exact) == 0
+    if not any((vsi, vse, vei, vee)):
+        return False                       # unbounded 'all versions' — filtered out
+    if vsi and _ver_cmp(version, vsi) < 0:
+        return False
+    if vse and _ver_cmp(version, vse) <= 0:
+        return False
+    if vei and _ver_cmp(version, vei) > 0:
+        return False
+    if vee and _ver_cmp(version, vee) >= 0:
+        return False
+    return True
+
+
+def _cve_lookup(vendor: str, product: str, version: str) -> "list | None":
+    """Matching CVE ids (newest first) for one vendor/product/version, or None when
+    the index is missing/unreadable."""
+    if not os.path.exists(CVE_INDEX_PATH):
+        return None
+    vendor, product = _CPE_ALIAS.get((vendor, product), (vendor, product))
+    try:
+        con = sqlite3.connect(CVE_INDEX_PATH)
+        try:
+            rows = con.execute(
+                "SELECT m.exact_ver, m.vsi, m.vse, m.vei, m.vee, m.cve "
+                "FROM cve_match m JOIN product p ON p.id = m.product_id "
+                "WHERE p.vendor = ? AND p.product = ?", (vendor, product)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    matched = {cve for exact, vsi, vse, vei, vee, cve in rows
+               if _ver_in_match(version, exact, vsi, vse, vei, vee)}
+    return sorted(matched, key=_cve_sort_key)
+
+
+def _run_cve_lookup(ip: str) -> list:
+    """Per versioned service CPE on the host, the CVEs it maps to.
+    Returns [(port, proto, product, version, [cve, …]), …]."""
+    results = []
+    for (port, proto), (_name, product_s, version_s, cpe) in sorted(fetch_services(ip).items()):
+        parts = _cpe_parts(cpe)
+        if not parts:
+            continue
+        vendor, product, cpe_ver = parts
+        version = cpe_ver or version_s
+        if not version or not re.search(r"\d", version):
+            continue                               # need a concrete version
+        cves = _cve_lookup(vendor, product, version)
+        if cves:
+            results.append((port, proto, product, version, cves))
+    return results
+
+
+def save_cve_findings(ip: str, results: list) -> None:
+    """Replace this host's CVE-lookup findings in the vulns table (script
+    'cve-lookup', one row per port), so re-running the phase stays idempotent."""
+    if not ip or _is_self_ip(ip):
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            conn.execute("DELETE FROM vulns WHERE ip = ? AND script = 'cve-lookup'", (ip,))
+            for port, proto, product, version, cves in results:
+                cve_str = ",".join(cves[:_CVE_STORE_CAP])
+                summary = f"{product} {version} — {len(cves)} known CVE(s)"
+                conn.execute(
+                    "INSERT INTO vulns (ip, port, proto, script, state, cve, risk, summary, "
+                    "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (ip, port, proto, "cve-lookup", "CVE", cve_str, "INFO", summary, now, now))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _do_cve_lookup(ip: str) -> None:
+    """Run the offline lookup for one host, store findings, log a job, print a recap."""
+    name = _PHASES["5"][0]
+    job = _new_job("5", f"{name} · {ip}", f"cve-index lookup (offline NVD) for {ip}")
+    results = []
+    try:
+        results = _run_cve_lookup(ip)
+        save_cve_findings(ip, results)
+        lines = [f"CVE lookup — {ip} (offline NVD index)"]
+        for port, proto, product, version, cves in results:
+            lines.append(f"{port}/{proto}  {product} {version}  {len(cves)} CVE")
+            shown = cves[:_CVE_STORE_CAP]
+            lines.append("  " + ", ".join(shown)
+                         + (f"  (+{len(cves) - len(shown)} more)" if len(cves) > len(shown) else ""))
+        job["output"], job["hosts"], job["state"] = "\n".join(lines), len(results), "done"
+    except Exception as exc:
+        job["state"], job["error"] = "error", str(exc)
+    finally:
+        _job_update(job)
+
+    print(f"\n{BOLD}CVE lookup — {ip}{RESET}  {DIM}(offline NVD index){RESET}")
+    if not results:
+        print(f"  {DIM}no versioned service CPE matched the index — run "
+              f"{BOLD}[3] Service detection{RESET}{DIM} first, or the service has no known CVEs{RESET}")
+        return
+    for port, proto, product, version, cves in results:
+        print(f"  {BOLD}{port}/{proto}{RESET}  {product} {version}  {RED}{len(cves)} CVE{RESET}")
+        shown = cves[:12]
+        tail = f"  {DIM}+{len(cves) - 12} more{RESET}" if len(cves) > 12 else ""
+        print(f"      {DIM}{', '.join(shown)}{RESET}{tail}")
+    print(f"\n  {DIM}saved to findings — see {BOLD}[d] database{RESET}{DIM} › {ip}{RESET}")
+
+
+def _handle_cve_lookup() -> None:
+    """Phase 5 flow: read a target IP and match its service CPEs to known CVEs."""
+    if not os.path.exists(CVE_INDEX_PATH):
+        print(f"\n{YELLOW}⚠ CVE index not found{RESET} {DIM}({os.path.basename(CVE_INDEX_PATH)}) "
+              f"— build it with the installer's NVD step, then retry{RESET}")
+        return
+    while True:
+        value = _ctx_ask("cve", "<single IP> · [h] help · [b] back")
+        if value is None or value.lower() in _BACK_WORDS:
+            return
+        if value.lower() in _HELP_WORDS:
+            print_help()
+            continue
+        try:
+            ip = str(ipaddress.ip_address(value))
+        except ValueError:
+            print(f"{RED}✗ give one valid IP address{RESET}")
+            continue
+        if not fetch_services(ip):
+            print(f"{DIM}note: no services recorded for {ip} — run {BOLD}[3] Service "
+                  f"detection{RESET}{DIM} first{RESET}")
+            continue
+        _do_cve_lookup(ip)
+        return
 
 
 # ── placeholder handlers (skeleton — nothing is wired yet) ────────────────────
@@ -1609,12 +1817,29 @@ def _render_host_ports(ip: str) -> list:
                       _cell(name, 15), _cell(ver, verlen), more])
     print(_box_table(["#", "PORT", "PROTO", "STATE", "SERVICE", "VERSION", "MORE"], trows,
                      aligns=["r", "r", "l", "l", "l", "l", "l"]))
+    if vulns or fetch_scripts(ip, 0, ""):
+        print(f"  {DIM}[f] findings{RESET}")
+    return ports
+
+
+def _render_host_findings(ip: str) -> None:
+    """The host's findings, opened with [f] from the ports view: the FINDINGS summary,
+    then the aggregated CVE list, then any host-level NSE output (HOST FINDINGS)."""
+    vulns = fetch_vulns(ip)
+    host_scripts = fetch_scripts(ip, 0, "")
+    print(f"\n{BOLD}{ip} — findings{RESET}")
+    if not vulns and not host_scripts:
+        print(f"  {DIM}none — run {BOLD}[3] Service detection{RESET}{DIM}, {BOLD}[4] Vuln scan{RESET}"
+              f"{DIM} or {BOLD}[5] CVE lookup{RESET}")
+        return
     if vulns:
         print(f"\n  {BOLD}FINDINGS{RESET}")
         for port, proto, script, state, cve, risk, summary in vulns:
             col = RED if state in ("VULNERABLE", "LIKELY") else \
-                (YELLOW if state == "FINDING" else DIM)
-            extra = " ".join(x for x in (risk, cve) if x)
+                (YELLOW if state == "EXPOSED" else DIM)
+            ids = cve.split(",") if cve else []       # collapse long CVE lists (cve-lookup)
+            cve_disp = cve if len(ids) <= 2 else f"{len(ids)}× CVE"
+            extra = " ".join(x for x in (risk, cve_disp) if x)
             print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
                   f"{_cell(summary or script, 34):<35}{DIM}{extra}{RESET}")
     cve_map = {}                                     # CVE → set of "port/proto" it was seen on
@@ -1628,14 +1853,12 @@ def _render_host_ports(ip: str) -> list:
         for c in sorted(cve_map):
             where = ", ".join(sorted(cve_map[c]))
             print(f"    {RED}{c}{RESET}  {DIM}{where}{RESET}")
-    host_scripts = fetch_scripts(ip, 0, "")          # host-level NSE output (e.g. smb-os-discovery)
     if host_scripts:
         print(f"\n  {BOLD}HOST FINDINGS{RESET}")
         for script, output in host_scripts:
             print(f"    {CYAN}{script}{RESET}")
             for line in (output or "").strip().split("\n"):
                 print(f"        {line.rstrip()}")
-    return ports
 
 
 def _render_port_scripts(ip: str, port: int, proto: str) -> None:
@@ -1681,13 +1904,16 @@ def _host_ports_view(rows: list, n: int) -> None:
     def _handle(ports, v):
         if v == "":
             return "refresh"
+        if v.lower() == "f":
+            _render_host_findings(ip)
+            return "stay"
         if v.isdigit():
             _port_scripts_view(ip, ports, int(v))
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · f · b · enter{RESET}")
         return "stay"
 
-    _run_view(ip, "[Enter] refresh · <n> select · [b] back",
+    _run_view(ip, "[Enter] refresh · <n> select · [f] findings · [b] back",
               lambda: _render_host_ports(ip), _handle)
 
 
@@ -2017,6 +2243,8 @@ def main() -> int:
                 _handle_service_detection()
             elif choice == "4":
                 _handle_vuln_scan()
+            elif choice == "5":
+                _handle_cve_lookup()
             elif choice in _PHASES:
                 run_phase(choice)
             elif choice in ("s", "status"):
