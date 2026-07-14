@@ -387,8 +387,7 @@ def _handle_vuln_scan() -> None:
             print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
                   f"enumeration{RESET}{DIM} (and {BOLD}[3] Service detection{RESET}{DIM}) first{RESET}")
             continue
-        print(f"{YELLOW}⚠ vuln scan is active/detectable; some auth checks make a small "
-              f"login attempt (no brute-force).{RESET}")
+        print(f"{DIM}vuln + auth scripting{RESET}")
         minutes = _prompt_minutes("vuln", "Vuln scan", ip)
         if minutes is None:
             return
@@ -1582,14 +1581,27 @@ def _cpe_parts(cpe: "str | None") -> "tuple | None":
 
 
 def _ver_in_match(version: str, exact, vsi, vse, vei, vee) -> bool:
-    """True when ``version`` satisfies one NVD cpeMatch row: an exact version, or the
-    open/closed start/end bounds (start-incl/excl, end-incl/excl). A row with neither
-    an exact version nor any bound is an 'all versions' match — too weak a signal
-    (matches every version), so it is filtered out to cut false positives."""
+    """True when ``version`` satisfies one NVD cpeMatch row — deliberately strict, to
+    show fewer but better-verified CVEs (less noise) rather than everything NVD lists:
+
+      • exact version: matched only when the fingerprint is at least as precise as the
+        exact value (so a bare major like '4' is NOT taken as '4.0.0' and does not match
+        every '4.x' exact row — the biggest false-positive source).
+      • ranges: only *closed* ranges (a start bound AND an end bound) count, and only for
+        a fingerprint with ≥2 numeric components. Open-ended rows ('< X' / '>= X' only,
+        or 'all versions') are dropped — they match huge, cross-branch swaths of versions.
+    """
+    vk = _ver_key(version)
     if exact:
-        return _ver_cmp(version, exact) == 0
-    if not any((vsi, vse, vei, vee)):
-        return False                       # unbounded 'all versions' — filtered out
+        ek = _ver_key(exact)
+        if len(vk) < len(ek):
+            return False                   # fingerprint too coarse to claim this version
+        n = max(len(vk), len(ek))
+        return vk + (0,) * (n - len(vk)) == ek + (0,) * (n - len(ek))
+    if len(vk) < 2:
+        return False                       # bare major — too coarse to place in a range
+    if not ((vsi or vse) and (vei or vee)):
+        return False                       # open-ended / unbounded range — dropped
     if vsi and _ver_cmp(version, vsi) < 0:
         return False
     if vse and _ver_cmp(version, vse) <= 0:
@@ -1686,17 +1698,13 @@ def _do_cve_lookup(ip: str) -> None:
     finally:
         _job_update(job)
 
-    print(f"\n{BOLD}CVE lookup — {ip}{RESET}  {DIM}(offline NVD index){RESET}")
     if not results:
-        print(f"  {DIM}no versioned service CPE matched the index — run "
-              f"{BOLD}[3] Service detection{RESET}{DIM} first, or the service has no known CVEs{RESET}")
+        print(f"\n{DIM}▸ CVE lookup — {ip}: no versioned service CPE matched the index "
+              f"(run {BOLD}[3] Service detection{RESET}{DIM} first, or no known CVEs){RESET}")
         return
-    for port, proto, product, version, cves in results:
-        print(f"  {BOLD}{port}/{proto}{RESET}  {product} {version}  {RED}{len(cves)} CVE{RESET}")
-        shown = cves[:12]
-        tail = f"  {DIM}+{len(cves) - 12} more{RESET}" if len(cves) > 12 else ""
-        print(f"      {DIM}{', '.join(shown)}{RESET}{tail}")
-    print(f"\n  {DIM}saved to findings — see {BOLD}[d] database{RESET}{DIM} › {ip}{RESET}")
+    total = sum(len(cves) for *_rest, cves in results)
+    print(f"\n{GREEN}▶ CVE lookup done{RESET} {DIM}({ip} · {len(results)} service(s), {total} CVE) — "
+          f"see {BOLD}[f] findings{RESET}{DIM} · {BOLD}[s] status{RESET}")
 
 
 def _handle_cve_lookup() -> None:
@@ -1841,8 +1849,7 @@ def _launch_phase_for(key: str, ip: str) -> None:
         return
     name = _PHASES[key][0]
     if key == "4":
-        print(f"{YELLOW}⚠ vuln scan is active/detectable; some auth checks make a small "
-              f"login attempt (no brute-force).{RESET}")
+        print(f"{DIM}vuln + auth scripting{RESET}")
     module = {"2": "ports", "3": "service", "4": "vuln"}[key]
     minutes = _prompt_minutes(module, name, ip)
     if minutes is None:
@@ -1869,14 +1876,17 @@ def _open_host_progress(ip: str) -> None:
         if v == "f":
             _host_findings_view(ip)
             return "refresh"
+        if v == "s":
+            _status_view()
+            return "refresh"
         if v in _PHASES:
             _launch_phase_for(v, ip)
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> run phase · f · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> run phase · f · s · b · enter{RESET}")
         return "stay"
 
     _run_view(f"{ip}/progress",
-              "[Enter] refresh · <n> run phase · [f] findings · [b] back · [m] menu",
+              "[Enter] refresh · <n> run phase · [f] findings · [s] status · [b] back · [m] menu",
               lambda: _render_host_progress(ip), _handle)
 
 
@@ -2290,7 +2300,7 @@ def _render_host_ports(ip: str) -> list:
         head += f"  {DIM}· OS:{RESET} {os_}"
     print(head)
     if not ports:
-        print(f"  {DIM}none — run {BOLD}[2] Port enumeration{RESET}")
+        print(f"  {DIM}none{RESET}")
         return ports
     vulns = fetch_vulns(ip)
     flagged = {(v[0], v[1]) for v in vulns}          # (port, proto) with a finding
@@ -2305,8 +2315,6 @@ def _render_host_ports(ip: str) -> list:
                       _cell(name, 15), _cell(ver, verlen), more])
     print(_box_table(["#", "PORT", "PROTO", "STATE", "SERVICE", "VERSION", "MORE"], trows,
                      aligns=["r", "r", "l", "l", "l", "l", "l"]))
-    if vulns or fetch_scripts(ip, 0, ""):
-        print(f"  {DIM}[f] findings{RESET}")
     return ports
 
 
@@ -2328,8 +2336,7 @@ def _render_host_findings(ip: str) -> None:
 
     print(f"\n{BOLD}{ip} — findings{RESET}")
     if not findings and not cve_map and not host_scripts:
-        print(f"  {DIM}none — run {BOLD}[3] Service detection{RESET}{DIM}, {BOLD}[4] Vuln scan{RESET}"
-              f"{DIM}, {BOLD}[5] CVE lookup{RESET}{DIM} or {BOLD}[6] Service exploitation{RESET}")
+        print(f"  {DIM}none{RESET}")
         return
     if findings:
         print(f"\n  {BOLD}FINDINGS{RESET}")
@@ -2340,9 +2347,11 @@ def _render_host_findings(ip: str) -> None:
                   f"{_cell(summary or script, 60)}")
     if cve_map:
         print(f"\n  {BOLD}CVE{RESET}")
-        for c in sorted(cve_map):
+        for c in sorted(cve_map, key=_cve_sort_key):     # newest first
             where = ", ".join(sorted(cve_map[c]))
             print(f"    {RED}{c}{RESET}  {DIM}{where}{RESET}")
+        print(f"    {DIM}hint: narrowed to closer version matches — if none fit, "
+              f"start from the newest CVE above{RESET}")
     if host_scripts:
         print(f"\n  {BOLD}HOST FINDINGS{RESET}")
         for script, output in host_scripts:
