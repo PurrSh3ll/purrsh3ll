@@ -640,6 +640,27 @@ def _is_self_ip(ip: str) -> bool:
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pshunter.db")
 # Offline CPE→CVE index (built by the installer from NVD; see build_cve_index). Read-only.
 CVE_INDEX_PATH = os.path.join(os.path.dirname(DB_PATH), "cve_index.db")
+# CISA Known Exploited Vulnerabilities — CVE ids actually exploited in the wild. Bundled
+# text file (one CVE per line); used to surface KEV matches first in the findings view.
+KEV_PATH = os.path.join(os.path.dirname(DB_PATH), "kev.txt")
+_KEV_CACHE: "set | None" = None
+
+
+def _load_kev() -> set:
+    """The set of CISA KEV CVE ids (cached). Empty if the file is missing."""
+    global _KEV_CACHE
+    if _KEV_CACHE is None:
+        kev = set()
+        try:
+            with open(KEV_PATH, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("CVE-"):
+                        kev.add(line)
+        except OSError:
+            pass
+        _KEV_CACHE = kev
+    return _KEV_CACHE
 _DB_LOCK = threading.Lock()
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosts (
@@ -2346,12 +2367,26 @@ def _render_host_findings(ip: str) -> None:
             print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
                   f"{_cell(summary or script, 60)}")
     if cve_map:
+        kev = _load_kev()
+        ordered = sorted(cve_map, key=_cve_sort_key)     # newest first
+        kev_hits = [c for c in ordered if c in kev]
+        rest = [c for c in ordered if c not in kev]
         print(f"\n  {BOLD}CVE{RESET}")
-        for c in sorted(cve_map, key=_cve_sort_key):     # newest first
-            where = ", ".join(sorted(cve_map[c]))
-            print(f"    {RED}{c}{RESET}  {DIM}{where}{RESET}")
-        print(f"    {DIM}hint: narrowed to closer version matches — if none fit, "
-              f"start from the newest CVE above{RESET}")
+
+        def _line(c):
+            print(f"      {RED}{c}{RESET}  {DIM}{', '.join(sorted(cve_map[c]))}{RESET}")
+
+        if kev_hits:
+            print(f"    {BOLD}{RED}⚑ KEV — known exploited{RESET}")
+            for c in kev_hits:
+                _line(c)
+            if rest:
+                print(f"    {DIM}other matches{RESET}")
+        for c in rest:
+            _line(c)
+        hint = ("KEV = actively exploited (patch first); " if kev_hits else "") + \
+               "narrowed to closer version matches — if none fit, start from the newest"
+        print(f"    {DIM}hint: {hint}{RESET}")
     if host_scripts:
         print(f"\n  {BOLD}HOST FINDINGS{RESET}")
         for script, output in host_scripts:
