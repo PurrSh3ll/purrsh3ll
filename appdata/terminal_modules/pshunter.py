@@ -17,6 +17,7 @@ explicitly permitted to test.
 
 from __future__ import annotations
 
+import ftplib
 import ipaddress
 import os
 import re
@@ -114,6 +115,7 @@ DEFAULT_MINUTES = 10   # Enter accepts this
 # ── navigation words (accepted at any sub-prompt) ─────────────────────────────
 _BACK_WORDS = {"b", "back"}
 _HELP_WORDS = {"h", "help", "?"}
+_MENU_WORDS = {"m", "menu"}          # jump straight back to the main menu (any depth)
 
 
 # ── menu ──────────────────────────────────────────────────────────────────────
@@ -125,7 +127,6 @@ def print_menu() -> None:
     print(f"  {DIM}actions{RESET}")
     print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}")
     print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}")
-    print(f"  {CYAN}[p]{RESET} {BOLD}progress{RESET}")
     print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET}")
     if not _is_root():
         print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}")
@@ -160,9 +161,8 @@ def print_help() -> None:
           f"in a new terminal, {BOLD}stop <n>{RESET} abort, {BOLD}c{RESET} clear finished")
     print(f"  {BOLD}database{RESET}   discovered hosts; type a number for its ports, "
           f"{BOLD}r <n>{RESET} remove, {BOLD}c{RESET} wipe all")
-    print(f"  {BOLD}progress{RESET}   per-host workflow tracker; type an IP to see which "
-          f"phases have run (complete / running / not run) and what's still pending, "
-          f"then a phase number ({BOLD}<n>{RESET}) to run it for that host")
+    print(f"  {DIM}           inside a host: {BOLD}[f]{RESET}{DIM} findings, {BOLD}[p]{RESET}{DIM} progress "
+          f"(per-phase tracker — which phases ran and what's pending; a number runs one){RESET}")
     print(f"  {BOLD}new session{RESET}  wipe the whole database (hosts + history) for a fresh start")
     print(f"  {BOLD}upgrade{RESET}      re-run under sudo for root (SYN/UDP scans); progress is kept")
     print()
@@ -179,17 +179,25 @@ class _ExitApp(Exception):
     """Raised from any prompt when the user types /exit — quits the whole app."""
 
 
+class _ToMenu(Exception):
+    """Raised from any prompt when the user types m/menu — pops out of every nested view
+    straight back to the main menu (the main loop catches it and just redraws the menu)."""
+
+
 def _ask(label: str) -> "str | None":
     """Prompt for a line. Returns the stripped text, or None if the user aborts
     (Ctrl+C / EOF) — callers treat None as 'back to the menu'. Typing /exit anywhere
-    raises _ExitApp, which the main loop catches to quit the whole application."""
+    raises _ExitApp (quit); m/menu raises _ToMenu (jump to the main menu)."""
     try:
         value = input(f"{BOLD}{label}{RESET} ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
         return None
-    if value.lower() in ("/exit", "\\exit"):
+    low = value.lower()
+    if low in ("/exit", "\\exit"):
         raise _ExitApp
+    if low in _MENU_WORDS:
+        raise _ToMenu
     return value
 
 
@@ -273,7 +281,7 @@ def _prompt_minutes(module: str, title: str, detail: str) -> "int | None":
     budget. Enter accepts the default; a number is validated to 1–1440."""
     print(f"\n{GREEN}✓{RESET} {BOLD}{title}{RESET} · {detail} · {DIM}⏱ {DEFAULT_MINUTES}m{RESET}")
     while True:
-        v = _ctx_ask(module, f"<minutes {MIN_MINUTES}-{MAX_MINUTES}, Enter={DEFAULT_MINUTES}> · [h] help · [b] back")
+        v = _ctx_ask(module, f"<minutes {MIN_MINUTES}-{MAX_MINUTES}, Enter={DEFAULT_MINUTES}> · [h] help · [b] back · [m] menu")
         if v is None or v.lower() in _BACK_WORDS:
             return None
         if v.lower() in _HELP_WORDS:
@@ -289,7 +297,7 @@ def _prompt_minutes(module: str, title: str, detail: str) -> "int | None":
 def _handle_host_discovery() -> None:
     """Phase 1 flow: read + validate the scope, then the time, then launch."""
     while True:
-        value = _ctx_ask("discovery", "<subnet / range> · [h] help · [b] back")
+        value = _ctx_ask("discovery", "<subnet / range> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -313,7 +321,7 @@ def _handle_port_enum() -> None:
     """Phase 2 flow: read + validate a single target IP, then the time, then launch
     the concurrent port scans."""
     while True:
-        value = _ctx_ask("ports", "<single IP> · [h] help · [b] back")
+        value = _ctx_ask("ports", "<single IP> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -337,7 +345,7 @@ def _handle_service_detection() -> None:
     """Phase 3 flow: read a target IP, then the time, then launch -sV -sC (+ OS) on the
     open ports discovered in phase 2."""
     while True:
-        value = _ctx_ask("service", "<single IP> · [h] help · [b] back")
+        value = _ctx_ask("service", "<single IP> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -364,7 +372,7 @@ def _handle_vuln_scan() -> None:
     """Phase 4 flow: read a target IP, then the time, then launch targeted vuln/auth
     NSE scans mapped to the host's detected services."""
     while True:
-        value = _ctx_ask("vuln", "<single IP> · [h] help · [b] back")
+        value = _ctx_ask("vuln", "<single IP> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -965,6 +973,35 @@ def fetch_vulns(ip: str) -> list:
     """(port, proto, script, state, cve, risk, summary) findings for a host."""
     rows = _fetch("SELECT port, proto, script, state, cve, risk, summary FROM vulns WHERE ip = ?", (ip,))
     return sorted(rows, key=lambda r: (r[0], r[2]))
+
+
+def save_exploit_output(ip: str, port: int, proto: str, script: str, output: str,
+                        state: str, risk: "str | None", summary: str) -> None:
+    """Persist a phase-6 tool's raw output (scripts table — shown in the port's DETAILS)
+    and a one-line finding (vulns — shown in [f] findings), keyed by (ip, port, proto,
+    script) so re-running a tool just refreshes its result."""
+    if not ip or _is_self_ip(ip):
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            conn.execute(
+                "INSERT INTO scripts (ip, port, proto, script, output, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(ip, port, proto, script) DO UPDATE SET "
+                "  output = excluded.output, last_seen = excluded.last_seen",
+                (ip, port, proto, script, output, now, now))
+            conn.execute(
+                "INSERT INTO vulns (ip, port, proto, script, state, cve, risk, summary, "
+                "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(ip, port, proto, script) DO UPDATE SET "
+                "  state = excluded.state, cve = excluded.cve, risk = excluded.risk, "
+                "  summary = excluded.summary, last_seen = excluded.last_seen",
+                (ip, port, proto, script, state, None, risk, summary, now, now))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 # ── background jobs (feed [s] status) ─────────────────────────────────────────
@@ -1669,7 +1706,7 @@ def _handle_cve_lookup() -> None:
               f"— build it with the installer's NVD step, then retry{RESET}")
         return
     while True:
-        value = _ctx_ask("cve", "<single IP> · [h] help · [b] back")
+        value = _ctx_ask("cve", "<single IP> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -1713,7 +1750,10 @@ def _render_host_progress(ip: str) -> None:
     host_scripts = fetch_scripts(ip, 0, "")
     scripted = fetch_scripted_ports(ip)
     vulns = fetch_vulns(ip)
-    vuln_findings = [v for v in vulns if v[3] != "CVE"]      # phase 4
+    # Phase 3's -sC feeds the same vulns table (http-methods, ssl-cert… all state INFO),
+    # so findings alone don't prove the vuln scan ran. Count only what the vuln category
+    # emits and -sC does not — VULNERABLE/LIKELY; a phase-4 job (persisted) also marks it.
+    vuln_findings = [v for v in vulns if v[3] in ("VULNERABLE", "LIKELY")]   # phase 4
     cve_findings = [v for v in vulns if v[3] == "CVE"]       # phase 5
     n_cve = sum(len([c for c in (v[4] or "").split(",") if c.strip()]) for v in cve_findings)
     jobstate = _host_job_states(ip)
@@ -1723,13 +1763,23 @@ def _render_host_progress(ip: str) -> None:
     # what adds a product/version/CPE or NSE script output — that's the real evidence.
     fingerprinted = [s for s in services.values() if s[1] or s[2] or s[3]]
 
+    # Phase 2 also re-registers the host (save_hosts), so "on record" alone doesn't mean
+    # host discovery ran. Prefer the discovery job's own record: if a discovery pass ran
+    # this session (its found-set is populated), phase 1 counts only when it found THIS
+    # host. With no live discovery job (e.g. a prior session), fall back to "on record".
+    with _JOBS_LOCK:
+        disc = [j for j in _JOBS if j["phase"] == "1"]
+        discovered = any(ip in j["found"] for j in disc)
+        live_discovery = any(j["found"] for j in disc)
+    phase1_done = discovered or (known and not live_discovery)
+
     # phase key -> (has evidence in the DB, short detail line)
     evidence = {
-        "1": (known, "on record" if known else ""),
+        "1": (phase1_done, "on record" if phase1_done else ""),
         "2": (bool(ports), f"{len(ports)} open port(s)" if ports else ""),
         "3": (bool(fingerprinted) or bool(host_scripts) or bool(scripted),
               f"{len(fingerprinted)} fingerprinted" if fingerprinted else ("NSE output" if (host_scripts or scripted) else "")),
-        "4": (bool(vuln_findings), f"{len(vuln_findings)} finding(s)" if vuln_findings else ""),
+        "4": (bool(vuln_findings), f"{len(vuln_findings)} vuln finding(s)" if vuln_findings else ""),
         "5": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
         "6": (False, ""),                                    # skeleton — not wired yet
     }
@@ -1768,7 +1818,7 @@ def _launch_phase_for(key: str, ip: str) -> None:
               f"{BOLD}[1]{RESET}{DIM} from the menu{RESET}")
         return
     if key == "6":
-        run_phase("6")                                       # skeleton notice
+        _exploit_targets_view(ip)                            # service triage (skeleton)
         return
     if key == "5":
         if not os.path.exists(CVE_INDEX_PATH):
@@ -1810,11 +1860,267 @@ def _launch_phase_for(key: str, ip: str) -> None:
           f"{DIM}({ip} · {detail}, ⏱ {minutes}m) — check {BOLD}[s] status{RESET}")
 
 
-def _handle_progress() -> None:
-    """Progress flow: read a target IP and open its per-phase workflow status. Typing a
-    phase number launches that phase for the host without re-entering the IP."""
+def _open_host_progress(ip: str) -> None:
+    """Interactive progress view for a known host: run a phase by number, or jump to its
+    findings with [f]. Reused from the database (p <n>) and the host's other sub-views."""
+    def _handle(_c, v):
+        if v == "":
+            return "refresh"
+        if v == "f":
+            _host_findings_view(ip)
+            return "refresh"
+        if v in _PHASES:
+            _launch_phase_for(v, ip)
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> run phase · f · b · enter{RESET}")
+        return "stay"
+
+    _run_view(f"{ip}/progress",
+              "[Enter] refresh · <n> run phase · [f] findings · [b] back · [m] menu",
+              lambda: _render_host_progress(ip), _handle)
+
+
+# ── service exploitation (phase 6) ────────────────────────────────────────────
+# Services are triaged in CTF/OSCP order: the ones that most often give a fast foothold
+# or rich enumeration come first, so you know what to hit first. Each entry is
+#   (key, label, {typical ports}, (match tokens for cpe/product/name, all lowercased)).
+# A service's class is resolved by the cascade CPE → product/version → service name →
+# port default — strongest signal first, port number only as a last resort.
+_EXPLOIT_SERVICES = [
+    ("http",    "HTTP / web app",     {80, 81, 443, 591, 2082, 2087, 3000, 5000, 5601,
+                                       7001, 8000, 8008, 8080, 8081, 8443, 8500, 8888,
+                                       9000, 9090, 15672},
+     ("http", "https", "ssl/http", "nginx", "apache", "httpd", "iis", "tomcat",
+      "jetty", "lighttpd", "werkzeug", "gunicorn", "express", "haproxy", "caddy")),
+    ("smb",     "SMB / file shares",  {137, 138, 139, 445},
+     ("smb", "microsoft-ds", "netbios-ssn", "netbios", "samba", "cifs")),
+    ("winrm",   "WinRM (remote shell)", {5985, 5986}, ("winrm", "wsman")),
+    ("ftp",     "FTP",                {21, 990, 2121},
+     ("ftp", "vsftpd", "proftpd", "pure-ftpd", "filezilla", "ftpd")),
+    ("tftp",    "TFTP (UDP)",         {69}, ("tftp",)),
+    ("nfs",     "NFS / RPC mounts",   {111, 2049},
+     ("nfs", "rpcbind", "portmap", "mountd")),
+    ("rsync",   "rsync",              {873}, ("rsync",)),
+    ("redis",   "Redis",              {6379, 6380}, ("redis",)),
+    ("memcached", "Memcached",        {11211}, ("memcache",)),
+    ("elastic", "Elasticsearch",      {9200, 9300}, ("elasticsearch", "elastic")),
+    ("mongodb", "MongoDB",            {27017, 27018}, ("mongodb", "mongod", "mongo")),
+    ("couchdb", "CouchDB",            {5984, 6984}, ("couchdb",)),
+    ("amqp",    "AMQP / RabbitMQ",    {5672}, ("amqp", "rabbitmq")),
+    ("docker",  "Docker API",         {2375, 2376}, ("docker",)),
+    ("rmi",     "Java RMI",           {1050, 1098, 1099}, ("rmi", "jrmi")),
+    ("ajp",     "AJP / Tomcat (Ghostcat)", {8009}, ("ajp13", "ajp")),
+    ("svn",     "SVN (svnserve)",     {3690}, ("svn", "subversion")),
+    ("mysql",   "MySQL / MariaDB",    {3306}, ("mysql", "mariadb")),
+    ("mssql",   "MS SQL Server",      {1433, 1434}, ("ms-sql", "mssql", "microsoft sql")),
+    ("psql",    "PostgreSQL",         {5432}, ("postgresql", "postgres")),
+    ("oracle",  "Oracle DB",          {1521, 1748, 1754, 1808, 1809, 2100},
+     ("oracle", "tns")),
+    ("ldap",    "LDAP / AD",          {389, 636, 3268, 3269}, ("ldap",)),
+    ("kerberos", "Kerberos (AD)",     {88, 464}, ("kerberos", "kpasswd")),
+    ("msrpc",   "MSRPC endpoint",     {135, 593}, ("msrpc", "epmap")),
+    ("snmp",    "SNMP",               {161, 162}, ("snmp",)),
+    ("ipmi",    "IPMI (hash leak)",   {623}, ("ipmi", "asf-rmcp")),
+    ("dns",     "DNS",                {53}, ("domain", "dns", "bind")),
+    ("smtp",    "SMTP / mail",        {25, 465, 587}, ("smtp",)),
+    ("mail2",   "POP3 / IMAP",        {110, 143, 993, 995}, ("pop3", "imap")),
+    ("telnet",  "Telnet",             {23}, ("telnet",)),
+    ("irc",     "IRC",                {6660, 6667, 6669, 6697}, ("irc", "ircd", "unreal")),
+    ("rdp",     "RDP",                {3389}, ("ms-wbt-server", "rdp", "terminal serv")),
+    ("vnc",     "VNC",                {5900, 5901, 5902, 5903}, ("vnc",)),
+    ("ssh",     "SSH",                {22, 2222}, ("ssh", "openssh", "dropbear")),
+    ("squid",   "Squid proxy",        {3128}, ("squid",)),
+    ("cups",    "CUPS / printing",    {631}, ("cups", "ipp")),
+    ("rservices", "BSD r-services",   {512, 513, 514}, ("rlogin", "rexec", "rsh", "rshd")),
+    ("x11",     "X11",                {6000, 6001, 6002, 6003, 6004, 6005}, ("x11",)),
+    ("finger",  "Finger",             {79}, ("finger",)),
+    ("rtsp",    "RTSP (cameras)",     {554, 8554}, ("rtsp",)),
+    ("sip",     "SIP / VoIP",         {5060, 5061}, ("sip",)),
+    ("nntp",    "NNTP",               {119}, ("nntp",)),
+]
+_EXPLOIT_RANK = {key: i for i, (key, *_rest) in enumerate(_EXPLOIT_SERVICES)}
+_EXPLOIT_UNKNOWN = ("other", "other / unknown")   # fallback bucket, always ranked last
+
+
+def _classify_service(port: int, name, product, version, cpe) -> tuple:
+    """Resolve one open port to a service class by the cascade CPE → product/version →
+    service name → port default. Returns (label, key, signal) where signal names the
+    level that matched (cpe / version / service / port) — a proxy for how much to trust
+    it (a port-only guess is far weaker than a CPE/version fingerprint)."""
+    sources = (
+        ("cpe",     (cpe or "").lower()),
+        ("version", f"{product or ''} {version or ''}".lower()),
+        ("service", (name or "").lower()),
+    )
+    for signal, text in sources:
+        if not text.strip():
+            continue
+        for key, label, _ports, tokens in _EXPLOIT_SERVICES:
+            if any(tok in text for tok in tokens):
+                return label, key, signal
+    for key, label, ports, _tokens in _EXPLOIT_SERVICES:
+        if port in ports:
+            return label, key, "port"
+    return _EXPLOIT_UNKNOWN[1], _EXPLOIT_UNKNOWN[0], "port"
+
+
+def _render_exploit_targets(ip: str) -> list:
+    """Numbered, priority-ordered list of the host's services worth attacking (best
+    CTF/OSCP candidates first). Returns the ordered targets so a number can pick one."""
+    ports = fetch_ports(ip)
+    services = fetch_services(ip)
+    print(f"\n{BOLD}{ip} — service exploitation{RESET}")
+    if not ports:
+        print(f"  {DIM}no open ports recorded — run {BOLD}[2] Port enumeration{RESET}"
+              f"{DIM} first{RESET}")
+        return []
+    triaged = []
+    for port, proto, _state in ports:
+        name, product, version, cpe = services.get((port, proto), (None, None, None, None))
+        label, key, signal = _classify_service(port, name, product, version, cpe)
+        rank = _EXPLOIT_RANK.get(key, len(_EXPLOIT_SERVICES))
+        ver = " ".join(x for x in (product, version) if x)
+        triaged.append((rank, port, proto, label, key, ver, signal))
+    triaged.sort(key=lambda t: (t[0], t[1]))
+    ordered, rows = [], []
+    for i, (_rank, port, proto, label, key, ver, signal) in enumerate(triaged, 1):
+        ordered.append((port, proto, label, key, ver, signal))
+        rows.append([str(i), label, f"{port}/{proto}", _cell(ver or "—", 30), f"via {signal}"])
+    print(_box_table(["#", "SERVICE", "PORT", "VERSION", "SIGNAL"], rows,
+                     aligns=["r", "l", "l", "l", "l"]))
+    return ordered
+
+
+def _tool_ftp_anon(ip: str, port: int) -> tuple:
+    """Check FTP anonymous login with ftplib (offline, no external tool). Returns
+    (state, risk, summary, output); state None means the check couldn't run."""
+    lines = []
+    try:
+        ftp = ftplib.FTP()
+        ftp.connect(ip, port, timeout=8)
+        banner = (ftp.getwelcome() or "").strip()
+        if banner:
+            lines.append(banner)
+        ftp.login()                                      # defaults to anonymous:anonymous
+        lines.append("login anonymous:anonymous → ACCEPTED")
+        try:
+            listing = []
+            ftp.retrlines("LIST", listing.append)
+            if listing:
+                lines.append("directory listing:")
+                lines.extend("  " + row for row in listing[:50])
+                if len(listing) > 50:
+                    lines.append(f"  … (+{len(listing) - 50} more)")
+            else:
+                lines.append("directory listing: (empty)")
+        except ftplib.all_errors as exc:
+            lines.append(f"listing failed: {exc}")
+        try:
+            ftp.quit()
+        except ftplib.all_errors:
+            ftp.close()
+        return "EXPOSED", "MEDIUM", "Anonymous FTP login allowed", "\n".join(lines)
+    except ftplib.error_perm as exc:
+        lines.append(f"login anonymous:anonymous → REJECTED ({exc})")
+        return "INFO", None, "Anonymous FTP login rejected", "\n".join(lines)
+    except ftplib.all_errors as exc:
+        return None, None, None, f"connection failed: {exc}"
+
+
+def _tool_whatweb(ip: str, port: int, proto: str) -> tuple:
+    """Fingerprint a web service with whatweb. Returns (state, risk, summary, output);
+    state None means whatweb is missing or produced nothing."""
+    if not shutil.which("whatweb"):
+        return None, None, None, "whatweb not installed — apt install whatweb"
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    url = f"{'https' if tls else 'http'}://{ip}:{port}"
+    try:
+        proc = subprocess.run(["whatweb", "--color=never", "-a", "1", url],
+                              capture_output=True, text=True, timeout=45)
+    except subprocess.TimeoutExpired:
+        return None, None, None, "whatweb timed out"
+    except Exception as exc:                             # noqa: BLE001 — surface any launch error
+        return None, None, None, f"whatweb failed: {exc}"
+    out = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    if not out:
+        return None, None, None, "whatweb returned no output"
+    first = out.splitlines()[0]
+    return "INFO", None, f"whatweb: {first}", out
+
+
+# service class -> (script name, runner) for the tools wired so far
+_EXPLOIT_TOOLS = {
+    "ftp":  ("ftp-anon", lambda ip, port, proto: _tool_ftp_anon(ip, port)),
+    "http": ("whatweb",  lambda ip, port, proto: _tool_whatweb(ip, port, proto)),
+}
+
+
+def _exploit_worker(job: dict, ip: str, port: int, proto: str, script: str, runner) -> None:
+    """Background body of an exploit: run the tool, store its output as a finding, and
+    update the job. Any result/error is read back from [s] status and [f] findings."""
+    try:
+        state, risk, summary, output = runner(ip, port, proto)
+    except Exception as exc:                             # noqa: BLE001 — never crash the thread
+        job["state"], job["error"] = "error", str(exc)
+        _job_update(job)
+        return
+    if state is None:                                    # tool couldn't run / no result
+        job["state"], job["output"] = "done", output
+        _job_update(job)
+        return
+    save_exploit_output(ip, port, proto, script, output, state, risk, summary)
+    job["state"], job["hosts"], job["output"] = "done", 1, output
+    _job_update(job)
+
+
+def _run_exploit(ip: str, target: tuple) -> None:
+    """Launch the wired tool for a chosen service (FTP anon / HTTP whatweb) in the
+    background; its output is saved to [f] findings. Not-yet-wired services show a
+    skeleton notice instead."""
+    port, proto, label, key, ver, signal = target
+    tool = _EXPLOIT_TOOLS.get(key)
+    if not tool:
+        print(f"\n{MAGENTA}▸ exploit — {label}{RESET}  {DIM}{ip}:{port}/{proto}{RESET}")
+        if ver:
+            print(f"  {DIM}fingerprint:{RESET} {ver}  {DIM}(via {signal}){RESET}")
+        print(f"  {YELLOW}[skeleton]{RESET} {DIM}tooling for '{key}' not wired yet — coming soon{RESET}")
+        return
+    script, runner = tool
+    job = _new_job("6", f"{_PHASES['6'][0]} · {ip}:{port} {script}",
+                   f"{script} on {ip}:{port}/{proto}")
+    threading.Thread(target=_exploit_worker, args=(job, ip, port, proto, script, runner),
+                     daemon=True).start()
+    print(f"\n{GREEN}▶ {label} exploit running in the background{RESET} "
+          f"{DIM}({ip}:{port}/{proto} · {script}) — check {BOLD}[s] status{RESET}{DIM} "
+          f"or {BOLD}[f] findings{RESET}")
+
+
+def _exploit_targets_view(ip: str) -> None:
+    """Sub-view listing a host's services in exploitation-priority order; a number runs the
+    wired tool for that service (or shows a skeleton for the not-yet-wired ones)."""
+    def _handle(targets, v):
+        if v == "":
+            return "refresh"
+        if v.isdigit():
+            n = int(v)
+            if 1 <= n <= len(targets):
+                _run_exploit(ip, targets[n - 1])
+                return "stay"
+            print(f"{RED}✗ no service {n}{RESET}")
+            return "stay"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · enter · b{RESET}")
+        return "stay"
+
+    _run_view(f"{ip}/exploit", "[Enter] refresh · <n> select · [b] back · [m] menu",
+              lambda: _render_exploit_targets(ip), _handle)
+
+
+def _handle_service_exploitation() -> None:
+    """Phase 6 flow: read a target IP, then show its services (best CTF/OSCP candidates
+    first) to pick one to exploit."""
     while True:
-        value = _ctx_ask("progress", "<single IP> · [h] help · [b] back")
+        value = _ctx_ask("exploit", "<single IP> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -1825,18 +2131,11 @@ def _handle_progress() -> None:
         except ValueError:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
-
-        def _handle(_c, v, ip=ip):
-            if v == "":
-                return "refresh"
-            if v in _PHASES:
-                _launch_phase_for(v, ip)
-                return "refresh"
-            print(f"{RED}✗ unknown option{RESET} {DIM}— <n> run phase · enter · b{RESET}")
-            return "stay"
-
-        _run_view(f"{ip}/progress", "[Enter] refresh · <n> run phase · [b] back",
-                  lambda: _render_host_progress(ip), _handle)
+        if not fetch_ports(ip):
+            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+                  f"enumeration{RESET}{DIM} first{RESET}")
+            continue
+        _exploit_targets_view(ip)
         return
 
 
@@ -1939,7 +2238,8 @@ def show_database() -> list:
 
 
 def _delete_host(rows: list, n: int) -> None:
-    """Remove one host (by its list number) and its ports/services from the database."""
+    """Remove one host (by its list number) and everything tied to it — ports, services,
+    scripts, vulns and its command-history jobs — from the database."""
     if not 1 <= n <= len(rows):
         print(f"{RED}✗ no host {n}{RESET}")
         return
@@ -1952,7 +2252,30 @@ def _delete_host(rows: list, n: int) -> None:
             conn.commit()
         finally:
             conn.close()
-    print(f"{GREEN}✓ removed {ip}{RESET}")
+    # also drop this host's command history: jobs that name the IP as a whole token
+    # (subnet-discovery jobs don't match, so a shared scope scan is left intact).
+    pat = re.compile(r"(?<!\d)" + re.escape(ip) + r"(?!\d)")
+    with _JOBS_LOCK:
+        gone = [j for j in _JOBS
+                if pat.search(j.get("command") or "") or pat.search(j.get("name") or "")]
+        gone_ids = {id(j) for j in gone}
+        for j in gone:
+            if j["state"] == "running":
+                j["cancel"].set()             # stop any in-flight scan for this host
+        _JOBS[:] = [j for j in _JOBS if id(j) not in gone_ids]
+        for j in _JOBS:                       # discovery jobs must forget this host too,
+            j["found"].discard(ip)            # or progress would still credit phase 1
+    ids = [(j["db_id"],) for j in gone if j.get("db_id") is not None]
+    if ids:
+        with _DB_LOCK:
+            conn = _db_connect()
+            try:
+                conn.executemany("DELETE FROM jobs WHERE id = ?", ids)
+                conn.commit()
+            finally:
+                conn.close()
+    tail = f" {DIM}(+{len(gone)} history entr{'y' if len(gone) == 1 else 'ies'}){RESET}" if gone else ""
+    print(f"{GREEN}✓ removed {ip}{RESET}{tail}")
 
 
 def _render_host_ports(ip: str) -> list:
@@ -1967,7 +2290,7 @@ def _render_host_ports(ip: str) -> list:
         head += f"  {DIM}· OS:{RESET} {os_}"
     print(head)
     if not ports:
-        print(f"  {DIM}no open ports recorded yet — run {BOLD}[2] Port enumeration{RESET}")
+        print(f"  {DIM}none — run {BOLD}[2] Port enumeration{RESET}")
         return ports
     vulns = fetch_vulns(ip)
     flagged = {(v[0], v[1]) for v in vulns}          # (port, proto) with a finding
@@ -1988,18 +2311,26 @@ def _render_host_ports(ip: str) -> list:
 
 
 def _render_host_findings(ip: str) -> None:
-    """The host's findings, opened with [f] from the ports view: the FINDINGS summary,
-    then the aggregated CVE list, then any host-level NSE output (HOST FINDINGS)."""
+    """The host's findings, opened with [f]: short one-line summaries — the FINDINGS list
+    (incl. phase-4 vuln and phase-6 tool results) and the aggregated CVE list — plus the
+    raw host-level NSE output (HOST FINDINGS). Per-port tool output lives in each port's
+    DETAILS view, not here."""
     vulns = fetch_vulns(ip)
     host_scripts = fetch_scripts(ip, 0, "")
-    print(f"\n{BOLD}{ip} — findings{RESET}")
-    if not vulns and not host_scripts:
-        print(f"  {DIM}none — run {BOLD}[3] Service detection{RESET}{DIM}, {BOLD}[4] Vuln scan{RESET}"
-              f"{DIM} or {BOLD}[5] CVE lookup{RESET}")
-        return
-    # cve-lookup rows (state 'CVE') are the CPE→CVE mapping — shown in the CVE section
-    # below, so they're kept out of FINDINGS to avoid listing the same CVEs twice.
+    # short summaries: everything except the CVE-lookup rows (those get their own section)
     findings = [v for v in vulns if v[3] != "CVE"]
+    cve_map = {}                                     # CVE → set of "port/proto" it was seen on
+    for port, proto, _script, _state, cve, _risk, _summary in vulns:
+        for c in (cve or "").split(","):
+            c = c.strip()
+            if c:
+                cve_map.setdefault(c, set()).add(f"{port}/{proto}")
+
+    print(f"\n{BOLD}{ip} — findings{RESET}")
+    if not findings and not cve_map and not host_scripts:
+        print(f"  {DIM}none — run {BOLD}[3] Service detection{RESET}{DIM}, {BOLD}[4] Vuln scan{RESET}"
+              f"{DIM}, {BOLD}[5] CVE lookup{RESET}{DIM} or {BOLD}[6] Service exploitation{RESET}")
+        return
     if findings:
         print(f"\n  {BOLD}FINDINGS{RESET}")
         for port, proto, script, state, cve, risk, summary in findings:
@@ -2007,12 +2338,6 @@ def _render_host_findings(ip: str) -> None:
                 (YELLOW if state == "EXPOSED" else DIM)
             print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
                   f"{_cell(summary or script, 60)}")
-    cve_map = {}                                     # CVE → set of "port/proto" it was seen on
-    for port, proto, _script, _state, cve, _risk, _summary in vulns:
-        for c in (cve or "").split(","):
-            c = c.strip()
-            if c:
-                cve_map.setdefault(c, set()).add(f"{port}/{proto}")
     if cve_map:
         print(f"\n  {BOLD}CVE{RESET}")
         for c in sorted(cve_map):
@@ -2027,10 +2352,11 @@ def _render_host_findings(ip: str) -> None:
 
 
 def _render_port_scripts(ip: str, port: int, proto: str) -> None:
-    """Print just the raw NSE script output for one port (Findings are summarised at
-    the host level in the ports table, not repeated here)."""
-    rows = fetch_scripts(ip, port, proto)          # port-specific only (host-level shown at host level)
-    print(f"\n{BOLD}{ip}:{port}/{proto} — NSE scripting{RESET}")
+    """Print the full collected output for one port — every tool's raw result: service
+    detection (-sC), the vuln scan (phase 4) and service exploitation (phase 6). The short
+    one-line takeaways are summarised separately in [f] findings, not repeated here."""
+    rows = fetch_scripts(ip, port, proto)          # all tools' output stored for this port
+    print(f"\n{BOLD}{ip}:{port}/{proto} — DETAILS{RESET}")
     if not rows:
         print(f"  {DIM}None{RESET}")
         return
@@ -2047,27 +2373,43 @@ def _port_scripts_view(ip: str, ports: list, n: int) -> None:
         print(f"{RED}✗ no port {n}{RESET}")
         return
     port, proto, _state = ports[n - 1]
-    _run_view(f"{ip}:{port}/{proto}", "[Enter] refresh · [b] back",
-              lambda: _render_port_scripts(ip, port, proto),
-              lambda _c, v: "refresh" if v == "" else "stay")
 
-
-def _host_findings_view(ip: str) -> None:
-    """Sub-view for one host's findings, opened with [f]: stays open (the ports table
-    is NOT redrawn) until the user goes back."""
     def _handle(_c, v):
         if v == "":
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— enter · b{RESET}")
+        if v == "f":
+            _host_findings_view(ip)
+            return "refresh"
+        if v == "p":
+            _open_host_progress(ip)
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— f · p · b · enter{RESET}")
         return "stay"
 
-    _run_view(f"{ip}/findings", "[Enter] refresh · [b] back",
+    _run_view(f"{ip}:{port}/{proto}",
+              "[Enter] refresh · [f] findings · [p] progress · [b] back · [m] menu",
+              lambda: _render_port_scripts(ip, port, proto), _handle)
+
+
+def _host_findings_view(ip: str) -> None:
+    """Sub-view for one host's findings, opened with [f]; [p] jumps to its progress. Stays
+    open (the ports table is NOT redrawn) until the user goes back."""
+    def _handle(_c, v):
+        if v == "":
+            return "refresh"
+        if v == "p":
+            _open_host_progress(ip)
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— p · b · enter{RESET}")
+        return "stay"
+
+    _run_view(f"{ip}/findings", "[Enter] refresh · [p] progress · [b] back · [m] menu",
               lambda: _render_host_findings(ip), _handle)
 
 
 def _host_ports_view(rows: list, n: int) -> None:
-    """Sub-view for one host's ports: stays open (the host list is NOT redrawn) until
-    the user goes back. Typing a port number opens that port's -sC script output."""
+    """Sub-view for one host's ports: stays open (the host list is NOT redrawn) until the
+    user goes back. A port number opens its -sC output; [f]/[p] jump to findings/progress."""
     if not 1 <= n <= len(rows):
         print(f"{RED}✗ no host {n}{RESET}")
         return
@@ -2079,13 +2421,16 @@ def _host_ports_view(rows: list, n: int) -> None:
         if v.lower() == "f":
             _host_findings_view(ip)
             return "refresh"
+        if v.lower() == "p":
+            _open_host_progress(ip)
+            return "refresh"
         if v.isdigit():
             _port_scripts_view(ip, ports, int(v))
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · f · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · f · p · b · enter{RESET}")
         return "stay"
 
-    _run_view(ip, "[Enter] refresh · <n> select · [f] findings · [b] back",
+    _run_view(ip, "[Enter] refresh · <n> select · [f] findings · [p] progress · [b] back · [m] menu",
               lambda: _render_host_ports(ip), _handle)
 
 
@@ -2379,7 +2724,8 @@ def _database_view() -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · r <n> · c · b · enter{RESET}")
         return "stay"
 
-    _run_view("database", "[Enter] refresh · <n> select · r <n> remove · [c] clear · [b] back",
+    _run_view("database",
+              "[Enter] refresh · <n> select · r <n> remove · [c] clear · [b] back",
               show_database, _handle)
 
 
@@ -2396,41 +2742,49 @@ def main() -> int:
     try:
         while True:
             print_menu()
-            try:
-                choice = input(f"{BOLD}{CYAN}[menu]{RESET}{DIM} ›{RESET} ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print(f"\n{DIM}bye.{RESET}")
-                return 0
+            while True:                       # prompt loop: a typo re-prompts bare, the
+                try:                          # menu is only reprinted after a real action
+                    choice = input(f"{BOLD}{CYAN}[menu]{RESET}{DIM} ›{RESET} ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print(f"\n{DIM}bye.{RESET}")
+                    return 0
 
-            if choice in ("/exit", "\\exit", "exit", "q", "quit"):
-                print(f"{DIM}bye.{RESET}")
-                return 0
-            if choice in _HELP_WORDS:
-                _view(print_help, "help")
-            elif choice == "1":
-                _handle_host_discovery()
-            elif choice == "2":
-                _handle_port_enum()
-            elif choice == "3":
-                _handle_service_detection()
-            elif choice == "4":
-                _handle_vuln_scan()
-            elif choice == "5":
-                _handle_cve_lookup()
-            elif choice in _PHASES:
-                run_phase(choice)
-            elif choice in ("s", "status"):
-                _status_view()
-            elif choice in ("d", "database"):
-                _database_view()
-            elif choice in ("p", "progress"):
-                _handle_progress()
-            elif choice in ("n", "new"):
-                new_session()
-            elif choice in ("u", "upgrade") and not _is_root():
-                _upgrade_to_root()
-            else:
-                print(f"{RED}✗ pick 1-6, s, d, p, n, h or /exit{RESET}")
+                if choice in ("/exit", "\\exit", "exit", "q", "quit"):
+                    print(f"{DIM}bye.{RESET}")
+                    return 0
+                try:
+                    if choice in _HELP_WORDS:
+                        _view(print_help, "help")
+                    elif choice == "1":
+                        _handle_host_discovery()
+                    elif choice == "2":
+                        _handle_port_enum()
+                    elif choice == "3":
+                        _handle_service_detection()
+                    elif choice == "4":
+                        _handle_vuln_scan()
+                    elif choice == "5":
+                        _handle_cve_lookup()
+                    elif choice == "6":
+                        _handle_service_exploitation()
+                    elif choice in _PHASES:
+                        run_phase(choice)
+                    elif choice in ("s", "status"):
+                        _status_view()
+                    elif choice in ("d", "database"):
+                        _database_view()
+                    elif choice in ("n", "new"):
+                        new_session()
+                    elif choice in ("u", "upgrade") and not _is_root():
+                        _upgrade_to_root()
+                    elif choice in _MENU_WORDS:
+                        pass                  # already at the menu → just redraw it
+                    else:
+                        print(f"{RED}✗ pick 1-6, s, d, n, h or /exit{RESET}")
+                        continue              # invalid → bare re-prompt, menu not reprinted
+                except _ToMenu:               # m/menu typed inside a sub-view → back here
+                    pass
+                break                         # a valid action ran → redraw the menu
 
             print(f"{DIM}{'─' * 56}{RESET}\n")
     except _ExitApp:          # /exit typed at any sub-prompt
