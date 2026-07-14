@@ -2434,8 +2434,12 @@ def _host_ports_view(rows: list, n: int) -> None:
             _open_host_progress(ip)
             return "refresh"
         if v.isdigit():
-            _port_scripts_view(ip, ports, int(v))
-            return "refresh"
+            n = int(v)
+            if 1 <= n <= len(ports):
+                _port_scripts_view(ip, ports, n)
+                return "refresh"
+            print(f"{RED}✗ no port {n}{RESET}")     # bad number → bare re-prompt, no redraw
+            return "stay"
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · f · p · b · enter{RESET}")
         return "stay"
 
