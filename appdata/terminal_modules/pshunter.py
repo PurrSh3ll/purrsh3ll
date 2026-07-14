@@ -161,7 +161,8 @@ def print_help() -> None:
     print(f"  {BOLD}database{RESET}   discovered hosts; type a number for its ports, "
           f"{BOLD}r <n>{RESET} remove, {BOLD}c{RESET} wipe all")
     print(f"  {BOLD}progress{RESET}   per-host workflow tracker; type an IP to see which "
-          f"phases have run (complete / running / not run) and what's still pending")
+          f"phases have run (complete / running / not run) and what's still pending, "
+          f"then a phase number ({BOLD}<n>{RESET}) to run it for that host")
     print(f"  {BOLD}new session{RESET}  wipe the whole database (hosts + history) for a fresh start")
     print(f"  {BOLD}upgrade{RESET}      re-run under sudo for root (SYN/UDP scans); progress is kept")
     print()
@@ -1710,18 +1711,24 @@ def _render_host_progress(ip: str) -> None:
     ports = fetch_ports(ip)
     services = fetch_services(ip)
     host_scripts = fetch_scripts(ip, 0, "")
+    scripted = fetch_scripted_ports(ip)
     vulns = fetch_vulns(ip)
     vuln_findings = [v for v in vulns if v[3] != "CVE"]      # phase 4
     cve_findings = [v for v in vulns if v[3] == "CVE"]       # phase 5
     n_cve = sum(len([c for c in (v[4] or "").split(",") if c.strip()]) for v in cve_findings)
     jobstate = _host_job_states(ip)
 
+    # Phase 2 (port scan) already seeds the services table with nmap's port->name
+    # guesses, so a bare name doesn't prove phase 3 ran. Service detection (-sV -sC) is
+    # what adds a product/version/CPE or NSE script output — that's the real evidence.
+    fingerprinted = [s for s in services.values() if s[1] or s[2] or s[3]]
+
     # phase key -> (has evidence in the DB, short detail line)
     evidence = {
         "1": (known, "on record" if known else ""),
         "2": (bool(ports), f"{len(ports)} open port(s)" if ports else ""),
-        "3": (bool(services) or bool(host_scripts),
-              f"{len(services)} service(s)" if services else ("host scripts" if host_scripts else "")),
+        "3": (bool(fingerprinted) or bool(host_scripts) or bool(scripted),
+              f"{len(fingerprinted)} fingerprinted" if fingerprinted else ("NSE output" if (host_scripts or scripted) else "")),
         "4": (bool(vuln_findings), f"{len(vuln_findings)} finding(s)" if vuln_findings else ""),
         "5": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
         "6": (False, ""),                                    # skeleton — not wired yet
@@ -1753,14 +1760,59 @@ def _render_host_progress(ip: str) -> None:
     print(f"\n  {DIM}{done}/{len(PHASES)} phase(s) complete{RESET}")
 
 
-def _handle_progress() -> None:
-    """Progress flow: read a target IP and open its per-phase workflow status."""
-    def _handle(_c, v):
-        if v == "":
-            return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— enter · b{RESET}")
-        return "stay"
+def _launch_phase_for(key: str, ip: str) -> None:
+    """Run one workflow phase for a host chosen in the progress view — same launch path
+    as the per-phase handlers, but the IP is already known so it's not re-typed."""
+    if key == "1":
+        print(f"{DIM}note: host discovery scans a subnet/range, not one host — use "
+              f"{BOLD}[1]{RESET}{DIM} from the menu{RESET}")
+        return
+    if key == "6":
+        run_phase("6")                                       # skeleton notice
+        return
+    if key == "5":
+        if not os.path.exists(CVE_INDEX_PATH):
+            print(f"\n{YELLOW}⚠ CVE index not found{RESET} {DIM}({os.path.basename(CVE_INDEX_PATH)}) "
+                  f"— build it with the installer's NVD step, then retry{RESET}")
+            return
+        if not fetch_services(ip):
+            print(f"{DIM}note: no services recorded for {ip} — run {BOLD}[3] Service "
+                  f"detection{RESET}{DIM} first{RESET}")
+            return
+        _do_cve_lookup(ip)
+        return
+    # phases 2–4: background nmap scans on a time budget
+    if key == "3" and not fetch_ports(ip):
+        print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+              f"enumeration{RESET}{DIM} first (OS scan still runs if root){RESET}")
+    if key == "4" and not fetch_ports(ip):
+        print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+              f"enumeration{RESET}{DIM} (and {BOLD}[3] Service detection{RESET}{DIM}) first{RESET}")
+        return
+    name = _PHASES[key][0]
+    if key == "4":
+        print(f"{YELLOW}⚠ vuln scan is active/detectable; some auth checks make a small "
+              f"login attempt (no brute-force).{RESET}")
+    module = {"2": "ports", "3": "service", "4": "vuln"}[key]
+    minutes = _prompt_minutes(module, name, ip)
+    if minutes is None:
+        return
+    if key == "2":
+        _start_port_enum(ip, minutes)
+        detail = "fast + full TCP + UDP"
+    elif key == "3":
+        _start_service_detection(ip, minutes)
+        detail = "-sV -sC + OS"
+    else:
+        _start_vuln_scan(ip, minutes)
+        detail = "targeted NSE vuln+auth"
+    print(f"\n{GREEN}▶ {name.lower()} running in the background{RESET} "
+          f"{DIM}({ip} · {detail}, ⏱ {minutes}m) — check {BOLD}[s] status{RESET}")
 
+
+def _handle_progress() -> None:
+    """Progress flow: read a target IP and open its per-phase workflow status. Typing a
+    phase number launches that phase for the host without re-entering the IP."""
     while True:
         value = _ctx_ask("progress", "<single IP> · [h] help · [b] back")
         if value is None or value.lower() in _BACK_WORDS:
@@ -1773,7 +1825,17 @@ def _handle_progress() -> None:
         except ValueError:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
-        _run_view(f"{ip}/progress", "[Enter] refresh · [b] back",
+
+        def _handle(_c, v, ip=ip):
+            if v == "":
+                return "refresh"
+            if v in _PHASES:
+                _launch_phase_for(v, ip)
+                return "refresh"
+            print(f"{RED}✗ unknown option{RESET} {DIM}— <n> run phase · enter · b{RESET}")
+            return "stay"
+
+        _run_view(f"{ip}/progress", "[Enter] refresh · <n> run phase · [b] back",
                   lambda: _render_host_progress(ip), _handle)
         return
 
