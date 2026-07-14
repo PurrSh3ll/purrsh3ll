@@ -1756,16 +1756,33 @@ def _handle_cve_lookup() -> None:
 
 # ── progress (per-host workflow tracker) ──────────────────────────────────────
 def _host_job_states(ip: str) -> dict:
-    """Latest command-history state per phase for one host. A job belongs to the host
-    when the IP appears as a whole token in its command or name; later jobs overwrite
-    earlier ones, so the freshest state per phase is returned (running/done/…)."""
+    """Aggregated command-history state per phase for one host. A phase spawns several
+    commands (parallel nmap passes / script families), so its state is combined across
+    all of them: 'running' while ANY is still running, and only settling to
+    'done'/'error'/'aborted' once they have all finished — so progress never flips to
+    complete mid-scan. A job belongs to the host when the IP appears as a whole token in
+    its command or name."""
     pat = re.compile(r"(?<!\d)" + re.escape(ip) + r"(?!\d)")
-    states = {}
     with _JOBS_LOCK:
         jobs = list(_JOBS)
+    per_phase: dict = {}
     for j in jobs:
         if pat.search(j.get("command") or "") or pat.search(j.get("name") or ""):
-            states[j["phase"]] = j["state"]      # chronological order → last one wins
+            per_phase.setdefault(j["phase"], []).append(j["state"])
+    states = {}
+    for phase, sts in per_phase.items():
+        # running wins (any pass still going); else a success (done) settles the phase;
+        # error/aborted only when nothing ran to completion.
+        if "running" in sts:
+            states[phase] = "running"
+        elif "done" in sts:
+            states[phase] = "done"
+        elif "error" in sts:
+            states[phase] = "error"
+        elif "aborted" in sts:
+            states[phase] = "aborted"
+        else:
+            states[phase] = sts[-1]
     return states
 
 
@@ -2373,20 +2390,18 @@ def _render_host_findings(ip: str) -> None:
         rest = [c for c in ordered if c not in kev]
         print(f"\n  {BOLD}CVE{RESET}")
 
-        def _line(c):
-            print(f"      {RED}{c}{RESET}  {DIM}{', '.join(sorted(cve_map[c]))}{RESET}")
+        def _group(title, cves, col):
+            print(f"    {title}")
+            if cves:
+                for c in cves:
+                    print(f"      {col}{c}{RESET}  {DIM}{', '.join(sorted(cve_map[c]))}{RESET}")
+            else:
+                print(f"      {DIM}none{RESET}")
 
-        if kev_hits:
-            print(f"    {BOLD}{RED}⚑ KEV — known exploited{RESET}")
-            for c in kev_hits:
-                _line(c)
-            if rest:
-                print(f"    {DIM}other matches{RESET}")
-        for c in rest:
-            _line(c)
-        hint = ("KEV = actively exploited (patch first); " if kev_hits else "") + \
-               "narrowed to closer version matches — if none fit, start from the newest"
-        print(f"    {DIM}hint: {hint}{RESET}")
+        _group(f"{BOLD}{RED}⚑ KEV CVE — known exploited{RESET}", kev_hits, RED)   # exploited → red
+        _group(f"{BOLD}other CVE{RESET}", rest, DIM)                             # rest → grey
+        print(f"    {DIM}hint: KEV = actively exploited (patch first); other = narrowed "
+              f"version matches, newest first — if none fit, start from the newest{RESET}")
     if host_scripts:
         print(f"\n  {BOLD}HOST FINDINGS{RESET}")
         for script, output in host_scripts:
