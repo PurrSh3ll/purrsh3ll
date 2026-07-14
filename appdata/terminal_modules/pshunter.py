@@ -125,6 +125,7 @@ def print_menu() -> None:
     print(f"  {DIM}actions{RESET}")
     print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}")
     print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}")
+    print(f"  {CYAN}[p]{RESET} {BOLD}progress{RESET}")
     print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET}")
     if not _is_root():
         print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}")
@@ -159,6 +160,8 @@ def print_help() -> None:
           f"in a new terminal, {BOLD}stop <n>{RESET} abort, {BOLD}c{RESET} clear finished")
     print(f"  {BOLD}database{RESET}   discovered hosts; type a number for its ports, "
           f"{BOLD}r <n>{RESET} remove, {BOLD}c{RESET} wipe all")
+    print(f"  {BOLD}progress{RESET}   per-host workflow tracker; type an IP to see which "
+          f"phases have run (complete / running / not run) and what's still pending")
     print(f"  {BOLD}new session{RESET}  wipe the whole database (hosts + history) for a fresh start")
     print(f"  {BOLD}upgrade{RESET}      re-run under sudo for root (SYN/UDP scans); progress is kept")
     print()
@@ -1684,6 +1687,97 @@ def _handle_cve_lookup() -> None:
         return
 
 
+# ── progress (per-host workflow tracker) ──────────────────────────────────────
+def _host_job_states(ip: str) -> dict:
+    """Latest command-history state per phase for one host. A job belongs to the host
+    when the IP appears as a whole token in its command or name; later jobs overwrite
+    earlier ones, so the freshest state per phase is returned (running/done/…)."""
+    pat = re.compile(r"(?<!\d)" + re.escape(ip) + r"(?!\d)")
+    states = {}
+    with _JOBS_LOCK:
+        jobs = list(_JOBS)
+    for j in jobs:
+        if pat.search(j.get("command") or "") or pat.search(j.get("name") or ""):
+            states[j["phase"]] = j["state"]      # chronological order → last one wins
+    return states
+
+
+def _render_host_progress(ip: str) -> None:
+    """Per-host workflow tracker: for every phase, show whether it has run for this host
+    (evidence in the DB) and its current state from the command history — so it's clear
+    what's complete, what's mid-run and what hasn't been done yet."""
+    known = any(r[0] == ip for r in fetch_hosts())
+    ports = fetch_ports(ip)
+    services = fetch_services(ip)
+    host_scripts = fetch_scripts(ip, 0, "")
+    vulns = fetch_vulns(ip)
+    vuln_findings = [v for v in vulns if v[3] != "CVE"]      # phase 4
+    cve_findings = [v for v in vulns if v[3] == "CVE"]       # phase 5
+    n_cve = sum(len([c for c in (v[4] or "").split(",") if c.strip()]) for v in cve_findings)
+    jobstate = _host_job_states(ip)
+
+    # phase key -> (has evidence in the DB, short detail line)
+    evidence = {
+        "1": (known, "on record" if known else ""),
+        "2": (bool(ports), f"{len(ports)} open port(s)" if ports else ""),
+        "3": (bool(services) or bool(host_scripts),
+              f"{len(services)} service(s)" if services else ("host scripts" if host_scripts else "")),
+        "4": (bool(vuln_findings), f"{len(vuln_findings)} finding(s)" if vuln_findings else ""),
+        "5": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
+        "6": (False, ""),                                    # skeleton — not wired yet
+    }
+
+    print(f"\n{BOLD}{ip} — progress{RESET}")
+    if not known and not ports and not vulns and not jobstate:
+        print(f"  {DIM}nothing recorded for this host yet — run {BOLD}[1] Host discovery{RESET}"
+              f"{DIM} / {BOLD}[2] Port enumeration{RESET}{DIM} first{RESET}")
+        return
+
+    done = 0
+    for key, name, _desc in PHASES:
+        has, detail = evidence[key]
+        st = jobstate.get(key)
+        if st == "running":
+            sym, col, label = "⏳", YELLOW, "running"
+        elif has or st == "done":
+            sym, col, label = "✓", GREEN, "complete"
+            done += 1
+        elif st == "error":
+            sym, col, label = "✗", RED, "error"
+        elif st == "aborted":
+            sym, col, label = "⊘", MAGENTA, "aborted"
+        else:
+            sym, col, label = "○", DIM, "not run"
+        extra = f"  {DIM}· {detail}{RESET}" if detail else ""
+        print(f"  {col}{sym} [{key}] {name:<20}{RESET} {col}{label:<9}{RESET}{extra}")
+    print(f"\n  {DIM}{done}/{len(PHASES)} phase(s) complete{RESET}")
+
+
+def _handle_progress() -> None:
+    """Progress flow: read a target IP and open its per-phase workflow status."""
+    def _handle(_c, v):
+        if v == "":
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— enter · b{RESET}")
+        return "stay"
+
+    while True:
+        value = _ctx_ask("progress", "<single IP> · [h] help · [b] back")
+        if value is None or value.lower() in _BACK_WORDS:
+            return
+        if value.lower() in _HELP_WORDS:
+            print_help()
+            continue
+        try:
+            ip = str(ipaddress.ip_address(value))
+        except ValueError:
+            print(f"{RED}✗ give one valid IP address{RESET}")
+            continue
+        _run_view(f"{ip}/progress", "[Enter] refresh · [b] back",
+                  lambda: _render_host_progress(ip), _handle)
+        return
+
+
 # ── placeholder handlers (skeleton — nothing is wired yet) ────────────────────
 def _todo(title: str) -> None:
     """Uniform 'not implemented yet' notice for a skeleton screen."""
@@ -1849,11 +1943,8 @@ def _render_host_findings(ip: str) -> None:
         for port, proto, script, state, cve, risk, summary in findings:
             col = RED if state in ("VULNERABLE", "LIKELY") else \
                 (YELLOW if state == "EXPOSED" else DIM)
-            ids = cve.split(",") if cve else []
-            cve_disp = cve if len(ids) <= 2 else f"{len(ids)}× CVE"
-            extra = " ".join(x for x in (risk, cve_disp) if x)
             print(f"    {col}{state:<11}{RESET}{port}/{proto:<5}"
-                  f"{_cell(summary or script, 34):<35}{DIM}{extra}{RESET}")
+                  f"{_cell(summary or script, 60)}")
     cve_map = {}                                     # CVE → set of "port/proto" it was seen on
     for port, proto, _script, _state, cve, _risk, _summary in vulns:
         for c in (cve or "").split(","):
@@ -1877,13 +1968,7 @@ def _render_port_scripts(ip: str, port: int, proto: str) -> None:
     """Print just the raw NSE script output for one port (Findings are summarised at
     the host level in the ports table, not repeated here)."""
     rows = fetch_scripts(ip, port, proto)          # port-specific only (host-level shown at host level)
-    print(f"\n{BOLD}{ip}:{port}/{proto} — scripts (-sC){RESET}")
-    name, product, version, cpe = fetch_services(ip).get((port, proto), (None, None, None, None))
-    svc = " ".join(x for x in (name, product, version) if x)
-    if svc:
-        print(f"  {DIM}service:{RESET} {svc}")
-    if cpe:
-        print(f"  {DIM}CPE:{RESET} {cpe}")
+    print(f"\n{BOLD}{ip}:{port}/{proto} — NSE scripting{RESET}")
     if not rows:
         print(f"  {DIM}None{RESET}")
         return
@@ -1905,6 +1990,19 @@ def _port_scripts_view(ip: str, ports: list, n: int) -> None:
               lambda _c, v: "refresh" if v == "" else "stay")
 
 
+def _host_findings_view(ip: str) -> None:
+    """Sub-view for one host's findings, opened with [f]: stays open (the ports table
+    is NOT redrawn) until the user goes back."""
+    def _handle(_c, v):
+        if v == "":
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— enter · b{RESET}")
+        return "stay"
+
+    _run_view(f"{ip}/findings", "[Enter] refresh · [b] back",
+              lambda: _render_host_findings(ip), _handle)
+
+
 def _host_ports_view(rows: list, n: int) -> None:
     """Sub-view for one host's ports: stays open (the host list is NOT redrawn) until
     the user goes back. Typing a port number opens that port's -sC script output."""
@@ -1917,8 +2015,8 @@ def _host_ports_view(rows: list, n: int) -> None:
         if v == "":
             return "refresh"
         if v.lower() == "f":
-            _render_host_findings(ip)
-            return "stay"
+            _host_findings_view(ip)
+            return "refresh"
         if v.isdigit():
             _port_scripts_view(ip, ports, int(v))
             return "refresh"
@@ -2263,12 +2361,14 @@ def main() -> int:
                 _status_view()
             elif choice in ("d", "database"):
                 _database_view()
+            elif choice in ("p", "progress"):
+                _handle_progress()
             elif choice in ("n", "new"):
                 new_session()
             elif choice in ("u", "upgrade") and not _is_root():
                 _upgrade_to_root()
             else:
-                print(f"{RED}✗ pick 1-6, s, d, n, h or /exit{RESET}")
+                print(f"{RED}✗ pick 1-6, s, d, p, n, h or /exit{RESET}")
 
             print(f"{DIM}{'─' * 56}{RESET}\n")
     except _ExitApp:          # /exit typed at any sub-prompt
