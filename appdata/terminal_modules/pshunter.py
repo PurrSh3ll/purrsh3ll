@@ -17,7 +17,6 @@ explicitly permitted to test.
 
 from __future__ import annotations
 
-import ftplib
 import ipaddress
 import os
 import re
@@ -998,35 +997,6 @@ def fetch_vulns(ip: str) -> list:
     return sorted(rows, key=lambda r: (r[0], r[2]))
 
 
-def save_exploit_output(ip: str, port: int, proto: str, script: str, output: str,
-                        state: str, risk: "str | None", summary: str) -> None:
-    """Persist a phase-6 tool's raw output (scripts table — shown in the port's DETAILS)
-    and a one-line finding (vulns — shown in [f] findings), keyed by (ip, port, proto,
-    script) so re-running a tool just refreshes its result."""
-    if not ip or _is_self_ip(ip):
-        return
-    now = datetime.now().isoformat(timespec="seconds")
-    with _DB_LOCK:
-        conn = _db_connect()
-        try:
-            conn.execute(
-                "INSERT INTO scripts (ip, port, proto, script, output, first_seen, last_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(ip, port, proto, script) DO UPDATE SET "
-                "  output = excluded.output, last_seen = excluded.last_seen",
-                (ip, port, proto, script, output, now, now))
-            conn.execute(
-                "INSERT INTO vulns (ip, port, proto, script, state, cve, risk, summary, "
-                "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(ip, port, proto, script) DO UPDATE SET "
-                "  state = excluded.state, cve = excluded.cve, risk = excluded.risk, "
-                "  summary = excluded.summary, last_seen = excluded.last_seen",
-                (ip, port, proto, script, state, None, risk, summary, now, now))
-            conn.commit()
-        finally:
-            conn.close()
-
-
 # ── background jobs (feed [s] status) ─────────────────────────────────────────
 _JOBS: list = []
 _JOBS_LOCK = threading.Lock()
@@ -1964,15 +1934,22 @@ _EXPLOIT_SERVICES = [
     ("tftp",    "TFTP (UDP)",         {69}, ("tftp",)),
     ("nfs",     "NFS / RPC mounts",   {111, 2049},
      ("nfs", "rpcbind", "portmap", "mountd")),
+    ("afp",     "AFP (Apple shares)", {548}, ("afp", "netatalk", "apple filing")),
     ("rsync",   "rsync",              {873}, ("rsync",)),
+    ("distcc",  "distcc (RCE)",       {3632}, ("distcc",)),
     ("redis",   "Redis",              {6379, 6380}, ("redis",)),
     ("memcached", "Memcached",        {11211}, ("memcache",)),
     ("elastic", "Elasticsearch",      {9200, 9300}, ("elasticsearch", "elastic")),
     ("mongodb", "MongoDB",            {27017, 27018}, ("mongodb", "mongod", "mongo")),
     ("couchdb", "CouchDB",            {5984, 6984}, ("couchdb",)),
+    ("neo4j",   "Neo4j",              {7474, 7687}, ("neo4j",)),
+    ("influxdb", "InfluxDB",          {8086}, ("influxdb", "influx")),
     ("amqp",    "AMQP / RabbitMQ",    {5672}, ("amqp", "rabbitmq")),
+    ("epmd",    "Erlang epmd",        {4369}, ("epmd", "erlang port mapper")),
     ("docker",  "Docker API",         {2375, 2376}, ("docker",)),
+    ("jdwp",    "Java JDWP (RCE)",    {8787}, ("jdwp", "java debug")),
     ("rmi",     "Java RMI",           {1050, 1098, 1099}, ("rmi", "jrmi")),
+    ("clamav",  "ClamAV (RCE)",       {3310}, ("clamav",)),
     ("ajp",     "AJP / Tomcat (Ghostcat)", {8009}, ("ajp13", "ajp")),
     ("svn",     "SVN (svnserve)",     {3690}, ("svn", "subversion")),
     ("mysql",   "MySQL / MariaDB",    {3306}, ("mysql", "mariadb")),
@@ -1980,6 +1957,7 @@ _EXPLOIT_SERVICES = [
     ("psql",    "PostgreSQL",         {5432}, ("postgresql", "postgres")),
     ("oracle",  "Oracle DB",          {1521, 1748, 1754, 1808, 1809, 2100},
      ("oracle", "tns")),
+    ("mqtt",    "MQTT (IoT)",         {1883, 8883}, ("mqtt", "mosquitto")),
     ("ldap",    "LDAP / AD",          {389, 636, 3268, 3269}, ("ldap",)),
     ("kerberos", "Kerberos (AD)",     {88, 464}, ("kerberos", "kpasswd")),
     ("msrpc",   "MSRPC endpoint",     {135, 593}, ("msrpc", "epmap")),
@@ -1995,15 +1973,308 @@ _EXPLOIT_SERVICES = [
     ("ssh",     "SSH",                {22, 2222}, ("ssh", "openssh", "dropbear")),
     ("squid",   "Squid proxy",        {3128}, ("squid",)),
     ("cups",    "CUPS / printing",    {631}, ("cups", "ipp")),
+    ("jetdirect", "Printer (JetDirect/PJL)", {9100}, ("jetdirect", "pjl")),
     ("rservices", "BSD r-services",   {512, 513, 514}, ("rlogin", "rexec", "rsh", "rshd")),
     ("x11",     "X11",                {6000, 6001, 6002, 6003, 6004, 6005}, ("x11",)),
     ("finger",  "Finger",             {79}, ("finger",)),
+    ("ident",   "ident (user enum)",  {113}, ("ident", "identd")),
     ("rtsp",    "RTSP (cameras)",     {554, 8554}, ("rtsp",)),
     ("sip",     "SIP / VoIP",         {5060, 5061}, ("sip",)),
     ("nntp",    "NNTP",               {119}, ("nntp",)),
 ]
 _EXPLOIT_RANK = {key: i for i, (key, *_rest) in enumerate(_EXPLOIT_SERVICES)}
 _EXPLOIT_UNKNOWN = ("other", "other / unknown")   # fallback bucket, always ranked last
+
+
+# Per-service pentest checklist: the steps to work through once a service is picked in
+# phase 6. Starter methodology (HTB/OSCP-flavoured) — each service gets a deeper, curated
+# pass later. Keyed by the service class key; 'other' is the generic fallback.
+_EXPLOIT_STEPS = {
+    "http": [
+        "Fingerprint the stack — response headers, whatweb, favicon hash",
+        "Browse the app + view-source; note tech, versions, comments, emails",
+        "Check robots.txt / sitemap.xml / .well-known / security.txt",
+        "Directory & file brute-force (feroxbuster / gobuster / ffuf)",
+        "Vhost & subdomain fuzzing on the Host header",
+        "Identify the CMS/app, then searchsploit its exact version",
+        "Try default / weak creds on every login and admin panel",
+        "Test inputs for SQLi, LFI/RFI, SSTI, command injection, IDOR",
+        "Look for exposed .git/.svn, backups, config and source files",
+        "Find a file-upload or write primitive → webshell",
+    ],
+    "smb": [
+        "Null / guest session — enum shares (enum4linux-ng, smbclient -N -L)",
+        "List and read every accessible share (smbmap, smbclient)",
+        "Enumerate users, groups and password policy (rpcclient)",
+        "Note the SMB version → known RCE (MS17-010, SMBGhost)",
+        "Try known / default creds (netexec smb)",
+        "Check SMB signing (relay potential)",
+        "Hunt readable shares for creds and sensitive files",
+    ],
+    "winrm": [
+        "Confirm WinRM is open (5985/5986)",
+        "Validate creds (netexec winrm) — password-spray known users",
+        "With valid creds get a shell (evil-winrm)",
+        "Note captured creds for lateral movement",
+    ],
+    "ftp": [
+        "Grab the banner; note server and version",
+        "Try anonymous login (anonymous:anonymous)",
+        "searchsploit the FTP server version (e.g. vsftpd backdoor)",
+        "List / download files; test write access (upload)",
+        "Try known / default creds and creds reused from elsewhere",
+        "If the web root is writable → upload a webshell",
+    ],
+    "tftp": [
+        "Confirm UDP/69 is open",
+        "GET common files (running-config, backups) — no auth",
+        "Test PUT (write) with a throwaway file",
+        "Enumerate known filenames for the device",
+    ],
+    "nfs": [
+        "List exports (showmount -e)",
+        "Mount an export; test read and write",
+        "no_root_squash → drop a SUID binary for privesc",
+        "Match local UID/GID to reach restricted files",
+    ],
+    "afp": [
+        "Enumerate shares (nmap afp-showmount)",
+        "Try guest / anonymous access",
+        "Known creds; look for Time Machine backups",
+    ],
+    "rsync": [
+        "List modules (rsync rsync://IP/)",
+        "Access modules without auth; test download and upload",
+        "Read sensitive files; write to any writable module",
+    ],
+    "distcc": [
+        "Confirm distcc on 3632",
+        "CVE-2004-2687 → command execution (metasploit distcc_exec or manual)",
+        "Use the RCE to read files / get a reverse shell",
+    ],
+    "redis": [
+        "Connect unauthenticated (redis-cli -h IP)",
+        "INFO and CONFIG GET dir/dbfilename; note version",
+        "Write an SSH key via CONFIG SET dir (if writable)",
+        "Write a webshell into the web root",
+        "RCE via module load / replication on newer versions",
+    ],
+    "memcached": [
+        "stats / stats items / stats slabs (unauthenticated)",
+        "Dump keys (memcdump) — hunt for sessions and creds",
+    ],
+    "elastic": [
+        "GET / and /_cat/indices?v (unauthenticated)",
+        "Dump indices for sensitive data",
+        "searchsploit the version (e.g. CVE-2015-1427 RCE)",
+    ],
+    "mongodb": [
+        "Connect unauthenticated (mongosh / mongo)",
+        "show dbs; dump interesting collections",
+        "searchsploit the version",
+    ],
+    "couchdb": [
+        "GET /_all_dbs and read documents (unauthenticated)",
+        "CVE-2017-12635 privilege escalation → admin",
+        "CVE-2017-12636 → RCE via config",
+    ],
+    "neo4j": [
+        "Open the browser on 7474; try default neo4j:neo4j",
+        "Cypher queries to dump data",
+        "Version-specific RCE (e.g. APOC / CVE)",
+    ],
+    "influxdb": [
+        "CVE-2019-20933 auth bypass (empty-secret JWT)",
+        "Enumerate databases; dump measurements",
+    ],
+    "amqp": [
+        "Try default guest:guest",
+        "Reach the management UI on 15672",
+        "Enumerate vhosts and queues; read messages",
+    ],
+    "epmd": [
+        "List Erlang nodes (epmd -names)",
+        "Find / guess the Erlang cookie → node RCE",
+        "App-specific path (RabbitMQ / CouchDB clustering)",
+    ],
+    "docker": [
+        "Confirm the unauthenticated Docker API (2375)",
+        "docker -H tcp://IP:2375 ps / images",
+        "Run a privileged container mounting host / → root",
+        "Read host files / escape to the host",
+    ],
+    "jdwp": [
+        "Confirm the JDWP handshake",
+        "Remote code execution (jdwp-shellifier / metasploit)",
+        "Get a reverse shell",
+    ],
+    "rmi": [
+        "Enumerate the RMI registry (nmap rmi-dumpregistry, BaRMIe)",
+        "Deserialization RCE (ysoserial)",
+    ],
+    "clamav": [
+        "Confirm clamd on 3310",
+        "Command execution via clamav-exec / known CVE",
+    ],
+    "ajp": [
+        "Confirm AJP13 on 8009",
+        "Ghostcat CVE-2020-1938 → read WEB-INF files",
+        "Chain to RCE if file upload is possible (ajpy)",
+    ],
+    "svn": [
+        "Enumerate (svn ls / svn log svn://IP)",
+        "Checkout the repo; read history for secrets and creds",
+        "svn cat old revisions of sensitive files",
+    ],
+    "mysql": [
+        "Try root with no password / default creds",
+        "Version → searchsploit (CVE-2012-2122 auth bypass)",
+        "Enumerate databases; read files with LOAD_FILE",
+        "Write a webshell with INTO OUTFILE",
+        "UDF for command execution (if plugin dir is writable)",
+    ],
+    "mssql": [
+        "Try sa / default creds (impacket mssqlclient)",
+        "Enable and use xp_cmdshell for command execution",
+        "Enumerate linked servers and impersonation",
+        "Capture the service hash; coerce / relay",
+    ],
+    "psql": [
+        "Try postgres / default creds",
+        "COPY ... FROM PROGRAM → RCE (9.3+)",
+        "Read / write files; enumerate databases",
+    ],
+    "oracle": [
+        "Enumerate the SID (odat / nmap oracle-sid-brute)",
+        "Brute default creds (scott/tiger, system/manager)",
+        "odat for file read / privesc / RCE",
+    ],
+    "mqtt": [
+        "Subscribe to everything anonymously (mosquitto_sub -t '#')",
+        "Sniff all topics for sensitive data",
+        "Publish to control topics; check for auth / default creds",
+    ],
+    "ldap": [
+        "Anonymous bind → dump the directory (ldapsearch -x)",
+        "Enumerate users/groups; read descriptions for passwords",
+        "Note domain info for AD attacks",
+    ],
+    "kerberos": [
+        "Enumerate valid users (kerbrute)",
+        "AS-REP roast users without pre-auth",
+        "Kerberoast SPNs (with any creds)",
+        "Keep tickets for pass-the-ticket later",
+    ],
+    "msrpc": [
+        "Enumerate endpoints (impacket rpcdump)",
+        "rpcclient null session: enumdomusers, querydispinfo",
+        "Coerce authentication (PetitPotam / Coercer)",
+    ],
+    "snmp": [
+        "Guess the community string (onesixtyone: public/private)",
+        "snmpwalk the full MIB — creds, processes, routes",
+        "Extended MIBs: processes, software, users",
+    ],
+    "ipmi": [
+        "Dump password hashes (CVE-2013-4786, ipmi_dumphashes)",
+        "Crack the hashes offline",
+        "Try the cipher-0 authentication bypass",
+    ],
+    "dns": [
+        "Attempt a zone transfer (dig axfr @IP domain)",
+        "Reverse lookups and subdomain brute-force",
+        "Version query (version.bind CHAOS TXT)",
+    ],
+    "smtp": [
+        "Banner; note the server and version",
+        "User enumeration (VRFY / EXPN / RCPT — smtp-user-enum)",
+        "Open-relay test",
+        "searchsploit the version",
+    ],
+    "mail2": [
+        "Banner; note the version",
+        "Try creds (reuse ones found elsewhere)",
+        "Read mailboxes for creds and information",
+    ],
+    "telnet": [
+        "Banner; identify the device / OS",
+        "Default / known creds (careful with lockout)",
+        "Look for no-auth access or a backdoor",
+    ],
+    "irc": [
+        "Connect; enumerate channels and users",
+        "searchsploit the ircd (UnrealIRCd backdoor CVE-2010-2075)",
+    ],
+    "rdp": [
+        "Check NLA and grab a screenshot (rdp-sec-check)",
+        "Known / weak creds (careful with lockout)",
+        "BlueKeep CVE-2019-0708 on older Windows",
+        "With creds → session (xfreerdp)",
+    ],
+    "vnc": [
+        "Check for no-auth (connect directly)",
+        "Weak password — crack the VNC challenge",
+        "Version-specific CVE; view / control the desktop",
+    ],
+    "ssh": [
+        "Banner → version; searchsploit",
+        "User enumeration (CVE-2018-15473); list auth methods",
+        "Key-based / known creds; careful password spray",
+        "Reuse creds found elsewhere",
+    ],
+    "squid": [
+        "Use it as a proxy to reach internal hosts / ports",
+        "Scan and access internal services through the proxy",
+        "cachemgr info-leak",
+    ],
+    "cups": [
+        "Web UI on 631/admin",
+        "Version → CVE (recent CUPS RCE)",
+        "Enumerate printers and captured jobs",
+    ],
+    "jetdirect": [
+        "PJL / PostScript access (PRET)",
+        "Read / write the printer filesystem",
+        "Capture print jobs and stored credentials",
+    ],
+    "rservices": [
+        "rlogin / rsh via a trusted host or no auth",
+        ".rhosts abuse; try root",
+    ],
+    "x11": [
+        "Confirm no auth (xdpyinfo / nmap x11-access)",
+        "Screenshot (xwd); keylog and inject keystrokes",
+    ],
+    "finger": [
+        "Enumerate users (finger @IP, finger root@IP)",
+        "Build a user list for brute-forcing elsewhere",
+    ],
+    "ident": [
+        "Query service owners (ident-user-enum)",
+        "Map running services to user accounts",
+    ],
+    "rtsp": [
+        "Enumerate streams (nmap rtsp-url-brute)",
+        "Default creds on cameras; view the stream",
+    ],
+    "sip": [
+        "Enumerate extensions (svwar / sipvicious)",
+        "Register / spoof; sniff creds; toll fraud",
+    ],
+    "nntp": [
+        "Banner; note the version",
+        "List newsgroups and read articles",
+        "Check for an auth bypass",
+    ],
+    "other": [
+        "Grab the banner (nc / telnet) and identify the service",
+        "searchsploit the product and version",
+        "Look the port / protocol up in HackTricks",
+        "Try default / anonymous credentials",
+        "Run the relevant nmap scripts (--script '<name>-*')",
+        "Note it for manual research",
+    ],
+}
 
 
 def _classify_service(port: int, name, product, version, cpe) -> tuple:
@@ -2025,6 +2296,10 @@ def _classify_service(port: int, name, product, version, cpe) -> tuple:
     for key, label, ports, _tokens in _EXPLOIT_SERVICES:
         if port in ports:
             return label, key, "port"
+    # unrecognised: still show nmap's own service name if it gave one (so the row is
+    # useful for research), else a bare 'other'. Stays keyed 'other' → ranked last, no tool.
+    if name:
+        return name, _EXPLOIT_UNKNOWN[0], "service"
     return _EXPLOIT_UNKNOWN[1], _EXPLOIT_UNKNOWN[0], "port"
 
 
@@ -2049,128 +2324,46 @@ def _render_exploit_targets(ip: str) -> list:
     ordered, rows = [], []
     for i, (_rank, port, proto, label, key, ver, signal) in enumerate(triaged, 1):
         ordered.append((port, proto, label, key, ver, signal))
-        rows.append([str(i), label, f"{port}/{proto}", _cell(ver or "—", 30), f"via {signal}"])
+        # '?' flags a label not confirmed by a -sV version/CPE fingerprint (a service-name
+        # or port guess), so it's clear which rows to verify before trusting them.
+        disp = label + ("?" if signal in ("service", "port") else "")
+        rows.append([str(i), disp, f"{port}/{proto}", _cell(ver or "—", 30), f"via {signal}"])
     print(_box_table(["#", "SERVICE", "PORT", "VERSION", "SIGNAL"], rows,
                      aligns=["r", "l", "l", "l", "l"]))
     return ordered
 
 
-def _tool_ftp_anon(ip: str, port: int) -> tuple:
-    """Check FTP anonymous login with ftplib (offline, no external tool). Returns
-    (state, risk, summary, output); state None means the check couldn't run."""
-    lines = []
-    try:
-        ftp = ftplib.FTP()
-        ftp.connect(ip, port, timeout=8)
-        banner = (ftp.getwelcome() or "").strip()
-        if banner:
-            lines.append(banner)
-        ftp.login()                                      # defaults to anonymous:anonymous
-        lines.append("login anonymous:anonymous → ACCEPTED")
-        try:
-            listing = []
-            ftp.retrlines("LIST", listing.append)
-            if listing:
-                lines.append("directory listing:")
-                lines.extend("  " + row for row in listing[:50])
-                if len(listing) > 50:
-                    lines.append(f"  … (+{len(listing) - 50} more)")
-            else:
-                lines.append("directory listing: (empty)")
-        except ftplib.all_errors as exc:
-            lines.append(f"listing failed: {exc}")
-        try:
-            ftp.quit()
-        except ftplib.all_errors:
-            ftp.close()
-        return "EXPOSED", "MEDIUM", "Anonymous FTP login allowed", "\n".join(lines)
-    except ftplib.error_perm as exc:
-        lines.append(f"login anonymous:anonymous → REJECTED ({exc})")
-        return "INFO", None, "Anonymous FTP login rejected", "\n".join(lines)
-    except ftplib.all_errors as exc:
-        return None, None, None, f"connection failed: {exc}"
-
-
-def _tool_whatweb(ip: str, port: int, proto: str) -> tuple:
-    """Fingerprint a web service with whatweb. Returns (state, risk, summary, output);
-    state None means whatweb is missing or produced nothing."""
-    if not shutil.which("whatweb"):
-        return None, None, None, "whatweb not installed — apt install whatweb"
-    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
-    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
-    url = f"{'https' if tls else 'http'}://{ip}:{port}"
-    try:
-        proc = subprocess.run(["whatweb", "--color=never", "-a", "1", url],
-                              capture_output=True, text=True, timeout=45)
-    except subprocess.TimeoutExpired:
-        return None, None, None, "whatweb timed out"
-    except Exception as exc:                             # noqa: BLE001 — surface any launch error
-        return None, None, None, f"whatweb failed: {exc}"
-    out = (proc.stdout or "").strip() or (proc.stderr or "").strip()
-    if not out:
-        return None, None, None, "whatweb returned no output"
-    first = out.splitlines()[0]
-    return "INFO", None, f"whatweb: {first}", out
-
-
-# service class -> (script name, runner) for the tools wired so far
-_EXPLOIT_TOOLS = {
-    "ftp":  ("ftp-anon", lambda ip, port, proto: _tool_ftp_anon(ip, port)),
-    "http": ("whatweb",  lambda ip, port, proto: _tool_whatweb(ip, port, proto)),
-}
-
-
-def _exploit_worker(job: dict, ip: str, port: int, proto: str, script: str, runner) -> None:
-    """Background body of an exploit: run the tool, store its output as a finding, and
-    update the job. Any result/error is read back from [s] status and [f] findings."""
-    try:
-        state, risk, summary, output = runner(ip, port, proto)
-    except Exception as exc:                             # noqa: BLE001 — never crash the thread
-        job["state"], job["error"] = "error", str(exc)
-        _job_update(job)
-        return
-    if state is None:                                    # tool couldn't run / no result
-        job["state"], job["output"] = "done", output
-        _job_update(job)
-        return
-    save_exploit_output(ip, port, proto, script, output, state, risk, summary)
-    job["state"], job["hosts"], job["output"] = "done", 1, output
-    _job_update(job)
-
-
-def _run_exploit(ip: str, target: tuple) -> None:
-    """Launch the wired tool for a chosen service (FTP anon / HTTP whatweb) in the
-    background; its output is saved to [f] findings. Not-yet-wired services show a
-    skeleton notice instead."""
+def _render_exploit_checklist(ip: str, target: tuple) -> None:
+    """The pentest checklist for one chosen service — the steps to work through."""
     port, proto, label, key, ver, signal = target
-    tool = _EXPLOIT_TOOLS.get(key)
-    if not tool:
-        print(f"\n{MAGENTA}▸ exploit — {label}{RESET}  {DIM}{ip}:{port}/{proto}{RESET}")
-        if ver:
-            print(f"  {DIM}fingerprint:{RESET} {ver}  {DIM}(via {signal}){RESET}")
-        print(f"  {YELLOW}[skeleton]{RESET} {DIM}tooling for '{key}' not wired yet — coming soon{RESET}")
-        return
-    script, runner = tool
-    job = _new_job("6", f"{_PHASES['6'][0]} · {ip}:{port} {script}",
-                   f"{script} on {ip}:{port}/{proto}")
-    threading.Thread(target=_exploit_worker, args=(job, ip, port, proto, script, runner),
-                     daemon=True).start()
-    print(f"\n{GREEN}▶ {label} exploit running in the background{RESET} "
-          f"{DIM}({ip}:{port}/{proto} · {script}) — check {BOLD}[s] status{RESET}{DIM} "
-          f"or {BOLD}[f] findings{RESET}")
+    steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
+    print(f"\n{BOLD}{label} — checklist{RESET}  {DIM}{ip}:{port}/{proto}{RESET}")
+    if ver:
+        print(f"  {DIM}fingerprint:{RESET} {ver} {DIM}(via {signal}){RESET}")
+    print()
+    for i, step in enumerate(steps, 1):
+        print(f"  {CYAN}{i:>2}{RESET}  {step}")
+
+
+def _exploit_service_view(ip: str, target: tuple) -> None:
+    """Sub-view showing one service's checklist; stays open until the user goes back."""
+    port, proto = target[0], target[1]
+    _run_view(f"{ip}:{port}/{proto} exploit", "[Enter] refresh · [b] back · [m] menu",
+              lambda: _render_exploit_checklist(ip, target),
+              lambda _c, v: "refresh" if v == "" else "stay")
 
 
 def _exploit_targets_view(ip: str) -> None:
-    """Sub-view listing a host's services in exploitation-priority order; a number runs the
-    wired tool for that service (or shows a skeleton for the not-yet-wired ones)."""
+    """Sub-view listing a host's services in exploitation-priority order; a number opens
+    that service's pentest checklist."""
     def _handle(targets, v):
         if v == "":
             return "refresh"
         if v.isdigit():
             n = int(v)
             if 1 <= n <= len(targets):
-                _run_exploit(ip, targets[n - 1])
-                return "stay"
+                _exploit_service_view(ip, targets[n - 1])
+                return "refresh"
             print(f"{RED}✗ no service {n}{RESET}")
             return "stay"
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · enter · b{RESET}")
