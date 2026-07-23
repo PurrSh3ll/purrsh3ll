@@ -102,6 +102,8 @@ PHASES = [
     ("4", "CVE lookup",           "match service CPEs to known CVEs"),
     ("5", "Service exploitation", "attempt exploitation / access on a chosen service"),
     ("6", "Privilege Escalation", "escalate to root / SYSTEM on a compromised host"),
+    ("7", "Persistence",          "maintain access on a compromised host"),
+    ("8", "Covering Tracks",      "clean up artifacts after an authorised engagement"),
 ]
 _PHASES = {key: (name, desc) for key, name, desc in PHASES}
 
@@ -1853,7 +1855,9 @@ def _render_host_progress(ip: str) -> None:
     targets = _exploit_targets(ip)
     n_svc_done = sum(1 for p, pr, _l, k, _v, _s in targets if _service_steps_complete(ip, p, pr, k))
     phase5_done = bool(targets) and n_svc_done == len(targets)
-    privesc_done, privesc_detail = _privesc_progress(ip)
+    privesc_done, privesc_detail = _os_checklist_progress(ip, "privesc", _PRIVESC_STEPS)
+    persist_done, persist_detail = _os_checklist_progress(ip, "persist", _PERSIST_STEPS)
+    cover_done, cover_detail = _os_checklist_progress(ip, "cover", _COVER_STEPS)
 
     # phase key -> (has evidence in the DB, short detail line)
     evidence = {
@@ -1865,6 +1869,8 @@ def _render_host_progress(ip: str) -> None:
         "4": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
         "5": (phase5_done, f"{n_svc_done}/{len(targets)} services" if targets else ""),
         "6": (privesc_done, privesc_detail),
+        "7": (persist_done, persist_detail),
+        "8": (cover_done, cover_detail),
     }
 
     print(f"\n{BOLD}{ip} — progress{RESET}")
@@ -1876,9 +1882,9 @@ def _render_host_progress(ip: str) -> None:
     done = 0
     for key, name, _desc in PHASES:
         has, detail = evidence[key]
-        # phases 5-6 are manual checklists (no background jobs) — completion is driven by
+        # phases 5-8 are manual checklists (no background jobs) — completion is driven by
         # the checklist evidence above, not job state.
-        st = None if key in ("5", "6") else jobstate.get(key)
+        st = None if key in ("5", "6", "7", "8") else jobstate.get(key)
         if st == "running":
             sym, col, label = "⏳", YELLOW, "running"
         elif has or st == "done":
@@ -1902,8 +1908,14 @@ def _launch_phase_for(key: str, ip: str) -> None:
         print(f"{DIM}note: host discovery scans a subnet/range, not one host — use "
               f"{BOLD}[0]{RESET}{DIM} from the menu{RESET}")
         return
+    if key == "8":
+        _os_checklist_for(ip, "cover", "Covering Tracks", _COVER_STEPS)
+        return
+    if key == "7":
+        _os_checklist_for(ip, "persist", "Persistence", _PERSIST_STEPS)
+        return
     if key == "6":
-        _privesc_for(ip)                                     # privilege escalation checklist
+        _os_checklist_for(ip, "privesc", "Privilege Escalation", _PRIVESC_STEPS)
         return
     if key == "5":
         _exploit_targets_view(ip)                            # service exploitation checklist
@@ -2560,10 +2572,11 @@ def _handle_service_exploitation() -> None:
         return
 
 
-# ── privilege escalation (phase 6) ────────────────────────────────────────────
-# Selectable OSes for a host with no OS on record — the ones that keep showing up on
-# HTB / OSCP / CTF. The second field is the privesc family (which checklist to use).
-_PRIVESC_OS = [
+# ── OS-family checklists: privilege escalation (6) & persistence (7) ───────────
+# Both phases key off the host OS, so they share one engine: pick the OS (when none is on
+# record), then work a per-family checklist with toggle/skip status. Selectable OSes are
+# the ones that keep showing up on HTB / OSCP / CTF; the 2nd field is the checklist family.
+_OS_CHOICES = [
     ("Linux",          "linux"),
     ("Ubuntu",         "linux"),
     ("Debian",         "linux"),
@@ -2600,17 +2613,84 @@ _PRIVESC_STEPS = {
     ],
 }
 
+# Persistence checklist per OS family (maintain access after a foothold / root).
+_PERSIST_STEPS = {
+    "linux": [
+        "Add an SSH key to ~/.ssh/authorized_keys (root & users)",
+        "Cron job — user crontab or /etc/cron.d for a callback",
+        "systemd service / timer that re-establishes access",
+        "New privileged user / add to sudoers (NOPASSWD)",
+        "Shell rc backdoor (.bashrc / .profile / /etc/profile.d)",
+        "SUID backdoor binary in a stable path",
+        "rc.local / init script on boot",
+        "PAM / SSH backdoor; capture creds (PAM, keylogger)",
+        "Web shell in a served path (if a web app is present)",
+        "Note & stash reusable creds for later re-entry",
+    ],
+    "windows": [
+        "Add a local admin / add user to Administrators",
+        "Registry Run keys (HKLM & HKCU …\\CurrentVersion\\Run)",
+        "Scheduled task (schtasks) for a callback",
+        "New service (sc create) running as SYSTEM",
+        "Startup folder shortcut",
+        "WMI event subscription (fileless)",
+        "Accessibility backdoor (sethc / utilman) at logon screen",
+        "Enable RDP + user for interactive re-entry",
+        "AD: DCSync / golden / silver ticket (domain persistence)",
+        "Dump creds (mimikatz) & pass-the-hash for re-entry",
+    ],
+}
+
+# Covering-tracks checklist per OS family (authorised-engagement cleanup / anti-forensics).
+_COVER_STEPS = {
+    "linux": [
+        "Clear shell history (~/.bash_history, HISTFILE; unset HISTFILE)",
+        "Scrub log entries (auth.log, syslog, wtmp/btmp/lastlog)",
+        "Timestomp touched files (touch -r reference / -t)",
+        "Remove dropped tools, payloads and temp files",
+        "Remove artifacts you added (cron/at, keys, users) when done",
+        "Clear/limit auditing (auditd rules, .bash_logout)",
+        "Close sessions cleanly; note what was changed for the report",
+    ],
+    "windows": [
+        "Clear PowerShell history (ConsoleHost_history.txt)",
+        "Clear event logs (wevtutil cl …) — noisy, note it",
+        "Timestomp touched files (SetMACE / PowerShell)",
+        "Remove dropped tools, payloads and temp artifacts",
+        "Delete Prefetch / Recent / Run-MRU traces",
+        "Remove added users, tasks and services when done",
+        "Note tampered logging (Sysmon/ETW) for the report",
+    ],
+}
+
 
 def _os_family(text: "str | None") -> str:
-    """Map an OS string (nmap's guess or the user's pick) to a privesc family."""
+    """Map an OS string (nmap's guess or the user's pick) to a checklist family."""
     return "windows" if text and "windows" in text.lower() else "linux"
 
 
-def _render_privesc_checklist(ip: str, family: str, os_label: str) -> None:
-    """The privilege-escalation checklist for a host, by OS family."""
-    steps = _PRIVESC_STEPS.get(family, _PRIVESC_STEPS["linux"])
-    status = fetch_step_status(ip, 0, "", f"privesc:{family}")
-    print(f"\n{BOLD}Privilege Escalation — checklist{RESET}  {DIM}{ip} · {os_label}{RESET}")
+def _select_os(ip: str) -> "tuple | None":
+    """Prompt for the host OS and remember the choice. Returns (label, family) or None."""
+    print(f"\n{BOLD}Select OS for {ip}{RESET}  {DIM}(pick the target's OS){RESET}")
+    for i, (label, _fam) in enumerate(_OS_CHOICES, 1):
+        print(f"  {CYAN}{i}{RESET} {label}")
+    while True:
+        v = _ctx_ask("os", f"<1-{len(_OS_CHOICES)}> · [b] back")
+        if v is None or v.lower() in _BACK_WORDS:
+            return None
+        if v.isdigit() and 1 <= int(v) <= len(_OS_CHOICES):
+            label, fam = _OS_CHOICES[int(v) - 1]
+            save_os(ip, label)                 # remember it on the host record
+            return label, fam
+        print(f"{RED}✗ pick 1-{len(_OS_CHOICES)}{RESET}")
+
+
+def _render_os_checklist(ip: str, kind: str, title: str, steps_map: dict,
+                         family: str, os_label: str) -> None:
+    """One OS-family checklist (privesc / persistence) for a host, by family."""
+    steps = steps_map.get(family, steps_map["linux"])
+    status = fetch_step_status(ip, 0, "", f"{kind}:{family}")
+    print(f"\n{BOLD}{title} — checklist{RESET}  {DIM}{ip} · {os_label}{RESET}")
     print()
     for i, step in enumerate(steps, 1):
         desc, _tool = _step_parts(step)
@@ -2620,18 +2700,18 @@ def _render_privesc_checklist(ip: str, family: str, os_label: str) -> None:
         print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
 
 
-def _privesc_view(ip: str, family: str, os_label: str) -> None:
-    """Interactive privesc checklist: <n> toggles done, s <n> toggles skip, o changes the
-    OS (in case the wrong one was picked). Status is saved (port 0, service
-    'privesc:<family>') so it survives across sessions."""
-    cur_os = {"family": family, "label": os_label}     # mutable so [o] can switch it live
+def _os_checklist_view(ip: str, kind: str, title: str, steps_map: dict,
+                       family: str, os_label: str) -> None:
+    """Interactive OS-family checklist: <n> done, s <n> skip, o change OS. Status is saved
+    (port 0, service '<kind>:<family>') so it survives across sessions."""
+    cur = {"family": family, "label": os_label}        # mutable so [o] can switch it live
 
     def _toggle(n, want):
-        steps = _PRIVESC_STEPS.get(cur_os["family"], _PRIVESC_STEPS["linux"])
+        steps = steps_map.get(cur["family"], steps_map["linux"])
         if not 1 <= n <= len(steps):
             print(f"{RED}✗ no step {n}{RESET}")
             return
-        svc = f"privesc:{cur_os['family']}"
+        svc = f"{kind}:{cur['family']}"
         prev = fetch_step_status(ip, 0, "", svc).get(n)
         set_step_status(ip, 0, "", svc, n, None if prev == want else want)
 
@@ -2639,9 +2719,9 @@ def _privesc_view(ip: str, family: str, os_label: str) -> None:
         if v == "":
             return "refresh"
         if v == "o":
-            picked = _select_privesc_os(ip)            # also saves the new OS on the host
+            picked = _select_os(ip)                    # also saves the new OS on the host
             if picked:
-                cur_os["label"], cur_os["family"] = picked
+                cur["label"], cur["family"] = picked
             return "refresh"
         if v.startswith("s") and v[1:].strip().isdigit():
             _toggle(int(v[1:].strip()), "skip")
@@ -2652,57 +2732,40 @@ def _privesc_view(ip: str, family: str, os_label: str) -> None:
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> done · s <n> skip · o · b{RESET}")
         return "stay"
 
-    _run_view(f"{ip} privesc",
+    _run_view(f"{ip} {kind}",
               "[Enter] refresh · <n> done · s <n> skip · [o] change OS · [b] back · [m] menu",
-              lambda: _render_privesc_checklist(ip, cur_os["family"], cur_os["label"]), _handle)
+              lambda: _render_os_checklist(ip, kind, title, steps_map, cur["family"], cur["label"]),
+              _handle)
 
 
-def _select_privesc_os(ip: str) -> "tuple | None":
-    """Prompt for the host OS (used when none is on record) and remember the choice.
-    Returns (label, family) or None if the user backs out."""
-    print(f"\n{BOLD}Select OS for {ip}{RESET}  {DIM}(pick the target's OS){RESET}")
-    for i, (label, _fam) in enumerate(_PRIVESC_OS, 1):
-        print(f"  {CYAN}{i}{RESET} {label}")
-    while True:
-        v = _ctx_ask("privesc-os", f"<1-{len(_PRIVESC_OS)}> · [b] back")
-        if v is None or v.lower() in _BACK_WORDS:
-            return None
-        if v.isdigit() and 1 <= int(v) <= len(_PRIVESC_OS):
-            label, fam = _PRIVESC_OS[int(v) - 1]
-            save_os(ip, label)                 # remember it on the host record
-            return label, fam
-        print(f"{RED}✗ pick 1-{len(_PRIVESC_OS)}{RESET}")
-
-
-def _privesc_for(ip: str) -> None:
-    """Open the privesc checklist for a known host: use the OS on record, or ask for it."""
+def _os_checklist_for(ip: str, kind: str, title: str, steps_map: dict) -> None:
+    """Open an OS-family checklist for a known host: use the OS on record, or ask for it."""
     os_db = fetch_host_os(ip)
     if os_db:
-        _privesc_view(ip, _os_family(os_db), os_db)
+        _os_checklist_view(ip, kind, title, steps_map, _os_family(os_db), os_db)
         return
-    picked = _select_privesc_os(ip)
+    picked = _select_os(ip)
     if picked:
-        _privesc_view(ip, picked[1], picked[0])
+        _os_checklist_view(ip, kind, title, steps_map, picked[1], picked[0])
 
 
-def _privesc_progress(ip: str) -> tuple:
-    """(complete, detail) for phase 6 in the progress view. Not started until an OS is on
-    record; complete once every privesc step is resolved (done/skip)."""
+def _os_checklist_progress(ip: str, kind: str, steps_map: dict) -> tuple:
+    """(complete, detail) for an OS-family phase in progress. Not started until an OS is on
+    record; complete once every step is resolved (done/skip)."""
     os_db = fetch_host_os(ip)
     if not os_db:
         return False, ""
     family = _os_family(os_db)
-    steps = _PRIVESC_STEPS.get(family, _PRIVESC_STEPS["linux"])
-    status = fetch_step_status(ip, 0, "", f"privesc:{family}")
+    steps = steps_map.get(family, steps_map["linux"])
+    status = fetch_step_status(ip, 0, "", f"{kind}:{family}")
     n_done = sum(1 for i in range(1, len(steps) + 1) if status.get(i) in ("done", "skip"))
     return n_done == len(steps), f"{n_done}/{len(steps)} steps · {family}"
 
 
-def _handle_privesc() -> None:
-    """Phase 6 flow: read a target IP, then work its privesc checklist (OS picked if the
-    host has none on record)."""
+def _handle_os_checklist(title: str, kind: str, steps_map: dict) -> None:
+    """Menu flow for an OS-family phase: read a target IP, then work its checklist."""
     while True:
-        value = _ctx_ask("privesc", "<single IP> · [h] help · [b] back · [m] menu")
+        value = _ctx_ask(kind, "<single IP> · [h] help · [b] back · [m] menu")
         if value is None or value.lower() in _BACK_WORDS:
             return
         if value.lower() in _HELP_WORDS:
@@ -2713,8 +2776,20 @@ def _handle_privesc() -> None:
         except ValueError:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
-        _privesc_for(ip)
+        _os_checklist_for(ip, kind, title, steps_map)
         return
+
+
+def _handle_privesc() -> None:
+    _handle_os_checklist("Privilege Escalation", "privesc", _PRIVESC_STEPS)
+
+
+def _handle_persist() -> None:
+    _handle_os_checklist("Persistence", "persist", _PERSIST_STEPS)
+
+
+def _handle_cover() -> None:
+    _handle_os_checklist("Covering Tracks", "cover", _COVER_STEPS)
 
 
 # ── placeholder handlers (skeleton — nothing is wired yet) ────────────────────
@@ -3394,6 +3469,10 @@ def main() -> int:
                         _handle_service_exploitation()
                     elif choice == "6":
                         _handle_privesc()
+                    elif choice == "7":
+                        _handle_persist()
+                    elif choice == "8":
+                        _handle_cover()
                     elif choice in _PHASES:
                         run_phase(choice)
                     elif choice in ("s", "status"):
@@ -3407,7 +3486,7 @@ def main() -> int:
                     elif choice in _MENU_WORDS:
                         pass                  # already at the menu → just redraw it
                     else:
-                        print(f"{RED}✗ pick 0-6, s, d, n, h or /exit{RESET}")
+                        print(f"{RED}✗ pick 0-8, s, d, n, h or /exit{RESET}")
                         continue              # invalid → bare re-prompt, menu not reprinted
                 except _ToMenu:               # m/menu typed inside a sub-view → back here
                     pass
