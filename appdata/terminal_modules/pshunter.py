@@ -480,7 +480,7 @@ def _host_detail_from_elem(elem) -> "dict | None":
             ip = addr.get("addr")
     if not ip:
         return None
-    services, scripts = [], []
+    services, scripts, hostnames = [], [], []
     for port in elem.findall("ports/port"):
         portid = int(port.get("portid"))
         proto = port.get("protocol") or "tcp"
@@ -494,6 +494,8 @@ def _host_detail_from_elem(elem) -> "dict | None":
             services.append({"port": portid, "proto": proto, "name": svc.get("name"),
                              "product": svc.get("product"), "version": svc.get("version"),
                              "cpe": cpe})
+            if svc.get("hostname"):                 # nmap resolves a name (often the TLS cert CN)
+                hostnames.append({"port": portid, "hostname": svc.get("hostname"), "source": "service"})
         for scr in port.findall("script"):
             scripts.append({"port": portid, "proto": proto,
                             "id": scr.get("id"), "output": scr.get("output")})
@@ -504,7 +506,8 @@ def _host_detail_from_elem(elem) -> "dict | None":
     os_name = om.get("name") if om is not None else None
     if not (services or scripts or os_name):
         return None
-    return {"ip": ip, "services": services, "scripts": scripts, "os": os_name}
+    return {"ip": ip, "services": services, "scripts": scripts, "os": os_name,
+            "hostnames": hostnames}
 
 
 def _run_nmap(args: list, targets: list, on_items, deadline: "float | None" = None,
@@ -740,6 +743,15 @@ CREATE TABLE IF NOT EXISTS exploit_steps (
     last_seen   TEXT,
     PRIMARY KEY (ip, port, proto, service, step)
 );
+CREATE TABLE IF NOT EXISTS hostnames (
+    ip          TEXT,
+    port        INTEGER,
+    hostname    TEXT,
+    source      TEXT,
+    first_seen  TEXT,
+    last_seen   TEXT,
+    PRIMARY KEY (ip, hostname)
+);
 """
 
 
@@ -963,10 +975,81 @@ def save_scripts(ip: str, rows: list) -> int:
                         "  summary = excluded.summary, last_seen = excluded.last_seen",
                         (ip, port, proto, sid, f["state"], f["cve"], f["risk"], f["summary"], now, now),
                     )
+                for hn in _extract_hostnames(ip, sid, output or ""):     # cert SANs, redirects, SMB FQDN
+                    conn.execute(
+                        "INSERT INTO hostnames (ip, port, hostname, source, first_seen, last_seen) "
+                        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(ip, hostname) DO UPDATE SET "
+                        "  last_seen = excluded.last_seen",
+                        (ip, port, hn, sid, now, now),
+                    )
             conn.commit()
         finally:
             conn.close()
     return len(rows)
+
+
+# a plausible DNS hostname (has a dot, valid label chars, not a bare IP)
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
+
+
+def _valid_hostname(name: str, ip: str) -> "str | None":
+    """Normalise & validate a candidate hostname; None if it isn't a usable DNS name."""
+    n = (name or "").strip().lower().rstrip(".")
+    if n.startswith("*."):                       # wildcard cert → keep the base domain
+        n = n[2:]
+    if not n or n == ip:
+        return None
+    if _HOSTNAME_RE.match(n) and not n.replace(".", "").isdigit():
+        return n
+    return None
+
+
+def _extract_hostnames(ip: str, sid: str, output: str) -> set:
+    """Pull DNS names out of one NSE script's output — TLS cert CN/SAN (ssl-cert), HTTP
+    redirect targets (http-title/http-*), and SMB FQDN/domain (smb-os-discovery). These
+    domains/vhosts are gold for phase 5 (add to /etc/hosts, vhost-fuzz)."""
+    if not output:
+        return set()
+    cands = []
+    if "ssl-cert" in sid or "ssl-" in sid:
+        cands += re.findall(r"DNS:([A-Za-z0-9_.*-]+)", output)
+        cands += re.findall(r"commonName=([A-Za-z0-9_.*-]+)", output)
+    if sid.startswith("http-"):
+        cands += re.findall(r"redirect to https?://([A-Za-z0-9_.-]+)", output, re.I)
+    if sid == "smb-os-discovery":
+        for pat in (r"FQDN:\s*(\S+)", r"Domain name:\s*(\S+)", r"DNS_?[Dd]omain[_ ]?[Nn]ame:\s*(\S+)",
+                    r"Forest name:\s*(\S+)"):
+            cands += re.findall(pat, output)
+    return {h for h in (_valid_hostname(c, ip) for c in cands) if h}
+
+
+def save_hostnames(ip: str, entries: list) -> None:
+    """Store validated DNS names for a host (dedup by (ip, hostname)). ``entries`` is a
+    list of {'port', 'hostname', 'source'} — e.g. nmap's per-service resolved name."""
+    if not ip or not entries or _is_self_ip(ip):
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            for e in entries:
+                hn = _valid_hostname(e.get("hostname"), ip)
+                if not hn:
+                    continue
+                conn.execute(
+                    "INSERT INTO hostnames (ip, port, hostname, source, first_seen, last_seen) "
+                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(ip, hostname) DO UPDATE SET "
+                    "  last_seen = excluded.last_seen",
+                    (ip, int(e.get("port") or 0), hn, e.get("source") or "service", now, now))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def fetch_hostnames(ip: str) -> list:
+    """(hostname, port, source) DNS names discovered for a host, for phase-5 vhost work."""
+    rows = _fetch("SELECT hostname, port, source FROM hostnames WHERE ip = ? ORDER BY hostname", (ip,))
+    return rows
 
 
 def save_os(ip: str, os_name: str) -> None:
@@ -1298,7 +1381,9 @@ def _run_service_pass(job: dict, args: list, ip: str, deadline: float) -> None:
             if svc:
                 save_services(h["ip"], svc)
             if scr:
-                save_scripts(h["ip"], scr)
+                save_scripts(h["ip"], scr)            # also extracts cert/redirect/SMB hostnames
+            if h.get("hostnames"):
+                save_hostnames(h["ip"], h["hostnames"])
             if os_name:
                 save_os(h["ip"], os_name)
             counter[0] += len(svc) + len(scr) + (1 if os_name else 0)
@@ -2511,6 +2596,10 @@ def _render_exploit_targets(ip: str) -> list:
         rows.append([str(i), disp, f"{port}/{proto}", _cell(ver or "—", 30), f"via {signal}"])
     print(_box_table(["#", "SERVICE", "PORT", "VERSION", "SIGNAL"], rows,
                      aligns=["r", "l", "l", "l", "l"]))
+    hostnames = fetch_hostnames(ip)
+    if hostnames:
+        names = ", ".join(hn for hn, _p, _s in hostnames)
+        print(f"  {DIM}hostnames (→ /etc/hosts, vhost-fuzz): {RESET}{CYAN}{names}{RESET}")
     return targets
 
 
@@ -3024,7 +3113,7 @@ def _delete_host(rows: list, n: int) -> None:
     with _DB_LOCK:
         conn = _db_connect()
         try:
-            for table in ("hosts", "ports", "services", "scripts", "vulns"):
+            for table in ("hosts", "ports", "services", "scripts", "vulns", "exploit_steps", "hostnames"):
                 conn.execute(f"DELETE FROM {table} WHERE ip = ?", (ip,))
             conn.commit()
         finally:
@@ -3092,6 +3181,7 @@ def _render_host_findings(ip: str) -> None:
     DETAILS view, not here."""
     vulns = fetch_vulns(ip)
     host_scripts = fetch_scripts(ip, 0, "")
+    hostnames = fetch_hostnames(ip)
     # short summaries: everything except the CVE-lookup rows (those get their own section)
     findings = [v for v in vulns if v[3] != "CVE"]
     cve_map = {}                                     # CVE → set of "port/proto" it was seen on
@@ -3102,9 +3192,13 @@ def _render_host_findings(ip: str) -> None:
                 cve_map.setdefault(c, set()).add(f"{port}/{proto}")
 
     print(f"\n{BOLD}{ip} — findings{RESET}")
-    if not findings and not cve_map and not host_scripts:
+    if not findings and not cve_map and not host_scripts and not hostnames:
         print(f"  {DIM}none{RESET}")
         return
+    if hostnames:
+        print(f"\n  {BOLD}HOSTNAMES{RESET}  {DIM}(add to /etc/hosts → vhost-fuzz){RESET}")
+        for hn, _port, source in hostnames:
+            print(f"    {CYAN}{hn}{RESET}  {DIM}{source}{RESET}")
     if findings:
         print(f"\n  {BOLD}FINDINGS{RESET}")
         for port, proto, script, state, cve, risk, summary in findings:
@@ -3238,7 +3332,7 @@ def clear_database() -> None:
     with _DB_LOCK:
         conn = _db_connect()
         try:
-            for table in ("hosts", "ports", "services", "scripts", "vulns"):
+            for table in ("hosts", "ports", "services", "scripts", "vulns", "exploit_steps", "hostnames"):
                 conn.execute(f"DELETE FROM {table}")
             conn.commit()
         finally:
@@ -3265,7 +3359,8 @@ def new_session() -> None:
         with _DB_LOCK:
             conn = _db_connect()
             try:
-                for table in ("hosts", "jobs", "ports", "services", "scripts", "vulns"):
+                for table in ("hosts", "jobs", "ports", "services", "scripts", "vulns",
+                              "exploit_steps", "hostnames"):
                     conn.execute(f"DELETE FROM {table}")
                 conn.commit()
             finally:
