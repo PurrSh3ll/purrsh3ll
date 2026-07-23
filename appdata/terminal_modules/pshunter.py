@@ -1016,6 +1016,7 @@ def _extract_hostnames(ip: str, sid: str, output: str) -> set:
         cands += re.findall(r"commonName=([A-Za-z0-9_.*-]+)", output)
     if sid.startswith("http-"):
         cands += re.findall(r"redirect to https?://([A-Za-z0-9_.-]+)", output, re.I)
+        cands += re.findall(r"[Ll]ocation:\s*https?://([A-Za-z0-9_.-]+)", output)
     if sid == "smb-os-discovery":
         for pat in (r"FQDN:\s*(\S+)", r"Domain name:\s*(\S+)", r"DNS_?[Dd]omain[_ ]?[Nn]ame:\s*(\S+)",
                     r"Forest name:\s*(\S+)"):
@@ -1557,6 +1558,29 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
     # 2) auth-category scripts: any output = weakness
     if sid in _AUTH_TITLE:
         return {"state": "EXPOSED", "cve": cve, "risk": "HIGH", "summary": _AUTH_TITLE[sid]}
+
+    # 2b) http-headers tool: fold the tech banner + missing security headers into one finding
+    if sid == "http-headers":
+        tech = []
+        for hdr in ("Server", "X-Powered-By"):
+            m = re.search(rf"^{hdr}:\s*(.+)$", output, re.I | re.M)
+            if m:
+                tech.append(m.group(1).strip())
+        wanted = [("content-security-policy", "CSP"), ("x-frame-options", "X-Frame-Options"),
+                  ("x-content-type-options", "X-Content-Type-Options")]
+        if re.match(r"\s*https://", output, re.I):          # HSTS only matters over TLS
+            wanted.append(("strict-transport-security", "HSTS"))
+        missing = [short for hdr, short in wanted
+                   if not re.search(rf"^{re.escape(hdr)}:", output, re.I | re.M)]
+        parts = []
+        if tech:
+            parts.append("tech: " + ", ".join(tech))
+        if missing:
+            parts.append("missing sec-headers: " + ", ".join(missing))
+        if parts:
+            return {"state": "INFO", "cve": cve, "risk": "LOW" if missing else "INFO",
+                    "summary": " · ".join(parts)[:140]}
+        return None
 
     # 3) info rules over -sC output
     low = output.lower()
@@ -2612,22 +2636,29 @@ def _step_parts(step) -> tuple:
 
 
 def _tool_http_headers(ip: str, port: int, proto: str) -> str:
-    """Example phase-6 tool: grab a web server's HTTP response headers (stdlib only, no
-    external dependency) so the run-a-tool flow can be tested end to end."""
+    """HTTP step-1 tool: grab a web server's response headers (Server, X-Powered-By,
+    cookies) + status, WITHOUT following redirects so a 30x Location (often a vhost) is
+    captured. Stdlib only — no external dependency; one focused header grab is enough for
+    this step (deeper fingerprinting is step 2 / whatweb)."""
     import urllib.request
     import ssl
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):       # keep the 30x so we see Location
+            return None
+
     name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
     tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
     url = f"{'https' if tls else 'http'}://{ip}:{port}/"
     ctx = ssl._create_unverified_context()
+    opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=ctx))
     req = urllib.request.Request(url, headers={"User-Agent": "pshunter"})
     try:
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            status, headers = resp.status, resp.headers
-    except urllib.error.HTTPError as exc:          # 4xx/5xx still carry useful headers
+        resp = opener.open(req, timeout=8)
+        status, headers = resp.status, resp.headers
+    except urllib.error.HTTPError as exc:          # 30x / 4xx / 5xx still carry useful headers
         status, headers = exc.code, exc.headers
-    except Exception as exc:                        # noqa: BLE001 — surface any failure
-        return f"request failed: {exc}"
+    # a connection-level failure (refused / timeout / DNS) propagates → the step won't go green
     lines = [f"{url} → HTTP {status}"]
     lines += [f"{k}: {v}" for k, v in headers.items()]
     return "\n".join(lines)
@@ -2639,7 +2670,8 @@ _STEP_TOOLS = {
 }
 
 # status glyph + colour for a checklist step
-_STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), None: ("○", DIM)}
+_STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), "running": ("⏳", YELLOW),
+              None: ("○", DIM)}
 
 
 def _render_exploit_checklist(ip: str, target: tuple) -> None:
@@ -2662,8 +2694,28 @@ def _render_exploit_checklist(ip: str, target: tuple) -> None:
             print(f"        {DIM}→ {_STEP_TOOLS[tool_key][0]}  ·  run with {BOLD}r {i}{RESET}")
 
 
+def _step_tool_worker(job: dict, ip: str, port: int, proto: str, tool_key, runner,
+                      svc_key: str, step_n: int, prev_status: "str | None") -> None:
+    """Background body of a checklist tool: run it, store the output as the port's DETAILS
+    (which also extracts hostnames/findings), update the job, and flip the checklist step
+    to ✓ done on success — or back to its prior status on error."""
+    try:
+        out = runner(ip, port, proto)
+    except Exception as exc:                              # noqa: BLE001 — never crash the thread
+        job["state"], job["error"] = "error", str(exc)
+        _job_update(job)
+        set_step_status(ip, port, proto, svc_key, step_n, prev_status)   # error → leave as it was
+        return
+    save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
+    job["state"], job["output"], job["hosts"] = "done", out, 1
+    _job_update(job)
+    set_step_status(ip, port, proto, svc_key, step_n, "done")            # success → green
+
+
 def _run_step_tool(ip: str, target: tuple, n: int) -> None:
-    """Run the wired tool for step n (if any) and print its output inline."""
+    """Launch the wired tool for step n in the background (like the scan phases, so the app
+    never blocks); marks the step ⏳ running now, ✓ done when it finishes. Output lands in
+    the port's DETAILS / [f] findings, viewable in status."""
     port, proto, _label, key, _ver, _signal = target
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
     if not 1 <= n <= len(steps):
@@ -2674,11 +2726,15 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{DIM}step {n} has no tool — do it manually{RESET}")
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
-    print(f"\n{GREEN}▶ running{RESET} {DIM}{tlabel} · {ip}:{port}/{proto}{RESET}")
-    out = runner(ip, port, proto)
-    for line in (out or "").splitlines()[:40]:
-        print(f"  {DIM}{line}{RESET}")
-    print(f"  {DIM}mark it {BOLD}{n}{RESET}{DIM} done when you've reviewed it{RESET}")
+    prev = fetch_step_status(ip, port, proto, key).get(n)     # so an error can restore it
+    set_step_status(ip, port, proto, key, n, "running")       # show ⏳ in the checklist now
+    job = _new_job("5", f"{tool_key} · {ip}:{port}", f"{tlabel} on {ip}:{port}/{proto}")
+    threading.Thread(target=_step_tool_worker,
+                     args=(job, ip, port, proto, tool_key, runner, key, n, prev),
+                     daemon=True).start()
+    print(f"\n{GREEN}▶ {tlabel} running in the background{RESET} "
+          f"{DIM}({ip}:{port}/{proto}) — check {BOLD}[s] status{RESET}{DIM}; output → "
+          f"{BOLD}DETAILS{RESET}{DIM} / {BOLD}[f] findings{RESET}")
 
 
 def _exploit_service_view(ip: str, target: tuple) -> None:
@@ -2702,7 +2758,7 @@ def _exploit_service_view(ip: str, target: tuple) -> None:
             return "refresh"
         if v.startswith("r") and v[1:].strip().isdigit():
             _run_step_tool(ip, target, int(v[1:].strip()))
-            return "stay"
+            return "refresh"                     # redraw so the step shows ⏳ running now
         if v.isdigit():
             _toggle(int(v), "done")
             return "refresh"
