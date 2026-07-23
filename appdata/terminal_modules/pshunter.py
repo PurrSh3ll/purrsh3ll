@@ -95,12 +95,13 @@ def print_header() -> None:
 # Each entry: (menu key, name, one-line intent). The order is the recommended
 # progression; nothing forces it, but later phases build on earlier findings.
 PHASES = [
-    ("1", "Host discovery",      "find which hosts are alive on the target scope"),
-    ("2", "Port enumeration",    "map open TCP/UDP ports on a live host"),
-    ("3", "Service detection",   "fingerprint the service/version behind each port"),
-    ("4", "Vuln scan",           "run vulnerability checks against detected services"),
-    ("5", "CVE lookup",          "match service CPEs to known CVEs"),
-    ("6", "Service exploitation", "attempt exploitation / access on a chosen service"),
+    ("0", "Host discovery",       "find which hosts are alive on the target scope"),
+    ("1", "Port enumeration",     "map open TCP/UDP ports on a live host"),
+    ("2", "Service detection",    "fingerprint the service/version behind each port"),
+    ("3", "Vuln scan",            "run vulnerability checks against detected services"),
+    ("4", "CVE lookup",           "match service CPEs to known CVEs"),
+    ("5", "Service exploitation", "attempt exploitation / access on a chosen service"),
+    ("6", "Privilege Escalation", "escalate to root / SYSTEM on a compromised host"),
 ]
 _PHASES = {key: (name, desc) for key, name, desc in PHASES}
 
@@ -356,7 +357,7 @@ def _handle_service_detection() -> None:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
         if not fetch_ports(ip):
-            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[1] Port "
                   f"enumeration{RESET}{DIM} first (OS scan still runs if root){RESET}")
         minutes = _prompt_minutes("service", "Service detection", ip)
         if minutes is None:
@@ -383,8 +384,8 @@ def _handle_vuln_scan() -> None:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
         if not fetch_ports(ip):
-            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
-                  f"enumeration{RESET}{DIM} (and {BOLD}[3] Service detection{RESET}{DIM}) first{RESET}")
+            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[1] Port "
+                  f"enumeration{RESET}{DIM} (and {BOLD}[2] Service detection{RESET}{DIM}) first{RESET}")
             continue
         print(f"{DIM}vuln + auth scripting{RESET}")
         minutes = _prompt_minutes("vuln", "Vuln scan", ip)
@@ -1162,12 +1163,12 @@ def _run_discovery(parsed: dict, minutes: int) -> None:
     _refresh_own_addresses()          # pick up any IP change since the last scan
     targets = parsed["targets"]
     deadline = max(1, minutes * 60)
-    name = _PHASES["1"][0]
+    name = _PHASES["0"][0]
     run = _next_run_id()
     threads = []
     for args in (_DISCOVERY_FAST, _DISCOVERY_SLOW):
         command = " ".join(["nmap"] + args + targets)
-        job = _new_job("1", name, command, run)
+        job = _new_job("0", name, command, run)
         t = threading.Thread(target=_run_pass, args=(job, args, targets, deadline), daemon=True)
         t.start()
         threads.append(t)
@@ -1241,12 +1242,12 @@ def _run_port_enum(ip: str, minutes: int) -> None:
     _refresh_own_addresses()
     save_hosts([{"ip": ip}])          # make sure the target shows in the hosts list
     deadline = max(1, minutes * 60)
-    name = _PHASES["2"][0]
+    name = _PHASES["1"][0]
     run = _next_run_id()
     threads = []
     for _label, args in _port_scan_specs():
         command = " ".join(["nmap"] + args + [ip])
-        job = _new_job("2", name, command, run)
+        job = _new_job("1", name, command, run)
         t = threading.Thread(target=_run_port_pass, args=(job, args, ip, deadline), daemon=True)
         t.start()
         threads.append(t)
@@ -1324,12 +1325,12 @@ def _run_service_detection(ip: str, minutes: int) -> None:
     _refresh_own_addresses()
     save_hosts([{"ip": ip}])
     deadline = max(1, minutes * 60)
-    name = _PHASES["3"][0]
+    name = _PHASES["2"][0]
     run = _next_run_id()
     threads = []
     for _label, args in _service_scan_specs(ip):
         command = " ".join(["nmap"] + args + [ip])
-        job = _new_job("3", name, command, run)
+        job = _new_job("2", name, command, run)
         t = threading.Thread(target=_run_service_pass, args=(job, args, ip, deadline), daemon=True)
         t.start()
         threads.append(t)
@@ -1533,10 +1534,10 @@ def _run_vuln_scan(ip: str, minutes: int) -> None:
     _refresh_own_addresses()
     save_hosts([{"ip": ip}])
     deadline = max(1, minutes * 60)
-    name = _PHASES["4"][0]
+    name = _PHASES["3"][0]
     families = _vuln_families(ip)
     if not families:
-        job = _new_job("4", name, f"nmap (no known services on {ip})")
+        job = _new_job("3", name, f"nmap (no known services on {ip})")
         job["state"] = "done"
         _job_update(job)
         return
@@ -1544,7 +1545,7 @@ def _run_vuln_scan(ip: str, minutes: int) -> None:
     threads = []
     for label, scripts, ports in families:
         command = f"nmap -sV --script {scripts} -T3 -p {','.join(str(p) for p in ports)} {ip}"
-        job = _new_job("4", f"{name} · {label}", command, run)
+        job = _new_job("3", f"{name} · {label}", command, run)
         t = threading.Thread(target=_run_vuln_pass, args=(job, scripts, ports, ip, deadline),
                              daemon=True)
         t.start()
@@ -1729,8 +1730,8 @@ def save_cve_findings(ip: str, results: list) -> None:
 
 def _do_cve_lookup(ip: str) -> None:
     """Run the offline lookup for one host, store findings, log a job, print a recap."""
-    name = _PHASES["5"][0]
-    job = _new_job("5", f"{name} · {ip}", f"cve-index lookup (offline NVD) for {ip}")
+    name = _PHASES["4"][0]
+    job = _new_job("4", f"{name} · {ip}", f"cve-index lookup (offline NVD) for {ip}")
     results = []
     try:
         results = _run_cve_lookup(ip)
@@ -1749,7 +1750,7 @@ def _do_cve_lookup(ip: str) -> None:
 
     if not results:
         print(f"\n{DIM}▸ CVE lookup — {ip}: no versioned service CPE matched the index "
-              f"(run {BOLD}[3] Service detection{RESET}{DIM} first, or no known CVEs){RESET}")
+              f"(run {BOLD}[2] Service detection{RESET}{DIM} first, or no known CVEs){RESET}")
         return
     total = sum(len(cves) for *_rest, cves in results)
     print(f"\n{GREEN}▶ CVE lookup done{RESET} {DIM}({ip} · {len(results)} service(s), {total} CVE) — "
@@ -1775,7 +1776,7 @@ def _handle_cve_lookup() -> None:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
         if not fetch_services(ip):
-            print(f"{DIM}note: no services recorded for {ip} — run {BOLD}[3] Service "
+            print(f"{DIM}note: no services recorded for {ip} — run {BOLD}[2] Service "
                   f"detection{RESET}{DIM} first{RESET}")
             continue
         _do_cve_lookup(ip)
@@ -1842,39 +1843,42 @@ def _render_host_progress(ip: str) -> None:
     # this session (its found-set is populated), phase 1 counts only when it found THIS
     # host. With no live discovery job (e.g. a prior session), fall back to "on record".
     with _JOBS_LOCK:
-        disc = [j for j in _JOBS if j["phase"] == "1"]
+        disc = [j for j in _JOBS if j["phase"] == "0"]
         discovered = any(ip in j["found"] for j in disc)
         live_discovery = any(j["found"] for j in disc)
-    phase1_done = discovered or (known and not live_discovery)
+    phase0_done = discovered or (known and not live_discovery)
 
-    # phase 6 is complete only when EVERY service's checklist is fully resolved (done/skip)
+    # phase 5 (service exploitation) is complete only when EVERY service's checklist is
+    # resolved (done/skip); phase 6 (privesc) when its OS checklist is resolved.
     targets = _exploit_targets(ip)
     n_svc_done = sum(1 for p, pr, _l, k, _v, _s in targets if _service_steps_complete(ip, p, pr, k))
-    phase6_done = bool(targets) and n_svc_done == len(targets)
+    phase5_done = bool(targets) and n_svc_done == len(targets)
+    privesc_done, privesc_detail = _privesc_progress(ip)
 
     # phase key -> (has evidence in the DB, short detail line)
     evidence = {
-        "1": (phase1_done, "on record" if phase1_done else ""),
-        "2": (bool(ports), f"{len(ports)} open port(s)" if ports else ""),
-        "3": (bool(fingerprinted) or bool(host_scripts) or bool(scripted),
+        "0": (phase0_done, "on record" if phase0_done else ""),
+        "1": (bool(ports), f"{len(ports)} open port(s)" if ports else ""),
+        "2": (bool(fingerprinted) or bool(host_scripts) or bool(scripted),
               f"{len(fingerprinted)} fingerprinted" if fingerprinted else ("NSE output" if (host_scripts or scripted) else "")),
-        "4": (bool(vuln_findings), f"{len(vuln_findings)} vuln finding(s)" if vuln_findings else ""),
-        "5": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
-        "6": (phase6_done, f"{n_svc_done}/{len(targets)} services" if targets else ""),
+        "3": (bool(vuln_findings), f"{len(vuln_findings)} vuln finding(s)" if vuln_findings else ""),
+        "4": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
+        "5": (phase5_done, f"{n_svc_done}/{len(targets)} services" if targets else ""),
+        "6": (privesc_done, privesc_detail),
     }
 
     print(f"\n{BOLD}{ip} — progress{RESET}")
     if not known and not ports and not vulns and not jobstate:
-        print(f"  {DIM}nothing recorded for this host yet — run {BOLD}[1] Host discovery{RESET}"
-              f"{DIM} / {BOLD}[2] Port enumeration{RESET}{DIM} first{RESET}")
+        print(f"  {DIM}nothing recorded for this host yet — run {BOLD}[0] Host discovery{RESET}"
+              f"{DIM} / {BOLD}[1] Port enumeration{RESET}{DIM} first{RESET}")
         return
 
     done = 0
     for key, name, _desc in PHASES:
         has, detail = evidence[key]
-        # phase 6 is a manual checklist with no automatic completion yet — never mark it
-        # complete/green; it stays 'not run' until real per-step tracking exists.
-        st = None if key == "6" else jobstate.get(key)
+        # phases 5-6 are manual checklists (no background jobs) — completion is driven by
+        # the checklist evidence above, not job state.
+        st = None if key in ("5", "6") else jobstate.get(key)
         if st == "running":
             sym, col, label = "⏳", YELLOW, "running"
         elif has or st == "done":
@@ -1894,43 +1898,46 @@ def _render_host_progress(ip: str) -> None:
 def _launch_phase_for(key: str, ip: str) -> None:
     """Run one workflow phase for a host chosen in the progress view — same launch path
     as the per-phase handlers, but the IP is already known so it's not re-typed."""
-    if key == "1":
+    if key == "0":
         print(f"{DIM}note: host discovery scans a subnet/range, not one host — use "
-              f"{BOLD}[1]{RESET}{DIM} from the menu{RESET}")
+              f"{BOLD}[0]{RESET}{DIM} from the menu{RESET}")
         return
     if key == "6":
-        _exploit_targets_view(ip)                            # service triage (skeleton)
+        _privesc_for(ip)                                     # privilege escalation checklist
         return
     if key == "5":
+        _exploit_targets_view(ip)                            # service exploitation checklist
+        return
+    if key == "4":
         if not os.path.exists(CVE_INDEX_PATH):
             print(f"\n{YELLOW}⚠ CVE index not found{RESET} {DIM}({os.path.basename(CVE_INDEX_PATH)}) "
                   f"— build it with the installer's NVD step, then retry{RESET}")
             return
         if not fetch_services(ip):
-            print(f"{DIM}note: no services recorded for {ip} — run {BOLD}[3] Service "
+            print(f"{DIM}note: no services recorded for {ip} — run {BOLD}[2] Service "
                   f"detection{RESET}{DIM} first{RESET}")
             return
         _do_cve_lookup(ip)
         return
-    # phases 2–4: background nmap scans on a time budget
-    if key == "3" and not fetch_ports(ip):
-        print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+    # phases 1–3: background nmap scans on a time budget
+    if key == "2" and not fetch_ports(ip):
+        print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[1] Port "
               f"enumeration{RESET}{DIM} first (OS scan still runs if root){RESET}")
-    if key == "4" and not fetch_ports(ip):
-        print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
-              f"enumeration{RESET}{DIM} (and {BOLD}[3] Service detection{RESET}{DIM}) first{RESET}")
+    if key == "3" and not fetch_ports(ip):
+        print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[1] Port "
+              f"enumeration{RESET}{DIM} (and {BOLD}[2] Service detection{RESET}{DIM}) first{RESET}")
         return
     name = _PHASES[key][0]
-    if key == "4":
+    if key == "3":
         print(f"{DIM}vuln + auth scripting{RESET}")
-    module = {"2": "ports", "3": "service", "4": "vuln"}[key]
+    module = {"1": "ports", "2": "service", "3": "vuln"}[key]
     minutes = _prompt_minutes(module, name, ip)
     if minutes is None:
         return
-    if key == "2":
+    if key == "1":
         _start_port_enum(ip, minutes)
         detail = "fast + full TCP + UDP"
-    elif key == "3":
+    elif key == "2":
         _start_service_detection(ip, minutes)
         detail = "-sV -sC + OS"
     else:
@@ -2383,7 +2390,7 @@ def _render_exploit_targets(ip: str) -> list:
     Returns the ordered targets so a number can pick one."""
     print(f"\n{BOLD}{ip} — service exploitation{RESET}")
     if not fetch_ports(ip):
-        print(f"  {DIM}no open ports recorded — run {BOLD}[2] Port enumeration{RESET}"
+        print(f"  {DIM}no open ports recorded — run {BOLD}[1] Port enumeration{RESET}"
               f"{DIM} first{RESET}")
         return []
     targets = _exploit_targets(ip)
@@ -2546,10 +2553,167 @@ def _handle_service_exploitation() -> None:
             print(f"{RED}✗ give one valid IP address{RESET}")
             continue
         if not fetch_ports(ip):
-            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[2] Port "
+            print(f"{DIM}note: no open ports recorded for {ip} — run {BOLD}[1] Port "
                   f"enumeration{RESET}{DIM} first{RESET}")
             continue
         _exploit_targets_view(ip)
+        return
+
+
+# ── privilege escalation (phase 6) ────────────────────────────────────────────
+# Selectable OSes for a host with no OS on record — the ones that keep showing up on
+# HTB / OSCP / CTF. The second field is the privesc family (which checklist to use).
+_PRIVESC_OS = [
+    ("Linux",          "linux"),
+    ("Ubuntu",         "linux"),
+    ("Debian",         "linux"),
+    ("Windows",        "windows"),
+    ("Windows Server", "windows"),
+    ("Other / Unix",   "linux"),
+]
+
+# Privesc checklist per OS family (starter methodology — deeper pass later).
+_PRIVESC_STEPS = {
+    "linux": [
+        "Automated enum (linpeas.sh / LinEnum.sh)",
+        "sudo -l — sudo rights → GTFOBins",
+        "SUID/SGID binaries (find / -perm -4000) → GTFOBins",
+        "Capabilities (getcap -r /) → abuse",
+        "Cron jobs & writable scripts / PATH hijack",
+        "Writable /etc/passwd, /etc/shadow, service files",
+        "Kernel version → known exploit (uname -a; searchsploit)",
+        "Interesting files: configs, history, SSH keys, backups, .env",
+        "Internal services / ports (ss -tlnp) → local exploit",
+        "Password reuse & creds in files / process memory",
+    ],
+    "windows": [
+        "Automated enum (winPEAS.exe / PrivescCheck)",
+        "whoami /priv — token privileges (SeImpersonate → Potato)",
+        "whoami /groups — group memberships",
+        "Services: unquoted paths, weak perms, writable binaries",
+        "AlwaysInstallElevated (HKLM + HKCU)",
+        "Scheduled tasks & startup items with weak perms",
+        "Stored creds: cmdkey, registry, Unattend.xml, SAM/SYSTEM",
+        "OS build → known exploit (systeminfo; wesng / Sherlock)",
+        "Autologon / SNMP / config files with passwords",
+        "Token impersonation / named-pipe → SYSTEM",
+    ],
+}
+
+
+def _os_family(text: "str | None") -> str:
+    """Map an OS string (nmap's guess or the user's pick) to a privesc family."""
+    return "windows" if text and "windows" in text.lower() else "linux"
+
+
+def _render_privesc_checklist(ip: str, family: str, os_label: str) -> None:
+    """The privilege-escalation checklist for a host, by OS family."""
+    steps = _PRIVESC_STEPS.get(family, _PRIVESC_STEPS["linux"])
+    status = fetch_step_status(ip, 0, "", f"privesc:{family}")
+    print(f"\n{BOLD}Privilege Escalation — checklist{RESET}  {DIM}{ip} · {os_label}{RESET}")
+    print()
+    for i, step in enumerate(steps, 1):
+        desc, _tool = _step_parts(step)
+        st = status.get(i)
+        sym, col = _STEP_MARK.get(st, _STEP_MARK[None])
+        body = f"{col}{desc}{RESET}" if st in ("done", "skip") else desc
+        print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
+
+
+def _privesc_view(ip: str, family: str, os_label: str) -> None:
+    """Interactive privesc checklist: <n> toggles done, s <n> toggles skip, o changes the
+    OS (in case the wrong one was picked). Status is saved (port 0, service
+    'privesc:<family>') so it survives across sessions."""
+    cur_os = {"family": family, "label": os_label}     # mutable so [o] can switch it live
+
+    def _toggle(n, want):
+        steps = _PRIVESC_STEPS.get(cur_os["family"], _PRIVESC_STEPS["linux"])
+        if not 1 <= n <= len(steps):
+            print(f"{RED}✗ no step {n}{RESET}")
+            return
+        svc = f"privesc:{cur_os['family']}"
+        prev = fetch_step_status(ip, 0, "", svc).get(n)
+        set_step_status(ip, 0, "", svc, n, None if prev == want else want)
+
+    def _handle(_c, v):
+        if v == "":
+            return "refresh"
+        if v == "o":
+            picked = _select_privesc_os(ip)            # also saves the new OS on the host
+            if picked:
+                cur_os["label"], cur_os["family"] = picked
+            return "refresh"
+        if v.startswith("s") and v[1:].strip().isdigit():
+            _toggle(int(v[1:].strip()), "skip")
+            return "refresh"
+        if v.isdigit():
+            _toggle(int(v), "done")
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> done · s <n> skip · o · b{RESET}")
+        return "stay"
+
+    _run_view(f"{ip} privesc",
+              "[Enter] refresh · <n> done · s <n> skip · [o] change OS · [b] back · [m] menu",
+              lambda: _render_privesc_checklist(ip, cur_os["family"], cur_os["label"]), _handle)
+
+
+def _select_privesc_os(ip: str) -> "tuple | None":
+    """Prompt for the host OS (used when none is on record) and remember the choice.
+    Returns (label, family) or None if the user backs out."""
+    print(f"\n{BOLD}Select OS for {ip}{RESET}  {DIM}(pick the target's OS){RESET}")
+    for i, (label, _fam) in enumerate(_PRIVESC_OS, 1):
+        print(f"  {CYAN}{i}{RESET} {label}")
+    while True:
+        v = _ctx_ask("privesc-os", f"<1-{len(_PRIVESC_OS)}> · [b] back")
+        if v is None or v.lower() in _BACK_WORDS:
+            return None
+        if v.isdigit() and 1 <= int(v) <= len(_PRIVESC_OS):
+            label, fam = _PRIVESC_OS[int(v) - 1]
+            save_os(ip, label)                 # remember it on the host record
+            return label, fam
+        print(f"{RED}✗ pick 1-{len(_PRIVESC_OS)}{RESET}")
+
+
+def _privesc_for(ip: str) -> None:
+    """Open the privesc checklist for a known host: use the OS on record, or ask for it."""
+    os_db = fetch_host_os(ip)
+    if os_db:
+        _privesc_view(ip, _os_family(os_db), os_db)
+        return
+    picked = _select_privesc_os(ip)
+    if picked:
+        _privesc_view(ip, picked[1], picked[0])
+
+
+def _privesc_progress(ip: str) -> tuple:
+    """(complete, detail) for phase 6 in the progress view. Not started until an OS is on
+    record; complete once every privesc step is resolved (done/skip)."""
+    os_db = fetch_host_os(ip)
+    if not os_db:
+        return False, ""
+    family = _os_family(os_db)
+    steps = _PRIVESC_STEPS.get(family, _PRIVESC_STEPS["linux"])
+    status = fetch_step_status(ip, 0, "", f"privesc:{family}")
+    n_done = sum(1 for i in range(1, len(steps) + 1) if status.get(i) in ("done", "skip"))
+    return n_done == len(steps), f"{n_done}/{len(steps)} steps · {family}"
+
+
+def _handle_privesc() -> None:
+    """Phase 6 flow: read a target IP, then work its privesc checklist (OS picked if the
+    host has none on record)."""
+    while True:
+        value = _ctx_ask("privesc", "<single IP> · [h] help · [b] back · [m] menu")
+        if value is None or value.lower() in _BACK_WORDS:
+            return
+        if value.lower() in _HELP_WORDS:
+            print_help()
+            continue
+        try:
+            ip = str(ipaddress.ip_address(value))
+        except ValueError:
+            print(f"{RED}✗ give one valid IP address{RESET}")
+            continue
+        _privesc_for(ip)
         return
 
 
@@ -3216,18 +3380,20 @@ def main() -> int:
                 try:
                     if choice in _HELP_WORDS:
                         _view(print_help, "help")
-                    elif choice == "1":
+                    elif choice == "0":
                         _handle_host_discovery()
-                    elif choice == "2":
+                    elif choice == "1":
                         _handle_port_enum()
-                    elif choice == "3":
+                    elif choice == "2":
                         _handle_service_detection()
-                    elif choice == "4":
+                    elif choice == "3":
                         _handle_vuln_scan()
-                    elif choice == "5":
+                    elif choice == "4":
                         _handle_cve_lookup()
-                    elif choice == "6":
+                    elif choice == "5":
                         _handle_service_exploitation()
+                    elif choice == "6":
+                        _handle_privesc()
                     elif choice in _PHASES:
                         run_phase(choice)
                     elif choice in ("s", "status"):
@@ -3241,7 +3407,7 @@ def main() -> int:
                     elif choice in _MENU_WORDS:
                         pass                  # already at the menu → just redraw it
                     else:
-                        print(f"{RED}✗ pick 1-6, s, d, n, h or /exit{RESET}")
+                        print(f"{RED}✗ pick 0-6, s, d, n, h or /exit{RESET}")
                         continue              # invalid → bare re-prompt, menu not reprinted
                 except _ToMenu:               # m/menu typed inside a sub-view → back here
                     pass
