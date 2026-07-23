@@ -681,7 +681,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     state       TEXT,
     hosts       INTEGER,
     error       TEXT,
-    output      TEXT
+    output      TEXT,
+    run         TEXT
 );
 CREATE TABLE IF NOT EXISTS ports (
     ip          TEXT,
@@ -762,6 +763,8 @@ def _db_connect() -> "sqlite3.Connection":
     jcols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()}
     if jcols and "output" not in jcols:
         conn.execute("ALTER TABLE jobs ADD COLUMN output TEXT")
+    if jcols and "run" not in jcols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN run TEXT")
     hcols = {r[1] for r in conn.execute("PRAGMA table_info(hosts)").fetchall()}
     if hcols and "os" not in hcols:
         conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT")
@@ -1036,10 +1039,10 @@ def _job_insert(job: dict) -> None:
         conn = _db_connect()
         try:
             cur = conn.execute(
-                "INSERT INTO jobs (created, phase, name, command, state, hosts, error, output) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (created, phase, name, command, state, hosts, error, output, run) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (job["created"], job["phase"], job["name"], job["command"],
-                 job["state"], job["hosts"], job["error"], job["output"]))
+                 job["state"], job["hosts"], job["error"], job["output"], job.get("run")))
             job["db_id"] = cur.lastrowid
             conn.commit()
         finally:
@@ -1070,7 +1073,7 @@ def _load_jobs() -> None:
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
         rows = conn.execute("SELECT id, created, phase, name, command, state, hosts, "
-                            "error, output FROM jobs ORDER BY id").fetchall()
+                            "error, output, run FROM jobs ORDER BY id").fetchall()
     except sqlite3.OperationalError:      # jobs table not created yet
         return
     finally:
@@ -1078,11 +1081,12 @@ def _load_jobs() -> None:
     corrected = []
     with _JOBS_LOCK:
         _JOBS.clear()
-        for jid, created, phase, name, command, state, hosts, error, output in rows:
+        for jid, created, phase, name, command, state, hosts, error, output, run in rows:
             st = "aborted" if state == "running" else state
             job = {"db_id": jid, "created": created, "phase": phase, "name": name,
                    "command": command, "state": st, "hosts": hosts or 0,
                    "found": set(), "error": error, "output": output,
+                   "run": run or f"job{jid}",    # pre-run-column jobs group as singletons
                    "cancel": threading.Event()}
             _JOBS.append(job)
             if st != state:
@@ -1091,9 +1095,17 @@ def _load_jobs() -> None:
         _job_update(job)
 
 
-def _new_job(phase: str, name: str, command: str) -> dict:
+def _next_run_id() -> str:
+    """A unique id for one phase execution (the batch of commands launched together).
+    Time-based so it never collides with a run id reloaded from a previous session."""
+    return str(time.time_ns())
+
+
+def _new_job(phase: str, name: str, command: str, run: "str | None" = None) -> dict:
+    # each phase execution shares one run id so status can group its commands; a job with
+    # no explicit run (single-command phases) gets its own, i.e. its own status entry.
     job = {
-        "phase": phase, "name": name, "command": command,
+        "phase": phase, "name": name, "command": command, "run": run or _next_run_id(),
         "state": "running", "hosts": 0, "found": set(), "error": None, "output": None,
         "cancel": threading.Event(),
         "created": datetime.now().isoformat(timespec="seconds"), "db_id": None,
@@ -1139,10 +1151,11 @@ def _run_discovery(parsed: dict, minutes: int) -> None:
     targets = parsed["targets"]
     deadline = max(1, minutes * 60)
     name = _PHASES["1"][0]
+    run = _next_run_id()
     threads = []
     for args in (_DISCOVERY_FAST, _DISCOVERY_SLOW):
         command = " ".join(["nmap"] + args + targets)
-        job = _new_job("1", name, command)
+        job = _new_job("1", name, command, run)
         t = threading.Thread(target=_run_pass, args=(job, args, targets, deadline), daemon=True)
         t.start()
         threads.append(t)
@@ -1217,10 +1230,11 @@ def _run_port_enum(ip: str, minutes: int) -> None:
     save_hosts([{"ip": ip}])          # make sure the target shows in the hosts list
     deadline = max(1, minutes * 60)
     name = _PHASES["2"][0]
+    run = _next_run_id()
     threads = []
     for _label, args in _port_scan_specs():
         command = " ".join(["nmap"] + args + [ip])
-        job = _new_job("2", name, command)
+        job = _new_job("2", name, command, run)
         t = threading.Thread(target=_run_port_pass, args=(job, args, ip, deadline), daemon=True)
         t.start()
         threads.append(t)
@@ -1299,10 +1313,11 @@ def _run_service_detection(ip: str, minutes: int) -> None:
     save_hosts([{"ip": ip}])
     deadline = max(1, minutes * 60)
     name = _PHASES["3"][0]
+    run = _next_run_id()
     threads = []
     for _label, args in _service_scan_specs(ip):
         command = " ".join(["nmap"] + args + [ip])
-        job = _new_job("3", name, command)
+        job = _new_job("3", name, command, run)
         t = threading.Thread(target=_run_service_pass, args=(job, args, ip, deadline), daemon=True)
         t.start()
         threads.append(t)
@@ -1513,10 +1528,11 @@ def _run_vuln_scan(ip: str, minutes: int) -> None:
         job["state"] = "done"
         _job_update(job)
         return
+    run = _next_run_id()
     threads = []
     for label, scripts, ports in families:
         command = f"nmap -sV --script {scripts} -T3 -p {','.join(str(p) for p in ports)} {ip}"
-        job = _new_job("4", f"{name} · {label}", command)
+        job = _new_job("4", f"{name} · {label}", command, run)
         t = threading.Thread(target=_run_vuln_pass, args=(job, scripts, ports, ip, deadline),
                              daemon=True)
         t.start()
@@ -1769,21 +1785,21 @@ def _host_job_states(ip: str) -> dict:
     for j in jobs:
         if pat.search(j.get("command") or "") or pat.search(j.get("name") or ""):
             per_phase.setdefault(j["phase"], []).append(j["state"])
-    states = {}
-    for phase, sts in per_phase.items():
-        # running wins (any pass still going); else a success (done) settles the phase;
-        # error/aborted only when nothing ran to completion.
-        if "running" in sts:
-            states[phase] = "running"
-        elif "done" in sts:
-            states[phase] = "done"
-        elif "error" in sts:
-            states[phase] = "error"
-        elif "aborted" in sts:
-            states[phase] = "aborted"
-        else:
-            states[phase] = sts[-1]
-    return states
+    return {phase: _agg_state(sts) for phase, sts in per_phase.items()}
+
+
+def _agg_state(states: list) -> str:
+    """Combine several command states into one: 'running' while any is still going;
+    else a success ('done') settles it; 'error'/'aborted' only when nothing completed."""
+    if "running" in states:
+        return "running"
+    if "done" in states:
+        return "done"
+    if "error" in states:
+        return "error"
+    if "aborted" in states:
+        return "aborted"
+    return states[-1] if states else "done"
 
 
 def _render_host_progress(ip: str) -> None:
@@ -2204,25 +2220,53 @@ _STATE_LABEL = {"running": (YELLOW, "running"), "done": (GREEN, "complete"),
                 "error": (RED, "error"), "aborted": (MAGENTA, "aborted")}
 
 
+def _status_groups(jobs: list) -> list:
+    """Group jobs of one phase execution (same run id) into one entry — a phase launches
+    its parallel commands together, so they share a number and sit beneath each other.
+    Each separate execution keeps its own number, even for the same phase re-run."""
+    groups: list = []
+    index: dict = {}                      # run id -> its group, to keep runs distinct
+    for j in jobs:
+        run = j.get("run") or f"job{id(j)}"
+        if run in index:
+            index[run].append(j)
+        else:
+            g = [j]
+            index[run] = g
+            groups.append(g)
+    return groups
+
+
 def show_status() -> list:
-    """Command history: each row shows its number, the phase name, the command's
-    state (running/complete/error/aborted) and a short found yes/no; the command
-    sits below. Returns the ordered jobs so the caller can stop one by number."""
+    """Command history, grouped by phase: each entry shows its number, the phase name,
+    the combined state (running/complete/error/aborted) and a short found yes/no; the
+    phase's command(s) sit beneath it. Returns the ordered groups so the caller can
+    stop / view one by number."""
     with _JOBS_LOCK:
         jobs = list(_JOBS)
     print(f"\n{BOLD}Status{RESET}")
     if not jobs:
         print(f"  {DIM}no commands have run yet{RESET}")
-        return jobs
-    for n, j in enumerate(jobs, 1):
-        colour, text = _STATE_LABEL.get(j["state"], (DIM, j["state"]))
-        found = f"{GREEN}yes{RESET}" if j["hosts"] > 0 else f"{DIM}no{RESET}"
-        print(f"  {CYAN}{n}{RESET} {BOLD}{j['name']}{RESET}  "
-              f"{DIM}·{RESET} {colour}{text}{RESET}  {DIM}·{RESET} found: {found}")
-        print(f"       {DIM}{j['command']}{RESET}")
-        if j["error"]:
-            print(f"       {RED}{j['error']}{RESET}")
-    return jobs
+        return []
+    groups = _status_groups(jobs)
+    for n, g in enumerate(groups, 1):
+        title = _PHASES.get(g[0]["phase"], (g[0]["name"],))[0]
+        state = _agg_state([j["state"] for j in g])
+        colour, text = _STATE_LABEL.get(state, (DIM, state))
+        found = f"{GREEN}yes{RESET}" if any(j["hosts"] > 0 for j in g) else f"{DIM}no{RESET}"
+        multi = len(g) > 1
+        tail = f"  {DIM}·{RESET} {DIM}{len(g)} cmds{RESET}" if multi else ""
+        print(f"  {CYAN}{n}{RESET} {BOLD}{title}{RESET}  "
+              f"{DIM}·{RESET} {colour}{text}{RESET}  {DIM}·{RESET} found: {found}{tail}")
+        for j in g:
+            if multi:                                    # per-command state so a partly
+                jc, jt = _STATE_LABEL.get(j["state"], (DIM, j["state"]))   # done phase is clear
+                print(f"       {jc}{jt:<8}{RESET} {DIM}{j['command']}{RESET}")
+            else:
+                print(f"       {DIM}{j['command']}{RESET}")
+            if j["error"]:
+                print(f"       {RED}{j['error']}{RESET}")
+    return groups
 
 
 def _cell(value: "str | None", width: int) -> str:
@@ -2579,17 +2623,19 @@ def _upgrade_to_root() -> None:
         print(f"{RED}✗ re-launch failed: {exc}{RESET}")
 
 
-def _stop_job(jobs: list, n: int) -> None:
-    """Signal a running scan (by its status number) to abort — nmap is killed within
-    a tick, whatever it found so far is kept, and the row turns to 'aborted'."""
-    if not 1 <= n <= len(jobs):
+def _stop_job(groups: list, n: int) -> None:
+    """Signal a running phase (by its status number) to abort — every still-running
+    command in the group is killed within a tick; whatever each found so far is kept."""
+    if not 1 <= n <= len(groups):
         print(f"{RED}✗ no scan {n}{RESET}")
         return
-    job = jobs[n - 1]
-    if job["state"] != "running":
-        print(f"{DIM}{n} already {job['state']}{RESET}")
+    grp = groups[n - 1]
+    running = [j for j in grp if j["state"] == "running"]
+    if not running:
+        print(f"{DIM}{n} already {_agg_state([j['state'] for j in grp])}{RESET}")
         return
-    job["cancel"].set()
+    for j in running:
+        j["cancel"].set()
     print(f"{YELLOW}aborting {n}…{RESET}")
 
 
@@ -2663,24 +2709,26 @@ def _spawn_report_standalone(job: dict) -> None:
         print(f"{RED}✗ could not open a terminal: {exc}{RESET}")
 
 
-def _view_command(jobs: list, n: int) -> None:
-    """Show scan n's command + output in a spawned terminal (variant B) — via the
-    PurrSh3ll host app when running inside it, or an external terminal standalone."""
-    if not 1 <= n <= len(jobs):
+def _view_command(groups: list, n: int) -> None:
+    """Show phase n's command(s) + output in a spawned terminal (variant B) — via the
+    PurrSh3ll host app when running inside it, or an external terminal standalone. A phase
+    with several commands opens one terminal per finished command."""
+    if not 1 <= n <= len(groups):
         print(f"{RED}✗ no scan {n}{RESET}")
         return
-    job = jobs[n - 1]
-    if job.get("db_id") is None:
-        print(f"{RED}✗ scan {n} was not saved{RESET}")
-        return
-    if job["state"] == "running":
-        print(f"{DIM}scan {n} still running — no captured output yet{RESET}")
+    viewable = [j for j in groups[n - 1]
+                if j.get("db_id") is not None and j["state"] != "running"]
+    if not viewable:
+        print(f"{DIM}scan {n} — no captured output yet{RESET}")
         return
     if os.environ.get("PURRSH_TERM_ID"):
-        _spawn_report_in_app(job["db_id"])
-        print(f"{GREEN}opened scan {n} output in a new terminal{RESET}")
+        for j in viewable:
+            _spawn_report_in_app(j["db_id"])
+        note = f" ({len(viewable)} cmds)" if len(viewable) > 1 else ""
+        print(f"{GREEN}opened scan {n} output{note} in a new terminal{RESET}")
     else:
-        _spawn_report_standalone(job)
+        for j in viewable:
+            _spawn_report_standalone(j)
 
 
 def _clear_status() -> None:
