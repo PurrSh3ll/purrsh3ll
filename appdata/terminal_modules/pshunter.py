@@ -2758,7 +2758,7 @@ def _exploit_service_view(ip: str, target: tuple) -> None:
             return "refresh"
         if v.startswith("r") and v[1:].strip().isdigit():
             _run_step_tool(ip, target, int(v[1:].strip()))
-            return "refresh"                     # redraw so the step shows ⏳ running now
+            return "stay"                        # just the launch line + bare prompt (no redraw)
         if v.isdigit():
             _toggle(int(v), "done")
             return "refresh"
