@@ -727,6 +727,16 @@ CREATE TABLE IF NOT EXISTS vulns (
     last_seen   TEXT,
     PRIMARY KEY (ip, port, proto, script)
 );
+CREATE TABLE IF NOT EXISTS exploit_steps (
+    ip          TEXT,
+    port        INTEGER,
+    proto       TEXT,
+    service     TEXT,
+    step        INTEGER,
+    status      TEXT,
+    last_seen   TEXT,
+    PRIMARY KEY (ip, port, proto, service, step)
+);
 """
 
 
@@ -995,6 +1005,38 @@ def fetch_vulns(ip: str) -> list:
     """(port, proto, script, state, cve, risk, summary) findings for a host."""
     rows = _fetch("SELECT port, proto, script, state, cve, risk, summary FROM vulns WHERE ip = ?", (ip,))
     return sorted(rows, key=lambda r: (r[0], r[2]))
+
+
+def fetch_step_status(ip: str, port: int, proto: str, service: str) -> dict:
+    """{step_index: status} for one service's checklist on a host ('done' / 'skip')."""
+    rows = _fetch("SELECT step, status FROM exploit_steps WHERE ip = ? AND port = ? "
+                  "AND proto = ? AND service = ?", (ip, port, proto, service))
+    return {step: status for step, status in rows}
+
+
+def set_step_status(ip: str, port: int, proto: str, service: str, step: int,
+                    status: "str | None") -> None:
+    """Persist one checklist step's status; status None clears it back to 'to-do'."""
+    if not ip or _is_self_ip(ip):
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            if status is None:
+                conn.execute("DELETE FROM exploit_steps WHERE ip = ? AND port = ? AND "
+                             "proto = ? AND service = ? AND step = ?",
+                             (ip, port, proto, service, step))
+            else:
+                conn.execute(
+                    "INSERT INTO exploit_steps (ip, port, proto, service, step, status, last_seen) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(ip, port, proto, service, step) DO UPDATE SET "
+                    "  status = excluded.status, last_seen = excluded.last_seen",
+                    (ip, port, proto, service, step, status, now))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 # ── background jobs (feed [s] status) ─────────────────────────────────────────
@@ -1805,6 +1847,11 @@ def _render_host_progress(ip: str) -> None:
         live_discovery = any(j["found"] for j in disc)
     phase1_done = discovered or (known and not live_discovery)
 
+    # phase 6 is complete only when EVERY service's checklist is fully resolved (done/skip)
+    targets = _exploit_targets(ip)
+    n_svc_done = sum(1 for p, pr, _l, k, _v, _s in targets if _service_steps_complete(ip, p, pr, k))
+    phase6_done = bool(targets) and n_svc_done == len(targets)
+
     # phase key -> (has evidence in the DB, short detail line)
     evidence = {
         "1": (phase1_done, "on record" if phase1_done else ""),
@@ -1813,7 +1860,7 @@ def _render_host_progress(ip: str) -> None:
               f"{len(fingerprinted)} fingerprinted" if fingerprinted else ("NSE output" if (host_scripts or scripted) else "")),
         "4": (bool(vuln_findings), f"{len(vuln_findings)} vuln finding(s)" if vuln_findings else ""),
         "5": (bool(cve_findings), f"{n_cve} CVE" if cve_findings else ""),
-        "6": (False, ""),                                    # skeleton — not wired yet
+        "6": (phase6_done, f"{n_svc_done}/{len(targets)} services" if targets else ""),
     }
 
     print(f"\n{BOLD}{ip} — progress{RESET}")
@@ -1825,7 +1872,9 @@ def _render_host_progress(ip: str) -> None:
     done = 0
     for key, name, _desc in PHASES:
         has, detail = evidence[key]
-        st = jobstate.get(key)
+        # phase 6 is a manual checklist with no automatic completion yet — never mark it
+        # complete/green; it stays 'not run' until real per-step tracking exists.
+        st = None if key == "6" else jobstate.get(key)
         if st == "running":
             sym, col, label = "⏳", YELLOW, "running"
         elif has or st == "done":
@@ -1991,7 +2040,7 @@ _EXPLOIT_UNKNOWN = ("other", "other / unknown")   # fallback bucket, always rank
 # pass later. Keyed by the service class key; 'other' is the generic fallback.
 _EXPLOIT_STEPS = {
     "http": [
-        "Fingerprint the stack — response headers, whatweb, favicon hash",
+        ("Fingerprint the stack — response headers, whatweb, favicon hash", "http-headers"),
         "Browse the app + view-source; note tech, versions, comments, emails",
         "Check robots.txt / sitemap.xml / .well-known / security.txt",
         "Directory & file brute-force (feroxbuster / gobuster / ffuf)",
@@ -2303,54 +2352,162 @@ def _classify_service(port: int, name, product, version, cpe) -> tuple:
     return _EXPLOIT_UNKNOWN[1], _EXPLOIT_UNKNOWN[0], "port"
 
 
-def _render_exploit_targets(ip: str) -> list:
-    """Numbered, priority-ordered list of the host's services worth attacking (best
-    CTF/OSCP candidates first). Returns the ordered targets so a number can pick one."""
-    ports = fetch_ports(ip)
+def _exploit_targets(ip: str) -> list:
+    """The host's services in exploitation-priority order (no output): a list of
+    (port, proto, label, key, ver, signal). Shared by the render and the progress view."""
     services = fetch_services(ip)
-    print(f"\n{BOLD}{ip} — service exploitation{RESET}")
-    if not ports:
-        print(f"  {DIM}no open ports recorded — run {BOLD}[2] Port enumeration{RESET}"
-              f"{DIM} first{RESET}")
-        return []
     triaged = []
-    for port, proto, _state in ports:
+    for port, proto, _state in fetch_ports(ip):
         name, product, version, cpe = services.get((port, proto), (None, None, None, None))
         label, key, signal = _classify_service(port, name, product, version, cpe)
         rank = _EXPLOIT_RANK.get(key, len(_EXPLOIT_SERVICES))
         ver = " ".join(x for x in (product, version) if x)
         triaged.append((rank, port, proto, label, key, ver, signal))
     triaged.sort(key=lambda t: (t[0], t[1]))
-    ordered, rows = [], []
-    for i, (_rank, port, proto, label, key, ver, signal) in enumerate(triaged, 1):
-        ordered.append((port, proto, label, key, ver, signal))
+    return [(port, proto, label, key, ver, signal)
+            for _rank, port, proto, label, key, ver, signal in triaged]
+
+
+def _service_steps_complete(ip: str, port: int, proto: str, key: str) -> bool:
+    """True when every checklist step for this service is resolved (done or skip) — the
+    condition for turning the service (and, when all are, phase 6) green."""
+    steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
+    status = fetch_step_status(ip, port, proto, key)
+    return bool(steps) and all(status.get(i) in ("done", "skip")
+                               for i in range(1, len(steps) + 1))
+
+
+def _render_exploit_targets(ip: str) -> list:
+    """Numbered, priority-ordered list of the host's services worth attacking (best
+    CTF/OSCP candidates first). A service whose whole checklist is resolved shows green.
+    Returns the ordered targets so a number can pick one."""
+    print(f"\n{BOLD}{ip} — service exploitation{RESET}")
+    if not fetch_ports(ip):
+        print(f"  {DIM}no open ports recorded — run {BOLD}[2] Port enumeration{RESET}"
+              f"{DIM} first{RESET}")
+        return []
+    targets = _exploit_targets(ip)
+    rows = []
+    for i, (port, proto, label, key, ver, signal) in enumerate(targets, 1):
         # '?' flags a label not confirmed by a -sV version/CPE fingerprint (a service-name
         # or port guess), so it's clear which rows to verify before trusting them.
-        disp = label + ("?" if signal in ("service", "port") else "")
+        name = label + ("?" if signal in ("service", "port") else "")
+        disp = f"{GREEN}{name}{RESET}" if _service_steps_complete(ip, port, proto, key) else name
         rows.append([str(i), disp, f"{port}/{proto}", _cell(ver or "—", 30), f"via {signal}"])
     print(_box_table(["#", "SERVICE", "PORT", "VERSION", "SIGNAL"], rows,
                      aligns=["r", "l", "l", "l", "l"]))
-    return ordered
+    return targets
+
+
+def _step_parts(step) -> tuple:
+    """Normalise a checklist entry to (description, tool_key). A plain string has no
+    tool; a (description, tool_key) tuple points at a runner in _STEP_TOOLS."""
+    if isinstance(step, tuple):
+        return step[0], step[1]
+    return step, None
+
+
+def _tool_http_headers(ip: str, port: int, proto: str) -> str:
+    """Example phase-6 tool: grab a web server's HTTP response headers (stdlib only, no
+    external dependency) so the run-a-tool flow can be tested end to end."""
+    import urllib.request
+    import ssl
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    url = f"{'https' if tls else 'http'}://{ip}:{port}/"
+    ctx = ssl._create_unverified_context()
+    req = urllib.request.Request(url, headers={"User-Agent": "pshunter"})
+    try:
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+            status, headers = resp.status, resp.headers
+    except urllib.error.HTTPError as exc:          # 4xx/5xx still carry useful headers
+        status, headers = exc.code, exc.headers
+    except Exception as exc:                        # noqa: BLE001 — surface any failure
+        return f"request failed: {exc}"
+    lines = [f"{url} → HTTP {status}"]
+    lines += [f"{k}: {v}" for k, v in headers.items()]
+    return "\n".join(lines)
+
+
+# tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
+_STEP_TOOLS = {
+    "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
+}
+
+# status glyph + colour for a checklist step
+_STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), None: ("○", DIM)}
 
 
 def _render_exploit_checklist(ip: str, target: tuple) -> None:
-    """The pentest checklist for one chosen service — the steps to work through."""
+    """One service's pentest checklist: each step with its status (○ to-do / ✓ done /
+    ⊘ skip) and, when one is wired, the tool that can run it."""
     port, proto, label, key, ver, signal = target
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
+    status = fetch_step_status(ip, port, proto, key)
     print(f"\n{BOLD}{label} — checklist{RESET}  {DIM}{ip}:{port}/{proto}{RESET}")
     if ver:
         print(f"  {DIM}fingerprint:{RESET} {ver} {DIM}(via {signal}){RESET}")
     print()
     for i, step in enumerate(steps, 1):
-        print(f"  {CYAN}{i:>2}{RESET}  {step}")
+        desc, tool_key = _step_parts(step)
+        st = status.get(i)
+        sym, col = _STEP_MARK.get(st, _STEP_MARK[None])
+        body = f"{col}{desc}{RESET}" if st in ("done", "skip") else desc   # done → green line
+        print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
+        if tool_key and tool_key in _STEP_TOOLS:
+            print(f"        {DIM}→ {_STEP_TOOLS[tool_key][0]}  ·  run with {BOLD}r {i}{RESET}")
+
+
+def _run_step_tool(ip: str, target: tuple, n: int) -> None:
+    """Run the wired tool for step n (if any) and print its output inline."""
+    port, proto, _label, key, _ver, _signal = target
+    steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
+    if not 1 <= n <= len(steps):
+        print(f"{RED}✗ no step {n}{RESET}")
+        return
+    _desc, tool_key = _step_parts(steps[n - 1])
+    if not tool_key or tool_key not in _STEP_TOOLS:
+        print(f"{DIM}step {n} has no tool — do it manually{RESET}")
+        return
+    tlabel, runner = _STEP_TOOLS[tool_key]
+    print(f"\n{GREEN}▶ running{RESET} {DIM}{tlabel} · {ip}:{port}/{proto}{RESET}")
+    out = runner(ip, port, proto)
+    for line in (out or "").splitlines()[:40]:
+        print(f"  {DIM}{line}{RESET}")
+    print(f"  {DIM}mark it {BOLD}{n}{RESET}{DIM} done when you've reviewed it{RESET}")
 
 
 def _exploit_service_view(ip: str, target: tuple) -> None:
-    """Sub-view showing one service's checklist; stays open until the user goes back."""
-    port, proto = target[0], target[1]
-    _run_view(f"{ip}:{port}/{proto} exploit", "[Enter] refresh · [b] back · [m] menu",
-              lambda: _render_exploit_checklist(ip, target),
-              lambda _c, v: "refresh" if v == "" else "stay")
+    """One service's checklist: <n> toggles done, s <n> toggles skip, r <n> runs the
+    step's tool. Status is saved so progress survives across sessions."""
+    port, proto, _label, key = target[0], target[1], target[2], target[3]
+    steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
+
+    def _toggle(n, want):
+        if not 1 <= n <= len(steps):
+            print(f"{RED}✗ no step {n}{RESET}")
+            return
+        cur = fetch_step_status(ip, port, proto, key).get(n)
+        set_step_status(ip, port, proto, key, n, None if cur == want else want)
+
+    def _handle(_c, v):
+        if v == "":
+            return "refresh"
+        if v.startswith("s") and v[1:].strip().isdigit():
+            _toggle(int(v[1:].strip()), "skip")
+            return "refresh"
+        if v.startswith("r") and v[1:].strip().isdigit():
+            _run_step_tool(ip, target, int(v[1:].strip()))
+            return "stay"
+        if v.isdigit():
+            _toggle(int(v), "done")
+            return "refresh"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> done · s <n> skip · r <n> run · b{RESET}")
+        return "stay"
+
+    _run_view(f"{ip}:{port}/{proto} exploit",
+              "[Enter] refresh · <n> done · s <n> skip · r <n> run · [b] back · [m] menu",
+              lambda: _render_exploit_checklist(ip, target), _handle)
 
 
 def _exploit_targets_view(ip: str) -> None:
