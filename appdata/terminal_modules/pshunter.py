@@ -2059,16 +2059,37 @@ _EXPLOIT_UNKNOWN = ("other", "other / unknown")   # fallback bucket, always rank
 # pass later. Keyed by the service class key; 'other' is the generic fallback.
 _EXPLOIT_STEPS = {
     "http": [
-        ("Fingerprint the stack — response headers, whatweb, favicon hash", "http-headers"),
-        "Browse the app + view-source; note tech, versions, comments, emails",
-        "Check robots.txt / sitemap.xml / .well-known / security.txt",
-        "Directory & file brute-force (feroxbuster / gobuster / ffuf)",
-        "Vhost & subdomain fuzzing on the Host header",
-        "Identify the CMS/app, then searchsploit its exact version",
-        "Try default / weak creds on every login and admin panel",
-        "Test inputs for SQLi, LFI/RFI, SSTI, command injection, IDOR",
-        "Look for exposed .git/.svn, backups, config and source files",
-        "Find a file-upload or write primitive → webshell",
+        # ── fingerprint & recon ──
+        ("HTTP headers, status & redirects (Server, X-Powered-By, cookies)", "http-headers"),
+        "Fingerprint stack: whatweb / Wappalyzer / favicon hash → server, framework, CMS, versions",
+        "TLS cert & redirects → extra hostnames / vhosts / emails; add them to /etc/hosts",
+        "searchsploit the exact server / CMS / app versions (note every version you see)",
+        # ── manual inspection ──
+        "View-source + linked JS on every page → comments, endpoints, API routes, creds/keys",
+        "robots.txt / sitemap.xml / .well-known + error pages → hidden paths & tech leaks",
+        "Cookies & session: flags, predictable IDs; decode JWT, test alg:none / weak secret",
+        # ── content discovery ──
+        "Directory & file brute-force (feroxbuster / ffuf / gobuster) — ext php,asp,aspx,txt,bak,zip",
+        "Hunt exposed VCS / backups / config: .git .svn .env web.config *.bak *~ config.php",
+        "Vhost & subdomain fuzzing (ffuf -H 'Host:') — hidden apps often hold the vuln",
+        "Hidden parameter discovery (arjun / ffuf) on dynamic endpoints",
+        # ── authentication ──
+        "Default / weak creds on every login and admin panel (admin:admin, product defaults)",
+        "Auth bypass & user enumeration (SQLi ' or 1=1 --, verbose errors, response timing)",
+        "Targeted brute-force (hydra) only if enumeration confirms users and no lockout",
+        # ── injection & inclusion (OSCP core) ──
+        "SQLi → auth bypass, UNION/error/blind dump; escalate to file read & RCE (xp_cmdshell / INTO OUTFILE / stacked)",
+        "LFI / path traversal (/etc/passwd, web.config) → RCE via log poisoning, php://filter, /proc/self/environ",
+        "RFI → include a remote webshell (allow_url_include)",
+        "OS command injection (; | & ` $()) in every input → reverse shell",
+        "SSTI ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
+        "File upload → webshell: bypass extension/MIME/magic (.phtml, double ext, null byte)",
+        "XXE (XML input) & SSRF (reach internal services / 169.254.169.254 metadata)",
+        "IDOR / broken access control — tamper IDs & roles to reach admin / other users",
+        # ── known-app exploitation & foothold ──
+        "CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
+        "Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
+        "Land a webshell / reverse shell; stabilise; loot DB creds & config for reuse",
     ],
     "smb": [
         "Null / guest session — enum shares (enum4linux-ng, smbclient -N -L)",
