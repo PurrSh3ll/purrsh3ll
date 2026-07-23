@@ -3221,10 +3221,8 @@ def _render_host_findings(ip: str) -> None:
             else:
                 print(f"      {DIM}none{RESET}")
 
-        _group(f"{BOLD}{RED}⚑ KEV CVE — known exploited{RESET}", kev_hits, RED)   # exploited → red
-        _group(f"{BOLD}other CVE{RESET}", rest, DIM)                             # rest → grey
-        print(f"    {DIM}hint: KEV = actively exploited (patch first); other = narrowed "
-              f"version matches, newest first — if none fit, start from the newest{RESET}")
+        _group(f"{BOLD}⚑ KEV CVE — known exploited{RESET}", kev_hits, RED)   # header neutral, CVEs red
+        _group(f"{BOLD}other CVE{RESET}", rest, DIM)                          # rest → grey
     if host_scripts:
         print(f"\n  {BOLD}HOST FINDINGS{RESET}")
         for script, output in host_scripts:
