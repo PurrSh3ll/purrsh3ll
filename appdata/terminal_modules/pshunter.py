@@ -2727,8 +2727,8 @@ _EXPLOIT_STEPS = {
          "admin-rce"),
         ("Spawn a reverse shell over a confirmed RCE channel and auto-upgrade it to a full interactive TTY",
          "foothold"),
-        # ── manual follow-up, tailored to what this host exposed ──
-        ("Manual follow-up commands — deeper enumeration, CVE research on the found versions, and verifying unconfirmed findings",
+        # ── manual steps, tailored to what this host exposed ──
+        ("Manual steps — deeper enumeration, CVE research on the found versions, and verifying unconfirmed findings",
          "next-steps"),
     ],
     "smb": [
@@ -8197,7 +8197,7 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     def q(s):
         return urllib.parse.quote(s)
 
-    L = [f"{base} — manual follow-up commands {DIM}(reference only — nothing is scanned here){RESET}",
+    L = [f"{base} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
          f"{DIM}targets: {base}" + (f"  ·  vhosts: {', '.join(vhosts)}" if vhosts else "") + RESET]
 
     L.append(f"\n{BOLD}A. Deeper enumeration (bigger lists / longer / recursive){RESET}")
@@ -8305,7 +8305,7 @@ _STEP_TOOLS = {
     "cms-scan": ("CMS scan → wpscan/droopescan + stdlib fallback (plugins/themes/users)", _tool_cms_scan),
     "admin-rce": ("admin panel → RCE (WordPress, creds-gated, inert, reversible)", _tool_admin_rce),
     "foothold": ("foothold → spawn & auto-upgrade a reverse shell (interactive)", _tool_foothold),
-    "next-steps": ("manual follow-up commands (context-aware, reference only)", _tool_next_steps),
+    "next-steps": ("manual steps (context-aware, reference only)", _tool_next_steps),
 }
 
 def _mins(seconds: int) -> str:
