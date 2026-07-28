@@ -2727,8 +2727,8 @@ _EXPLOIT_STEPS = {
          "admin-rce"),
         ("Spawn a reverse shell over a confirmed RCE channel and auto-upgrade it to a full interactive TTY",
          "foothold"),
-        # ── stuck? manual escalations tailored to what we found ──
-        ("Nothing worked? Manual next steps — bigger wordlists, Burp, CVE research on the found versions, verify unconfirmed hits",
+        # ── manual follow-up, tailored to what this host exposed ──
+        ("Manual follow-up commands — deeper enumeration, CVE research on the found versions, and verifying unconfirmed findings",
          "next-steps"),
     ],
     "smb": [
@@ -8184,10 +8184,20 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
                 warns.append(f"{DIM}[{sid}]{RESET} {s}")
     warns = warns[:14]
 
+    # CVEs actually surfaced in the HTTP phase: this port's findings + any CVE-id in its output
+    kev = _load_kev()
+    found_cves = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found_cves |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found_cves |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found_cves = sorted(found_cves, key=_cve_sort_key)
+
     def q(s):
         return urllib.parse.quote(s)
 
-    L = [f"{base} — manual next steps {DIM}(list only; nothing is scanned here){RESET}",
+    L = [f"{base} — manual follow-up commands {DIM}(reference only — nothing is scanned here){RESET}",
          f"{DIM}targets: {base}" + (f"  ·  vhosts: {', '.join(vhosts)}" if vhosts else "") + RESET]
 
     L.append(f"\n{BOLD}A. Deeper enumeration (bigger lists / longer / recursive){RESET}")
@@ -8202,24 +8212,31 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     L.append(f"  {DIM}params: arjun -u {base}<endpoint> -w big.txt  ·  x8  ·  Burp Param Miner{RESET}")
     L.append(f"  {DIM}api: check /openapi.json /swagger  ·  GraphQL introspection on /graphql{RESET}")
 
-    L.append(f"\n{BOLD}B. Interactive / heavier tools{RESET}")
+    L.append(f"\n{BOLD}B. Interactive & heavier tooling{RESET}")
     L.append(f"  {DIM}Burp: proxy + spider + active scan; Intruder/Turbo Intruder on the params below; "
              f"Collaborator for blind OOB (XXE/SSRF/SSTI){RESET}")
     tag = cms.lower() if cms else "<tech>"
     L.append(f"  {DIM}nuclei -u {base} -tags {tag},cve,exposure  ·  nuclei -u {base} -as (auto tech){RESET}")
     L.append(f"  {DIM}wafw00f {base}  (if requests get blocked → --delay / proxychains / rotate IP){RESET}")
 
-    L.append(f"\n{BOLD}C. CVE research on the versions we found{RESET}")
+    L.append(f"\n{BOLD}C. CVE research{RESET}")
+    if found_cves:
+        L.append(f"  {CYAN}CVEs surfaced in the HTTP phase:{RESET}")
+        for c in found_cves:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"    {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
     if versions:
+        L.append(f"  {DIM}hunt further against the detected versions:{RESET}")
         for v in versions:
             L.append(f"  {CYAN}{v}{RESET}")
             L.append(f"      {DIM}searchsploit {v}  ·  https://www.exploit-db.com/search?q={q(v)}{RESET}")
             L.append(f"      {DIM}https://nvd.nist.gov/vuln/search/results?query={q(v)}  ·  "
                      f"https://vulners.com/search?query={q(v)}{RESET}")
-    else:
-        L.append(f"  {DIM}no versioned products captured — re-run fingerprint (r2) / headers (r1) first{RESET}")
+    if not found_cves and not versions:
+        L.append(f"  {DIM}no CVEs or versioned products captured yet — "
+                 f"re-run fingerprint (r2) / headers (r1) / searchsploit (r4){RESET}")
 
-    L.append(f"\n{BOLD}D. Auth / credentials (beyond our small default set){RESET}")
+    L.append(f"\n{BOLD}D. Credentials & authentication{RESET}")
     if users:
         L.append(f"  {CYAN}users found:{RESET} {', '.join(users)}")
         L.append(f"  {DIM}spray: hydra -L users.txt -p '<Season2024!>' {ip} http-post-form ...  (mind lockout){RESET}")
@@ -8228,7 +8245,7 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
              f"'/login:user=^USER^&pass=^PASS^:F=incorrect'{RESET}")
     L.append(f"  {DIM}reuse any looted creds across the host's other services (SSH/SMB/DB/RDP){RESET}")
 
-    L.append(f"\n{BOLD}E. Injection deep-dive (manual){RESET}")
+    L.append(f"\n{BOLD}E. Injection deep-dive{RESET}")
     if params:
         L.append(f"  {CYAN}params to target:{RESET} " +
                  "; ".join(f"{p}?[{pp}]" for p, pp in params[:6]))
@@ -8238,20 +8255,20 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
              f"--batch --dbs  (then --os-shell){RESET}")
     L.append(f"  {DIM}LFI wrapper chains / deeper traversal (ffuf)  ·  SSTI engine-specific gadgets{RESET}")
     L.append(f"  {DIM}deserialization if you see __VIEWSTATE / PHP-serialized / Java blobs → ysoserial{RESET}")
-    L.append(f"  {DIM}HTTP request smuggling / desync → Burp (we don't test this){RESET}")
+    L.append(f"  {DIM}HTTP request smuggling / desync (Burp){RESET}")
 
-    L.append(f"\n{BOLD}F. Classes we do NOT cover — check by hand{RESET}")
+    L.append(f"\n{BOLD}F. Additional vulnerability classes to test manually{RESET}")
     L.append(f"  {DIM}XSS (reflected/stored/DOM) · CSRF · business logic · race conditions · "
              f"OAuth/SAML/JWT deep · CORS misconfig{RESET}")
 
-    L.append(f"\n{BOLD}G. Verify our own UNCONFIRMED hits (highest value){RESET}")
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
     if warns:
         for w in warns:
             L.append(f"  {w}")
     else:
         L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
 
-    L.append(f"\n{BOLD}H. Housekeeping / re-run{RESET}")
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
     if vhosts:
         L.append(f"  {DIM}add vhosts to /etc/hosts, then re-run dir-brute (r9) per vhost: "
                  f"{ip} {' '.join(vhosts)}{RESET}")
@@ -8288,7 +8305,7 @@ _STEP_TOOLS = {
     "cms-scan": ("CMS scan → wpscan/droopescan + stdlib fallback (plugins/themes/users)", _tool_cms_scan),
     "admin-rce": ("admin panel → RCE (WordPress, creds-gated, inert, reversible)", _tool_admin_rce),
     "foothold": ("foothold → spawn & auto-upgrade a reverse shell (interactive)", _tool_foothold),
-    "next-steps": ("manual next steps — context-aware 'when stuck' list (no scan)", _tool_next_steps),
+    "next-steps": ("manual follow-up commands (context-aware, reference only)", _tool_next_steps),
 }
 
 def _mins(seconds: int) -> str:
@@ -8331,7 +8348,7 @@ _STEP_TOOL_RUNS = {
     "cms-scan":         ("Python + wpscan/droopescan", f"{_mins(_CMS_DEADLINE)} min"),
     "admin-rce":        ("Python", f"{_mins(_ADMINRCE_DEADLINE)} min"),
     "foothold":         ("Python", None),
-    "next-steps":       ("list only — no scan", None),
+    "next-steps":       ("reference · no scan", None),
 }
 
 
