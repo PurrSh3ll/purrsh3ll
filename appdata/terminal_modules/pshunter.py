@@ -2572,48 +2572,49 @@ _EXPLOIT_UNKNOWN = ("other", "other / unknown")   # fallback bucket, always rank
 _EXPLOIT_STEPS = {
     "http": [
         # ── fingerprint & recon ──
-        ("HTTP headers, status & redirects (Server, X-Powered-By, cookies)", "http-headers"),
-        ("Fingerprint stack: whatweb / Wappalyzer / favicon hash → server, framework, CMS, versions",
+        ("Read response headers, status & redirects — Server, X-Powered-By, cookies; a 30x Location often leaks a vhost",
+         "http-headers"),
+        ("Fingerprint the web stack — server, framework, CMS and their versions",
          "http-fingerprint"),
-        ("TLS cert & redirects → extra hostnames / vhosts / emails; add them to /etc/hosts",
+        ("Harvest extra hostnames / vhosts / emails from the TLS certificate — add them to /etc/hosts",
          "ssl-cert"),
-        ("searchsploit the exact server / CMS / app versions (note every version you see)",
+        ("Look up public exploits for the exact server / CMS / app versions you found",
          "searchsploit"),
         # ── manual inspection ──
-        ("View-source + linked JS on every page → comments, endpoints, API routes, creds/keys",
+        ("Mine page source + linked JS — comments, endpoints, API routes, leaked creds/keys",
          "http-source"),
-        ("robots.txt / sitemap.xml / .well-known + error pages → hidden paths & tech leaks",
+        ("Check robots.txt / sitemap.xml / .well-known + error pages for hidden paths & tech leaks",
          "http-wellknown"),
-        ("Cookies & session: flags, predictable IDs; decode JWT, test alg:none / weak secret",
+        ("Inspect cookies & sessions — flags, predictable IDs; decode & attack JWTs (alg:none / weak secret)",
          "http-cookies"),
         # ── content discovery ──
-        ("Vhost & subdomain fuzzing (ffuf -H 'Host:') — map every app on this IP; hidden apps often hold the vuln",
+        ("Discover virtual hosts & subdomains on this IP — hidden apps often hold the vuln",
          "vhost-fuzz"),
-        ("Directory & file brute-force (feroxbuster / ffuf / gobuster) on the default host and every discovered vhost — ext php,asp,aspx,txt,bak,zip",
+        ("Brute-force directories & files on the default host and every discovered vhost (php,asp,aspx,txt,bak,zip)",
          "dir-brute"),
-        ("Hunt exposed VCS / backups / config: .git .svn .env web.config *.bak *~ config.php",
+        ("Hunt exposed VCS / backups / config — .git .svn .env web.config *.bak *~ config.php",
          "vcs-hunt"),
-        ("Hidden parameter discovery (arjun / ffuf) on dynamic endpoints",
+        ("Discover hidden parameters on dynamic endpoints",
          "param-hunt"),
         # ── authentication ──
-        ("Default / weak creds on every login and admin panel (admin:admin, product defaults)",
+        ("Try default / weak creds on every login and admin panel (admin:admin, product defaults)",
          "default-creds"),
-        ("Auth bypass & user enumeration (SQLi ' or 1=1 --, verbose errors, response timing)",
+        ("Test auth bypass (SQLi ' or 1=1 --, verbose errors, response timing) & user enumeration",
          "auth-bypass"),
-        ("Targeted brute-force (hydra) only if enumeration confirms users and no lockout",
+        ("Targeted brute-force — only when enumeration confirms users and there is no lockout",
          "login-brute"),
         # ── injection & inclusion (OSCP core) ──
-        ("SQLi auto-dump (OSCP-safe, no sqlmap): UNION/error extract → DB, tables, rows; blind for short values",
+        ("Auto-dump via SQLi (OSCP-safe) — UNION/error extract of DB, tables, rows; blind for short values",
          "sqli-dump"),
-        ("SQLi → auth bypass, UNION/error/blind dump; escalate to file read & RCE (xp_cmdshell / INTO OUTFILE / stacked; sqlmap)",
+        ("Full SQLi assessment — auth bypass, UNION/error/blind dump; escalate to file read & RCE",
          "sqli-scan"),
-        ("LFI / path traversal (/etc/passwd, web.config) → RCE via log poisoning, php://filter, /proc/self/environ",
+        ("LFI / path traversal → RCE via log poisoning, php://filter, /proc/self/environ",
          "lfi-scan"),
-        ("RFI → include a remote webshell (allow_url_include)",
+        ("RFI — include a remote webshell (allow_url_include)",
          "rfi-scan"),
         ("OS command injection (; | & ` $()) in every input → reverse shell",
          "cmdi-scan"),
-        ("SSTI ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
+        ("Server-side template injection ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
          "ssti-scan"),
         "File upload → webshell: bypass extension/MIME/magic (.phtml, double ext, null byte)",
         "XXE (XML input) & SSRF (reach internal services / 169.254.169.254 metadata)",
@@ -6321,6 +6322,52 @@ _STEP_TOOLS = {
     "ssti-scan": ("SSTI (stdlib, math-verified) → engine + auto-id RCE + cmd", _tool_ssti_scan),
 }
 
+def _mins(seconds: int) -> str:
+    """Compact minute count for a step-tool time cap: '10', '2.5' (caller adds the unit)."""
+    m = seconds / 60
+    return str(int(m)) if seconds % 60 == 0 else f"{m:.1f}"
+
+
+# What runs behind each wired step, shown compactly under the checklist line. Verified against
+# every _tool_* source: the ONLY external Kali binaries invoked are whatweb / openssl /
+# searchsploit (each IS the step) and sqlmap (driven by sqli-scan, only if installed). Every
+# other engine is pure stdlib — no john/hashcat/hydra/nmap/ffuf/gobuster/wpscan/etc. (arjun is
+# reused only as a wordlist file, not run). Per key: (engine label, time-cap text | None).
+_STEP_TOOL_RUNS = {
+    "http-headers":     ("Python", None),
+    "http-fingerprint": ("whatweb", None),
+    "ssl-cert":         ("openssl", None),
+    "searchsploit":     ("searchsploit", None),
+    "http-source":      ("Python", None),
+    "http-wellknown":   ("Python", None),
+    "http-cookies":     ("Python", None),
+    "vhost-fuzz":       ("Python", f"{_mins(_VHOST_DEADLINE)} min"),
+    "dir-brute":        ("Python", f"{_mins(_DIRB_DEADLINE)} min"),
+    "vcs-hunt":         ("Python", f"{_mins(_VCS_DEADLINE)} min"),
+    "param-hunt":       ("Python", f"{_mins(_PARAM_DEADLINE)} min"),
+    "default-creds":    ("Python", f"{_mins(_CREDS_DEADLINE)} min"),
+    "auth-bypass":      ("Python", f"{_mins(_AUTHB_DEADLINE)} min"),
+    "login-brute":      ("Python", f"{_mins(_BRUTE_DEADLINE)} min"),
+    "sqli-dump":        ("Python", f"{_mins(_SQLI_DUMP_DEADLINE)} min"),
+    # stdlib detection (5 min) then sqlmap enum/dump if installed (3 min/point) → "5/3 min"
+    "sqli-scan":        ("Python/sqlmap",
+                         f"{_mins(_SQLI_DEADLINE)}/{_mins(_SQLI_SQLMAP_TIMEOUT)} min"),
+    "lfi-scan":         ("Python", f"{_mins(_LFI_DEADLINE)} min"),
+    "rfi-scan":         ("Python", f"{_mins(_RFI_DEADLINE)} min"),
+    "cmdi-scan":        ("Python", f"{_mins(_CMDI_DEADLINE)} min"),
+    "ssti-scan":        ("Python", f"{_mins(_SSTI_DEADLINE)} min"),
+}
+
+
+def _step_run_line(tool_key: str) -> str:
+    """Compact '→ …' descriptor under a wired step: the tool/engine and its time cap."""
+    info = _STEP_TOOL_RUNS.get(tool_key)
+    if not info:
+        return "internal program"
+    label, cap = info
+    return f"{label}  ·  time {cap}" if cap else label
+
+
 # tools that harvest hostnames → maintain the managed /etc/hosts block (root) / show the
 # paste line (no root); used to print the right sudo notice at launch
 _HOSTS_WRITING_TOOLS = {"http-headers", "ssl-cert", "http-source", "vhost-fuzz"}
@@ -6350,7 +6397,7 @@ def _render_exploit_checklist(ip: str, target: tuple) -> None:
         body = f"{col}{text}{RESET}" if st in ("done", "skip") else text  # done → green line
         print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
         if has_tool:
-            print(f"        {DIM}→ {_STEP_TOOLS[tool_key][0]}  ·  run with {BOLD}r {i}{RESET}")
+            print(f"        {DIM}→ {_step_run_line(tool_key)}  ·  run with {BOLD}r {i}{RESET}")
 
 
 def _step_tool_worker(job: dict, ip: str, port: int, proto: str, tool_key, runner,
