@@ -2693,13 +2693,18 @@ _EXPLOIT_STEPS = {
          "vcs-hunt"),
         ("Discover hidden parameters on dynamic endpoints",
          "param-hunt"),
-        # ── authentication ──
+        # ── CMS enumeration (run early — a vulnerable plugin can shortcut straight to RCE) ──
+        ("CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions, users",
+         "cms-scan"),
+        # ── authentication & access control ──
         ("Try default / weak creds on every login and admin panel (admin:admin, product defaults)",
          "default-creds"),
         ("Test auth bypass (SQLi ' or 1=1 --, verbose errors, response timing) & user enumeration",
          "auth-bypass"),
         ("Targeted brute-force — only when enumeration confirms users and there is no lockout",
          "login-brute"),
+        ("IDOR / broken access control — tamper IDs & roles to reach admin / other users",
+         "idor-bac"),
         # ── injection & inclusion (OSCP core) ──
         ("Auto-dump via SQLi (OSCP-safe) — UNION/error extract of DB, tables, rows; blind for short values",
          "sqli-dump"),
@@ -2709,22 +2714,18 @@ _EXPLOIT_STEPS = {
          "lfi-scan"),
         ("RFI — include a remote webshell (allow_url_include)",
          "rfi-scan"),
-        ("OS command injection (; | & ` $()) in every input → reverse shell",
+        ("OS command injection (; | & ` $()) in every input → RCE (feeds the foothold step)",
          "cmdi-scan"),
         ("Server-side template injection ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
          "ssti-scan"),
-        ("File upload → webshell — bypass extension / MIME / magic bytes (.phtml, double ext, magic prefix)",
-         "upload-shell"),
         ("XXE (XML input) & SSRF — file read, cloud metadata (169.254.169.254), out-of-band callback",
          "xxe-ssrf"),
-        ("IDOR / broken access control — tamper IDs & roles to reach admin / other users",
-         "idor-bac"),
-        # ── known-app exploitation & foothold ──
-        ("CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
-         "cms-scan"),
+        # ── land a shell & foothold ──
+        ("File upload → webshell — bypass extension / MIME / magic bytes (.phtml, double ext, magic prefix)",
+         "upload-shell"),
         ("Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
          "admin-rce"),
-        ("Land a webshell / reverse shell; stabilise; loot DB creds & config for reuse",
+        ("Spawn a reverse shell over a confirmed RCE channel and auto-upgrade it to a full interactive TTY",
          "foothold"),
     ],
     "smb": [
@@ -8132,7 +8133,7 @@ def _tool_foothold(ip: str, port: int, proto: str) -> str:
 
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
-    "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
+    "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
     "http-fingerprint": ("whatweb (stack fingerprint)", _tool_http_fingerprint),
     "ssl-cert": ("openssl (TLS cert → hostnames/emails)", _tool_tls_cert),
     "searchsploit": ("searchsploit (Exploit-DB by version)", _tool_searchsploit),
