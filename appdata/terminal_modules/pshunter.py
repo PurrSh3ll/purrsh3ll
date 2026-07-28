@@ -2048,6 +2048,23 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"Enumerable objects (verify for IDOR): {enum[0]}"[:140]}
         return None
 
+    # 2y) cms-scan: vulnerable plugin/theme/core high, user enum info, detection info
+    if sid == "cms-scan":
+        vulns = re.findall(r"✗ CMS-VULN (.+)", output)
+        users = re.search(r"⚠ CMS-USERS (.+)", output)
+        cmsm = re.search(r"^CMS: (.+)$", output, re.M)
+        if vulns:
+            shown = vulns[0][:90] + (f" +{len(vulns) - 1}" if len(vulns) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"CMS vuln: {shown}"[:140]}
+        if users:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"CMS user enumeration: {users.group(1)}"[:140]}
+        if cmsm:
+            return {"state": "INFO", "cve": cve, "risk": "INFO",
+                    "summary": f"CMS detected: {cmsm.group(1)}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2685,7 +2702,8 @@ _EXPLOIT_STEPS = {
         ("IDOR / broken access control — tamper IDs & roles to reach admin / other users",
          "idor-bac"),
         # ── known-app exploitation & foothold ──
-        "CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
+        ("CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
+         "cms-scan"),
         "Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
         "Land a webshell / reverse shell; stabilise; loot DB creds & config for reuse",
     ],
@@ -7352,6 +7370,242 @@ def _tool_idor_bac(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+# ── HTTP step 24: CMS-specific scan (wpscan / droopescan orchestrator + stdlib fallback) ──
+_CMS_DEADLINE = 300
+_CMS_REQ_TIMEOUT = 10
+_CMS_SCAN_TIMEOUT = 240        # per external scanner
+_CMS_MAX_PLUGINS = 25
+_WP_TOP_PLUGINS = [
+    "akismet", "contact-form-7", "woocommerce", "elementor", "wordpress-seo", "jetpack",
+    "wpforms-lite", "wordfence", "all-in-one-seo-pack", "wp-super-cache", "w3-total-cache",
+    "really-simple-ssl", "updraftplus", "classic-editor", "mailchimp-for-wp", "redirection",
+    "google-site-kit", "ninja-forms", "advanced-custom-fields", "wp-file-manager",
+    "ithemes-security", "backwpup", "duplicate-post", "loginizer", "revslider",
+]
+
+
+def _detect_cms(blob: str) -> tuple:
+    """Best-effort CMS + version from a fingerprint blob (services + http-* output + homepage).
+    Ordered so the strongest signature wins. Returns (cms|None, version|None)."""
+    low = (blob or "").lower()
+    if re.search(r"wp-content|wp-json|wp-login|wordpress", low):
+        m = re.search(r"wordpress[ /]?(\d+\.\d+(?:\.\d+)?)", low)
+        return "wordpress", (m.group(1) if m else None)
+    if re.search(r"x-generator:\s*drupal|\bdrupal\b|sites/default|/core/misc/drupal", low):
+        m = re.search(r"drupal[ /]?(\d+(?:\.\d+)+)", low)
+        return "drupal", (m.group(1) if m else None)
+    if re.search(r"\bjoomla\b|/administrator/|com_content|/media/system/js", low):
+        m = re.search(r"joomla![ /]?(\d+(?:\.\d+)+)", low)
+        return "joomla", (m.group(1) if m else None)
+    for nm in ("magento", "typo3", "moodle", "mediawiki", "prestashop", "opencart", "ghost"):
+        if nm in low:
+            m = re.search(nm + r"[ /]?(\d+(?:\.\d+)+)", low)
+            return nm, (m.group(1) if m else None)
+    return None, None
+
+
+def _parse_wpscan_json(data: dict) -> tuple:
+    """(version, [vuln lines], [component lines], [users]) from wpscan --format json output."""
+    def _cves(v):
+        cs = ((v.get("references") or {}).get("cve") or [])
+        return " ".join((c if str(c).upper().startswith("CVE") else "CVE-" + str(c)) for c in cs)
+
+    core = data.get("version") or {}
+    ver = core.get("number")
+    vulns, items, users = [], [], []
+    for v in (core.get("vulnerabilities") or []):
+        vulns.append(f"core {ver or '?'}: {v.get('title', '?')} {_cves(v)}".strip())
+    for section in ("plugins", "themes"):
+        for name, info in (data.get(section) or {}).items():
+            pv = ((info.get("version") or {}) or {}).get("number")
+            vs = info.get("vulnerabilities") or []
+            if vs:
+                for v in vs:
+                    vulns.append(f"{section[:-1]} {name} {pv or '?'}: "
+                                 f"{v.get('title', '?')} {_cves(v)}".strip())
+            else:
+                items.append(f"{section[:-1]} {name}{(' ' + pv) if pv else ''}")
+    mt = data.get("main_theme") or {}
+    if mt.get("slug"):
+        pv = (mt.get("version") or {}).get("number")
+        for v in (mt.get("vulnerabilities") or []):
+            vulns.append(f"theme {mt.get('slug')} {pv or '?'}: {v.get('title', '?')} {_cves(v)}".strip())
+    for u in (data.get("users") or {}):
+        users.append(u)
+    return ver, vulns, items, users
+
+
+def _parse_droopescan(out: str) -> tuple:
+    """(versions, [component lines]) from droopescan text output. No CVE data — enumeration only."""
+    versions = []
+    m = re.search(r"Possible version\(s\):\s*\n((?:[ \t]+\S+\n)+)", out or "")
+    if m:
+        versions = re.findall(r"[ \t]+([\d][\w.]*)", m.group(1))
+    items = []
+    for sec in re.finditer(r"\[\+\] ([A-Za-z ]+?) identified[^\n]*:\n"
+                           r"((?:[ \t]+http\S+\n?)+)", out or ""):
+        label = sec.group(1).strip()
+        for u in re.findall(r"[ \t]+(http\S+)", sec.group(2)):
+            items.append(f"{label}: {u}")
+    return versions, items
+
+
+def _tool_cms_scan(ip: str, port: int, proto: str) -> str:
+    """HTTP step-24 tool: fingerprint the CMS, then run its matching external scanner if
+    installed (wpscan for WordPress, droopescan for Drupal/Joomla) to surface vulnerable
+    plugins/themes/versions and users; otherwise fall back to a stdlib enumeration (version
+    files, wp-json user list, common plugin readmes). Read-only — no exploitation or brute
+    force. wpscan CVE data needs WPSCAN_API_TOKEN (env). Stdlib only for the fallback; a dead
+    server raises."""
+    import http.client
+    import ssl
+    import time
+    import urllib.parse
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(path, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_CMS_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_CMS_REQ_TIMEOUT)
+            hdr = {"Host": ip, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request("GET", path, headers=hdr)
+            resp = conn.getresponse()
+            return resp.status, resp.read(200000).decode("utf-8", "replace"), resp.headers
+        except Exception:                                     # noqa: BLE001
+            return None, None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    # fingerprint blob: services + earlier http-* output + live homepage
+    blob = ""
+    for (nm, prod, ver, cpe) in fetch_services(ip).values():
+        blob += " ".join(x for x in (nm, prod, cpe) if x) + " "
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid in ("http-fingerprint", "http-headers", "http-source", "dir-brute"):
+            blob += " " + (output or "")
+    st, body, hdrs = _req("/")
+    if st is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot CMS-scan")
+    blob += " " + (body[:20000] if body else "")
+    if hdrs:
+        for k in ("Server", "X-Powered-By", "X-Generator", "Link"):
+            hv = hdrs.get(k)
+            if hv:
+                blob += f" {k}: {hv}"
+
+    cms, ver = _detect_cms(blob)
+    base = f"{scheme}://{ip}:{port}/"
+    deadline = time.time() + _CMS_DEADLINE
+    if not cms:
+        return (f"{scheme}://{ip}:{port}/ CMS scan\n"
+                "no CMS fingerprinted (WordPress / Drupal / Joomla / …)")
+
+    vulns, items, users, notes = [], [], [], []
+    engine = "stdlib fallback"
+
+    if cms == "wordpress" and shutil.which("wpscan"):
+        engine = "wpscan"
+        cmd = ["wpscan", "--url", base, "--no-banner", "--format", "json",
+               "--enumerate", "vp,vt,u", "--random-user-agent", "--disable-tls-checks",
+               "--request-timeout", "20", "--connect-timeout", "10"]
+        tok = os.environ.get("WPSCAN_API_TOKEN")
+        if tok:
+            cmd += ["--api-token", tok]
+        else:
+            notes.append("no WPSCAN_API_TOKEN — enumeration only, no CVE mapping")
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_CMS_SCAN_TIMEOUT)
+            data = json.loads(proc.stdout or "{}")
+            wver, vulns, items, users = _parse_wpscan_json(data)
+            ver = wver or ver
+        except subprocess.TimeoutExpired:
+            notes.append("wpscan timed out (partial/none)")
+        except Exception as exc:                              # noqa: BLE001
+            notes.append(f"wpscan parse failed: {exc}")
+    elif cms in ("drupal", "joomla", "silverstripe") and shutil.which("droopescan"):
+        engine = "droopescan"
+        try:
+            proc = subprocess.run(["droopescan", "scan", cms, "-u", base, "-t", "8"],
+                                  capture_output=True, text=True, timeout=_CMS_SCAN_TIMEOUT)
+            versions, items = _parse_droopescan(proc.stdout or "")
+            if versions:
+                ver = versions[0]
+                if len(versions) > 1:
+                    notes.append("droopescan version candidates: " + ", ".join(versions[:5]))
+        except subprocess.TimeoutExpired:
+            notes.append("droopescan timed out (partial/none)")
+        except Exception as exc:                              # noqa: BLE001
+            notes.append(f"droopescan failed: {exc}")
+
+    if engine == "stdlib fallback":
+        notes.append("external scanner not installed — stdlib fallback (versions + user enum)")
+        if cms == "wordpress":
+            for p in ("/readme.html", "/wp-includes/version.php"):
+                s, b, _h = _req(p)
+                if s == 200 and b:
+                    m = re.search(r"[Vv]ersion\s+(\d+\.\d+(?:\.\d+)?)", b)
+                    if m:
+                        ver = ver or m.group(1)
+            s, b, _h = _req("/wp-json/wp/v2/users")
+            if not (s == 200 and b and b.lstrip().startswith("[")):
+                s, b, _h = _req("/?rest_route=/wp/v2/users")
+            if s == 200 and b and b.lstrip().startswith("["):
+                users += re.findall(r'"slug":"([^"]+)"', b)
+            for pl in _WP_TOP_PLUGINS[:_CMS_MAX_PLUGINS]:
+                if time.time() >= deadline:
+                    break
+                s, b, _h = _req(f"/wp-content/plugins/{pl}/readme.txt")
+                if s == 200 and b and re.search(r"stable tag", b, re.I):
+                    pm = re.search(r"[Ss]table tag:\s*([\w.]+)", b)
+                    items.append(f"plugin {pl}{(' ' + pm.group(1)) if pm else ''}")
+        elif cms == "drupal":
+            for p in ("/CHANGELOG.txt", "/core/CHANGELOG.txt"):
+                s, b, _h = _req(p)
+                if s == 200 and b:
+                    m = re.search(r"Drupal (\d+\.\d+(?:\.\d+)?)", b)
+                    if m:
+                        ver = ver or m.group(1)
+        elif cms == "joomla":
+            for p in ("/administrator/manifests/files/joomla.xml",
+                      "/language/en-GB/en-GB.xml"):
+                s, b, _h = _req(p)
+                if s == 200 and b:
+                    m = re.search(r"<version>([\d.]+)</version>", b)
+                    if m:
+                        ver = ver or m.group(1)
+
+    lines = [f"{scheme}://{ip}:{port}/ CMS scan",
+             f"CMS: {cms}{(' ' + ver) if ver else ' (version unknown)'}",
+             f"engine: {engine}"]
+    for n in notes:
+        lines.append(f"note: {n}")
+    if vulns:
+        lines.append("\nVULNERABILITIES:")
+        lines += [f"  ✗ CMS-VULN {v}" for v in vulns]
+    if items:
+        lines.append("\nCOMPONENTS:")
+        lines += [f"  {it}" for it in sorted(set(items))]
+    if users:
+        lines.append("\nUSERS:")
+        lines.append(f"  ⚠ CMS-USERS " + ", ".join(sorted(set(users))[:20]))
+    if not (vulns or items or users):
+        lines.append("\nno components / vulns enumerated")
+    return "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
@@ -7377,6 +7631,7 @@ _STEP_TOOLS = {
     "upload-shell": ("file-upload webshell (stdlib, PHP/ASP/JSP auto, exec-verified)", _tool_file_upload),
     "xxe-ssrf": ("XXE & SSRF (stdlib, read-only) → metadata + file-read + OOB", _tool_xxe_ssrf),
     "idor-bac": ("IDOR / broken access control (stdlib, read-only, creds-aware)", _tool_idor_bac),
+    "cms-scan": ("CMS scan → wpscan/droopescan + stdlib fallback (plugins/themes/users)", _tool_cms_scan),
 }
 
 def _mins(seconds: int) -> str:
@@ -7416,6 +7671,7 @@ _STEP_TOOL_RUNS = {
     "upload-shell":     ("Python", f"{_mins(_UPLOAD_DEADLINE)} min"),
     "xxe-ssrf":         ("Python", f"{_mins(_XXES_DEADLINE)} min"),
     "idor-bac":         ("Python", f"{_mins(_IDOR_DEADLINE)} min"),
+    "cms-scan":         ("Python + wpscan/droopescan", f"{_mins(_CMS_DEADLINE)} min"),
 }
 
 
