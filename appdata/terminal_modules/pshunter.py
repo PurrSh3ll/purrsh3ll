@@ -2727,6 +2727,9 @@ _EXPLOIT_STEPS = {
          "admin-rce"),
         ("Spawn a reverse shell over a confirmed RCE channel and auto-upgrade it to a full interactive TTY",
          "foothold"),
+        # ── stuck? manual escalations tailored to what we found ──
+        ("Nothing worked? Manual next steps — bigger wordlists, Burp, CVE research on the found versions, verify unconfirmed hits",
+         "next-steps"),
     ],
     "smb": [
         # ── recon (no creds) ──
@@ -8131,6 +8134,132 @@ def _tool_foothold(ip: str, port: int, proto: str) -> str:
             f"(via {desc}); listener in a new terminal")
 
 
+# ── HTTP step 27: manual next steps — a context-aware "when stuck" playbook (list only) ──
+def _tool_next_steps(ip: str, port: int, proto: str) -> str:
+    """HTTP step-27 tool: NOT a scan — a read-only checklist of manual escalations for when the
+    automated steps came up short, with this host's own findings substituted in (versions →
+    CVE-research links, discovered vhosts/params/users → ready commands, and our own unconfirmed
+    ⚠ hits listed for manual verification). Pure DB synthesis; no network traffic."""
+    import urllib.parse
+
+    services = fetch_services(ip)
+    svc = services.get((port, proto)) or (None, None, None, None)
+    name = svc[0] or ""
+    tls = port in (443, 8443) or "https" in name.lower() or "ssl" in name.lower()
+    scheme = "https" if tls else "http"
+    base = f"{scheme}://{ip}:{port}/"
+    vhosts = sorted({hn for hn, _p, _s in fetch_hostnames(ip) if hn and hn != ip})
+
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+
+    # versions (services + whatweb Product[ver] + Server/X-Powered-By headers)
+    versions = []
+    for (_nm, prod, ver, _cpe) in services.values():
+        if prod and ver:
+            versions.append(f"{prod} {ver}")
+    for m in re.finditer(r"([A-Za-z][\w .\-]*?)\[([\d][\w.\-]*)\]", by_sid.get("http-fingerprint", "")):
+        versions.append(f"{m.group(1).strip()} {m.group(2)}")
+    for h in ("Server", "X-Powered-By"):
+        m = re.search(rf"^{h}:\s*(.+)$", by_sid.get("http-headers", ""), re.I | re.M)
+        if m:                                                 # "Apache/2.4.51" → "Apache 2.4.51"
+            versions.append(m.group(1).strip().split()[0].replace("/", " "))
+    versions = [v for v in dict.fromkeys(versions) if re.search(r"\d", v)][:10]
+
+    cms = (re.search(r"^CMS: (\S+)", by_sid.get("cms-scan", ""), re.M) or [None, None])[1] \
+        if "CMS:" in by_sid.get("cms-scan", "") else None
+    mu = re.search(r"⚠ CMS-USERS (.+)", by_sid.get("cms-scan", ""))
+    users = [u.strip() for u in mu.group(1).split(",")] if mu else []
+
+    params = re.findall(r"^\s*(/\S*)\?\[([^\]]+)\]", by_sid.get("param-hunt", ""), re.M)
+    eps = list(dict.fromkeys(re.findall(r"^\s*\+ \d{3}\s+(\S+)", by_sid.get("dir-brute", ""), re.M)))[:8]
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            s = ln.strip()
+            if s.startswith("⚠") and "CMS-USERS" not in s:
+                warns.append(f"{DIM}[{sid}]{RESET} {s}")
+    warns = warns[:14]
+
+    def q(s):
+        return urllib.parse.quote(s)
+
+    L = [f"{base} — manual next steps {DIM}(list only; nothing is scanned here){RESET}",
+         f"{DIM}targets: {base}" + (f"  ·  vhosts: {', '.join(vhosts)}" if vhosts else "") + RESET]
+
+    L.append(f"\n{BOLD}A. Deeper enumeration (bigger lists / longer / recursive){RESET}")
+    L.append(f"  {DIM}feroxbuster -u {base} -w /usr/share/seclists/Discovery/Web-Content/"
+             f"directory-list-2.3-big.txt -x php,txt,bak,zip -r{RESET}")
+    L.append(f"  {DIM}ffuf -u {base}FUZZ -w /usr/share/seclists/Discovery/Web-Content/"
+             f"raft-large-words.txt -e .php,.bak,.old{RESET}")
+    if vhosts or True:
+        L.append(f"  {DIM}vhost: ffuf -u {base} -H 'Host: FUZZ.<domain>' -w "
+                 f"/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt -fs <baseline>{RESET}")
+    L.append(f"  {DIM}subdomains (if you know the domain): subfinder -d <domain> ; amass enum -d <domain>{RESET}")
+    L.append(f"  {DIM}params: arjun -u {base}<endpoint> -w big.txt  ·  x8  ·  Burp Param Miner{RESET}")
+    L.append(f"  {DIM}api: check /openapi.json /swagger  ·  GraphQL introspection on /graphql{RESET}")
+
+    L.append(f"\n{BOLD}B. Interactive / heavier tools{RESET}")
+    L.append(f"  {DIM}Burp: proxy + spider + active scan; Intruder/Turbo Intruder on the params below; "
+             f"Collaborator for blind OOB (XXE/SSRF/SSTI){RESET}")
+    tag = cms.lower() if cms else "<tech>"
+    L.append(f"  {DIM}nuclei -u {base} -tags {tag},cve,exposure  ·  nuclei -u {base} -as (auto tech){RESET}")
+    L.append(f"  {DIM}wafw00f {base}  (if requests get blocked → --delay / proxychains / rotate IP){RESET}")
+
+    L.append(f"\n{BOLD}C. CVE research on the versions we found{RESET}")
+    if versions:
+        for v in versions:
+            L.append(f"  {CYAN}{v}{RESET}")
+            L.append(f"      {DIM}searchsploit {v}  ·  https://www.exploit-db.com/search?q={q(v)}{RESET}")
+            L.append(f"      {DIM}https://nvd.nist.gov/vuln/search/results?query={q(v)}  ·  "
+                     f"https://vulners.com/search?query={q(v)}{RESET}")
+    else:
+        L.append(f"  {DIM}no versioned products captured — re-run fingerprint (r2) / headers (r1) first{RESET}")
+
+    L.append(f"\n{BOLD}D. Auth / credentials (beyond our small default set){RESET}")
+    if users:
+        L.append(f"  {CYAN}users found:{RESET} {', '.join(users)}")
+        L.append(f"  {DIM}spray: hydra -L users.txt -p '<Season2024!>' {ip} http-post-form ...  (mind lockout){RESET}")
+    L.append(f"  {DIM}full brute on the real login form: hydra -l <user> -P "
+             f"/usr/share/wordlists/rockyou.txt {ip} -s {port} http[s]-post-form "
+             f"'/login:user=^USER^&pass=^PASS^:F=incorrect'{RESET}")
+    L.append(f"  {DIM}reuse any looted creds across the host's other services (SSH/SMB/DB/RDP){RESET}")
+
+    L.append(f"\n{BOLD}E. Injection deep-dive (manual){RESET}")
+    if params:
+        L.append(f"  {CYAN}params to target:{RESET} " +
+                 "; ".join(f"{p}?[{pp}]" for p, pp in params[:6]))
+    if eps:
+        L.append(f"  {CYAN}endpoints:{RESET} {', '.join(eps)}")
+    L.append(f"  {DIM}sqlmap -u '{base}<endpoint>?id=1' --level 5 --risk 3 --tamper=space2comment "
+             f"--batch --dbs  (then --os-shell){RESET}")
+    L.append(f"  {DIM}LFI wrapper chains / deeper traversal (ffuf)  ·  SSTI engine-specific gadgets{RESET}")
+    L.append(f"  {DIM}deserialization if you see __VIEWSTATE / PHP-serialized / Java blobs → ysoserial{RESET}")
+    L.append(f"  {DIM}HTTP request smuggling / desync → Burp (we don't test this){RESET}")
+
+    L.append(f"\n{BOLD}F. Classes we do NOT cover — check by hand{RESET}")
+    L.append(f"  {DIM}XSS (reflected/stored/DOM) · CSRF · business logic · race conditions · "
+             f"OAuth/SAML/JWT deep · CORS misconfig{RESET}")
+
+    L.append(f"\n{BOLD}G. Verify our own UNCONFIRMED hits (highest value){RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Housekeeping / re-run{RESET}")
+    if vhosts:
+        L.append(f"  {DIM}add vhosts to /etc/hosts, then re-run dir-brute (r9) per vhost: "
+                 f"{ip} {' '.join(vhosts)}{RESET}")
+    L.append(f"  {DIM}raise time budgets and re-run the long steps (vhost r8 / dir-brute r9 / param r11){RESET}")
+    L.append(f"  {DIM}enumerate the host's OTHER ports/services (own checklists) — the web app may not be the way in{RESET}")
+    return "\n".join(L)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -8159,6 +8288,7 @@ _STEP_TOOLS = {
     "cms-scan": ("CMS scan → wpscan/droopescan + stdlib fallback (plugins/themes/users)", _tool_cms_scan),
     "admin-rce": ("admin panel → RCE (WordPress, creds-gated, inert, reversible)", _tool_admin_rce),
     "foothold": ("foothold → spawn & auto-upgrade a reverse shell (interactive)", _tool_foothold),
+    "next-steps": ("manual next steps — context-aware 'when stuck' list (no scan)", _tool_next_steps),
 }
 
 def _mins(seconds: int) -> str:
@@ -8201,6 +8331,7 @@ _STEP_TOOL_RUNS = {
     "cms-scan":         ("Python + wpscan/droopescan", f"{_mins(_CMS_DEADLINE)} min"),
     "admin-rce":        ("Python", f"{_mins(_ADMINRCE_DEADLINE)} min"),
     "foothold":         ("Python", None),
+    "next-steps":       ("list only — no scan", None),
 }
 
 
@@ -8279,15 +8410,18 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key == "foothold":                                # interactive: menu + spawns a terminal
+    if tool_key in ("foothold", "next-steps"):                # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
-            out = runner(ip, port, proto)                     # runs in the foreground (reads input)
+            out = runner(ip, port, proto)                     # foothold reads input; next-steps builds a list
         except Exception as exc:                              # noqa: BLE001
-            print(f"{RED}✗ foothold error: {exc}{RESET}")
+            print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
+        if tool_key == "next-steps":                          # it's a list to read now, not a scan result
+            print("\n" + out)
+            out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
         set_step_status(ip, port, proto, key, n, "done")
         return
