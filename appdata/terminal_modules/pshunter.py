@@ -8137,11 +8137,9 @@ def _tool_foothold(ip: str, port: int, proto: str) -> str:
 # ── HTTP step 27: manual next steps — a context-aware "when stuck" playbook (list only) ──
 def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     """HTTP step-27 tool: NOT a scan — a read-only checklist of manual escalations for when the
-    automated steps came up short, with this host's own findings substituted in (versions →
-    CVE-research links, discovered vhosts/params/users → ready commands, and our own unconfirmed
-    ⚠ hits listed for manual verification). Pure DB synthesis; no network traffic."""
-    import urllib.parse
-
+    automated steps came up short, with this host's own findings substituted in (HTTP-phase
+    CVEs, discovered vhosts/params/users → ready commands, and unconfirmed ⚠ hits listed for
+    manual verification). Pure DB synthesis; no network traffic."""
     services = fetch_services(ip)
     svc = services.get((port, proto)) or (None, None, None, None)
     name = svc[0] or ""
@@ -8154,19 +8152,6 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     by_sid = {}
     for sid, out in scripts:
         by_sid.setdefault(sid, out or "")
-
-    # versions (services + whatweb Product[ver] + Server/X-Powered-By headers)
-    versions = []
-    for (_nm, prod, ver, _cpe) in services.values():
-        if prod and ver:
-            versions.append(f"{prod} {ver}")
-    for m in re.finditer(r"([A-Za-z][\w .\-]*?)\[([\d][\w.\-]*)\]", by_sid.get("http-fingerprint", "")):
-        versions.append(f"{m.group(1).strip()} {m.group(2)}")
-    for h in ("Server", "X-Powered-By"):
-        m = re.search(rf"^{h}:\s*(.+)$", by_sid.get("http-headers", ""), re.I | re.M)
-        if m:                                                 # "Apache/2.4.51" → "Apache 2.4.51"
-            versions.append(m.group(1).strip().split()[0].replace("/", " "))
-    versions = [v for v in dict.fromkeys(versions) if re.search(r"\d", v)][:10]
 
     cms = (re.search(r"^CMS: (\S+)", by_sid.get("cms-scan", ""), re.M) or [None, None])[1] \
         if "CMS:" in by_sid.get("cms-scan", "") else None
@@ -8194,9 +8179,6 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
         found_cves |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
     found_cves = sorted(found_cves, key=_cve_sort_key)
 
-    def q(s):
-        return urllib.parse.quote(s)
-
     L = [f"{base} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
          f"{DIM}targets: {base}" + (f"  ·  vhosts: {', '.join(vhosts)}" if vhosts else "") + RESET]
 
@@ -8219,22 +8201,14 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     L.append(f"  {DIM}nuclei -u {base} -tags {tag},cve,exposure  ·  nuclei -u {base} -as (auto tech){RESET}")
     L.append(f"  {DIM}wafw00f {base}  (if requests get blocked → --delay / proxychains / rotate IP){RESET}")
 
-    L.append(f"\n{BOLD}C. CVE research{RESET}")
+    L.append(f"\n{BOLD}C. CVEs surfaced in the HTTP phase{RESET}")
     if found_cves:
-        L.append(f"  {CYAN}CVEs surfaced in the HTTP phase:{RESET}")
         for c in found_cves:
             ktag = f"  {RED}KEV{RESET}" if c in kev else ""
-            L.append(f"    {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
-    if versions:
-        L.append(f"  {DIM}hunt further against the detected versions:{RESET}")
-        for v in versions:
-            L.append(f"  {CYAN}{v}{RESET}")
-            L.append(f"      {DIM}searchsploit {v}  ·  https://www.exploit-db.com/search?q={q(v)}{RESET}")
-            L.append(f"      {DIM}https://nvd.nist.gov/vuln/search/results?query={q(v)}  ·  "
-                     f"https://vulners.com/search?query={q(v)}{RESET}")
-    if not found_cves and not versions:
-        L.append(f"  {DIM}no CVEs or versioned products captured yet — "
-                 f"re-run fingerprint (r2) / headers (r1) / searchsploit (r4){RESET}")
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced yet — re-run searchsploit (r4) / cms-scan (r12) "
+                 f"if versions were found{RESET}")
 
     L.append(f"\n{BOLD}D. Credentials & authentication{RESET}")
     if users:
