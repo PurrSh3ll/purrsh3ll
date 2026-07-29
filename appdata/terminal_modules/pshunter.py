@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2aw) ftp-creds: default / reused FTP login worked → immediate access
+    if sid == "ftp-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"FTP creds: {shown}"[:140]}
+
     # 2av) ftp-write: anonymous-writable directory — webshell / payload-drop surface
     if sid == "ftp-write":
         w = re.findall(r"^✗ WRITABLE (\S+)", output, re.M)
@@ -3070,7 +3079,7 @@ _EXPLOIT_STEPS = {
         ("Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)", "ftp-banner"),
         ("Anonymous login (anonymous:<any>) → browse the tree", "ftp-anon"),
         ("Download everything; test write access (upload a throwaway file)", "ftp-write"),
-        "Try known / default / reused creds; targeted brute only if lockout allows",
+        ("Try known / default / reused creds; targeted brute only if lockout allows", "ftp-creds"),
         "If FTP root maps to a web root or is writable → drop a webshell / poison a served file",
         "FTP-bounce (PORT) to reach & scan internal hosts through the server",
         # ── land a shell & foothold ──
@@ -10652,6 +10661,85 @@ def _tool_ftp_write(ip: str, port: int, proto: str) -> str:
     return f"FTP write test — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── FTP step 4: known / default / reused credentials (targeted, no wordlist) ───
+_FTPCREDS_DEADLINE = 120         # s — wall-clock cap
+_FTPCREDS_MAX = 60               # ceiling on login attempts (targeted, not a brute)
+_FTP_DEFAULTS = [                # curated FTP defaults — not a wordlist (lockout-safe)
+    ("ftp", "ftp"), ("ftp", ""), ("ftp", "password"), ("admin", "admin"), ("admin", ""),
+    ("admin", "password"), ("administrator", "administrator"), ("root", "root"), ("root", "toor"),
+    ("root", ""), ("ftpuser", "ftpuser"), ("user", "user"), ("guest", "guest"), ("test", "test"),
+    ("webadmin", "webadmin"), ("www", "www"),
+]
+
+
+def _ftp_login_test(ip: str, port: int, user: str, pw: str) -> "bool | None":
+    """One FTP login attempt on a fresh connection. True=valid, False=rejected, None=conn error."""
+    import ftplib
+    try:
+        f = ftplib.FTP(timeout=6)
+        f.connect(ip, port)
+        f.login(user, pw)
+        try:
+            f.quit()
+        except Exception:                                    # noqa: BLE001
+            f.close()
+        return True
+    except ftplib.error_perm:
+        return False
+    except Exception:                                        # noqa: BLE001 — connection error
+        return None
+
+
+def _tool_ftp_creds(ip: str, port: int, proto: str) -> str:
+    """FTP step 4 tool: try a curated set of default FTP credentials plus any harvested password
+    (reuse across services) against the login — targeted, NOT a wordlist brute, so it stays
+    lockout-safe. Valid logins are saved to smb-creds ('ftp on <host>') for reuse. A full brute
+    (hydra) stays manual and is printed. An unreachable host raises. Authorised targets only."""
+    import time
+    reused = [(u, s) for _d, u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]        # password reuse (no hashes)
+    candidates, seen = [], set()
+    for u, p in _FTP_DEFAULTS + reused:
+        key = (u.lower(), p)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((u, p, (u, p) not in _FTP_DEFAULTS))     # (user, pass, is_reused)
+    candidates = candidates[:_FTPCREDS_MAX]
+
+    deadline = time.time() + _FTPCREDS_DEADLINE
+    valid, conn_err = [], 0
+    for user, pw, is_reused in candidates:
+        if time.time() > deadline:
+            break
+        r = _ftp_login_test(ip, port, user, pw)
+        if r is True:
+            valid.append((user, pw, is_reused))
+        elif r is None:
+            conn_err += 1
+            if conn_err >= 5:                                # target down / dropping us → stop
+                break
+    if conn_err >= 5 and not valid:
+        raise RuntimeError(f"{ip}:{port} — FTP not answering login attempts (down / not FTP?)")
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw, _r in valid:
+            line = f"! {user}:{pw or '<blank>'} @ ftp on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(candidates)} cred(s) tried (defaults + reuse) · {len(valid)} valid"]
+    for user, pw, is_reused in valid:
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}" + ("  (reused)" if is_reused else ""))
+    if not valid:
+        lines.append("· no default/reused login worked")
+    lines.append(f"· full brute (only if no lockout): hydra -L users.txt -P "
+                 f"/usr/share/wordlists/rockyou.txt ftp://{ip}")
+    return f"FTP credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10704,6 +10792,7 @@ _STEP_TOOLS = {
     "ftp-banner": ("FTP banner + version → searchsploit (stdlib ftplib)", _tool_ftp_banner),
     "ftp-anon": ("Anonymous login → browse tree (stdlib ftplib, read-only)", _tool_ftp_anon),
     "ftp-write": ("Test write access → throwaway upload (stdlib, reversible)", _tool_ftp_write),
+    "ftp-creds": ("Default + reused FTP creds (stdlib, targeted, lockout-safe)", _tool_ftp_creds),
 }
 
 def _mins(seconds: int) -> str:
@@ -10771,6 +10860,7 @@ _STEP_TOOL_RUNS = {
     "ftp-banner":       ("Python + searchsploit", None),
     "ftp-anon":         ("Python", f"{_mins(_FTPANON_DEADLINE)} min"),
     "ftp-write":        ("Python", f"{_mins(_FTPWRITE_DEADLINE)} min"),
+    "ftp-creds":        ("Python", f"{_mins(_FTPCREDS_DEADLINE)} min"),
 }
 
 
@@ -10932,6 +11022,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "ftp-creds":                   # curated defaults + reuse, not a wordlist brute
+        print(f"{DIM}   tries curated FTP defaults + harvested passwords (reuse) — targeted, not a "
+              f"wordlist brute (lockout-safe); a full hydra brute stays manual · "
+              f"{RESET}{YELLOW}authorised targets only{RESET}")
     if tool_key == "ftp-write":                   # WRITES a throwaway marker — reversible
         print(f"{DIM}   uploads a throwaway {BOLD}~pshw_*.txt{RESET}{DIM} to each dir, confirms the "
               f"STOR, then deletes it (reversible) — finds the webshell/payload-drop surface · "
