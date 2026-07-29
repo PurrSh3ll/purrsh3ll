@@ -3042,6 +3042,10 @@ _EXPLOIT_STEPS = {
         "Try known / default / reused creds; targeted brute only if lockout allows",
         "If FTP root maps to a web root or is writable → drop a webshell / poison a served file",
         "FTP-bounce (PORT) to reach & scan internal hosts through the server",
+        # ── land a shell & foothold ──
+        "Spawn & upgrade an interactive shell",
+        # ── manual steps, tailored to what this host exposed ──
+        "Manual steps & further research",
     ],
     "tftp": [
         "Confirm UDP/69 (no auth)",
