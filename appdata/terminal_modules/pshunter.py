@@ -1038,6 +1038,13 @@ def _extract_hostnames(ip: str, sid: str, output: str) -> set:
         for pat in (r"FQDN:\s*(\S+)", r"Domain name:\s*(\S+)", r"DNS_?[Dd]omain[_ ]?[Nn]ame:\s*(\S+)",
                     r"Forest name:\s*(\S+)"):
             cands += re.findall(pat, output)
+    if sid == "smb-enum":                         # our report header: 'Host: X   OS: …   Domain: Y'
+        dom = re.search(r"Domain:\s*(\S+)", output)
+        host = re.search(r"Host:\s*(\S+)", output)
+        if dom:
+            cands.append(dom.group(1))
+            if host and host.group(1) not in ("?", ""):
+                cands.append(f"{host.group(1)}.{dom.group(1)}")
     return {h for h in (_valid_hostname(c, ip) for c in cands) if h}
 
 
@@ -2160,6 +2167,35 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"Reverse shell foothold: {m.group(1)}"[:140]}
         return None
 
+    # 2ab) smb-enum: SMB signing not required / SMBv1 → relay & EternalBlue surface (high);
+    # null/guest sessions & readable shares → exposed; otherwise the OS/domain banner is info.
+    if sid == "smb-enum":
+        conds, state, risk = [], "INFO", "LOW"
+        if "signing NOT required" in output:
+            conds.append("SMB signing not required (NTLM relay)")
+            state, risk = "VULNERABLE", "HIGH"
+        if "SMBv1 enabled" in output:
+            conds.append("SMBv1 enabled (EternalBlue surface)")
+            state, risk = "VULNERABLE", "HIGH"
+        acc = re.search(r"Access:\s*(null session|guest) allowed", output)
+        if acc:
+            conds.append(f"{acc.group(1)} allowed")
+            if state == "INFO":
+                state, risk = "EXPOSED", "MEDIUM"
+        rsh = [m.group(1) for m in re.finditer(r"^\s*(\S+)\s+(?:READ,WRITE|READ|WRITE)\b", output, re.M)
+               if m.group(1).upper() not in ("IPC$", "SHARE", "SHARENAME", "DISK")]
+        if rsh:
+            conds.append("readable shares: " + ", ".join(dict.fromkeys(rsh))[:60])
+            if state == "INFO":
+                state, risk = "EXPOSED", "MEDIUM"
+        if conds:
+            return {"state": state, "cve": cve, "risk": risk, "summary": (" · ".join(conds))[:140]}
+        mo = re.search(r"OS:\s*(.+)", output)
+        if mo:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": ("SMB: " + mo.group(1).strip())[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2810,8 +2846,9 @@ _EXPLOIT_STEPS = {
     ],
     "smb": [
         # ── recon (no creds) ──
-        "Null / guest session: enumerate shares, users (RID cycling), groups, password policy",
-        "Identify the domain, the DC(s) and each host's exact OS & SMB dialect",
+        ("Null / guest session: shares, users (RID cycling), groups & password policy — plus "
+         "the host OS, domain / DC and SMB dialect & signing status",
+         "smb-enum"),
         "Version RCE: MS17-010 EternalBlue, MS08-067, SMBGhost CVE-2020-0796",
         # ── loot shares ──
         "Recursively read every readable share; grep for creds, keys, configs, backups",
@@ -8328,6 +8365,139 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ── SMB step 1+2: unauthenticated enumeration ─────────────────────────────────
+_SMBENUM_DEADLINE = 240          # s — hard wall-clock cap across every external call
+_SMB_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _smb_run(cmd: list, timeout: int) -> "tuple[int, str]":
+    """Run an external SMB tool; return (rc, ANSI-stripped stdout+stderr). Never raises."""
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, ""
+    except OSError as exc:
+        return 127, str(exc)
+    return p.returncode, _SMB_ANSI.sub("", (p.stdout or "") + (p.stderr or ""))
+
+
+def _nxc_body(out: str) -> str:
+    """Strip netexec's repeated 'SMB  <ip>  445  <HOST>  ' line prefix so the payload
+    (share table / user list / policy) reads cleanly; drop banner ([*]/[+]/[-]) lines."""
+    body = []
+    for ln in out.splitlines():
+        m = re.match(r"^SMB\s+\S+\s+\d+\s+\S+\s+(.*)$", ln)
+        rest = m.group(1) if m else ln
+        if rest.strip() and not rest.lstrip().startswith(("[*]", "[+]", "[-]", "[!]")):
+            body.append(rest.rstrip())
+    return "\n".join(body)
+
+
+def _smb_parse_banner(out: str, facts: dict) -> None:
+    """Pull host/OS/domain/signing/SMBv1 out of a netexec SMB banner line into ``facts``."""
+    m = re.search(r"445\s+\S+\s+\[\*\]\s*(.+)", out)
+    if m and "os" not in facts:
+        facts["os"] = re.sub(r"\s*\(name:.*$", "", m.group(1)).strip()
+    for key, rx in (("name", r"\(name:([^)]*)\)"), ("domain", r"\(domain:([^)]*)\)"),
+                    ("signing", r"\(signing:(\w+)\)"), ("smbv1", r"\(SMBv1:(\w+)\)")):
+        mm = re.search(rx, out)
+        if mm and key not in facts:
+            facts[key] = mm.group(1).strip()
+
+
+def _smb_enum_nxc(nxc: str, ip: str, deadline: float) -> "list[str]":
+    """netexec path: banner (null then guest), then shares/users/rid/groups/pass-pol with
+    whichever anonymous session is accepted. Returns the report lines (empty if nothing)."""
+    import time
+    facts, report = {}, []
+    session = None
+    for alabel, (u, pw) in (("null session", ("", "")), ("guest", ("guest", ""))):
+        _, out = _smb_run([nxc, "smb", ip, "-u", u, "-p", pw], 60)
+        _smb_parse_banner(out, facts)
+        if re.search(r"\b445\b.*\[\+\]", out) and session is None:
+            session = (alabel, u, pw)
+    if not facts and session is None:
+        return []                                    # nxc ran but target isn't speaking SMB
+    host = facts.get("name", "?")
+    line = f"[*] Host: {host}   OS: {facts.get('os', '?')}"
+    dom = facts.get("domain", "")
+    if dom and dom.lower() != host.lower():
+        line += f"   Domain: {dom}"
+    report.append(line)
+    sm = []
+    if facts.get("signing") is not None:
+        sm.append("signing required" if facts["signing"].lower() in ("true", "1", "yes")
+                  else "signing NOT required")
+    if facts.get("smbv1") is not None:
+        sm.append("SMBv1 enabled" if facts["smbv1"].lower() in ("true", "1", "yes")
+                  else "SMBv1 disabled")
+    if sm:
+        report.append("[*] SMB: " + " · ".join(sm))
+    if session is None:
+        report.append("[*] Access: null/guest denied — banner only "
+                      "(creds needed to enumerate shares/users)")
+        return report
+    alabel, u, pw = session
+    report.append(f"[*] Access: {alabel} allowed")
+    for flag, sub, cap in (("SHARES", "--shares", 90), ("USERS", "--users", 90),
+                           ("RID-BRUTE", "--rid-brute", 120), ("GROUPS", "--groups", 90),
+                           ("PASSWORD POLICY", "--pass-pol", 60)):
+        if time.time() > deadline:
+            report.append(f"\n{flag}\n  (skipped — time budget reached)")
+            break
+        _, out = _smb_run([nxc, "smb", ip, "-u", u, "-p", pw, sub], cap)
+        body = _nxc_body(out)
+        if body.strip():
+            report.append(f"\n{flag}\n{body}")
+    return report
+
+
+def _smb_enum_fallback(ip: str, deadline: float) -> "list[str]":
+    """No-netexec path: smbclient (shares) + rpcclient (domain/users) + nmap NSE (OS/signing)."""
+    report = []
+    smbclient, rpcclient, nmap = (shutil.which("smbclient"), shutil.which("rpcclient"),
+                                  shutil.which("nmap"))
+    if nmap:
+        _, out = _smb_run([nmap, "-Pn", "-p445", "--script",
+                           "smb-os-discovery,smb-security-mode,smb-protocols", ip], 120)
+        keep = [ln.strip() for ln in out.splitlines()
+                if re.search(r"os:|computer name|domain|signing|SMBv1|2\.0|3\.0|3\.1", ln, re.I)]
+        if keep:
+            report.append("[*] nmap NSE\n  " + "\n  ".join(keep))
+    if smbclient:
+        _, out = _smb_run([smbclient, "-L", f"//{ip}/", "-N"], 40)
+        sh = [ln.rstrip() for ln in out.splitlines() if re.search(r"\bDisk\b|\bIPC\b", ln)]
+        if sh:
+            report.append("SHARES (smbclient -N)\n" + "\n".join(sh))
+    if rpcclient:
+        _, out = _smb_run([rpcclient, "-U", "", "-N", ip, "-c", "querydominfo;enumdomusers"], 40)
+        us = [ln.strip() for ln in out.splitlines() if "user:" in ln.lower() or "Domain:" in ln]
+        if us:
+            report.append("USERS / DOMAIN (rpcclient null)\n  " + "\n  ".join(us))
+    return report
+
+
+def _tool_smb_enum(ip: str, port: int, proto: str) -> str:
+    """SMB step 1+2 tool: unauthenticated (null / guest) enumeration — shares, users
+    (incl. RID cycling), groups, password policy — plus the host OS, domain, SMB dialect
+    and signing status. Read-only: no share writes, no credential guessing, so there is
+    no lockout risk. netexec is the engine; falls back to smbclient + rpcclient + nmap
+    NSE. A missing toolchain or a target not speaking SMB raises, so the step won't turn
+    green on a non-result. Authorised targets only."""
+    import time
+    deadline = time.time() + _SMBENUM_DEADLINE
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if nxc:
+        report = _smb_enum_nxc(nxc, ip, deadline)
+    elif shutil.which("smbclient") or shutil.which("rpcclient") or shutil.which("nmap"):
+        report = _smb_enum_fallback(ip, deadline)
+    else:
+        raise RuntimeError("no SMB tooling found — install netexec (or smbclient/rpcclient/nmap)")
+    if not report:
+        raise RuntimeError(f"{ip}:{port} did not answer SMB enumeration (unreachable / not SMB?)")
+    return f"SMB enumeration — {ip}:{port}/{proto}\n\n" + "\n".join(report)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -8357,6 +8527,7 @@ _STEP_TOOLS = {
     "admin-rce": ("admin panel → RCE (WordPress, creds-gated, inert, reversible)", _tool_admin_rce),
     "foothold": ("foothold → spawn & auto-upgrade a reverse shell (interactive)", _tool_foothold),
     "next-steps": ("manual steps (context-aware, reference only)", _tool_next_steps),
+    "smb-enum": ("SMB null/guest enum (netexec → shares/users/pol + OS/domain/signing)", _tool_smb_enum),
 }
 
 def _mins(seconds: int) -> str:
@@ -8366,10 +8537,11 @@ def _mins(seconds: int) -> str:
 
 
 # What runs behind each wired step, shown compactly under the checklist line. Verified against
-# every _tool_* source: the ONLY external Kali binaries invoked are whatweb / openssl /
-# searchsploit (each IS the step) and sqlmap (driven by sqli-scan, only if installed). Every
-# other engine is pure stdlib — no john/hashcat/hydra/nmap/ffuf/gobuster/wpscan/etc. (arjun is
-# reused only as a wordlist file, not run). Per key: (engine label, time-cap text | None).
+# every _tool_* source. External Kali binaries invoked: whatweb / openssl / searchsploit (each
+# IS the step), sqlmap (driven by sqli-scan, only if installed), and — for the SMB phase, where
+# a pure-Python client is impractical — netexec (with smbclient/rpcclient/nmap fallback). Every
+# HTTP engine is pure stdlib — no john/hashcat/hydra/ffuf/gobuster/wpscan/etc. on that side
+# (arjun is reused only as a wordlist file, not run). Per key: (engine label, time-cap text | None).
 _STEP_TOOL_RUNS = {
     "http-headers":     ("Python", None),
     "http-fingerprint": ("whatweb", None),
@@ -8400,6 +8572,7 @@ _STEP_TOOL_RUNS = {
     "admin-rce":        ("Python", f"{_mins(_ADMINRCE_DEADLINE)} min"),
     "foothold":         ("Python", None),
     "next-steps":       ("reference · no scan", None),
+    "smb-enum":         ("netexec / smbclient+rpcclient+nmap", f"{_mins(_SMBENUM_DEADLINE)} min"),
 }
 
 
@@ -8414,7 +8587,7 @@ def _step_run_line(tool_key: str) -> str:
 
 # tools that harvest hostnames → maintain the managed /etc/hosts block (root) / show the
 # paste line (no root); used to print the right sudo notice at launch
-_HOSTS_WRITING_TOOLS = {"http-headers", "ssl-cert", "http-source", "vhost-fuzz"}
+_HOSTS_WRITING_TOOLS = {"http-headers", "ssl-cert", "http-source", "vhost-fuzz", "smb-enum"}
 
 # status glyph + colour for a checklist step
 _STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), "running": ("⏳", YELLOW),
@@ -8557,6 +8730,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ active template-injection tests{RESET}{DIM} — computed math marker; "
               f"auto-runs read-only id via engine gadget (confirms RCE) · "
               f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key == "smb-enum":                    # unauth recon: no creds tried, no writes
+        eng = "netexec" if (shutil.which("netexec") or shutil.which("nxc")) \
+            else "smbclient/rpcclient/nmap"
+        print(f"{DIM}   unauthenticated null/guest enum via {BOLD}{eng}{RESET}{DIM} — read-only, "
+              f"no credential guessing (no lockout) · deadline {_SMBENUM_DEADLINE // 60} min{RESET}")
     if tool_key in _HOSTS_WRITING_TOOLS:          # domain-discovery tools: /etc/hosts status
         if _is_root():
             print(f"{DIM}   sudo ✓ — discovered domains are auto-added to "
