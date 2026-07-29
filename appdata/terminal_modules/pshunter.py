@@ -3033,7 +3033,7 @@ _EXPLOIT_STEPS = {
         # ── land a shell & foothold ──
         ("Valid creds / hash → spawn & upgrade an interactive shell (evil-winrm, PtH)", "winrm-shell"),
         # ── manual steps, tailored to what this host exposed ──
-        "Manual steps & further research",
+        ("Manual steps & further research", "winrm-next"),
     ],
     "ftp": [
         "Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)",
@@ -10283,6 +10283,102 @@ def _tool_winrm_recon(ip: str, port: int, proto: str) -> str:
     return f"WinRM post-access recon — {host}\n\n" + "\n".join(lines)
 
 
+# ── WinRM step 6: manual steps (read-only reference, this host's findings substituted) ──
+def _tool_winrm_next(ip: str, port: int, proto: str) -> str:
+    """WinRM step-6 tool: NOT a scan — a read-only checklist of manual WinRM/AD escalations for
+    when the automated steps came up short, with this host's own findings substituted in (the
+    privesc path from winrm-recon, pivot subnets, who can WinRM, the domain, phase CVEs, and
+    unconfirmed ⚠ hits to verify). Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    recon, access, enum = by_sid.get("winrm-recon", ""), by_sid.get("winrm-access", ""), by_sid.get("winrm-enum", "")
+
+    md = re.search(r"Domain:\s*(\S+)", enum)
+    dom = md.group(1) if md and not _looks_ip(md.group(1)) else None
+    dc = dom or "<domain>"
+    privs = re.findall(r"^✗ PRIV (\S+)", recon, re.M)
+    hot = [p for p in privs if p in _HOT_PRIVS]
+    subnets = (re.search(r"Networks:\s*(.+?)\s{2,}", recon) or re.search(r"Networks:\s*(.+)", recon))
+    subnets = subnets.group(1).strip() if subnets else ""
+    who = [w.replace("  (have cred)", "").strip()
+           for w in re.findall(r"^✗ WINRM-USER (.+)$", access, re.M)]
+    nwinrm = len(_gather_winrm_creds())
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            s = ln.strip()
+            if s.startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {s}")
+    warns = warns[:14]
+
+    L = [f"WinRM {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
+         f"{DIM}domain: {dc}  ·  WinRM-capable creds: {nwinrm}"
+         + (f"  ·  pivot: {subnets}" if subnets else "") + RESET]
+
+    L.append(f"\n{BOLD}A. Privilege escalation (run in the shell){RESET}")
+    if hot:
+        if any(p in ("SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege") for p in hot):
+            L.append(f"  {CYAN}{'/'.join(hot)}{RESET} → {DIM}PrintSpoofer.exe -i -c cmd  ·  "
+                     f"GodPotato -cmd 'cmd /c whoami'  ·  JuicyPotatoNG → SYSTEM{RESET}")
+        if any(p in ("SeBackupPrivilege", "SeRestorePrivilege") for p in hot):
+            L.append(f"  {CYAN}SeBackup/SeRestore{RESET} → {DIM}reg save HKLM\\SAM & SYSTEM → "
+                     f"secretsdump  ·  or shadow-copy the NTDS.dit on a DC{RESET}")
+        if "SeDebugPrivilege" in hot:
+            L.append(f"  {CYAN}SeDebug{RESET} → {DIM}dump LSASS (mimikatz / nanodump / procdump){RESET}")
+    L.append(f"  {DIM}winPEAS.exe / Seatbelt.exe · unquoted service paths · AlwaysInstallElevated · "
+             f"scheduled tasks · writable service binaries{RESET}")
+
+    L.append(f"\n{BOLD}B. Lateral movement & pivot{RESET}")
+    if subnets and "," in subnets:
+        L.append(f"  {CYAN}other subnet(s):{RESET} {subnets} {DIM}→ re-run spray/PtH there{RESET}")
+    L.append(f"  {DIM}tunnel through this host: ligolo-ng / chisel / proxychains, then nxc the inner net{RESET}")
+    L.append(f"  {DIM}reuse creds & NT hashes (PtH) across SMB/WinRM/MSSQL/RDP on the domain{RESET}")
+
+    L.append(f"\n{BOLD}C. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — WinRM is creds-driven; check the SMB phase / searchsploit{RESET}")
+
+    L.append(f"\n{BOLD}D. Post-exploitation loot (through the shell){RESET}")
+    L.append(f"  {DIM}LSASS: nanodump / mimikatz sekurlsa::logonpasswords · DPAPI masterkeys · "
+             f"browser creds · saved RDP/WiFi · KeePass{RESET}")
+
+    if dom:
+        L.append(f"\n{BOLD}E. AD escalation{RESET}")
+        L.append(f"  {DIM}BloodHound (SharpHound) → ACL paths · Kerberoast / AS-REP roast · "
+                 f"certipy find -vulnerable (ADCS ESC1-8) · delegation / RBCD{RESET}")
+    if who:
+        L.append(f"\n{BOLD}F. Accounts with WinRM access (target these){RESET}")
+        L.append(f"  {CYAN}{', '.join(who[:10])}{RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}after dumping hashes, re-spray them (r2) to reach more WinRM hosts{RESET}")
+    L.append(f"  {DIM}add {dc} / the DC to /etc/hosts; sync the clock for Kerberos{RESET}")
+    return "\n".join(L)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10331,6 +10427,7 @@ _STEP_TOOLS = {
     "winrm-shell": ("Interactive WinRM shell (evil-winrm, -S HTTPS, PtH)", _tool_winrm_shell),
     "winrm-access": ("Who can WinRM — Remote Management Users / admins (netexec)", _tool_winrm_access),
     "winrm-recon": ("Post-access recon over WinRM (privesc path + pivot surface)", _tool_winrm_recon),
+    "winrm-next": ("manual WinRM/AD steps (context-aware, reference only)", _tool_winrm_next),
 }
 
 def _mins(seconds: int) -> str:
@@ -10394,6 +10491,7 @@ _STEP_TOOL_RUNS = {
     "winrm-shell":      ("evil-winrm", None),
     "winrm-access":     ("netexec --local-group", None),
     "winrm-recon":      ("netexec winrm -x", None),
+    "winrm-next":       ("reference · no scan", None),
 }
 
 
@@ -10472,7 +10570,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -10481,7 +10579,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next"):            # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
