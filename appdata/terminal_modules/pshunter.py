@@ -9058,6 +9058,10 @@ def _render_host_ports(ip: str) -> list:
     return ports
 
 
+_VALID_PORT_STATES = {"open", "closed", "filtered", "unfiltered",
+                      "open|filtered", "closed|filtered"}
+
+
 def _ask_port_proto():
     """Prompt for a port + protocol. Returns (port, proto) or None on a bad/blank value."""
     pv = _ask("port [1-65535]:")
@@ -9066,7 +9070,8 @@ def _ask_port_proto():
         return None
     pr = (_ask("proto [tcp/udp, default tcp]:") or "tcp").lower()
     if pr not in ("tcp", "udp"):
-        pr = "tcp"
+        print(f"{RED}✗ proto must be tcp or udp{RESET}")
+        return None
     return int(pv), pr
 
 
@@ -9075,7 +9080,10 @@ def _manual_add_port(ip: str) -> None:
     if not pp:
         return
     port, proto = pp
-    state = _ask("state [default open]:") or "open"
+    state = (_ask("state [open/filtered/closed, default open]:") or "open").lower()
+    if state not in _VALID_PORT_STATES:
+        print(f"{RED}✗ state must be one of: {', '.join(sorted(_VALID_PORT_STATES))}{RESET}")
+        return
     name = _ask("service name (optional, e.g. http):") or None
     row = {"port": port, "proto": proto, "state": state}
     if name:
@@ -9328,7 +9336,7 @@ def _host_findings_view(ip: str) -> None:
             return "refresh"
         if v == "a":
             _manual_add(ip)
-            return "refresh"
+            return "stay"                        # keep the info line — don't redraw the list
         if v == "p":
             _open_host_progress(ip)
             return "refresh"
@@ -9651,7 +9659,7 @@ def _database_view() -> None:
             return "refresh"
         if v == "a":
             _manual_add_host()
-            return "refresh"
+            return "stay"                        # keep the info line — don't redraw the table
         if v == "c":
             clear_database()
             return "refresh"
