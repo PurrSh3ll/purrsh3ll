@@ -1059,6 +1059,71 @@ def fetch_hostnames(ip: str) -> list:
     return rows
 
 
+# ── manual findings (user-entered) ────────────────────────────────────────────
+# The scanner only records what it saw; a tester often knows more — a port behind a
+# knock, a vhost from a report, creds from another box, a page found by hand. These
+# helpers top up the DB so the downstream scans/tools pick the extra surface up.
+# Hosts/ports/services/hostnames reuse the normal save_* upserts. Creds and paths are
+# stored as synthetic script rows (`manual-creds` / `manual-paths`) in the exact line
+# format their consumers already parse, so a tool only needs the new sid added next to
+# default-creds / dir-brute — no new source of truth.
+
+def _load_manual_block(ip: str, port: int, proto: str, sid: str) -> dict:
+    """Parse an existing manual script row into {host: [lines]} (order preserved)."""
+    blocks, host = {}, None
+    for s, output in fetch_scripts(ip, port, proto):
+        if s != sid:
+            continue
+        for ln in (output or "").splitlines():
+            mh = re.match(r"^\[([^\]\s]+)\]\s*$", ln)
+            if mh:
+                host = mh.group(1)
+                blocks.setdefault(host, [])
+            elif ln.strip() and host is not None:
+                blocks[host].append(ln)
+    return blocks
+
+
+def _save_manual_block(ip: str, port: int, proto: str, sid: str, blocks: dict) -> None:
+    """Re-render {host: [lines]} to a `[host]`-sectioned body and upsert the script row."""
+    lines = []
+    for host, entries in blocks.items():
+        if not entries:
+            continue
+        lines.append(f"[{host}]")
+        lines.extend(entries)
+    save_scripts(ip, [{"id": sid, "port": port, "proto": proto, "output": "\n".join(lines)}])
+
+
+def add_manual_path(ip: str, port: int, proto: str, host: str, path: str) -> None:
+    """Record a user-found path/page under `manual-paths` in dir-brute's `+ 200 /path`
+    format so every path-gathering tool (param/idor/upload/xxe/priv) surfaces it."""
+    blocks = _load_manual_block(ip, port, proto, "manual-paths")
+    entries = blocks.setdefault(host, [])
+    line = f"+ 200  {path}"
+    if line not in entries:
+        entries.append(line)
+    _save_manual_block(ip, port, proto, "manual-paths", blocks)
+
+
+def add_manual_cred(ip: str, port: int, proto: str, host: str, user: str,
+                    pw: str, path: str, kind: str) -> None:
+    """Record user-supplied valid credentials under `manual-creds` in default-creds'
+    `! user:pass @ /path (form) [host]` format so admin-rce / idor / foothold reuse them."""
+    blocks = _load_manual_block(ip, port, proto, "manual-creds")
+    entries = blocks.setdefault(host, [])
+    line = f"! {user}:{pw or '<blank>'} @ {path} ({kind}) [{host}]"
+    if line not in entries:
+        entries.append(line)
+    _save_manual_block(ip, port, proto, "manual-creds", blocks)
+
+
+def fetch_manual(ip: str) -> list:
+    """(port, proto, sid, output) rows the user entered by hand (creds + paths)."""
+    return _fetch("SELECT port, proto, script, output FROM scripts WHERE ip = ? "
+                  "AND script IN ('manual-paths', 'manual-creds') ORDER BY port, script", (ip,))
+
+
 # ── managed /etc/hosts block ──────────────────────────────────────────────────
 # Discovered vhosts are useless in a browser / name-based tools until they resolve, and
 # the only OS-wide way to do that is /etc/hosts (glibc reads it hard-coded; no alternate
@@ -4233,7 +4298,7 @@ def _gather_param_endpoints(ip: str, port: int, proto: str) -> list:
             eps.append((hostval, base))
 
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid == "dir-brute":
+        if sid in ("dir-brute", "manual-paths"):
             host = ip
             for ln in output.splitlines():
                 mh = re.match(r"^\[([^\]\s]+)", ln)
@@ -4474,7 +4539,7 @@ def _gather_login_targets(ip: str, port: int, proto: str) -> list:
             tgts.append((hostval, base))
 
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid == "dir-brute":
+        if sid in ("dir-brute", "manual-paths"):
             host = ip
             for ln in output.splitlines():
                 mh = re.match(r"^\[([^\]\s]+)", ln)
@@ -6476,7 +6541,7 @@ def _gather_upload_targets(ip: str, port: int, proto: str) -> list:
             tgts.append((hostval, base))
 
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid == "dir-brute":
+        if sid in ("dir-brute", "manual-paths"):
             host = ip
             for ln in output.splitlines():
                 mh = re.match(r"^\[([^\]\s]+)", ln)
@@ -6905,7 +6970,7 @@ def _gather_xml_endpoints(ip: str, port: int, proto: str) -> list:
         for p in _XXE_XML_PATHS:
             _add(h, p)
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid in ("dir-brute", "http-source"):
+        if sid in ("dir-brute", "http-source", "manual-paths"):
             host = ip
             for ln in (output or "").splitlines():
                 mh = re.match(r"^\[([^\]\s]+)", ln)
@@ -6915,7 +6980,7 @@ def _gather_xml_endpoints(ip: str, port: int, proto: str) -> list:
                 for m in re.findall(
                         r"(/[A-Za-z0-9_./-]*(?:api|soap|xml|rpc|ws|rest|feed|rss|graphql)"
                         r"[A-Za-z0-9_./-]*)", ln, re.I):
-                    _add(host if sid == "dir-brute" else ip, m)
+                    _add(host if sid in ("dir-brute", "manual-paths") else ip, m)
     return out[:_XXES_MAX_TARGETS]
 
 
@@ -7097,7 +7162,7 @@ def _gather_priv_paths(ip: str, port: int, proto: str) -> list:
             out.append((host, base, status))
 
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid == "dir-brute":
+        if sid in ("dir-brute", "manual-paths"):
             host = ip
             for ln in (output or "").splitlines():
                 mh = re.match(r"^\[([^\]\s]+)", ln)
@@ -7144,7 +7209,7 @@ def _gather_id_endpoints(ip: str, port: int, proto: str) -> list:
     for host, path in _gather_param_endpoints(ip, port, proto):
         _add(host, path)
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid == "dir-brute":
+        if sid in ("dir-brute", "manual-paths"):
             host = ip
             for ln in (output or "").splitlines():
                 mh = re.match(r"^\[([^\]\s]+)", ln)
@@ -7173,7 +7238,7 @@ def _parse_valid_creds(ip: str, port: int, proto: str) -> list:
     under a `[host]` section)."""
     out = []
     for sid, output in fetch_scripts(ip, port, proto):
-        if sid == "default-creds":
+        if sid in ("default-creds", "manual-creds"):
             for m in re.finditer(
                     r"! (\S+):(\S+) @ (\S+) \((Basic|form)\) \[([^\]]+)\]", output or ""):
                 pw = "" if m.group(2) == "<blank>" else m.group(2)
@@ -8993,6 +9058,143 @@ def _render_host_ports(ip: str) -> list:
     return ports
 
 
+def _ask_port_proto():
+    """Prompt for a port + protocol. Returns (port, proto) or None on a bad/blank value."""
+    pv = _ask("port [1-65535]:")
+    if not pv or not pv.isdigit() or not 1 <= int(pv) <= 65535:
+        print(f"{RED}✗ need a port 1-65535{RESET}")
+        return None
+    pr = (_ask("proto [tcp/udp, default tcp]:") or "tcp").lower()
+    if pr not in ("tcp", "udp"):
+        pr = "tcp"
+    return int(pv), pr
+
+
+def _manual_add_port(ip: str) -> None:
+    pp = _ask_port_proto()
+    if not pp:
+        return
+    port, proto = pp
+    state = _ask("state [default open]:") or "open"
+    name = _ask("service name (optional, e.g. http):") or None
+    row = {"port": port, "proto": proto, "state": state}
+    if name:
+        row["service"] = {"name": name}
+    save_ports(ip, [row])
+    print(f"{GREEN}✓ added {port}/{proto} ({state}) on {ip}{RESET}")
+
+
+def _manual_add_service(ip: str) -> None:
+    pp = _ask_port_proto()
+    if not pp:
+        return
+    port, proto = pp
+    name = _ask("service name (e.g. http, ssh):") or None
+    product = _ask("product (e.g. Apache httpd, optional):") or None
+    version = _ask("version (e.g. 2.4.51, optional):") or None
+    if not (name or product or version):
+        print(f"{RED}✗ give at least a name, product or version{RESET}")
+        return
+    save_ports(ip, [{"port": port, "proto": proto, "state": "open"}])
+    save_services(ip, [{"port": port, "proto": proto, "name": name,
+                        "product": product, "version": version}])
+    print(f"{GREEN}✓ set service {name or ''} {product or ''} {version or ''} on "
+          f"{port}/{proto}{RESET}{DIM} — run vuln-scan / exploit to use it{RESET}")
+
+
+def _manual_add_hostname(ip: str) -> None:
+    hn = _ask("hostname / vhost (e.g. admin.target.htb):")
+    if not hn:
+        return
+    if not _valid_hostname(hn, ip):
+        print(f"{RED}✗ not a usable DNS name{RESET}")
+        return
+    save_hostnames(ip, [{"hostname": hn, "source": "manual", "port": 0}])
+    where = " → added to /etc/hosts" if _is_root() else " (run under sudo to auto-add to /etc/hosts)"
+    print(f"{GREEN}✓ added vhost {hn.strip().lower()}{RESET}{DIM}{where}{RESET}")
+
+
+def _manual_add_cred(ip: str) -> None:
+    pp = _ask_port_proto()
+    if not pp:
+        return
+    port, proto = pp
+    host = _ask(f"host/vhost [default {ip}]:") or ip
+    user = _ask("username:")
+    if not user:
+        print(f"{RED}✗ need a username{RESET}")
+        return
+    pw = _ask("password (blank allowed):") or ""
+    path = _ask("login path [default /]:") or "/"
+    kind = (_ask("kind [form/Basic, default form]:") or "form")
+    kind = "Basic" if kind.lower() == "basic" else "form"
+    save_ports(ip, [{"port": port, "proto": proto, "state": "open"}])
+    add_manual_cred(ip, port, proto, host, user, pw, path, kind)
+    print(f"{GREEN}✓ stored creds {user}:{pw or '<blank>'} @ {path} ({kind}) on "
+          f"{port}/{proto}{RESET}{DIM} — admin-rce / idor / foothold will reuse them{RESET}")
+
+
+def _manual_add_path(ip: str) -> None:
+    pp = _ask_port_proto()
+    if not pp:
+        return
+    port, proto = pp
+    host = _ask(f"host/vhost [default {ip}]:") or ip
+    path = _ask("path / page (e.g. /admin or /api/users?id=1):")
+    if not path:
+        print(f"{RED}✗ need a path{RESET}")
+        return
+    if not path.startswith("/"):
+        m = re.match(r"https?://[^/]+(/\S*)", path)          # tolerate a full URL
+        if not m:
+            print(f"{RED}✗ path must start with / (or be a full URL){RESET}")
+            return
+        path = m.group(1)
+    save_ports(ip, [{"port": port, "proto": proto, "state": "open"}])
+    add_manual_path(ip, port, proto, host, path)
+    print(f"{GREEN}✓ stored path {path} on {port}/{proto}{RESET}{DIM} — the HTTP tools "
+          f"(param/idor/upload/xxe/priv) will probe it{RESET}")
+
+
+def _manual_add(ip: str) -> None:
+    """Sub-menu (opened with [a] in a host's findings): add surface the scanner missed —
+    a port, a service, a vhost, credentials, or a path — attached to this host."""
+    print(f"\n{BOLD}Add finding for {ip}{RESET}")
+    print(f"  {BOLD}1{RESET}  port")
+    print(f"  {BOLD}2{RESET}  service {DIM}(name / product / version){RESET}")
+    print(f"  {BOLD}3{RESET}  hostname / vhost")
+    print(f"  {BOLD}4{RESET}  credentials")
+    print(f"  {BOLD}5{RESET}  path / page")
+    choice = _ask("add [1-5] (blank to cancel):")
+    fn = {"1": _manual_add_port, "2": _manual_add_service, "3": _manual_add_hostname,
+          "4": _manual_add_cred, "5": _manual_add_path}.get((choice or "").strip())
+    if fn:
+        fn(ip)
+    elif choice:
+        print(f"{RED}✗ pick 1-5{RESET}")
+
+
+def _manual_add_host() -> None:
+    """Add a whole host the scan never saw (from a scope doc / another box). Opened with
+    [a] in the database view. Optional MAC/vendor/hostname/OS can be filled in too."""
+    ipv = _ask("host IP:")
+    if not ipv:
+        return
+    try:
+        ip = str(ipaddress.ip_address(ipv))
+    except ValueError:
+        print(f"{RED}✗ not a valid IP address{RESET}")
+        return
+    if _is_self_ip(ip):
+        print(f"{RED}✗ refusing to add your own / loopback address{RESET}")
+        return
+    hostname = _ask("hostname (optional):") or None
+    os_ = _ask("OS (optional, e.g. Linux / Windows):") or None
+    vendor = _ask("vendor (optional):") or None
+    save_hosts([{"ip": ip, "hostname": hostname, "os": os_, "vendor": vendor}])
+    print(f"{GREEN}✓ added host {ip}{RESET}{DIM} — open it and add its ports/services next{RESET}")
+
+
 def _render_host_findings(ip: str) -> None:
     """The host's findings, opened with [f]: short one-line summaries — the FINDINGS list
     (incl. phase-4 vuln and phase-6 tool results) and the aggregated CVE list — plus the
@@ -9002,6 +9204,7 @@ def _render_host_findings(ip: str) -> None:
     vulns = fetch_vulns(ip)
     host_scripts = fetch_scripts(ip, 0, "")
     hostnames = fetch_hostnames(ip)
+    manual = fetch_manual(ip)
     # short summaries: everything except the CVE-lookup rows (those get their own section)
     findings = [v for v in vulns if v[3] != "CVE"]
     cve_map = {}                                     # CVE → set of "port/proto" it was seen on
@@ -9012,9 +9215,29 @@ def _render_host_findings(ip: str) -> None:
                 cve_map.setdefault(c, set()).add(f"{port}/{proto}")
 
     print(f"\n{BOLD}{ip} — findings{RESET}")
-    if not findings and not cve_map and not host_scripts and not hostnames:
+    if not findings and not cve_map and not host_scripts and not hostnames and not manual:
         print(f"  {DIM}none{RESET}")
         return
+    if manual:
+        print(f"\n  {BOLD}MANUAL{RESET}  {DIM}(entered by you — feeds the scans/tools){RESET}")
+        for mport, mproto, sid, output in manual:
+            if sid == "manual-creds":
+                for m in re.finditer(r"! (\S+):(\S+) @ (\S+) \(([^)]+)\)", output or ""):
+                    pw = "" if m.group(2) == "<blank>" else m.group(2)
+                    print(f"    {YELLOW}cred{RESET}  {mport}/{mproto:<5}"
+                          f"{_cell(f'{m.group(1)}:{pw} @ {m.group(3)} ({m.group(4)})', 60)}")
+            else:                                    # manual-paths
+                host = ip
+                for ln in (output or "").splitlines():
+                    mh = re.match(r"^\[([^\]\s]+)\]\s*$", ln)
+                    if mh:
+                        host = mh.group(1)
+                        continue
+                    mp = re.match(r"\s*[!+] \d{3}\s+(\S+)", ln)
+                    if mp:
+                        tag = "" if host == ip else f"  {DIM}[{host}]{RESET}"
+                        print(f"    {CYAN}path{RESET}  {mport}/{mproto:<5}"
+                              f"{_cell(mp.group(1), 50)}{tag}")
     if hostnames:
         note = ("auto-synced to /etc/hosts (removed on exit)" if _is_root()
                 else "no sudo — not in /etc/hosts; paste the line below")
@@ -9103,13 +9326,16 @@ def _host_findings_view(ip: str) -> None:
     def _handle(_c, v):
         if v == "":
             return "refresh"
+        if v == "a":
+            _manual_add(ip)
+            return "refresh"
         if v == "p":
             _open_host_progress(ip)
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— p · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— a · p · b · enter{RESET}")
         return "stay"
 
-    _run_view(f"{ip}/findings", "[Enter] refresh · [p] progress · [b] back · [m] menu",
+    _run_view(f"{ip}/findings", "[Enter] refresh · [a] add finding · [p] progress · [b] back · [m] menu",
               lambda: _render_host_findings(ip), _handle)
 
 
@@ -9423,6 +9649,9 @@ def _database_view() -> None:
     def _handle(rows, v):
         if v == "":
             return "refresh"
+        if v == "a":
+            _manual_add_host()
+            return "refresh"
         if v == "c":
             clear_database()
             return "refresh"
@@ -9436,11 +9665,11 @@ def _database_view() -> None:
         if v.isdigit():
             _host_ports_view(rows, int(v))
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · r <n> · c · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · a · r <n> · c · b · enter{RESET}")
         return "stay"
 
     _run_view("database",
-              "[Enter] refresh · <n> select · r <n> remove · [c] clear · [b] back",
+              "[Enter] refresh · <n> select · [a] add host · r <n> remove · [c] clear · [b] back",
               show_database, _handle)
 
 
