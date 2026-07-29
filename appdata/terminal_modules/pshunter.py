@@ -2922,6 +2922,12 @@ _EXPLOIT_STEPS = {
         "Valid admin creds/hash → shell (psexec / wmiexec / smbexec; pass-the-hash)",
         "Dump SAM / LSA / LSASS / DPAPI (secretsdump); with rights → DCSync the domain",
         "Writable share → SCF / LNK / desktop.ini for hash capture, or stage a payload",
+        # ── land a shell & foothold ──
+        "Spawn an interactive shell over valid creds / a captured hash and upgrade it to a "
+        "full session (psexec / wmiexec / smbexec / atexec; pass-the-hash)",
+        # ── manual steps, tailored to what this host exposed ──
+        "Manual steps — deeper enumeration, CVE research on the found versions, and verifying "
+        "unconfirmed findings",
     ],
     "winrm": [
         "Confirm WinRM transport (5985 HTTP / 5986 HTTPS)",
