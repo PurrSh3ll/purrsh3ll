@@ -2976,6 +2976,10 @@ _EXPLOIT_STEPS = {
         "Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)",
         "Needs 'Remote Management Users' / admin membership — note who has access",
         "Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot",
+        # ── land a shell & foothold ──
+        "Spawn & upgrade an interactive shell",
+        # ── manual steps, tailored to what this host exposed ──
+        "Manual steps & further research",
     ],
     "ftp": [
         "Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)",
