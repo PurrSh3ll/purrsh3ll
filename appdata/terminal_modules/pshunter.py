@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ai) smb-dccve: confirmed DC-takeover CVE (ZeroLogon / noPac / PrintNightmare)
+    if sid == "smb-dccve":
+        hits = re.findall(r"^✗ VULN (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:4]) + (f" +{len(hits) - 4}" if len(hits) > 4 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                "summary": f"DC takeover: {shown}"[:140]}
+
     # 2ah) smb-coerce: target coercible into authenticating to us → drives the relay
     if sid == "smb-coerce":
         hits = re.findall(r"^✗ COERCE (.+)$", output, re.M)
@@ -2896,7 +2905,7 @@ _EXPLOIT_STEPS = {
         ("NTLM relay (signing not required)", "smb-relay"),
         ("Coerce auth → relay to escalate", "smb-coerce"),
         # ── DC-critical CVEs ──
-        "DC CVEs: ZeroLogon, noPac",
+        ("DC CVEs: ZeroLogon, noPac, PrintNightmare (detection only)", "smb-dccve"),
         # ── creds → exec / dump ──
         "Spray creds & hashes (mind lockout)",
         "Valid creds / hash → shell",
@@ -9274,6 +9283,68 @@ def _tool_smb_coerce(ip: str, port: int, proto: str) -> str:
     return f"Auth coercion — {ip}  (trigger → LISTENER {lhost})\n\n" + "\n".join(lines)
 
 
+# ── SMB step 8: DC-critical CVEs (DETECTION ONLY) ─────────────────────────────
+_SMBDCCVE_DEADLINE = 240         # s — overall cap
+
+
+def _nxc_is_vuln(out: str) -> bool:
+    """True when a netexec module output signals the target is vulnerable (not the reverse)."""
+    return bool(re.search(r"vulnerable", out, re.I)) and \
+        not re.search(r"not vulnerable|appears not|is not vulnerable", out, re.I)
+
+
+def _tool_smb_dccve(ip: str, port: int, proto: str) -> str:
+    """SMB step 8 tool: DETECTION-ONLY scan for DC-takeover CVEs — ZeroLogon (CVE-2020-1472,
+    unauth), noPac (CVE-2021-42278/42287) and PrintNightmare (CVE-2021-34527), the last two
+    needing valid domain creds (from smb-creds). netexec runs each check module; it NEVER
+    exploits — ZeroLogon's exploit resets the DC machine-account password and is destructive,
+    so only the safe probe is used. A confirmed hit is a CRITICAL finding (CVE auto-harvested
+    + KEV-tagged). Unreachable / non-SMB raises; a patched DC returns a clean report.
+    Authorised targets only."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to check DC CVEs")
+    reached = False
+    checks = []                                   # (label, cve, vulnerable | None)
+
+    _, zl = _smb_run([nxc, "smb", ip, "-u", "", "-p", "", "-M", "zerologon"], 90)  # unauth
+    if re.search(r"\b445\b", zl):
+        reached = True
+    checks.append(("ZeroLogon", "CVE-2020-1472", _nxc_is_vuln(zl)))
+
+    authed_base = None                            # noPac / PrintNightmare need domain creds
+    for dom, user, pw, _label in _smb_gpp_attempts(ip, port, proto):
+        if not user:                              # skip null/anon for creds-required modules
+            continue
+        base = [nxc, "smb", ip] + _smb_auth_nxc(dom, user, pw)
+        _, probe = _smb_run(base, 60)
+        if re.search(r"\b445\b", probe):
+            reached = True
+        if re.search(r"\b445\b.*\[\+\]", probe):
+            authed_base = base
+            break
+    for label, cve, mod in (("noPac", "CVE-2021-42278,CVE-2021-42287", "nopac"),
+                            ("PrintNightmare", "CVE-2021-34527", "printnightmare")):
+        if not authed_base:
+            checks.append((label, cve, None))
+            continue
+        _, out = _smb_run(authed_base + ["-M", mod], 90)
+        checks.append((label, cve, _nxc_is_vuln(out)))
+
+    if not reached:
+        raise RuntimeError(f"{ip}:{port} did not answer the DC-CVE scan (unreachable / not SMB?)")
+
+    lines = []
+    for label, cveid, vuln in checks:
+        if vuln:                                  # CVE string ONLY on confirmed hits (hygiene)
+            lines.append(f"✗ VULN {label} ({cveid})")
+        elif vuln is None:
+            lines.append(f"· {label}: not tested (no valid domain creds)")
+        else:
+            lines.append(f"· {label}: not vulnerable")
+    return f"DC-critical CVEs — {ip}:{port}/{proto}  (detection only)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9310,6 +9381,7 @@ _STEP_TOOLS = {
     "smb-poison": ("LLMNR/NBT-NS poisoning → NetNTLM capture (Responder, timed, root)", _tool_smb_poison),
     "smb-relay": ("NTLM relay → SAM dump (ntlmrelayx, signing-off targets, timed, root)", _tool_smb_relay),
     "smb-coerce": ("Auth coercion (netexec coerce_plus → drives relay/poison)", _tool_smb_coerce),
+    "smb-dccve": ("DC-takeover CVE scan (ZeroLogon/noPac/PrintNightmare, detection only)", _tool_smb_dccve),
 }
 
 def _mins(seconds: int) -> str:
@@ -9361,6 +9433,7 @@ _STEP_TOOL_RUNS = {
     "smb-poison":       ("Responder", f"{_mins(_SMBPOISON_DEADLINE)} min"),
     "smb-relay":        ("ntlmrelayx", f"{_mins(_SMBRELAY_DEADLINE)} min"),
     "smb-coerce":       ("netexec coerce_plus", f"{_mins(_SMBCOERCE_DEADLINE)} min"),
+    "smb-dccve":        ("netexec zerologon/nopac/printnightmare", f"{_mins(_SMBDCCVE_DEADLINE)} min"),
 }
 
 
@@ -9522,6 +9595,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-dccve":                   # detection only — ZeroLogon reset is destructive
+        print(f"{YELLOW}   ⚠ DC-takeover CVE scan{RESET}{DIM} — detection only (netexec); ZeroLogon's "
+              f"exploit resets the DC machine account and is NEVER run · noPac/PrintNightmare need "
+              f"domain creds · {RESET}{YELLOW}authorised targets only{RESET}{DIM} · deadline "
+              f"{_SMBDCCVE_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-coerce":                  # driver — fires auth toward our listener
         lh = _foothold_lhost(ip) or "<our IP>"
         print(f"{YELLOW}   ⚠ ACTIVE auth coercion{RESET}{DIM} — forces {ip} to authenticate to "
