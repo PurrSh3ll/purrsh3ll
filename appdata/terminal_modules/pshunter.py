@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2au) ftp-anon: anonymous FTP access — high when it exposes interesting files
+    if sid == "ftp-anon":
+        if "anonymous login allowed" not in output:
+            return None
+        ni = len(re.findall(r"^! ", output, re.M))
+        summ = "anonymous FTP login allowed" + (f" · {ni} interesting file(s)" if ni else "")
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if ni else "MEDIUM",
+                "summary": summ[:140]}
+
     # 2at) ftp-banner: known-backdoor FTP version → critical RCE; else version info
     if sid == "ftp-banner":
         vulns = re.findall(r"^✗ VULN (.+)$", output, re.M)
@@ -3050,7 +3059,7 @@ _EXPLOIT_STEPS = {
     ],
     "ftp": [
         ("Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)", "ftp-banner"),
-        "Anonymous login (anonymous:<any>) → browse the tree",
+        ("Anonymous login (anonymous:<any>) → browse the tree", "ftp-anon"),
         "Download everything; test write access (upload a throwaway file)",
         "Try known / default / reused creds; targeted brute only if lockout allows",
         "If FTP root maps to a web root or is writable → drop a webshell / poison a served file",
@@ -10461,6 +10470,103 @@ def _tool_ftp_banner(ip: str, port: int, proto: str) -> str:
     return f"FTP banner — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── FTP step 2: anonymous login → browse the tree (stdlib ftplib) ──────────────
+_FTPANON_DEADLINE = 60           # s — wall-clock cap on the walk
+_FTPANON_MAXDEPTH = 4
+_FTPANON_MAXFILES = 300
+# interesting files on an FTP tree: the SMB loot set plus web source / config / DB files
+_FTP_LOOT_RE = re.compile(r"(?i)config|\.(?:php|aspx?|jsp|cgi|pl|py|sh|htaccess|db|sqlite3?)$")
+
+
+def _ftp_walk(ftp, path: str, depth: int, files: list, dirs: list, deadline: float) -> None:
+    """Recursively list an FTP tree (MLSD when supported, else ls/dir parsing), capped."""
+    import time
+    if depth > _FTPANON_MAXDEPTH or len(files) >= _FTPANON_MAXFILES or time.time() > deadline:
+        return
+    try:                                                     # MLSD: machine-readable (preferred)
+        entries = list(ftp.mlsd(path or "."))
+    except Exception:                                        # noqa: BLE001 — fall back to ls/dir
+        raw = []
+        try:
+            ftp.dir(path or ".", raw.append)
+        except Exception:                                    # noqa: BLE001
+            return
+        for ln in raw:
+            mw = re.match(r"\d{2}-\d{2}-\d{2}\s+\S+\s+(<DIR>|\d+)\s+(.+)$", ln)  # Windows FTP
+            if mw:
+                name, is_dir, size = mw.group(2).strip(), mw.group(1) == "<DIR>", mw.group(1)
+            else:
+                parts = ln.split(maxsplit=8)                 # Unix ls -l
+                if len(parts) < 9 or parts[0][0] not in "d-":
+                    continue
+                name, is_dir, size = parts[8], parts[0].startswith("d"), parts[4]
+            if name in (".", ".."):
+                continue
+            full = (path.rstrip("/") + "/" + name) if path else name
+            if is_dir:
+                dirs.append(full)
+                _ftp_walk(ftp, full, depth + 1, files, dirs, deadline)
+            else:
+                files.append((full, size if str(size).isdigit() else "?"))
+        return
+    for name, facts in entries:                              # MLSD path
+        if name in (".", ".."):
+            continue
+        full = (path.rstrip("/") + "/" + name) if path else name
+        typ = facts.get("type", "")
+        if typ == "dir":
+            dirs.append(full)
+            _ftp_walk(ftp, full, depth + 1, files, dirs, deadline)
+        elif typ == "file":
+            files.append((full, facts.get("size", "?")))
+
+
+def _tool_ftp_anon(ip: str, port: int, proto: str) -> str:
+    """FTP step 2 tool: attempt anonymous login (anonymous:<any>) and, on success, recursively
+    browse the tree (stdlib ftplib, MLSD/ls, capped) — reporting the directory/file inventory
+    and flagging interesting files (configs / keys / backups / creds). Read-only, no writes. A
+    host that doesn't answer FTP raises; anonymous denied returns a clean report. Authorised
+    targets only."""
+    import ftplib
+    import time
+    try:
+        ftp = ftplib.FTP(timeout=8)
+        ftp.connect(ip, port)
+    except Exception as exc:                                 # noqa: BLE001
+        raise RuntimeError(f"FTP unreachable on {ip}:{port} ({exc})")
+    try:
+        ftp.login("anonymous", "anonymous@pshunter")
+    except ftplib.error_perm:
+        try:
+            ftp.quit()
+        except Exception:                                    # noqa: BLE001
+            ftp.close()
+        return f"FTP anonymous — {ip}:{port}\n\n[*] anonymous login DENIED"
+    except Exception as exc:                                 # noqa: BLE001
+        raise RuntimeError(f"FTP login error on {ip}:{port} ({exc})")
+
+    files, dirs = [], []
+    _ftp_walk(ftp, "", 0, files, dirs, time.time() + _FTPANON_DEADLINE)
+    try:
+        ftp.quit()
+    except Exception:                                        # noqa: BLE001
+        ftp.close()
+
+    interesting = [(p, s) for p, s in files if _SMB_LOOT_RE.search(p) or _FTP_LOOT_RE.search(p)]
+    lines = ["✗ ANON anonymous login allowed",
+             f"[*] {len(dirs)} dir(s), {len(files)} file(s)"
+             + (f" (capped at {_FTPANON_MAXFILES})" if len(files) >= _FTPANON_MAXFILES else "")]
+    for p, s in interesting[:25]:
+        lines.append(f"! {p} ({s})")
+    if not interesting:
+        for p, s in files[:12]:
+            lines.append(f"· {p} ({s})")
+        if len(files) > 12:
+            lines.append(f"· … +{len(files) - 12} more")
+    lines.append("· download read-only files; test write access next (step 3)")
+    return f"FTP anonymous — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10511,6 +10617,7 @@ _STEP_TOOLS = {
     "winrm-recon": ("Post-access recon over WinRM (privesc path + pivot surface)", _tool_winrm_recon),
     "winrm-next": ("manual WinRM/AD steps (context-aware, reference only)", _tool_winrm_next),
     "ftp-banner": ("FTP banner + version → searchsploit (stdlib ftplib)", _tool_ftp_banner),
+    "ftp-anon": ("Anonymous login → browse tree (stdlib ftplib, read-only)", _tool_ftp_anon),
 }
 
 def _mins(seconds: int) -> str:
@@ -10576,6 +10683,7 @@ _STEP_TOOL_RUNS = {
     "winrm-recon":      ("netexec winrm -x", None),
     "winrm-next":       ("reference · no scan", None),
     "ftp-banner":       ("Python + searchsploit", None),
+    "ftp-anon":         ("Python", f"{_mins(_FTPANON_DEADLINE)} min"),
 }
 
 
