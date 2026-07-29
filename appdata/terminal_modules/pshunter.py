@@ -3028,11 +3028,10 @@ _EXPLOIT_STEPS = {
     "winrm": [
         ("Confirm WinRM transport (5985 HTTP / 5986 HTTPS)", "winrm-enum"),
         ("Validate & spray creds and NTLM hashes against known users (watch lockout)", "winrm-spray"),
-        ("Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)", "winrm-shell"),
         ("Needs 'Remote Management Users' / admin membership — note who has access", "winrm-access"),
         ("Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot", "winrm-recon"),
         # ── land a shell & foothold ──
-        "Spawn & upgrade an interactive shell",
+        ("Valid creds / hash → spawn & upgrade an interactive shell (evil-winrm, PtH)", "winrm-shell"),
         # ── manual steps, tailored to what this host exposed ──
         "Manual steps & further research",
     ],
