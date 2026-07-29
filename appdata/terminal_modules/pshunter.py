@@ -2196,6 +2196,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": ("SMB: " + mo.group(1).strip())[:140]}
         return None
 
+    # 2ac) smb-vuln: confirmed unauth version-RCE (MS17-010 / MS08-067 / SMBGhost / DoublePulsar)
+    if sid == "smb-vuln":
+        hits = re.findall(r"^✗ VULN (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:4]) + (f" +{len(hits) - 4}" if len(hits) > 4 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                "summary": f"SMB RCE: {shown}"[:140]}
+
     # 3) info rules over -sC output
     low = output.lower()
     info = None
@@ -2849,7 +2858,9 @@ _EXPLOIT_STEPS = {
         ("Null / guest session: shares, users (RID cycling), groups & password policy — plus "
          "the host OS, domain / DC and SMB dialect & signing status",
          "smb-enum"),
-        "Version RCE: MS17-010 EternalBlue, MS08-067, SMBGhost CVE-2020-0796",
+        ("Version RCE: MS17-010 EternalBlue, MS08-067, SMBGhost CVE-2020-0796, DoublePulsar "
+         "(detection only — never auto-exploited)",
+         "smb-vuln"),
         # ── loot shares ──
         "Recursively read every readable share; grep for creds, keys, configs, backups",
         "SYSVOL / NETLOGON → GPP cpassword (Groups.xml), logon scripts, unattend.xml",
@@ -8498,6 +8509,100 @@ def _tool_smb_enum(ip: str, port: int, proto: str) -> str:
     return f"SMB enumeration — {ip}:{port}/{proto}\n\n" + "\n".join(report)
 
 
+# ── SMB step 2: version-RCE vulnerability scan (DETECTION ONLY) ────────────────
+_SMBVULN_DEADLINE = 300          # s — hard wall-clock cap across every external call
+# (nmap script, canonical (label, CVE)) — CVE strings kept in the report so the generic
+# CVE harvester + KEV tagging pick them up automatically.
+_SMBVULN_NMAP = {
+    "smb-vuln-ms17-010":            ("MS17-010 EternalBlue", "CVE-2017-0143"),
+    "smb-vuln-ms08-067":            ("MS08-067", "CVE-2008-4250"),
+    "smb-double-pulsar-backdoor":   ("DoublePulsar implant (host already compromised)", None),
+}
+
+
+def _smbvuln_nmap(nmap: str, ip: str) -> "tuple[dict, bool]":
+    """Run the safe nmap smb-vuln detection scripts; return ({script: vulnerable_bool}, reachable)."""
+    scripts = ",".join(_SMBVULN_NMAP)
+    _, out = _smb_run([nmap, "-Pn", "-p139,445", "--script", scripts, ip], 240)
+    sections, cur = {}, None
+    for ln in out.splitlines():
+        # nmap prefixes the last result of a block with '|_' (underscore is a word char, so a
+        # leading \b won't match) — anchor the '|'/'|_' prefix instead.
+        hm = re.match(r"\|_?\s*(smb-vuln-ms17-010|smb-vuln-ms08-067|smb-double-pulsar-backdoor)\s*:", ln)
+        if hm:
+            cur = hm.group(1)
+            sections.setdefault(cur, []).append(ln)
+        elif ln.startswith("|") and cur:
+            sections[cur].append(ln)
+        elif not ln.startswith("|"):
+            cur = None
+    result = {}
+    for key in _SMBVULN_NMAP:
+        text = " ".join(sections.get(key, []))
+        result[key] = ("VULNERABLE" in text) and ("NOT VULNERABLE" not in text)
+    reachable = bool(sections) or ("445/tcp open" in out) or ("139/tcp open" in out)
+    return result, reachable
+
+
+def _smbvuln_nxc(nxc: str, ip: str) -> "tuple[dict, bool]":
+    """netexec modules: ms17-010 (confirm) + smbghost. Returns ({mod: vulnerable_bool}, reachable)."""
+    res, reachable = {}, False
+    for mod in ("ms17-010", "smbghost"):
+        _, out = _smb_run([nxc, "smb", ip, "-M", mod], 90)
+        if re.search(r"\b445\b", out):
+            reachable = True
+        res[mod] = bool(re.search(r"vulnerable", out, re.I)) and \
+            not re.search(r"not vulnerable|appears not|is not vulnerable", out, re.I)
+    return res, reachable
+
+
+def _tool_smb_vuln(ip: str, port: int, proto: str) -> str:
+    """SMB step 2 tool: DETECTION-ONLY scan for unauth version-RCE SMB bugs — MS17-010
+    (EternalBlue), MS08-067, SMBGhost (CVE-2020-0796) and the DoublePulsar implant. Never
+    exploits, never passes nmap unsafe=1, never fires a payload. nmap NSE is the engine
+    (MS17-010 / MS08-067 / DoublePulsar) with netexec adding SMBGhost + an MS17-010 confirm.
+    A confirmed hit is a CRITICAL RCE finding (CVE auto-harvested + KEV-tagged). An
+    unreachable / non-SMB target raises; an all-clean SMB host returns a clean report.
+    Authorised targets only."""
+    nmap = shutil.which("nmap")
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nmap and not nxc:
+        raise RuntimeError("no SMB vuln tooling found — install nmap and/or netexec")
+    nmap_res, nxc_res, reachable = {}, {}, False
+    if nmap:
+        nmap_res, r1 = _smbvuln_nmap(nmap, ip)
+        reachable = reachable or r1
+    if nxc:
+        nxc_res, r2 = _smbvuln_nxc(nxc, ip)
+        reachable = reachable or r2
+    if not reachable:
+        raise RuntimeError(f"{ip}:{port} did not answer the SMB vuln scan (unreachable / not SMB?)")
+
+    # canonical checks: (label, cve, vulnerable | None=not tested)
+    ms17 = None
+    if "smb-vuln-ms17-010" in nmap_res or "ms17-010" in nxc_res:
+        ms17 = bool(nmap_res.get("smb-vuln-ms17-010")) or bool(nxc_res.get("ms17-010"))
+    checks = [
+        ("MS17-010 EternalBlue", "CVE-2017-0143", ms17),
+        ("MS08-067", "CVE-2008-4250",
+         nmap_res.get("smb-vuln-ms08-067") if "smb-vuln-ms08-067" in nmap_res else None),
+        ("SMBGhost", "CVE-2020-0796",
+         nxc_res.get("smbghost") if "smbghost" in nxc_res else None),
+        ("DoublePulsar implant (host already compromised)", None,
+         nmap_res.get("smb-double-pulsar-backdoor")
+         if "smb-double-pulsar-backdoor" in nmap_res else None),
+    ]
+    lines = []
+    for label, cveid, vuln in checks:
+        if vuln:                                  # CVE string ONLY on confirmed hits, so the
+            lines.append(f"✗ VULN {label}" + (f" ({cveid})" if cveid else ""))   # generic CVE
+        elif vuln is None:                        # harvester never tags a non-vulnerable check
+            lines.append(f"· {label}: not tested (tool unavailable)")
+        else:
+            lines.append(f"· {label}: not vulnerable")
+    return (f"SMB vuln scan — {ip}:{port}/{proto}  (detection only)\n\n" + "\n".join(lines))
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -8528,6 +8633,7 @@ _STEP_TOOLS = {
     "foothold": ("foothold → spawn & auto-upgrade a reverse shell (interactive)", _tool_foothold),
     "next-steps": ("manual steps (context-aware, reference only)", _tool_next_steps),
     "smb-enum": ("SMB null/guest enum (netexec → shares/users/pol + OS/domain/signing)", _tool_smb_enum),
+    "smb-vuln": ("SMB version-RCE scan (nmap NSE + netexec, detection only)", _tool_smb_vuln),
 }
 
 def _mins(seconds: int) -> str:
@@ -8573,6 +8679,7 @@ _STEP_TOOL_RUNS = {
     "foothold":         ("Python", None),
     "next-steps":       ("reference · no scan", None),
     "smb-enum":         ("netexec / smbclient+rpcclient+nmap", f"{_mins(_SMBENUM_DEADLINE)} min"),
+    "smb-vuln":         ("nmap NSE + netexec", f"{_mins(_SMBVULN_DEADLINE)} min"),
 }
 
 
@@ -8730,6 +8837,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ active template-injection tests{RESET}{DIM} — computed math marker; "
               f"auto-runs read-only id via engine gadget (confirms RCE) · "
               f"{RESET}{YELLOW}authorized targets only{RESET}{DIM}{RESET}")
+    if tool_key == "smb-vuln":                    # detection only — never exploits
+        print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
+              f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
+              f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
     if tool_key == "smb-enum":                    # unauth recon: no creds tried, no writes
         eng = "netexec" if (shutil.which("netexec") or shutil.which("nxc")) \
             else "smbclient/rpcclient/nmap"
