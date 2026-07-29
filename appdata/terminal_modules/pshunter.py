@@ -2223,6 +2223,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2av) ftp-write: anonymous-writable directory — webshell / payload-drop surface
+    if sid == "ftp-write":
+        w = re.findall(r"^✗ WRITABLE (\S+)", output, re.M)
+        if not w:
+            return None
+        shown = ", ".join(dict.fromkeys(w))[:100]
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                "summary": f"anonymous-writable FTP dir(s): {shown}"[:140]}
+
     # 2au) ftp-anon: anonymous FTP access — high when it exposes interesting files
     if sid == "ftp-anon":
         if "anonymous login allowed" not in output:
@@ -3060,7 +3069,7 @@ _EXPLOIT_STEPS = {
     "ftp": [
         ("Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)", "ftp-banner"),
         ("Anonymous login (anonymous:<any>) → browse the tree", "ftp-anon"),
-        "Download everything; test write access (upload a throwaway file)",
+        ("Download everything; test write access (upload a throwaway file)", "ftp-write"),
         "Try known / default / reused creds; targeted brute only if lockout allows",
         "If FTP root maps to a web root or is writable → drop a webshell / poison a served file",
         "FTP-bounce (PORT) to reach & scan internal hosts through the server",
@@ -10567,6 +10576,82 @@ def _tool_ftp_anon(ip: str, port: int, proto: str) -> str:
     return f"FTP anonymous — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── FTP step 3: test write access (throwaway upload → verify → delete) ─────────
+_FTPWRITE_DEADLINE = 60          # s — wall-clock cap
+_FTPWRITE_MAXDIRS = 40           # directories to probe for write access
+
+
+def _ftp_writable(ftp, dirpath: str) -> "tuple | None":
+    """Test one dir for write access: cwd, STOR a throwaway marker, then delete it. Returns
+    (writable_bool, deleted_bool) or None if the dir can't be entered. Reversible."""
+    import io
+    import random
+    name = f"~pshw_{random.randint(10000, 99999)}.txt"
+    try:
+        ftp.cwd("/" + dirpath if dirpath else "/")
+    except Exception:                                        # noqa: BLE001
+        return None
+    try:
+        ftp.storbinary(f"STOR {name}", io.BytesIO(b"pshunter-write-test\n"))
+    except Exception:                                        # noqa: BLE001 — not writable
+        return (False, True)
+    deleted = True                                           # writable → clean up immediately
+    try:
+        ftp.delete(name)
+    except Exception:                                        # noqa: BLE001
+        deleted = False
+    return (True, deleted)
+
+
+def _tool_ftp_write(ip: str, port: int, proto: str) -> str:
+    """FTP step 3 tool: over anonymous access, find which directories are WRITABLE — for each
+    (root + those discovered), it uploads a throwaway marker (~pshw_*.txt), confirms the STOR
+    succeeded, then deletes it (reversible; a leftover is reported for manual cleanup). Writable
+    dirs are the webshell / payload-drop surface (step 5). The ONLY FTP tool that writes. A host
+    with no anonymous access raises. Authorised targets only."""
+    import ftplib
+    import time
+    try:
+        ftp = ftplib.FTP(timeout=8)
+        ftp.connect(ip, port)
+        ftp.login("anonymous", "anonymous@pshunter")
+    except ftplib.error_perm:
+        raise RuntimeError("anonymous denied — run ftp-anon (r2); write-test needs FTP access")
+    except Exception as exc:                                 # noqa: BLE001
+        raise RuntimeError(f"FTP unreachable on {ip}:{port} ({exc})")
+
+    deadline = time.time() + _FTPWRITE_DEADLINE
+    files, dirs = [], []
+    _ftp_walk(ftp, "", 0, files, dirs, deadline)
+    targets = [""] + dirs[:_FTPWRITE_MAXDIRS]                # root first, then discovered dirs
+
+    writable, leftovers = [], []
+    for d in targets:
+        if time.time() > deadline:
+            break
+        res = _ftp_writable(ftp, d)
+        if res and res[0]:
+            writable.append("/" + d if d else "/")
+            if not res[1]:
+                leftovers.append("/" + d if d else "/")
+    try:
+        ftp.quit()
+    except Exception:                                        # noqa: BLE001
+        ftp.close()
+
+    lines = ["[*] logged in as anonymous"]
+    for w in writable:
+        lines.append(f"✗ WRITABLE {w}  (throwaway uploaded & removed)")
+    if writable:
+        lines.append("· writable dir(s) → drop a webshell if a web root serves this path (step 5), "
+                     "or stage a payload")
+    else:
+        lines.append("· no writable directory found for anonymous")
+    for lo in leftovers:
+        lines.append(f"⚠ {lo} — throwaway marker may be left behind (delete ~pshw_*.txt manually)")
+    return f"FTP write test — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10618,6 +10703,7 @@ _STEP_TOOLS = {
     "winrm-next": ("manual WinRM/AD steps (context-aware, reference only)", _tool_winrm_next),
     "ftp-banner": ("FTP banner + version → searchsploit (stdlib ftplib)", _tool_ftp_banner),
     "ftp-anon": ("Anonymous login → browse tree (stdlib ftplib, read-only)", _tool_ftp_anon),
+    "ftp-write": ("Test write access → throwaway upload (stdlib, reversible)", _tool_ftp_write),
 }
 
 def _mins(seconds: int) -> str:
@@ -10684,6 +10770,7 @@ _STEP_TOOL_RUNS = {
     "winrm-next":       ("reference · no scan", None),
     "ftp-banner":       ("Python + searchsploit", None),
     "ftp-anon":         ("Python", f"{_mins(_FTPANON_DEADLINE)} min"),
+    "ftp-write":        ("Python", f"{_mins(_FTPWRITE_DEADLINE)} min"),
 }
 
 
@@ -10845,6 +10932,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "ftp-write":                   # WRITES a throwaway marker — reversible
+        print(f"{DIM}   uploads a throwaway {BOLD}~pshw_*.txt{RESET}{DIM} to each dir, confirms the "
+              f"STOR, then deletes it (reversible) — finds the webshell/payload-drop surface · "
+              f"{RESET}{YELLOW}authorised targets only{RESET}")
     if tool_key == "winrm-recon":                 # read-only post-access recon over the channel
         print(f"{DIM}   read-only recon over WinRM (whoami /priv, ipconfig) — privesc path "
               f"(SeImpersonate → potato) + pivot subnets · deeper enum stays in the shell (r3){RESET}")
