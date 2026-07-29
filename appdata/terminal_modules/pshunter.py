@@ -699,6 +699,7 @@ CREATE TABLE IF NOT EXISTS ports (
     state       TEXT,
     first_seen  TEXT,
     last_seen   TEXT,
+    source      TEXT,
     PRIMARY KEY (ip, port, proto)
 );
 CREATE TABLE IF NOT EXISTS services (
@@ -711,6 +712,7 @@ CREATE TABLE IF NOT EXISTS services (
     cpe         TEXT,
     first_seen  TEXT,
     last_seen   TEXT,
+    source      TEXT,
     PRIMARY KEY (ip, port, proto)
 );
 CREATE TABLE IF NOT EXISTS scripts (
@@ -795,6 +797,10 @@ def _db_connect() -> "sqlite3.Connection":
     hcols = {r[1] for r in conn.execute("PRAGMA table_info(hosts)").fetchall()}
     if hcols and "os" not in hcols:
         conn.execute("ALTER TABLE hosts ADD COLUMN os TEXT")
+    for tbl in ("ports", "services"):            # source: NULL = scanned, 'manual' = user-entered
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+        if cols and "source" not in cols:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN source TEXT")
     conn.commit()
     _chown_db_to_user()          # keep the DB user-owned even while running as root
     return conn
@@ -856,10 +862,12 @@ def fetch_hosts() -> list:
     return rows
 
 
-def save_ports(ip: str, rows: list) -> int:
+def save_ports(ip: str, rows: list, source: "str | None" = None) -> int:
     """Upsert open ports for a host by (ip, port, proto). When a scan carried a service
     guess (nmap's port->name table, or -sV later), it's upserted into the services
-    table too — kept non-null so the service-detection phase only enriches it."""
+    table too — kept non-null so the service-detection phase only enriches it.
+    ``source='manual'`` tags user-entered rows; a scanned upsert (source=None) never
+    clears an existing tag (COALESCE), so a manual row stays flagged for removal."""
     if not ip or not rows or _is_self_ip(ip):
         return 0
     now = datetime.now().isoformat(timespec="seconds")
@@ -868,24 +876,26 @@ def save_ports(ip: str, rows: list) -> int:
         try:
             for r in rows:
                 conn.execute(
-                    "INSERT INTO ports (ip, port, proto, state, first_seen, last_seen) "
-                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "INSERT INTO ports (ip, port, proto, state, first_seen, last_seen, source) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(ip, port, proto) DO UPDATE SET "
-                    "  state = excluded.state, last_seen = excluded.last_seen",
-                    (ip, r["port"], r["proto"], r.get("state"), now, now),
+                    "  state = excluded.state, last_seen = excluded.last_seen, "
+                    "  source = COALESCE(excluded.source, source)",
+                    (ip, r["port"], r["proto"], r.get("state"), now, now, source),
                 )
                 svc = r.get("service") or {}
                 if svc.get("name") or svc.get("product") or svc.get("version"):
                     conn.execute(
                         "INSERT INTO services (ip, port, proto, name, product, version, cpe, "
-                        "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                        "first_seen, last_seen, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                         "ON CONFLICT(ip, port, proto) DO UPDATE SET "
                         "  name     = COALESCE(excluded.name, name), "
                         "  product  = COALESCE(excluded.product, product), "
                         "  version  = COALESCE(excluded.version, version), "
-                        "  last_seen = excluded.last_seen",
+                        "  last_seen = excluded.last_seen, "
+                        "  source   = COALESCE(excluded.source, source)",
                         (ip, r["port"], r["proto"], svc.get("name"), svc.get("product"),
-                         svc.get("version"), None, now, now),
+                         svc.get("version"), None, now, now, source),
                     )
             conn.commit()
         finally:
@@ -918,9 +928,10 @@ def fetch_services(ip: str) -> dict:
     return {(p, pr): (n, prod, ver, cpe) for p, pr, n, prod, ver, cpe in rows}
 
 
-def save_services(ip: str, rows: list) -> int:
+def save_services(ip: str, rows: list, source: "str | None" = None) -> int:
     """Upsert probed service data (-sV) by (ip, port, proto), overwriting the earlier
-    port-enum guess with the real name/product/version/cpe."""
+    port-enum guess with the real name/product/version/cpe. ``source='manual'`` tags
+    user-entered rows; a scanned upsert never clears an existing tag (COALESCE)."""
     if not ip or not rows or _is_self_ip(ip):
         return 0
     now = datetime.now().isoformat(timespec="seconds")
@@ -930,15 +941,16 @@ def save_services(ip: str, rows: list) -> int:
             for r in rows:
                 conn.execute(
                     "INSERT INTO services (ip, port, proto, name, product, version, cpe, "
-                    "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "first_seen, last_seen, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(ip, port, proto) DO UPDATE SET "
                     "  name     = COALESCE(excluded.name, name), "
                     "  product  = COALESCE(excluded.product, product), "
                     "  version  = COALESCE(excluded.version, version), "
                     "  cpe      = COALESCE(excluded.cpe, cpe), "
-                    "  last_seen = excluded.last_seen",
+                    "  last_seen = excluded.last_seen, "
+                    "  source   = COALESCE(excluded.source, source)",
                     (ip, r["port"], r["proto"], r.get("name"), r.get("product"),
-                     r.get("version"), r.get("cpe"), now, now),
+                     r.get("version"), r.get("cpe"), now, now, source),
                 )
             conn.commit()
         finally:
@@ -9088,7 +9100,7 @@ def _manual_add_port(ip: str) -> None:
     row = {"port": port, "proto": proto, "state": state}
     if name:
         row["service"] = {"name": name}
-    save_ports(ip, [row])
+    save_ports(ip, [row], source="manual")
     print(f"{GREEN}✓ added {port}/{proto} ({state}) on {ip}{RESET}")
 
 
@@ -9103,9 +9115,9 @@ def _manual_add_service(ip: str) -> None:
     if not (name or product or version):
         print(f"{RED}✗ give at least a name, product or version{RESET}")
         return
-    save_ports(ip, [{"port": port, "proto": proto, "state": "open"}])
+    save_ports(ip, [{"port": port, "proto": proto, "state": "open"}], source="manual")
     save_services(ip, [{"port": port, "proto": proto, "name": name,
-                        "product": product, "version": version}])
+                        "product": product, "version": version}], source="manual")
     print(f"{GREEN}✓ set service {name or ''} {product or ''} {version or ''} on "
           f"{port}/{proto}{RESET}{DIM} — run vuln-scan / exploit to use it{RESET}")
 
@@ -9201,6 +9213,122 @@ def _manual_add_host() -> None:
     vendor = _ask("vendor (optional):") or None
     save_hosts([{"ip": ip, "hostname": hostname, "os": os_, "vendor": vendor}])
     print(f"{GREEN}✓ added host {ip}{RESET}{DIM} — open it and add its ports/services next{RESET}")
+
+
+def _db_exec(query: str, params: tuple = ()) -> None:
+    """Run a single write statement under the DB lock (create schema if needed)."""
+    with _DB_LOCK:
+        conn = _db_connect()
+        try:
+            conn.execute(query, params)
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _remove_manual_line(ip: str, port: int, proto: str, sid: str, host: str, line: str) -> None:
+    """Drop one line from a manual-creds / manual-paths script row; delete the row if empty."""
+    blocks = _load_manual_block(ip, port, proto, sid)
+    if line in blocks.get(host, []):
+        blocks[host].remove(line)
+        if not blocks[host]:
+            del blocks[host]
+    if any(blocks.values()):
+        _save_manual_block(ip, port, proto, sid, blocks)
+    else:
+        _db_exec("DELETE FROM scripts WHERE ip=? AND port=? AND proto=? AND script=?",
+                 (ip, port, proto, sid))
+
+
+def _gather_manual_items(ip: str) -> list:
+    """Every user-entered item for a host — manual ports/services/vhosts/creds/paths —
+    as {kind, label, …} dicts, so the remove view can list and delete them by number."""
+    items = []
+    for port, proto, state in _fetch(
+            "SELECT port, proto, state FROM ports WHERE ip=? AND source='manual' "
+            "ORDER BY port", (ip,)):
+        items.append({"kind": "port", "port": port, "proto": proto,
+                      "label": f"port   {port}/{proto} {state or ''}".rstrip()})
+    for port, proto, name, product, version in _fetch(
+            "SELECT port, proto, name, product, version FROM services "
+            "WHERE ip=? AND source='manual' ORDER BY port", (ip,)):
+        desc = " ".join(x for x in (name, product, version) if x) or "—"
+        items.append({"kind": "service", "port": port, "proto": proto,
+                      "label": f"svc    {port}/{proto} {desc}"})
+    for hn, _p, source in fetch_hostnames(ip):
+        if source == "manual":
+            items.append({"kind": "vhost", "hostname": hn, "label": f"vhost  {hn}"})
+    for port, proto, sid, output in fetch_manual(ip):
+        host = ip
+        for ln in (output or "").splitlines():
+            mh = re.match(r"^\[([^\]\s]+)\]\s*$", ln)
+            if mh:
+                host = mh.group(1)
+                continue
+            if sid == "manual-creds":
+                mc = re.match(r"! (\S+):(\S+) @ (\S+) \(([^)]+)\)", ln)
+                if mc:
+                    pw = "" if mc.group(2) == "<blank>" else mc.group(2)
+                    items.append({"kind": "cred", "port": port, "proto": proto, "host": host,
+                                  "line": ln, "label": f"cred   {port}/{proto} "
+                                  f"{mc.group(1)}:{pw} @ {mc.group(3)}"})
+            else:
+                mp = re.match(r"\s*[!+] \d{3}\s+(\S+)", ln)
+                if mp:
+                    tag = "" if host == ip else f" [{host}]"
+                    items.append({"kind": "path", "port": port, "proto": proto, "host": host,
+                                  "line": ln, "label": f"path   {port}/{proto} {mp.group(1)}{tag}"})
+    return items
+
+
+def _delete_manual_item(ip: str, item: dict) -> None:
+    """Remove one manual item (guarded to source='manual' rows so a scanned finding is safe)."""
+    kind = item["kind"]
+    if kind in ("port", "service"):
+        if kind == "port":                       # dropping the port drops its manual service too
+            _db_exec("DELETE FROM ports WHERE ip=? AND port=? AND proto=? AND source='manual'",
+                     (ip, item["port"], item["proto"]))
+        _db_exec("DELETE FROM services WHERE ip=? AND port=? AND proto=? AND source='manual'",
+                 (ip, item["port"], item["proto"]))
+    elif kind == "vhost":
+        _db_exec("DELETE FROM hostnames WHERE ip=? AND hostname=? AND source='manual'",
+                 (ip, item["hostname"]))
+        _sync_hosts_block(ip)                    # keep the managed /etc/hosts block current
+    elif kind in ("cred", "path"):
+        sid = "manual-creds" if kind == "cred" else "manual-paths"
+        _remove_manual_line(ip, item["port"], item["proto"], sid, item["host"], item["line"])
+
+
+def _manual_remove(ip: str) -> None:
+    """Sub-view (opened with [r]): list what the user entered by hand for this host and
+    delete entries by number. Only source='manual' rows are touched — scanned findings
+    are never listed or removed here."""
+    def _render():
+        items = _gather_manual_items(ip)
+        print(f"\n{BOLD}{ip} — remove manual entries{RESET}")
+        if not items:
+            print(f"  {DIM}nothing entered manually for this host{RESET}")
+        else:
+            for i, it in enumerate(items, 1):
+                print(f"  {BOLD}{i:>2}{RESET}  {it['label']}")
+        return items
+
+    def _handle(items, v):
+        if v == "":
+            return "refresh"
+        if v.isdigit():
+            n = int(v)
+            if 1 <= n <= len(items):
+                it = items[n - 1]
+                _delete_manual_item(ip, it)
+                print(f"{GREEN}✓ removed {it['label'].strip()}{RESET}")
+                return "refresh"
+            print(f"{RED}✗ no entry {n}{RESET}")
+            return "stay"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> remove · b · enter{RESET}")
+        return "stay"
+
+    _run_view(f"{ip}/manual", "[Enter] refresh · <n> remove · [b] back", _render, _handle)
 
 
 def _render_host_findings(ip: str) -> None:
@@ -9314,17 +9442,23 @@ def _port_scripts_view(ip: str, ports: list, n: int) -> None:
     def _handle(_c, v):
         if v == "":
             return "refresh"
+        if v == "a":
+            _manual_add(ip)
+            return "stay"                        # keep the info line — don't redraw
+        if v == "r":
+            _manual_remove(ip)
+            return "refresh"
         if v == "f":
             _host_findings_view(ip)
             return "refresh"
         if v == "p":
             _open_host_progress(ip)
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— f · p · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— a · r · f · p · b · enter{RESET}")
         return "stay"
 
     _run_view(f"{ip}:{port}/{proto}",
-              "[Enter] refresh · [f] findings · [p] progress · [b] back · [m] menu",
+              "[Enter] refresh · [a] add · [r] remove manual · [f] findings · [p] progress · [b] back · [m] menu",
               lambda: _render_port_scripts(ip, port, proto), _handle)
 
 
@@ -9337,13 +9471,16 @@ def _host_findings_view(ip: str) -> None:
         if v == "a":
             _manual_add(ip)
             return "stay"                        # keep the info line — don't redraw the list
+        if v == "r":
+            _manual_remove(ip)
+            return "refresh"
         if v == "p":
             _open_host_progress(ip)
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— a · p · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— a · r · p · b · enter{RESET}")
         return "stay"
 
-    _run_view(f"{ip}/findings", "[Enter] refresh · [a] add finding · [p] progress · [b] back · [m] menu",
+    _run_view(f"{ip}/findings", "[Enter] refresh · [a] add · [r] remove manual · [p] progress · [b] back · [m] menu",
               lambda: _render_host_findings(ip), _handle)
 
 
@@ -9358,6 +9495,12 @@ def _host_ports_view(rows: list, n: int) -> None:
     def _handle(ports, v):
         if v == "":
             return "refresh"
+        if v == "a":
+            _manual_add(ip)
+            return "stay"                        # keep the info line — don't redraw the table
+        if v == "r":
+            _manual_remove(ip)
+            return "refresh"
         if v.lower() == "f":
             _host_findings_view(ip)
             return "refresh"
@@ -9371,10 +9514,10 @@ def _host_ports_view(rows: list, n: int) -> None:
                 return "refresh"
             print(f"{RED}✗ no port {n}{RESET}")     # bad number → bare re-prompt, no redraw
             return "stay"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · f · p · b · enter{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · a · r · f · p · b · enter{RESET}")
         return "stay"
 
-    _run_view(ip, "[Enter] refresh · <n> select · [f] findings · [p] progress · [b] back · [m] menu",
+    _run_view(ip, "[Enter] refresh · <n> select · [a] add · [r] remove manual · [f] findings · [p] progress · [b] back · [m] menu",
               lambda: _render_host_ports(ip), _handle)
 
 
