@@ -2223,6 +2223,16 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ao) winrm-enum: WinRM transport confirmed → evil-winrm target; Basic-over-HTTP is worse
+    if sid == "winrm-enum":
+        trans = re.findall(r"((?:HTTPS?) \d+) ✓", output)
+        if not trans:
+            return None
+        auth = re.search(r"Auth:\s*(.+)", output)
+        risk = "HIGH" if "Basic auth over HTTP" in output else "MEDIUM"
+        summ = f"WinRM: {', '.join(trans)}" + (f" · auth {auth.group(1)}" if auth else "")
+        return {"state": "EXPOSED", "cve": cve, "risk": risk, "summary": summ[:140]}
+
     # 2an) smb-foothold: an interactive admin session was spawned over valid creds / a hash
     if sid == "smb-foothold":
         m = re.search(r"^smb-foothold: (\S+ shell → .+)$", output, re.M)
@@ -2971,7 +2981,7 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "smb-next"),
     ],
     "winrm": [
-        "Confirm WinRM transport (5985 HTTP / 5986 HTTPS)",
+        ("Confirm WinRM transport (5985 HTTP / 5986 HTTPS)", "winrm-enum"),
         "Validate & spray creds and NTLM hashes against known users (watch lockout)",
         "Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)",
         "Needs 'Remote Management Users' / admin membership — note who has access",
@@ -9901,6 +9911,100 @@ def _tool_smb_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ── WinRM step 1: confirm the WS-Management transport (unauth, stdlib probe) ────
+_WINRM_PORTS = ((5985, False), (5986, True))     # (port, tls) — HTTP and HTTPS WS-Man
+
+
+def _winrm_auth_schemes(headers: list) -> list:
+    """Auth schemes offered on WWW-Authenticate (Negotiate/Kerberos/NTLM/Basic/CredSSP)."""
+    out = []
+    for h in headers:
+        for s in re.findall(r"\b(Negotiate|Kerberos|NTLM|Basic|CredSSP|Digest)\b", h or ""):
+            if s not in out:
+                out.append(s)
+    return out
+
+
+def _winrm_probe(ip: str, port: int, tls: bool) -> dict:
+    """Unauthenticated probe of /wsman: is WinRM up, its Server banner and offered auth."""
+    import http.client
+    import ssl
+    info = {"port": port, "tls": tls, "up": False, "server": "", "auth": []}
+    try:
+        if tls:
+            conn = http.client.HTTPSConnection(ip, port, timeout=8,
+                                               context=ssl._create_unverified_context())
+        else:
+            conn = http.client.HTTPConnection(ip, port, timeout=8)
+        conn.request("POST", "/wsman", body="",
+                     headers={"Content-Type": "application/soap+xml;charset=UTF-8",
+                              "Content-Length": "0"})
+        r = conn.getresponse()
+        info["server"] = r.getheader("Server", "") or ""
+        info["auth"] = _winrm_auth_schemes([v for k, v in r.getheaders()
+                                            if k.lower() == "www-authenticate"])
+        r.read()
+        conn.close()
+        info["up"] = ("microsoft-httpapi" in info["server"].lower()) or r.status in (401, 200, 405)
+    except Exception:                                        # noqa: BLE001 — down/filtered
+        info["up"] = False
+    return info
+
+
+def _tool_winrm_enum(ip: str, port: int, proto: str) -> str:
+    """WinRM step 1 tool: confirm the WS-Management transport unauthenticated — probe /wsman on
+    5985 (HTTP) and 5986 (HTTPS), read the Microsoft-HTTPAPI banner and the offered auth schemes
+    (Negotiate/Kerberos/NTLM/Basic/CredSSP), and (when netexec is present) enrich with the host
+    OS / name / domain. Stdlib core: no creds tried, no lockout. A host with neither port up
+    raises so the step won't green on a non-result. Authorised targets only."""
+    probes = [_winrm_probe(ip, p, tls) for p, tls in _WINRM_PORTS]
+    up = [x for x in probes if x["up"]]
+    if not up:
+        raise RuntimeError(f"{ip} — no WinRM on 5985/5986 (service down / filtered?)")
+
+    server = next((x["server"] for x in up if x["server"]), "")
+    auth = []
+    for x in up:
+        for s in x["auth"]:
+            if s not in auth:
+                auth.append(s)
+    basic_http = any("Basic" in x["auth"] and not x["tls"] for x in up)
+
+    trans = "   ".join(
+        f"{'HTTPS' if tls else 'HTTP'} {p} "
+        f"{'✓' if any(x['port'] == p and x['up'] for x in probes) else '✗'}"
+        for p, tls in _WINRM_PORTS)
+    lines = [f"[*] Transport: {trans}"]
+    if server:
+        lines.append(f"[*] Server: {server}")
+    if auth:
+        lines.append(f"[*] Auth: {', '.join(auth)}")
+
+    nxc = shutil.which("netexec") or shutil.which("nxc")     # enrichment: OS / name / domain
+    if nxc:
+        _, out = _smb_run([nxc, "winrm", ip], 40)
+        facts = {}
+        mb = re.search(r"\[\*\]\s*(.+)", out)
+        if mb:
+            facts["os"] = re.sub(r"\s*\(name:.*$", "", mb.group(1)).strip()
+        for key, rx in (("name", r"\(name:([^)]*)\)"), ("domain", r"\(domain:([^)]*)\)")):
+            mm = re.search(rx, out)
+            if mm:
+                facts[key] = mm.group(1).strip()
+        bits = "   ".join(x for x in (
+            f"Host: {facts['name']}" if facts.get("name") else "",
+            f"OS: {facts['os']}" if facts.get("os") else "",
+            f"Domain: {facts['domain']}" if facts.get("domain") else "") if x)
+        if bits:
+            lines.append(f"[*] {bits}   (netexec)")
+
+    if basic_http:
+        lines.append("⚠ Basic auth over HTTP — credentials are sniffable")
+    lines.append("· evil-winrm candidate — validate/spray creds next (step 2)"
+                 + ("  ·  use -S for HTTPS" if any(x["tls"] for x in up) else ""))
+    return f"WinRM enumeration — {ip}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9944,6 +10048,7 @@ _STEP_TOOLS = {
     "smb-writable": ("Writable share → plant hash-capture LNK (netexec slinky, reversible)", _tool_smb_writable),
     "smb-foothold": ("foothold → spawn interactive admin session (psexec/evil-winrm)", _tool_smb_foothold),
     "smb-next": ("manual AD/SMB steps (context-aware, reference only)", _tool_smb_next),
+    "winrm-enum": ("Confirm WinRM transport + auth (stdlib /wsman probe + netexec)", _tool_winrm_enum),
 }
 
 def _mins(seconds: int) -> str:
@@ -10002,6 +10107,7 @@ _STEP_TOOL_RUNS = {
     "smb-writable":     ("netexec slinky", f"{_mins(_SMBWRITABLE_DEADLINE)} min"),
     "smb-foothold":     ("impacket / evil-winrm", None),
     "smb-next":         ("reference · no scan", None),
+    "winrm-enum":       ("Python + netexec", None),
 }
 
 
@@ -10163,6 +10269,9 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "winrm-enum":                  # unauth transport confirm — no creds, no lockout
+        print(f"{DIM}   unauthenticated /wsman probe on 5985/5986 (stdlib) + netexec banner — "
+              f"read-only, no creds tried (no lockout){RESET}")
     if tool_key == "smb-writable":                # WRITES to the target — reversible, blast radius
         print(f"{YELLOW}   ⚠ WRITES to the target{RESET}{DIM} — plants {BOLD}{_SMBWRITABLE_NAME}.lnk{RESET}"
               f"{DIM} on writable shares to capture NetNTLM from any browsing user (third parties); "
