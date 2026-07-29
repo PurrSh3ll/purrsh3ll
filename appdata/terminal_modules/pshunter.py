@@ -2223,6 +2223,19 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2at) ftp-banner: known-backdoor FTP version → critical RCE; else version info
+    if sid == "ftp-banner":
+        vulns = re.findall(r"^✗ VULN (.+)$", output, re.M)
+        if vulns:
+            vcve = ",".join(sorted(set(re.findall(r"CVE-\d{4}-\d{3,7}", " ".join(vulns))))) or None
+            return {"state": "VULNERABLE", "cve": vcve, "risk": "CRITICAL",
+                    "summary": f"FTP: {vulns[0]}"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"FTP: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2as) winrm-recon: post-access recon — hot privilege → privesc path; pivot subnets
     if sid == "winrm-recon":
         privs = re.findall(r"^✗ PRIV (\S+)", output, re.M)
@@ -3036,7 +3049,7 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "winrm-next"),
     ],
     "ftp": [
-        "Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)",
+        ("Banner & exact version → searchsploit (vsftpd 2.3.4 backdoor, ProFTPD mod_copy CVE-2015-3306)", "ftp-banner"),
         "Anonymous login (anonymous:<any>) → browse the tree",
         "Download everything; test write access (upload a throwaway file)",
         "Try known / default / reused creds; targeted brute only if lockout allows",
@@ -10383,6 +10396,71 @@ def _tool_winrm_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ── FTP step 1: banner + version → searchsploit (stdlib ftplib) ────────────────
+_FTP_KNOWN_VULN = [   # (banner regex, CVE, description) — famous FTP RCE/backdoor versions
+    (r"vsftpd\s*2\.3\.4",       "CVE-2011-2523", "vsftpd 2.3.4 backdoor (user ':)') → root shell on 6200"),
+    (r"ProFTPD\s*1\.3\.5",      "CVE-2015-3306", "ProFTPD 1.3.5 mod_copy (SITE CPFR/CPTO) → RCE"),
+    (r"ProFTPD\s*1\.3\.3c",     "CVE-2010-4221", "ProFTPD 1.3.3c backdoor / telnet IAC → RCE"),
+    (r"ProFTPD\s*1\.3\.[0-2]\b", "CVE-2010-4221", "ProFTPD ≤1.3.2 telnet IAC overflow"),
+]
+
+
+def _tool_ftp_banner(ip: str, port: int, proto: str) -> str:
+    """FTP step 1 tool: grab the 220 welcome banner (stdlib ftplib), parse the product/version,
+    record it as the service (-sV), flag famous RCE/backdoor versions (vsftpd 2.3.4, ProFTPD
+    1.3.5 mod_copy / 1.3.3c) with their CVE, and query Exploit-DB with searchsploit when present.
+    Read-only, no login. A host that doesn't answer FTP raises. Authorised targets only."""
+    import ftplib
+    try:
+        ftp = ftplib.FTP(timeout=8)
+        ftp.connect(ip, port)
+        banner = (ftp.getwelcome() or "").strip()
+        try:
+            ftp.quit()
+        except Exception:                                    # noqa: BLE001
+            ftp.close()
+    except Exception as exc:                                 # noqa: BLE001
+        raise RuntimeError(f"no FTP banner on {ip}:{port} ({exc})")
+    if not banner:
+        raise RuntimeError(f"{ip}:{port} — empty FTP banner (not FTP?)")
+
+    m = re.search(r"(vsFTPd|ProFTPD|Pure-FTPd|FileZilla(?: Server)?|wu-ftpd|Serv-U|glFTPd|"
+                  r"Microsoft FTP)[^\d]*(\d+(?:\.\d+)+[a-z0-9]*)?", banner, re.I)
+    product = m.group(1) if m else None
+    version = m.group(2) if (m and m.group(2)) else None
+    if product and version:                                  # record as the service (-sV-like)
+        save_services(ip, [{"port": port, "proto": proto, "name": "ftp",
+                            "product": product, "version": version}])
+
+    lines = [f"[*] Banner: {banner}"]
+    if product:
+        lines.append(f"[*] Service: {product}{(' ' + version) if version else ''}")
+    for rx, cveid, desc in _FTP_KNOWN_VULN:
+        if re.search(rx, banner, re.I):
+            lines.append(f"✗ VULN {desc} ({cveid})")
+
+    ss = shutil.which("searchsploit")
+    if ss and product and version:
+        proc = subprocess.run([ss, "-j", "-s", "-t", product, version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 8:
+                break
+    elif not ss and product:
+        lines.append("· searchsploit not installed — check Exploit-DB for the version manually")
+    return f"FTP banner — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10432,6 +10510,7 @@ _STEP_TOOLS = {
     "winrm-access": ("Who can WinRM — Remote Management Users / admins (netexec)", _tool_winrm_access),
     "winrm-recon": ("Post-access recon over WinRM (privesc path + pivot surface)", _tool_winrm_recon),
     "winrm-next": ("manual WinRM/AD steps (context-aware, reference only)", _tool_winrm_next),
+    "ftp-banner": ("FTP banner + version → searchsploit (stdlib ftplib)", _tool_ftp_banner),
 }
 
 def _mins(seconds: int) -> str:
@@ -10496,6 +10575,7 @@ _STEP_TOOL_RUNS = {
     "winrm-access":     ("netexec --local-group", None),
     "winrm-recon":      ("netexec winrm -x", None),
     "winrm-next":       ("reference · no scan", None),
+    "ftp-banner":       ("Python + searchsploit", None),
 }
 
 
