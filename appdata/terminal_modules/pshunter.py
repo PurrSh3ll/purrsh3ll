@@ -9713,14 +9713,15 @@ def _smb_cred_domain(user: str, secret: str) -> str:
 
 
 def _smb_foothold_methods(host: str) -> list:
-    """Viable exec methods for a host, psexec first (per decision); evil-winrm only if WinRM
-    is open. Each entry is (method_name, binary)."""
+    """Every installed exec method the operator can pick, psexec first (the default). evil-winrm
+    is always offered when installed — the menu flags whether WinRM was actually seen — so the
+    operator can choose any way to spawn, not only the auto-detected one. (name, binary)."""
     order = []
     for name, binexe in (("psexec", "impacket-psexec"), ("wmiexec", "impacket-wmiexec"),
                          ("smbexec", "impacket-smbexec"), ("atexec", "impacket-atexec")):
         if shutil.which(binexe):
             order.append((name, binexe))
-    if any(p in (5985, 5986) for p, _pr, _st in fetch_ports(host)) and shutil.which("evil-winrm"):
+    if shutil.which("evil-winrm"):
         order.append(("evil-winrm", "evil-winrm"))
     return order
 
@@ -9768,9 +9769,14 @@ def _tool_smb_foothold(ip: str, port: int, proto: str) -> str:
     if len(methods) == 1:
         method, binexe = methods[0]
     else:
-        print(f"\n{BOLD}exec method{RESET} {DIM}(1 = psexec = full SYSTEM shell){RESET}")
+        winrm = any(p in (5985, 5986) for p, _pr, _st in fetch_ports(host))
+        print(f"\n{BOLD}exec method / tool{RESET} {DIM}(blank = 1 psexec){RESET}")
         for i, (nm, _b) in enumerate(methods, 1):
-            print(f"  {BOLD}{i}{RESET}  {nm}")
+            hint = {"psexec": "full SYSTEM shell", "wmiexec": "semi-interactive, cleaner",
+                    "smbexec": "service-based", "atexec": "scheduled task"}.get(nm, "")
+            if nm == "evil-winrm":
+                hint = "WinRM ✓" if winrm else "needs WinRM 5985"
+            print(f"  {BOLD}{i}{RESET}  {nm:<11}{DIM}{hint}{RESET}")
         v = _ask("pick method [1-N, blank = 1]:")
         method, binexe = methods[int(v) - 1] if (v and v.isdigit() and 1 <= int(v) <= len(methods)) \
             else methods[0]
