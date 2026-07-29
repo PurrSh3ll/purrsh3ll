@@ -2223,6 +2223,16 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"SMB readable shares: {len(files)} sensitive file(s)"[:140]}
         return None
 
+    # 2ar) winrm-access: enumerated who can use WinRM (Remote Management Users / admins)
+    if sid == "winrm-access":
+        hits = [h.replace("  (have cred)", "").strip()
+                for h in re.findall(r"^✗ WINRM-USER (.+)$", output, re.M)]
+        if not hits:
+            return None
+        shown = ", ".join(dict.fromkeys(hits))[:110]
+        return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                "summary": f"WinRM access: {shown}"[:140]}
+
     # 2aq) winrm-shell: an interactive evil-winrm session was spawned over a WinRM cred
     if sid == "winrm-shell":
         m = re.search(r"^winrm-shell: (evil-winrm shell → .+)$", output, re.M)
@@ -3006,7 +3016,7 @@ _EXPLOIT_STEPS = {
         ("Confirm WinRM transport (5985 HTTP / 5986 HTTPS)", "winrm-enum"),
         ("Validate & spray creds and NTLM hashes against known users (watch lockout)", "winrm-spray"),
         ("Valid creds or hash → interactive shell (evil-winrm; -H for pass-the-hash)", "winrm-shell"),
-        "Needs 'Remote Management Users' / admin membership — note who has access",
+        ("Needs 'Remote Management Users' / admin membership — note who has access", "winrm-access"),
         "Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot",
         # ── land a shell & foothold ──
         "Spawn & upgrade an interactive shell",
@@ -10159,6 +10169,55 @@ def _tool_winrm_shell(ip: str, port: int, proto: str) -> str:
     return f"winrm-shell: evil-winrm shell → {user}@{host}{tail}"
 
 
+# ── WinRM step 4: who can log in — Remote Management Users / Administrators ─────
+def _tool_winrm_access(ip: str, port: int, proto: str) -> str:
+    """WinRM step 4 tool: enumerate who can actually use WinRM — the members of the local
+    'Remote Management Users' and 'Administrators' groups on this host — using any harvested
+    valid cred (netexec --local-group over SMB). Accounts you already hold a cred for are
+    flagged, so you know which to target/reuse. Read-only; needs a valid cred and SMB (445)
+    reachable. No root. Raises without a working cred. Authorised targets only."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        raise RuntimeError("netexec not found — install it to enumerate WinRM access")
+    creds = _gather_all_smb_creds()
+    if not creds:
+        raise RuntimeError("no valid creds — run the SMB phase / winrm-spray (r2) first")
+    have = {u.lower() for _d, u, _s in creds}
+
+    lines, members, used = [], [], None
+    for dom, user, secret in creds:
+        is_hash = bool(re.fullmatch(r"[a-fA-F0-9]{32}", secret))
+        auth = ["-u", user] + (["-H", secret] if is_hash else ["-p", secret])
+        if dom:
+            auth += ["-d", dom]
+        _, probe = _smb_run([nxc, "smb", ip, *auth], 40)
+        if not re.search(r"\b445\b.*\[\+\]", probe):
+            continue
+        used = f"{dom}\\{user}" if dom else user
+        for group in ("Remote Management Users", "Administrators"):
+            _, out = _smb_run([nxc, "smb", ip, *auth, "--local-group", group], 60)
+            gm = []
+            for ln in _nxc_body(out).splitlines():
+                mm = re.search(r"([A-Za-z0-9._-]+\\[A-Za-z0-9._$ -]+?)\s*$", ln.strip())
+                if mm and "\\" in mm.group(1):
+                    gm.append(mm.group(1).strip())
+            gm = list(dict.fromkeys(gm))
+            if gm:
+                lines.append(f"[{group}]")
+                for who in gm:
+                    tag = "  (have cred)" if who.split("\\")[-1].lower() in have else ""
+                    lines.append(f"✗ WINRM-USER {who}{tag}")
+                    members.append(who)
+        break
+    if used is None:
+        raise RuntimeError(f"{ip} — no harvested cred authenticated over SMB (is 445 open?)")
+
+    head = [f"[*] enumerated via {used} (SMB 445 on {ip})"]
+    if not members:
+        head.append("· no members returned (groups empty / not resolvable with this cred)")
+    return f"WinRM access — {ip}\n\n" + "\n".join(head + lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -10205,6 +10264,7 @@ _STEP_TOOLS = {
     "winrm-enum": ("Confirm WinRM transport + auth (stdlib /wsman probe + netexec)", _tool_winrm_enum),
     "winrm-spray": ("Validate harvested creds/hashes against WinRM (netexec → shell)", _tool_winrm_spray),
     "winrm-shell": ("Interactive WinRM shell (evil-winrm, -S HTTPS, PtH)", _tool_winrm_shell),
+    "winrm-access": ("Who can WinRM — Remote Management Users / admins (netexec)", _tool_winrm_access),
 }
 
 def _mins(seconds: int) -> str:
@@ -10266,6 +10326,7 @@ _STEP_TOOL_RUNS = {
     "winrm-enum":       ("Python + netexec", None),
     "winrm-spray":      ("netexec winrm", f"{_mins(_WINRMSPRAY_DEADLINE)} min"),
     "winrm-shell":      ("evil-winrm", None),
+    "winrm-access":     ("netexec --local-group", None),
 }
 
 
@@ -10427,6 +10488,9 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ SMB version-RCE scan{RESET}{DIM} — detection only (nmap NSE + netexec), "
               f"no exploitation / no unsafe probes · {RESET}{YELLOW}authorized targets only{RESET}"
               f"{DIM} · deadline {_SMBVULN_DEADLINE // 60} min{RESET}")
+    if tool_key == "winrm-access":                # read-only group enum with a harvested cred
+        print(f"{DIM}   enumerates Remote Management Users / Administrators via a harvested cred "
+              f"(netexec --local-group over SMB 445) — read-only{RESET}")
     if tool_key == "winrm-spray":                 # real creds only — 1 try/host, no guessing
         nc, nh = len(_gather_all_smb_creds()), len(_winrm_hosts())
         print(f"{DIM}   validates {BOLD}{nc}{RESET}{DIM} harvested cred(s) against {BOLD}{nh}{RESET}"
