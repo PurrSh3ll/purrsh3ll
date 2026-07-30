@@ -2282,6 +2282,18 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if ni else "MEDIUM",
                 "summary": summ[:140]}
 
+    # 2bd) telnet-banner: unauthenticated shell (critical) → else banner / auth-required info
+    if sid == "telnet-banner":
+        no = re.search(r"^✗ NOAUTH unauthenticated shell — (.+)$", output, re.M)
+        if no:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"telnet: unauthenticated shell ({no.group(1)})"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"telnet: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bc) tftp-write: anonymous WRQ accepted — payload-drop / config-overwrite surface
     if sid == "tftp-write":
         w = re.findall(r"^✗ WRITABLE (\S+)", output, re.M)
@@ -3016,6 +3028,7 @@ _EXPLOIT_SERVICES = [
     ("ftp",     "FTP",                {21, 990, 2121},
      ("ftp", "vsftpd", "proftpd", "pure-ftpd", "filezilla", "ftpd")),
     ("tftp",    "TFTP (UDP)",         {69}, ("tftp",)),
+    ("telnet",  "Telnet",             {23}, ("telnet",)),
     ("nfs",     "NFS / RPC mounts",   {111, 2049},
      ("nfs", "rpcbind", "portmap", "mountd")),
     ("afp",     "AFP (Apple shares)", {548}, ("afp", "netatalk", "apple filing")),
@@ -3050,7 +3063,6 @@ _EXPLOIT_SERVICES = [
     ("dns",     "DNS",                {53}, ("domain", "dns", "bind")),
     ("smtp",    "SMTP / mail",        {25, 465, 587}, ("smtp",)),
     ("mail2",   "POP3 / IMAP",        {110, 143, 993, 995}, ("pop3", "imap")),
-    ("telnet",  "Telnet",             {23}, ("telnet",)),
     ("irc",     "IRC",                {6660, 6667, 6669, 6697}, ("irc", "ircd", "unreal")),
     ("rdp",     "RDP",                {3389}, ("ms-wbt-server", "rdp", "terminal serv")),
     ("vnc",     "VNC",                {5900, 5901, 5902, 5903}, ("vnc",)),
@@ -3408,8 +3420,7 @@ _EXPLOIT_STEPS = {
         "Manual steps & further research",
     ],
     "telnet": [
-        "Banner → identify the device / OS / service",
-        "No-auth access or a backdoor prompt?",
+        ("Banner + version → searchsploit; probe for a no-auth shell / backdoor prompt", "telnet-banner"),
         "Default / known creds; careful, targeted brute (lockout-aware)",
         "Sniff cleartext creds if you can MITM the segment",
         "Manual steps & further research",
@@ -11859,6 +11870,160 @@ def _tool_tftp_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ Telnet (23) ══ cleartext remote login — a fast HTB foothold via no-auth shells, weak/default
+# creds or device backdoors. Raw socket (telnetlib was removed in 3.13): we answer IAC option
+# negotiation (refuse everything) so the server sends its banner/prompt, then fingerprint it and,
+# when no login is demanded, probe for an unauthenticated shell with a computed marker.
+_TELNET_PROMPT_LOGIN = re.compile(r"(?i)(?:login|user\s?name|username)\s*:\s*$")
+_TELNET_PROMPT_PASS = re.compile(r"(?i)password\s*:\s*$")
+
+
+def _telnet_pump(sock, budget: float = 4.0, per_recv: float = 1.5) -> str:
+    """Read from a telnet socket for up to `budget` seconds (or until quiet), answering IAC
+    option negotiation (DO→WONT, WILL→DONT — refuse all) and stripping IAC/subnegotiation so the
+    returned text is just the banner/prompt. The IAC state machine survives recv boundaries."""
+    import socket as _s
+    import time
+    st, opt_cmd = 0, None
+    buf, replies = bytearray(), bytearray()
+    end = time.time() + budget
+    while time.time() < end:
+        try:
+            sock.settimeout(per_recv)
+            chunk = sock.recv(4096)
+        except _s.timeout:
+            break
+        except OSError:
+            break
+        if not chunk:
+            break
+        for b in chunk:
+            if st == 0:
+                buf.append(b) if b != 255 else None
+                st = 1 if b == 255 else 0
+            elif st == 1:                                    # after IAC
+                if b in (251, 252, 253, 254):
+                    opt_cmd, st = b, 2
+                elif b == 250:
+                    st = 3                                   # SB … IAC SE
+                elif b == 255:
+                    buf.append(255); st = 0
+                else:
+                    st = 0                                   # other 2-byte command
+            elif st == 2:                                    # option byte
+                if opt_cmd == 253:
+                    replies += bytes((255, 252, b))          # DO  → WONT
+                elif opt_cmd == 251:
+                    replies += bytes((255, 254, b))          # WILL → DONT
+                st = 0
+            elif st == 3:
+                st = 4 if b == 255 else 3
+            elif st == 4:
+                st = 0 if b == 240 else 3                    # IAC SE ends subnegotiation
+        if replies:
+            try:
+                sock.sendall(bytes(replies))
+            except OSError:
+                pass
+            replies = bytearray()
+    return buf.decode("latin-1", "replace")
+
+
+def _telnet_fingerprint(banner: str) -> tuple:
+    """(product, version) from a telnet banner when recognisable, else (None, None). Captures a
+    version when one follows the product name; otherwise returns the product alone."""
+    mb = re.search(r"BusyBox v([\d.]+)", banner)
+    if mb:
+        return "BusyBox", mb.group(1)
+    for prod in ("Ubuntu", "Debian", "CentOS", "Red Hat", "Fedora", "OpenWrt", "DD-WRT",
+                 "Cisco", "VxWorks", "MikroTik", "Windows"):
+        mo = re.search(re.escape(prod) + r"[^\n]*?(\d+(?:\.\d+)+)", banner, re.I)
+        if mo:
+            return prod, mo.group(1)
+        if re.search(r"\b" + re.escape(prod) + r"\b", banner, re.I):
+            return prod, None
+    return None, None
+
+
+def _tool_telnet_banner(ip: str, port: int, proto: str) -> str:
+    """Telnet step 1 tool: open a raw-socket telnet session, negotiate IAC so the server sends its
+    banner/prompt, fingerprint the device/OS/version (→ service record + searchsploit), and — when
+    no login is demanded — probe for an UNAUTHENTICATED shell with a computed marker (id + echo
+    <mark>$((6*7)); a match proves real execution, not reflection). Non-destructive, read-only.
+    A host that doesn't answer telnet raises. Authorised targets only."""
+    import socket
+    import os
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(8)
+        s.connect((ip, port))
+    except Exception as exc:                                 # noqa: BLE001
+        raise RuntimeError(f"no telnet on {ip}:{port} ({exc})")
+
+    noauth_ctx, asks_login, asks_pass = None, False, False
+    try:
+        banner = _telnet_pump(s, budget=4.0)
+        tail = banner.rstrip()[-80:]
+        low = tail.lower()
+        asks_login = bool(_TELNET_PROMPT_LOGIN.search(tail)) or "login:" in low
+        asks_pass = bool(_TELNET_PROMPT_PASS.search(tail)) or low.endswith("password:")
+        if not (asks_login or asks_pass):                    # maybe a direct shell — verify
+            mark = f"PSH{os.urandom(2).hex()}"
+            try:
+                s.sendall(f"id; echo {mark}$((6*7))\n".encode())
+                resp = _telnet_pump(s, budget=3.0)
+            except OSError:
+                resp = ""
+            if f"{mark}42" in resp or re.search(r"uid=\d+\(", resp):
+                muid = re.search(r"(uid=\d+\([^\r\n]+)", resp)
+                noauth_ctx = muid.group(1).strip() if muid else "shell executes commands"
+            elif _TELNET_PROMPT_LOGIN.search(resp) or "password:" in resp.lower():
+                asks_login = True                            # auth prompt arrived after our input
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    product, version = _telnet_fingerprint(banner)
+    if product:
+        save_services(ip, [{"port": port, "proto": proto, "name": "telnet",
+                            "product": product, "version": version}])
+
+    shown = " | ".join(ln.strip() for ln in banner.splitlines() if ln.strip())[:200]
+    lines = [f"[*] Banner: {shown or '(none — silent / binary)'}"]
+    if product:
+        lines.append(f"[*] Service: telnet {product}{(' ' + version) if version else ''}")
+    if noauth_ctx:
+        lines.append(f"✗ NOAUTH unauthenticated shell — {noauth_ctx}")
+        lines.append("· spawn it: Privilege Escalation phase → spawn-shell (r1)")
+    elif asks_login or asks_pass:
+        lines.append("· login prompt — needs creds (run telnet-creds)")
+    else:
+        lines.append("· no login prompt and no shell confirmed — inspect the banner / try creds")
+
+    ss = shutil.which("searchsploit")
+    if ss and product and version:
+        proc = subprocess.run([ss, "-j", "-s", "-t", product, version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 8:
+                break
+    elif not ss and product:
+        lines.append("· searchsploit not installed — check Exploit-DB for the version manually")
+    return f"Telnet banner — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -11985,6 +12150,7 @@ _STEP_TOOLS = {
     "tftp-grab": ("sweep known filenames → configs/creds/secrets (raw UDP, in-memory grep)", _tool_tftp_grab),
     "tftp-write": ("test anonymous write (WRQ throwaway) — non-reversible, no DELETE", _tool_tftp_write),
     "tftp-next": ("manual TFTP steps (context-aware, reference only)", _tool_tftp_next),
+    "telnet-banner": ("telnet banner + version → searchsploit; probe no-auth shell (raw socket)", _tool_telnet_banner),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12062,6 +12228,7 @@ _STEP_TOOL_RUNS = {
     "tftp-grab":        ("Python (raw UDP)", f"{_mins(_TFTPGRAB_DEADLINE)} min"),
     "tftp-write":       ("Python (raw UDP)", None),
     "tftp-next":        ("reference · no scan", None),
+    "telnet-banner":    ("Python (raw socket) + searchsploit", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
