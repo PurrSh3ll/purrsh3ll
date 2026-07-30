@@ -132,7 +132,7 @@ def print_menu() -> None:
     print(f"  {DIM}actions{RESET}")
     print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}")
     print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}")
-    print(f"  {CYAN}[c]{RESET} {BOLD}services{RESET} {DIM}— supported services & their steps{RESET}")
+    print(f"  {CYAN}[c]{RESET} {BOLD}catalog{RESET} {DIM}— supported services & their steps{RESET}")
     print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET}")
     if not _is_root():
         print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}")
@@ -169,7 +169,7 @@ def print_help() -> None:
           f"{BOLD}r <n>{RESET} remove, {BOLD}c{RESET} wipe all")
     print(f"  {DIM}           inside a host: {BOLD}[f]{RESET}{DIM} findings, {BOLD}[p]{RESET}{DIM} progress "
           f"(per-phase tracker — which phases ran and what's pending; a number runs one){RESET}")
-    print(f"  {BOLD}services{RESET}   catalog of supported services in exploitation order (bold = wired "
+    print(f"  {BOLD}catalog{RESET}    supported services in exploitation order (bold = wired "
           f"tools implemented); type a number to see that service's steps")
     print(f"  {BOLD}new session{RESET}  wipe the whole database (hosts + history) for a fresh start")
     print(f"  {BOLD}upgrade{RESET}      re-run under sudo for root (SYN/UDP scans); progress is kept")
@@ -13627,14 +13627,14 @@ def _services_catalog_view() -> None:
             n = int(v)
             if 1 <= n <= len(services):
                 key, label = services[n - 1][0], services[n - 1][1]
-                _view(lambda: _render_service_steps(key, label), f"services/{key}", "[b] back")
+                _view(lambda: _render_service_steps(key, label), f"catalog/{key}", "[b] back")
                 return "refresh"
             print(f"{RED}✗ no service {n}{RESET}")
             return "stay"
         print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · enter · b{RESET}")
         return "stay"
 
-    _run_view("services", "[Enter] refresh · <n> view steps · [b] back · [m] menu",
+    _run_view("catalog", "[Enter] refresh · <n> view steps · [b] back · [m] menu",
               _render_services_catalog, _handle)
 
 
@@ -13690,7 +13690,7 @@ def main() -> int:
                         _status_view()
                     elif choice in ("d", "database"):
                         _database_view()
-                    elif choice in ("c", "services"):
+                    elif choice in ("c", "catalog", "services"):
                         _services_catalog_view()
                     elif choice in ("n", "new"):
                         new_session()
