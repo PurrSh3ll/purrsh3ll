@@ -132,7 +132,7 @@ def print_menu() -> None:
     print(f"  {DIM}actions{RESET}")
     print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}")
     print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}")
-    print(f"  {CYAN}[c]{RESET} {BOLD}catalog{RESET} {DIM}— supported services & their steps{RESET}")
+    print(f"  {CYAN}[c]{RESET} {BOLD}catalog{RESET}")
     print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET}")
     if not _is_root():
         print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}")
@@ -13580,20 +13580,15 @@ def _render_services_catalog() -> list:
     order. Services with at least one wired tool are bold (implemented); the rest are dim
     (checklist only, no automation yet). Returns the ordered services so a number can pick one."""
     print(f"\n{BOLD}supported services{RESET}  "
-          f"{DIM}exploitation order · {BOLD}bold{RESET}{DIM} = wired tools implemented · "
-          f"dim = checklist only{RESET}")
-    rows, n_impl = [], 0
+          f"{DIM}exploitation order · {BOLD}bold{RESET}{DIM} = wired tools implemented{RESET}")
+    rows = []
     for i, (key, label, ports, _tokens) in enumerate(_EXPLOIT_SERVICES, 1):
         wired, total = _service_wired_count(key)
-        impl = wired > 0
-        n_impl += impl
-        name = f"{BOLD}{label}{RESET}" if impl else f"{DIM}{label}{RESET}"
-        steps_cell = (f"{GREEN}{wired}{RESET}{DIM}/{total} wired{RESET}" if impl
-                      else (f"{DIM}{total} manual{RESET}" if total else f"{DIM}—{RESET}"))
+        name = f"{BOLD}{label}{RESET}" if wired > 0 else f"{DIM}{label}{RESET}"
+        steps_cell = str(total) if total else "—"
         pr = ", ".join(str(p) for p in sorted(ports)[:5]) + ("…" if len(ports) > 5 else "")
         rows.append([str(i), name, _cell(pr, 20), steps_cell])
     print(_box_table(["#", "SERVICE", "PORTS", "STEPS"], rows, aligns=["r", "l", "l", "l"]))
-    print(f"  {DIM}{n_impl}/{len(_EXPLOIT_SERVICES)} services wired · pick a number to see its steps{RESET}")
     return list(_EXPLOIT_SERVICES)
 
 
@@ -13602,19 +13597,16 @@ def _render_service_steps(key: str, label: str) -> None:
     green ● when it's wired to a tool, dim with ○ when it's a manual step; wired steps show what
     runs behind them."""
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
-    wired, total = _service_wired_count(key)
-    print(f"\n{BOLD}{label} — checklist{RESET}  {DIM}({wired}/{total} steps wired){RESET}")
+    print(f"\n{BOLD}{label} — checklist{RESET}")
     print()
     for i, step in enumerate(steps, 1):
         desc, tool_key = _step_parts(step)
         has_tool = bool(tool_key and tool_key in _STEP_TOOLS)
-        mark = f"{GREEN}●{RESET}" if has_tool else f"{DIM}○{RESET}"
+        mark = f"●" if has_tool else f"{DIM}○{RESET}"
         text = f"{BOLD}{desc}{RESET}" if has_tool else f"{DIM}{desc}{RESET}"
         print(f"  {CYAN}{i:>2}{RESET} {mark} {text}")
         if has_tool:
             print(f"        {DIM}→ {_step_run_line(tool_key)}{RESET}")
-    if not wired:
-        print(f"\n  {DIM}no automation yet — these are manual methodology steps{RESET}")
 
 
 def _services_catalog_view() -> None:
