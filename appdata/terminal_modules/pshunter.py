@@ -2337,6 +2337,19 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL" if admin else "HIGH",
                 "summary": f"MSSQL creds: {shown}"[:140]}
 
+    # 2br) ssh-banner: libssh auth bypass (critical) → else version info
+    if sid == "ssh-banner":
+        vulns = re.findall(r"^✗ VULN (.+)$", output, re.M)
+        if vulns:
+            vcve = ",".join(sorted(set(re.findall(r"CVE-\d{4}-\d{3,7}", " ".join(vulns))))) or None
+            return {"state": "VULNERABLE", "cve": vcve, "risk": "CRITICAL",
+                    "summary": f"SSH: {vulns[0]}"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"SSH: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bm) mssql-banner: unauthenticated version disclosure (info)
     if sid == "mssql-banner":
         mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
@@ -3584,7 +3597,7 @@ _EXPLOIT_STEPS = {
         "Manual steps & further research",
     ],
     "ssh": [
-        "Banner → exact version; searchsploit (libssh CVE-2018-10933 auth bypass, older OpenSSH)",
+        ("Banner + KEXINIT algos → searchsploit; libssh / Terrapin / user-enum flags", "ssh-banner"),
         "Enumerate valid users (OpenSSH < 7.7 CVE-2018-15473) & list supported auth methods",
         "Reused / known creds & private keys found elsewhere; targeted spray (lockout-aware)",
         "Crack an encrypted private key you recover (ssh2john → hashcat)",
@@ -13712,6 +13725,148 @@ def _tool_mssql_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ SSH (22 / 2222) ══ the version banner and the KEXINIT algorithm lists are exchanged in the
+# clear before auth, so the fingerprint is pure stdlib; auth / shell come later (ssh CLI / netexec).
+def _ssh_namelists(payload: bytes) -> list:
+    """Parse the sequence of SSH name-lists out of a KEXINIT payload (after msg byte + 16B cookie)."""
+    import struct
+    p = payload[17:]
+    out = []
+    for _ in range(10):
+        if len(p) < 4:
+            break
+        ln = struct.unpack(">I", p[:4])[0]
+        out.append(p[4:4 + ln].decode("latin-1", "replace"))
+        p = p[4 + ln:]
+    return out
+
+
+def _ssh_probe(ip: str, port: int, timeout: float = 8.0) -> dict:
+    """Read the SSH banner and (best-effort) the server KEXINIT. Returns {banner, kex, hostkeys,
+    ciphers} — algorithm fields empty if the KEXINIT couldn't be parsed. Raises on no banner."""
+    import socket
+    import struct
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no SSH on {ip}:{port} ({exc})")
+        buf = b""
+        while b"\n" not in buf and len(buf) < 2048:
+            try:
+                chunk = s.recv(512)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        nl = buf.find(b"\n")
+        if nl < 0 or b"SSH-" not in buf:
+            raise RuntimeError(f"{ip}:{port} — no SSH banner (not SSH?)")
+        banner = buf[:nl].rstrip(b"\r").decode("latin-1", "replace")
+        rest = buf[nl + 1:]
+        try:
+            s.sendall(b"SSH-2.0-pshunter\r\n")
+            for _ in range(4):
+                if len(rest) >= 6:
+                    plen = struct.unpack(">I", rest[:4])[0]
+                    if 6 <= plen <= 35000 and len(rest) >= 4 + plen:
+                        break
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                rest += chunk
+        except OSError:
+            pass
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    info = {"banner": banner, "kex": "", "hostkeys": "", "ciphers": ""}
+    try:
+        plen = struct.unpack(">I", rest[:4])[0]
+        padlen = rest[4]
+        payload = rest[5:5 + plen - padlen - 1]
+        if payload and payload[0] == 20:                     # SSH_MSG_KEXINIT
+            names = _ssh_namelists(payload)
+            if len(names) >= 4:
+                info["kex"], info["hostkeys"] = names[0], names[1]
+                info["ciphers"] = names[3]                    # encryption server→client
+    except (struct.error, IndexError):
+        pass
+    return info
+
+
+def _tool_ssh_banner(ip: str, port: int, proto: str) -> str:
+    """SSH step 1 tool: read the cleartext banner (exact product/version) and the server KEXINIT
+    (host-key / KEX / cipher algorithms) — pure stdlib, no auth. Records the service, runs
+    searchsploit, and flags libssh auth-bypass (CVE-2018-10933), Terrapin prefix-truncation
+    (CVE-2023-48795), OpenSSH user-enum (<7.7, CVE-2018-15473) and weak algorithms. A host that
+    isn't SSH raises. Authorised targets only."""
+    info = _ssh_probe(ip, port)
+    banner = info["banner"]
+    m = re.search(r"SSH-\d+\.\d+-([A-Za-z]+)[_-]?([\d][\w.]*)?", banner)
+    product = m.group(1) if m else None
+    version = m.group(2) if (m and m.group(2)) else None
+    prod_map = {"OpenSSH": "OpenSSH", "dropbear": "Dropbear", "Dropbear": "Dropbear",
+                "libssh": "libssh"}
+    product = prod_map.get(product, product) if product else None
+    if product and version:
+        save_services(ip, [{"port": port, "proto": proto, "name": "ssh",
+                            "product": product, "version": version}])
+
+    lines = [f"[*] Banner: {banner}"]
+    if product:
+        lines.append(f"[*] Service: {product}{(' ' + version) if version else ''}")
+    if info["hostkeys"]:
+        lines.append(f"[*] host keys: {info['hostkeys'][:80]}")
+
+    # libssh auth bypass (CVE-2018-10933): server-side libssh 0.6.x–0.8.3
+    if product == "libssh" and version and re.match(r"0\.(6\.|7\.|8\.[0-3])", version):
+        lines.append("✗ VULN libssh auth bypass — CVE-2018-10933 (send SSH2_MSG_USERAUTH_SUCCESS)")
+    # OpenSSH username enumeration (< 7.7)
+    if product == "OpenSSH" and version:
+        vm = re.match(r"(\d+)\.(\d+)", version)
+        if vm and (int(vm.group(1)), int(vm.group(2))) < (7, 7):
+            lines.append("· OpenSSH < 7.7 → username enumeration (CVE-2018-15473) — see ssh-next")
+    # Terrapin (CVE-2023-48795): vulnerable cipher + no strict-kex
+    if info["kex"] and info["ciphers"]:
+        strict = "kex-strict-s-v00@openssh.com" in info["kex"]
+        vuln_cipher = ("chacha20-poly1305@openssh.com" in info["ciphers"]
+                       or any(c.strip().endswith("-cbc") for c in info["ciphers"].split(",")))
+        if vuln_cipher and not strict:
+            lines.append("· Terrapin (CVE-2023-48795) — prefix truncation possible (no strict-kex + "
+                         "chacha20/CBC-EtM); low severity, note the downgrade risk")
+    if info["hostkeys"] and any(w in info["hostkeys"] for w in ("ssh-rsa", "ssh-dss")):
+        lines.append("· weak host-key algo offered (ssh-rsa SHA-1 / ssh-dss)")
+
+    ss = shutil.which("searchsploit")
+    if ss and product and version:
+        proc = subprocess.run([ss, "-j", "-s", "-t", product, version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 8:
+                break
+    elif not ss and product:
+        lines.append("· searchsploit not installed — check Exploit-DB for the version manually")
+    lines.append("· next: reused/known creds & recovered keys (ssh-creds r2)")
+    return f"SSH banner — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13869,6 +14024,7 @@ _STEP_TOOLS = {
     "mssql-shell": ("MSSQL foothold → xp_cmdshell PowerShell reverse shell (spawned)", _tool_mssql_shell),
     "mssql-loot": ("DBs, linked servers, sql_login hashes, OPENROWSET file-read (netexec -q)", _tool_mssql_loot),
     "mssql-next": ("manual MSSQL steps (context-aware, reference only)", _tool_mssql_next),
+    "ssh-banner": ("SSH banner + KEXINIT algos → searchsploit; libssh/Terrapin flags (stdlib)", _tool_ssh_banner),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13963,6 +14119,7 @@ _STEP_TOOL_RUNS = {
     "mssql-shell":      ("netexec + nc listener", None),
     "mssql-loot":       ("netexec mssql -q", None),
     "mssql-next":       ("reference · no scan", None),
+    "ssh-banner":       ("Python (stdlib) + searchsploit", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
