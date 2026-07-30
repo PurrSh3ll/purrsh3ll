@@ -3615,14 +3615,8 @@ _EXPLOIT_STEPS = {
     ],
     "ssh": [
         ("Banner + KEXINIT algos → searchsploit; libssh / Terrapin / user-enum flags", "ssh-banner"),
-        "Enumerate valid users (OpenSSH < 7.7 CVE-2018-15473) & list supported auth methods",
         ("Reused / known creds & recovered keys; targeted spray (fail2ban-aware)", "ssh-creds"),
-        "Crack an encrypted private key you recover (ssh2john → hashcat)",
-        "After access: pivot — local/remote/dynamic port-forward & tunnelling into internal nets",
-        "Restricted shell (rbash / lshell) → escape (ssh -t, command tricks) to a full shell",
-        "authorized_keys / SSH-agent abuse for lateral movement & persistence",
-        "Weak host key algorithms / Terrapin CVE-2023-48795 — note downgrade risk",
-        "Manual steps & further research",
+        ("Manual steps & further research", "ssh-next"),
     ],
     "squid": [
         "Use it as a proxy to reach internal hosts & ports (proxychains)",
@@ -14020,6 +14014,100 @@ def _tool_ssh_shell(ip: str, port: int, proto: str) -> str:
     return f"ssh-shell: shell → {user}@{ip}:{port}"
 
 
+# ── SSH step 3: manual steps & further research (reference only, context-aware) ──
+def _tool_ssh_next(ip: str, port: int, proto: str) -> str:
+    """SSH step-3 tool: NOT a scan — a read-only checklist of where to go on SSH, with this host's
+    own findings substituted in (a proven cred to spawn, user-enum & spray, private-key use/crack,
+    pivoting & restricted-shell escape, phase CVEs, and unconfirmed ⚠). Pure DB synthesis."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    banner = by_sid.get("ssh-banner", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", banner, re.M)
+    ver = mv.group(1).strip() if mv else ""
+    creds = _gather_ssh_creds(ip)
+    userenum = "username enumeration" in banner
+    terrapin = "Terrapin" in banner
+    libssh = "libssh auth bypass" in banner
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((445, "SMB"), (21, "FTP"), (3306, "MySQL"), (5985, "WinRM"))
+                 if (pnum, "tcp") in oports]
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = f"{DIM}version: {ver or 'unknown'}  ·  creds: {len(creds)}  ·  foothold: {'yes' if creds else 'no'}"
+    L = [f"SSH {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Get a shell{RESET}")
+    if creds:
+        L.append(f"  {CYAN}ready{RESET} {DIM}({len(creds)} cred(s)) → Privilege Escalation phase → spawn-shell (r1){RESET}")
+    elif libssh:
+        L.append(f"  {CYAN}libssh auth bypass{RESET} {DIM}(CVE-2018-10933) → any user, no password "
+                 f"(msf auxiliary/scanner/ssh/libssh_auth_bypass){RESET}")
+    else:
+        L.append(f"  {DIM}no cred yet — spray (B), use a recovered key (C), or crack one{RESET}")
+
+    L.append(f"\n{BOLD}B. Users & spray{RESET}")
+    if userenum:
+        L.append(f"  {CYAN}OpenSSH < 7.7{RESET} {DIM}→ enumerate users (CVE-2018-15473): "
+                 f"python3 sshUserEnum.py / msf ssh_enumusers{RESET}")
+    L.append(f"  {DIM}build a user list (finger/SMB/web) → targeted spray (ssh-creds r2); "
+             f"mind fail2ban (slow, few passwords){RESET}")
+
+    L.append(f"\n{BOLD}C. Private keys{RESET}")
+    L.append(f"  {DIM}recovered a key? {RESET}{CYAN}chmod 600 key; ssh -i key user@{ip} -p {port}{RESET}")
+    L.append(f"  {DIM}encrypted key → ssh2john key > h; hashcat -m 22921 h rockyou · agent/authorized_keys "
+             f"abuse (add your key for persistence & lateral movement){RESET}")
+
+    L.append(f"\n{BOLD}D. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    elif terrapin:
+        L.append(f"  {DIM}Terrapin (CVE-2023-48795) offered — low severity; note the downgrade risk{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit '{ver or 'OpenSSH <version>'}'{RESET}")
+
+    L.append(f"\n{BOLD}E. After access{RESET}")
+    L.append(f"  {DIM}pivot/tunnel: ssh -L / -R / -D (+ proxychains), or ligolo-ng / chisel into internal nets{RESET}")
+    L.append(f"  {DIM}restricted shell (rbash/lshell)? ssh -t user@{ip} 'bash --noprofile' · "
+             f"'vi'→:!sh · sudo -l → GTFOBins for root{RESET}")
+
+    L.append(f"\n{BOLD}F. Reuse creds elsewhere{RESET}")
+    tgt = ", ".join(reuse_svc) if reuse_svc else "SMB / FTP / DBs / web"
+    L.append(f"  {DIM}reuse any working SSH password on {tgt} (password reuse across the estate){RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}after a foothold: sudo -l, SUID, cron, kernel → privesc (phase 6); "
+             f"remove any authorized_keys entry you added when done{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -14183,6 +14271,7 @@ _STEP_TOOLS = {
     "ssh-banner": ("SSH banner + KEXINIT algos → searchsploit; libssh/Terrapin flags (stdlib)", _tool_ssh_banner),
     "ssh-creds": ("reused/default SSH creds (netexec ssh / sshpass, fail2ban-aware)", _tool_ssh_creds),
     "ssh-shell": ("SSH foothold → direct interactive session (spawned)", _tool_ssh_shell),
+    "ssh-next": ("manual SSH steps (context-aware, reference only)", _tool_ssh_next),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -14280,6 +14369,7 @@ _STEP_TOOL_RUNS = {
     "ssh-banner":       ("Python (stdlib) + searchsploit", None),
     "ssh-creds":        ("netexec ssh / sshpass", f"{_mins(_SSHCREDS_DEADLINE)} min"),
     "ssh-shell":        ("ssh / sshpass", None),
+    "ssh-next":         ("reference · no scan", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -14359,7 +14449,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -14368,7 +14458,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "mssql-next", "ssh-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
