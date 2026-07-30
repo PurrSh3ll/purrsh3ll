@@ -3114,7 +3114,7 @@ _EXPLOIT_STEPS = {
         # ── land a shell & foothold ──
         ("Spawn & upgrade an interactive shell", "ftp-foothold"),
         # ── manual steps, tailored to what this host exposed ──
-        "Manual steps & further research",
+        ("Manual steps & further research", "ftp-next"),
     ],
     "tftp": [
         "Confirm UDP/69 (no auth)",
@@ -11176,6 +11176,114 @@ def _tool_ftp_foothold(ip: str, port: int, proto: str) -> str:
     return _ftp_fh_sshkey(ip, port)
 
 
+# ── FTP step 8: manual steps & further research (reference only, context-aware) ─
+def _tool_ftp_next(ip: str, port: int, proto: str) -> str:
+    """FTP step-8 tool: NOT a scan — a read-only checklist of manual FTP escalations for when the
+    automated steps came up short, with this host's own findings substituted in (viable foothold
+    paths, writable dirs, anon loot, proven creds to reuse, internal ports via bounce, phase CVEs,
+    and unconfirmed ⚠ hits to verify). Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    banner, anon, write = by_sid.get("ftp-banner", ""), by_sid.get("ftp-anon", ""), by_sid.get("ftp-write", "")
+    web, bounce = by_sid.get("ftp-webshell", ""), by_sid.get("ftp-bounce", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", banner, re.M)
+    ver = mv.group(1).strip() if mv else ""
+    anon_ok = "anonymous login allowed" in anon
+    writable = list(dict.fromkeys(re.findall(r"^✗ WRITABLE (\S+)", write, re.M)))
+    served = list(dict.fromkeys(re.findall(r"^✗ SERVED (.+)$", web, re.M)))
+    rce = "✗ RCE" in web
+    creds = _gather_ftp_creds(ip)
+    loot = re.findall(r"^! (.+)$", anon, re.M)
+    internal = re.findall(r"^✗ BOUNCE 127\.0\.0\.1:(\d+) open\s+\(([^)]+)\)", bounce, re.M)
+    ssh_open = any(p == 22 and pr == "tcp" for p, pr, _s in fetch_ports(ip))
+    methods = _ftp_foothold_methods(ip, port)
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            s = ln.strip()
+            if s.startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {s}")
+    warns = warns[:14]
+
+    sub = f"{DIM}version: {ver or 'unknown'}  ·  anon: {'yes' if anon_ok else 'no'}"
+    sub += f"  ·  proven creds: {len(creds)}"
+    if writable:
+        sub += f"  ·  writable dir(s): {len(writable)}"
+    L = [f"FTP {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Land a shell (if you haven't yet){RESET}")
+    if methods:
+        for _k, label in methods:
+            L.append(f"  {CYAN}ready{RESET} {DIM}→ {label}  ·  run ftp-foothold (r7){RESET}")
+    else:
+        L.append(f"  {DIM}no automated path yet — try:{RESET}")
+        L.append(f"  {DIM}ProFTPD 1.3.5 → SITE CPFR/CPTO (mod_copy, CVE-2015-3306) copy a payload into a web root{RESET}")
+        L.append(f"  {DIM}ProFTPD 1.3.3c / telnet IAC · exact banner → searchsploit '{ver or 'ftp'}'{RESET}")
+
+    L.append(f"\n{BOLD}B. Abuse a writable directory{RESET}")
+    if writable:
+        L.append(f"  {CYAN}writable:{RESET} {', '.join(writable[:6])}")
+        L.append(f"  {DIM}if web-served → drop a webshell (ftp-webshell r5) · {'served: ' + served[0] if served else 'map dir↔URL'}{RESET}")
+        L.append(f"  {DIM}~/.ssh/authorized_keys (if it's a home dir + SSH open){' — SSH is open' if ssh_open else ''}{RESET}")
+        L.append(f"  {DIM}cron.d / cron.hourly drop · .netrc / config poisoning · overwrite a served static file{RESET}")
+    else:
+        L.append(f"  {DIM}none proven writable — re-test with creds (ftp-write r3 after ftp-creds r4){RESET}")
+
+    L.append(f"\n{BOLD}C. Pivot through the server (FTP bounce){RESET}")
+    if internal:
+        shown = ", ".join(f"{p} {h}" for p, h in internal[:8])
+        L.append(f"  {CYAN}internal open:{RESET} {shown}")
+        L.append(f"  {DIM}bounce-scan other internal IPs the same way: PORT <internal-ip> (ftp-bounce r6){RESET}")
+    else:
+        L.append(f"  {DIM}no internal ports surfaced — retry ftp-bounce (r6), or tunnel once you have a shell{RESET}")
+
+    L.append(f"\n{BOLD}D. Reuse these creds elsewhere{RESET}")
+    if creds:
+        shown = ", ".join(dict.fromkeys(f"{u}:{p or '<blank>'}" for u, p in creds))[:120]
+        L.append(f"  {CYAN}{shown}{RESET} {DIM}→ spray on SSH / SMB / web-login / MSSQL / RDP (password reuse){RESET}")
+    else:
+        L.append(f"  {DIM}none proven yet — run ftp-creds (r4); then reuse any hit across other services{RESET}")
+
+    L.append(f"\n{BOLD}E. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit the exact banner: '{ver or 'ftp <version>'}'{RESET}")
+
+    L.append(f"\n{BOLD}F. Loot & data{RESET}")
+    if loot:
+        L.append(f"  {CYAN}interesting file(s):{RESET} {', '.join(l.strip() for l in loot[:6])}"
+                 + (f" {DIM}+{len(loot) - 6}{RESET}" if len(loot) > 6 else ""))
+    L.append(f"  {DIM}mirror the tree (wget -m ftp://…) · grep configs/backups/.git for creds & DB strings{RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}after proving creds, re-run ftp-write (r3) / ftp-webshell (r5) with authenticated access{RESET}")
+    L.append(f"  {DIM}{'RCE confirmed — jump to ftp-foothold (r7)' if rce else 'chain writable + web root for RCE (ftp-webshell r5)'}{RESET}")
+    return "\n".join(L)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11232,6 +11340,7 @@ _STEP_TOOLS = {
     "ftp-webshell": ("FTP-writable + web root → webshell RCE (stdlib, exec-verified)", _tool_ftp_webshell),
     "ftp-bounce": ("FTP-bounce (PORT) → scan internal 127.0.0.1 ports (stdlib)", _tool_ftp_bounce),
     "ftp-foothold": ("foothold → backdoor / web-RCE / ssh-key (interactive, pick)", _tool_ftp_foothold),
+    "ftp-next": ("manual FTP steps (context-aware, reference only)", _tool_ftp_next),
 }
 
 def _mins(seconds: int) -> str:
@@ -11303,6 +11412,7 @@ _STEP_TOOL_RUNS = {
     "ftp-webshell":     ("Python", f"{_mins(_FTPWEB_DEADLINE)} min"),
     "ftp-bounce":       ("Python", f"{_mins(_FTPBOUNCE_DEADLINE)} min"),
     "ftp-foothold":     ("Python + nc/ssh", None),
+    "ftp-next":         ("reference · no scan", None),
 }
 
 
@@ -11381,7 +11491,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -11390,7 +11500,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
