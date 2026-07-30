@@ -2279,6 +2279,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if ni else "MEDIUM",
                 "summary": summ[:140]}
 
+    # 2bc) tftp-write: anonymous WRQ accepted — payload-drop / config-overwrite surface
+    if sid == "tftp-write":
+        w = re.findall(r"^✗ WRITABLE (\S+)", output, re.M)
+        if not w:
+            return None
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                "summary": f"anonymous-writable TFTP (no DELETE): {w[0]}"[:140]}
+
     # 2bb) tftp-grab: creds/secrets pulled from world-readable device configs & boot files
     if sid == "tftp-grab":
         creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
@@ -3148,7 +3156,7 @@ _EXPLOIT_STEPS = {
     "tftp": [
         ("Confirm UDP/69 (no auth) + path-traversal read", "tftp-probe"),
         ("Sweep known filenames (configs/boot/backups) → grep creds & secrets", "tftp-grab"),
-        "Test PUT (arbitrary write) → overwrite a config or drop a payload",
+        ("Test write access (WRQ throwaway) — non-reversible, no DELETE", "tftp-write"),
     ],
     "nfs": [
         "List exports & allowed clients (showmount -e; nmap nfs-*)",
@@ -11542,6 +11550,96 @@ def _tool_tftp_grab(ip: str, port: int, proto: str) -> str:
     return f"TFTP grab — {ip}:{port}/udp\n\n" + "\n".join(lines)
 
 
+# ── TFTP step 3: test write access (WRQ) — non-reversible, TFTP has no DELETE ────
+def _tftp_write(ip: str, port: int, filename: str, data: bytes = b"", timeout: float = 4.0) -> tuple:
+    """Write a file over TFTP (octet) on a raw UDP socket. Returns ('ok',''), ('error','code:msg')
+    or ('timeout',''). Handles the ACK-0 handshake, the server TID, and 512-byte DATA/ACK blocks."""
+    import socket
+    import struct
+    wrq = struct.pack("!H", _TFTP_WRQ) + filename.encode("latin-1", "replace") + b"\x00octet\x00"
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(wrq, (ip, port))
+        tid = None
+        while True:                                          # await ACK 0 (server ready) or ERROR
+            try:
+                resp, addr = s.recvfrom(1024)
+            except socket.timeout:
+                return ("timeout", "")
+            if tid is None:
+                tid = addr
+            elif addr != tid:
+                continue
+            if len(resp) < 4:
+                continue
+            op = struct.unpack("!H", resp[:2])[0]
+            if op == _TFTP_ERROR:
+                code = struct.unpack("!H", resp[2:4])[0]
+                msg = resp[4:].split(b"\x00", 1)[0].decode("latin-1", "replace")
+                return ("error", f"{code}:{msg}")
+            if op == _TFTP_ACK:
+                break
+        blocks = [data[i:i + 512] for i in range(0, len(data), 512)] or [b""]
+        if data and len(data) % 512 == 0:
+            blocks.append(b"")                               # trailing empty block signals EOF
+        blk = 1
+        for chunk in blocks:
+            s.sendto(struct.pack("!HH", _TFTP_DATA, blk) + chunk, tid)
+            while True:                                      # await ACK for this block
+                try:
+                    resp, addr = s.recvfrom(1024)
+                except socket.timeout:
+                    return ("timeout", "")
+                if addr != tid:
+                    continue
+                op = struct.unpack("!H", resp[:2])[0]
+                if op == _TFTP_ERROR:
+                    code = struct.unpack("!H", resp[2:4])[0]
+                    msg = resp[4:].split(b"\x00", 1)[0].decode("latin-1", "replace")
+                    return ("error", f"{code}:{msg}")
+                if op == _TFTP_ACK and struct.unpack("!H", resp[2:4])[0] == blk:
+                    break
+            blk = (blk + 1) & 0xffff
+        return ("ok", "")
+    finally:
+        s.close()
+
+
+def _tool_tftp_write(ip: str, port: int, proto: str) -> str:
+    """TFTP step 3 tool: test anonymous write access by uploading a throwaway marker file (WRQ) and
+    reading it back (RRQ) to confirm. CAUTION — TFTP has no DELETE: the marker CANNOT be removed by
+    the protocol, so the tool blanks it to zero bytes and reports the exact name to clean up on the
+    server filesystem. A read-only server answers with an access-violation (reported, not fatal); a
+    silent host raises. Authorised targets only."""
+    import os
+    marker = f"~pshw_{os.urandom(4).hex()}"
+    token = f"pshunter-write-test-{os.urandom(4).hex()}".encode()
+    st, detail = _tftp_write(ip, port, marker, token)
+    if st == "timeout":
+        raise RuntimeError(f"{ip}:{port}/udp — no reply to WRQ (filtered / not a TFTP server)")
+    if st == "error":
+        code, _, msg = detail.partition(":")
+        return (f"TFTP write — {ip}:{port}/udp\n\n"
+                f"· write denied (read-only TFTP) — ERROR {code} '{msg}'\n"
+                f"· no anonymous write surface here; loot stays read-only (see tftp-grab)")
+
+    rst, payload = _tftp_read(ip, port, marker, timeout=3.0)
+    verified = rst == "data" and payload == token
+    lines = []
+    if verified:
+        lines.append(f"✗ WRITABLE {marker}  (anonymous WRQ accepted & read back)")
+        _tftp_write(ip, port, marker, b"")                   # blank it — best-effort, can't delete
+        lines.append(f"{YELLOW}⚠ TFTP has no DELETE — file left on server (blanked to 0 bytes){RESET}")
+        lines.append(f"  {DIM}clean up manually on the box: rm <tftp-root>/{marker}{RESET}")
+        lines.append(f"  {DIM}abuse: overwrite a served config / drop authorized_keys / webshell if the "
+                     f"root maps somewhere useful — see tftp-next{RESET}")
+    else:
+        lines.append(f"· WRQ accepted but read-back failed ({rst}) — write may be blind/quarantined")
+        lines.append(f"  {DIM}left behind (no DELETE): {marker} — verify & clean up manually{RESET}")
+    return f"TFTP write — {ip}:{port}/udp\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11601,6 +11699,7 @@ _STEP_TOOLS = {
     "ftp-next": ("manual FTP steps (context-aware, reference only)", _tool_ftp_next),
     "tftp-probe": ("confirm UDP/69 + path-traversal read (raw UDP, content-verified)", _tool_tftp_probe),
     "tftp-grab": ("sweep known filenames → configs/creds/secrets (raw UDP, in-memory grep)", _tool_tftp_grab),
+    "tftp-write": ("test anonymous write (WRQ throwaway) — non-reversible, no DELETE", _tool_tftp_write),
 }
 
 def _mins(seconds: int) -> str:
@@ -11675,6 +11774,7 @@ _STEP_TOOL_RUNS = {
     "ftp-next":         ("reference · no scan", None),
     "tftp-probe":       ("Python (raw UDP)", None),
     "tftp-grab":        ("Python (raw UDP)", f"{_mins(_TFTPGRAB_DEADLINE)} min"),
+    "tftp-write":       ("Python (raw UDP)", None),
 }
 
 
@@ -11852,6 +11952,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{DIM}   uploads a throwaway {BOLD}~pshw_*.txt{RESET}{DIM} to each dir, confirms the "
               f"STOR, then deletes it (reversible) — finds the webshell/payload-drop surface · "
               f"{RESET}{YELLOW}authorised targets only{RESET}")
+    if tool_key == "tftp-write":                  # WRITES a throwaway marker — NOT reversible (no DELETE)
+        print(f"{YELLOW}   ⚠ WRITES to the target{RESET}{DIM} — uploads a throwaway {BOLD}~pshw_*{RESET}"
+              f"{DIM} via WRQ, reads it back, then blanks it to 0 bytes. "
+              f"{RESET}{YELLOW}TFTP has no DELETE — the file stays; clean up manually{RESET}"
+              f"{DIM} · authorised targets only{RESET}")
     if tool_key == "winrm-recon":                 # read-only post-access recon over the channel
         print(f"{DIM}   read-only recon over WinRM (whoami /priv, ipconfig) — privesc path "
               f"(SeImpersonate → potato) + pivot subnets · deeper enum stays in the shell (r3){RESET}")
