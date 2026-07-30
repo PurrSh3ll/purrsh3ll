@@ -132,6 +132,7 @@ def print_menu() -> None:
     print(f"  {DIM}actions{RESET}")
     print(f"  {CYAN}[s]{RESET} {BOLD}status{RESET}")
     print(f"  {CYAN}[d]{RESET} {BOLD}database{RESET}")
+    print(f"  {CYAN}[c]{RESET} {BOLD}services{RESET} {DIM}— supported services & their steps{RESET}")
     print(f"  {CYAN}[n]{RESET} {BOLD}new session{RESET}")
     if not _is_root():
         print(f"  {CYAN}[u]{RESET} {BOLD}upgrade{RESET}")
@@ -168,6 +169,8 @@ def print_help() -> None:
           f"{BOLD}r <n>{RESET} remove, {BOLD}c{RESET} wipe all")
     print(f"  {DIM}           inside a host: {BOLD}[f]{RESET}{DIM} findings, {BOLD}[p]{RESET}{DIM} progress "
           f"(per-phase tracker — which phases ran and what's pending; a number runs one){RESET}")
+    print(f"  {BOLD}services{RESET}   catalog of supported services in exploitation order (bold = wired "
+          f"tools implemented); type a number to see that service's steps")
     print(f"  {BOLD}new session{RESET}  wipe the whole database (hosts + history) for a fresh start")
     print(f"  {BOLD}upgrade{RESET}      re-run under sudo for root (SYN/UDP scans); progress is kept")
     print()
@@ -13564,6 +13567,77 @@ def _database_view() -> None:
               show_database, _handle)
 
 
+# ── supported-services catalog (reference: what the app covers, and each service's steps) ──
+def _service_wired_count(key: str) -> tuple:
+    """(#wired-steps, #total-steps) for a service class — wired = a step with a tool in _STEP_TOOLS."""
+    steps = _EXPLOIT_STEPS.get(key) or []
+    wired = sum(1 for s in steps if _step_parts(s)[1] in _STEP_TOOLS)
+    return wired, len(steps)
+
+
+def _render_services_catalog() -> list:
+    """Numbered list of every service the app knows, in exploitation-priority (implementation)
+    order. Services with at least one wired tool are bold (implemented); the rest are dim
+    (checklist only, no automation yet). Returns the ordered services so a number can pick one."""
+    print(f"\n{BOLD}supported services{RESET}  "
+          f"{DIM}exploitation order · {BOLD}bold{RESET}{DIM} = wired tools implemented · "
+          f"dim = checklist only{RESET}")
+    rows, n_impl = [], 0
+    for i, (key, label, ports, _tokens) in enumerate(_EXPLOIT_SERVICES, 1):
+        wired, total = _service_wired_count(key)
+        impl = wired > 0
+        n_impl += impl
+        name = f"{BOLD}{label}{RESET}" if impl else f"{DIM}{label}{RESET}"
+        steps_cell = (f"{GREEN}{wired}{RESET}{DIM}/{total} wired{RESET}" if impl
+                      else (f"{DIM}{total} manual{RESET}" if total else f"{DIM}—{RESET}"))
+        pr = ", ".join(str(p) for p in sorted(ports)[:5]) + ("…" if len(ports) > 5 else "")
+        rows.append([str(i), name, _cell(pr, 20), steps_cell])
+    print(_box_table(["#", "SERVICE", "PORTS", "STEPS"], rows, aligns=["r", "l", "l", "l"]))
+    print(f"  {DIM}{n_impl}/{len(_EXPLOIT_SERVICES)} services wired · pick a number to see its steps{RESET}")
+    return list(_EXPLOIT_SERVICES)
+
+
+def _render_service_steps(key: str, label: str) -> None:
+    """One service's checklist as a static reference (no host / no status): each step, bold with a
+    green ● when it's wired to a tool, dim with ○ when it's a manual step; wired steps show what
+    runs behind them."""
+    steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
+    wired, total = _service_wired_count(key)
+    print(f"\n{BOLD}{label} — checklist{RESET}  {DIM}({wired}/{total} steps wired){RESET}")
+    print()
+    for i, step in enumerate(steps, 1):
+        desc, tool_key = _step_parts(step)
+        has_tool = bool(tool_key and tool_key in _STEP_TOOLS)
+        mark = f"{GREEN}●{RESET}" if has_tool else f"{DIM}○{RESET}"
+        text = f"{BOLD}{desc}{RESET}" if has_tool else f"{DIM}{desc}{RESET}"
+        print(f"  {CYAN}{i:>2}{RESET} {mark} {text}")
+        if has_tool:
+            print(f"        {DIM}→ {_step_run_line(tool_key)}{RESET}")
+    if not wired:
+        print(f"\n  {DIM}no automation yet — these are manual methodology steps{RESET}")
+
+
+def _services_catalog_view() -> None:
+    """Catalog screen: list supported services (implemented ones bold); a number opens that
+    service's steps as a read-only reference."""
+    def _handle(services, v):
+        if v == "":
+            return "refresh"
+        if v.isdigit():
+            n = int(v)
+            if 1 <= n <= len(services):
+                key, label = services[n - 1][0], services[n - 1][1]
+                _view(lambda: _render_service_steps(key, label), f"services/{key}", "[b] back")
+                return "refresh"
+            print(f"{RED}✗ no service {n}{RESET}")
+            return "stay"
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> · enter · b{RESET}")
+        return "stay"
+
+    _run_view("services", "[Enter] refresh · <n> view steps · [b] back · [m] menu",
+              _render_services_catalog, _handle)
+
+
 # ── main loop ─────────────────────────────────────────────────────────────────
 def main() -> int:
     if any(a in ("-h", "--help") for a in sys.argv[1:]):
@@ -13616,6 +13690,8 @@ def main() -> int:
                         _status_view()
                     elif choice in ("d", "database"):
                         _database_view()
+                    elif choice in ("c", "services"):
+                        _services_catalog_view()
                     elif choice in ("n", "new"):
                         new_session()
                     elif choice in ("u", "upgrade") and not _is_root():
@@ -13623,7 +13699,7 @@ def main() -> int:
                     elif choice in _MENU_WORDS:
                         pass                  # already at the menu → just redraw it
                     else:
-                        print(f"{RED}✗ pick 0-8, s, d, n, h or /exit{RESET}")
+                        print(f"{RED}✗ pick 0-8, s, d, c, n, h or /exit{RESET}")
                         continue              # invalid → bare re-prompt, menu not reprinted
                 except _ToMenu:               # m/menu typed inside a sub-view → back here
                     pass
