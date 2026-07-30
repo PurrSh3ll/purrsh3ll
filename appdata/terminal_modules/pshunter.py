@@ -3104,7 +3104,7 @@ _EXPLOIT_STEPS = {
         # ── land a shell & foothold ──
         ("File upload → webshell", "upload-shell"),
         ("Admin panel → RCE", "admin-rce"),
-        ("Spawn & upgrade a reverse shell", "foothold"),
+        # ── shell spawn moved to the Privilege Escalation phase (one place, all services) ──
         # ── manual steps, tailored to what this host exposed ──
         ("Manual steps & further research", "next-steps"),
     ],
@@ -3126,8 +3126,7 @@ _EXPLOIT_STEPS = {
         ("Valid creds / hash → shell", "smb-exec"),
         ("Dump SAM / LSA / LSASS; DCSync", "smb-dump"),
         ("Writable share → hash capture / payload", "smb-writable"),
-        # ── land a shell & foothold ──
-        ("Spawn & upgrade an interactive shell", "smb-foothold"),
+        # ── shell spawn moved to the Privilege Escalation phase (one place, all services) ──
         # ── manual steps, tailored to what this host exposed ──
         ("Manual steps & further research", "smb-next"),
     ],
@@ -3136,8 +3135,7 @@ _EXPLOIT_STEPS = {
         ("Validate & spray creds and NTLM hashes against known users (watch lockout)", "winrm-spray"),
         ("Needs 'Remote Management Users' / admin membership — note who has access", "winrm-access"),
         ("Via the shell: enumerate, upload tooling, run commands; reuse creds to pivot", "winrm-recon"),
-        # ── land a shell & foothold ──
-        ("Valid creds / hash → spawn & upgrade an interactive shell (evil-winrm, PtH)", "winrm-shell"),
+        # ── shell spawn moved to the Privilege Escalation phase (one place, all services) ──
         # ── manual steps, tailored to what this host exposed ──
         ("Manual steps & further research", "winrm-next"),
     ],
@@ -3148,8 +3146,7 @@ _EXPLOIT_STEPS = {
         ("Try known / default / reused creds; targeted brute only if lockout allows", "ftp-creds"),
         ("If FTP root maps to a web root or is writable → drop a webshell / poison a served file", "ftp-webshell"),
         ("FTP-bounce (PORT) to reach & scan internal hosts through the server", "ftp-bounce"),
-        # ── land a shell & foothold ──
-        ("Spawn & upgrade an interactive shell", "ftp-foothold"),
+        # ── shell spawn moved to the Privilege Escalation phase (one place, all services) ──
         # ── manual steps, tailored to what this host exposed ──
         ("Manual steps & further research", "ftp-next"),
     ],
@@ -8569,6 +8566,7 @@ def _tool_next_steps(ip: str, port: int, proto: str) -> str:
     L = [f"{base} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
          f"{DIM}targets: {base}" + (f"  ·  vhosts: {', '.join(vhosts)}" if vhosts else "") + RESET]
 
+    L.append(f"{DIM}▶ shell? → Privilege Escalation phase, step 1 (spawn-shell) — one place, all services{RESET}")
     L.append(f"\n{BOLD}A. Deeper enumeration (bigger lists / longer / recursive){RESET}")
     L.append(f"  {DIM}feroxbuster -u {base} -w /usr/share/seclists/Discovery/Web-Content/"
              f"directory-list-2.3-big.txt -x php,txt,bak,zip -r{RESET}")
@@ -10012,6 +10010,7 @@ def _tool_smb_next(ip: str, port: int, proto: str) -> str:
     L = [f"SMB {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}",
          f"{DIM}domain: {dc}  ·  harvested creds: {ncreds}  ·  admin footholds: {nadmin}{RESET}"]
 
+    L.append(f"{DIM}▶ shell? → Privilege Escalation phase, step 1 (spawn-shell) — one place, all services{RESET}")
     L.append(f"\n{BOLD}A. Deeper enumeration{RESET}")
     L.append(f"  {DIM}enum4linux-ng -A {ip}   ·   nxc smb {ip} -u '' -p '' --rid-brute 20000{RESET}")
     L.append(f"  {DIM}LDAP: nxc ldap {dc} {ucred} --bloodhound -c all -ns {ip}   ·   "
@@ -10437,6 +10436,7 @@ def _tool_winrm_next(ip: str, port: int, proto: str) -> str:
          f"{DIM}domain: {dc}  ·  WinRM-capable creds: {nwinrm}"
          + (f"  ·  pivot: {subnets}" if subnets else "") + RESET]
 
+    L.append(f"{DIM}▶ no shell yet? → Privilege Escalation phase, step 1 (spawn-shell){RESET}")
     L.append(f"\n{BOLD}A. Privilege escalation (run in the shell){RESET}")
     if hot:
         if any(p in ("SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege") for p in hot):
@@ -11261,10 +11261,11 @@ def _tool_ftp_next(ip: str, port: int, proto: str) -> str:
         sub += f"  ·  writable dir(s): {len(writable)}"
     L = [f"FTP {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
 
+    L.append(f"{DIM}▶ shell? → Privilege Escalation phase, step 1 (spawn-shell) — one place, all services{RESET}")
     L.append(f"\n{BOLD}A. Land a shell (if you haven't yet){RESET}")
     if methods:
         for _k, label in methods:
-            L.append(f"  {CYAN}ready{RESET} {DIM}→ {label}  ·  run ftp-foothold (r7){RESET}")
+            L.append(f"  {CYAN}ready{RESET} {DIM}→ {label}  ·  Privilege Escalation phase → spawn-shell (r1){RESET}")
     else:
         L.append(f"  {DIM}no automated path yet — try:{RESET}")
         L.append(f"  {DIM}ProFTPD 1.3.5 → SITE CPFR/CPTO (mod_copy, CVE-2015-3306) copy a payload into a web root{RESET}")
@@ -11317,7 +11318,7 @@ def _tool_ftp_next(ip: str, port: int, proto: str) -> str:
 
     L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
     L.append(f"  {DIM}after proving creds, re-run ftp-write (r3) / ftp-webshell (r5) with authenticated access{RESET}")
-    L.append(f"  {DIM}{'RCE confirmed — jump to ftp-foothold (r7)' if rce else 'chain writable + web root for RCE (ftp-webshell r5)'}{RESET}")
+    L.append(f"  {DIM}{'RCE confirmed — Privilege Escalation phase → spawn-shell (r1)' if rce else 'chain writable + web root for RCE (ftp-webshell r5)'}{RESET}")
     return "\n".join(L)
 
 
@@ -11754,6 +11755,71 @@ def _tool_tftp_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
+# service surfaced. A router: it detects which of this host's services have a viable path to a
+# shell (from findings already in the DB) and dispatches to that service's existing foothold tool
+# (each keeps its own method sub-picker). No re-implementation — pure aggregation.
+def _spawn_shell_paths(ip: str) -> list:
+    """Viable foothold paths for this host, derived from earlier findings.
+    Returns [(service_label, detail, tool_key, port, proto)]."""
+    paths = []
+    targets = _exploit_targets(ip)
+    by_key = {}
+    for port, proto, _label, key, _ver, _sig in targets:
+        by_key.setdefault(key, []).append((port, proto))
+
+    if by_key.get("smb") and any(h == ip for h, _u, _s in _gather_smb_admin()):
+        p, pr = by_key["smb"][0]
+        paths.append(("SMB", "admin session — psexec / wmiexec / smbexec / evil-winrm",
+                      "smb-foothold", p, pr))
+    if by_key.get("winrm") and any(h == ip for h, _u, _s in _gather_winrm_creds()):
+        p, pr = by_key["winrm"][0]
+        paths.append(("WinRM", "evil-winrm shell (a spray-proven cred)", "winrm-shell", p, pr))
+    for p, pr in by_key.get("ftp", []):
+        methods = _ftp_foothold_methods(ip, p)
+        if methods:
+            paths.append(("FTP", " / ".join(k for k, _l in methods), "ftp-foothold", p, pr))
+    for p, pr in by_key.get("http", []):
+        if _parse_cmdi_vectors(ip, p, pr):
+            paths.append(("HTTP", "reverse shell over a confirmed cmdi RCE channel",
+                          "foothold", p, pr))
+    return paths
+
+
+def _tool_spawn_shell(ip: str, port: int, proto: str) -> str:
+    """Privesc step 1 tool (INTERACTIVE): the single place to spawn a shell. Aggregates every
+    viable foothold path this host's exploited services surfaced (SMB admin, WinRM, FTP, HTTP RCE),
+    lets the operator pick one, and hands off to that service's existing foothold tool (which then
+    picks the exact method). The chosen result is stored under the originating service so it shows
+    up in that host's findings exactly as before. Authorised targets only."""
+    paths = _spawn_shell_paths(ip)
+    if not paths:
+        print(f"\n{YELLOW}no viable foothold path yet{RESET} — unlock one first:\n"
+              f"  {DIM}· SMB   → smb-spray / smb-exec (confirm a local admin)\n"
+              f"  · WinRM → winrm-spray (a cred that gets a shell)\n"
+              f"  · FTP   → ftp-banner / ftp-webshell / ftp-write (+SSH)\n"
+              f"  · HTTP  → cmdi-scan (a confirmed command channel){RESET}")
+        return "spawn-shell: no viable path yet"
+
+    if len(paths) == 1:
+        label, detail, tool_key, p, pr = paths[0]
+        print(f"\n{DIM}one path available:{RESET} {BOLD}{label}{RESET} {DIM}{detail}{RESET}")
+    else:
+        print(f"\n{BOLD}spawn a shell — pick a path{RESET}")
+        for i, (label, detail, _tk, p, pr) in enumerate(paths, 1):
+            print(f"  {BOLD}{i}{RESET}  {CYAN}{label:<6}{RESET}{DIM}:{pr}/{p}{RESET}  {detail}")
+        v = _ask("pick path [1-N, blank = cancel]:")
+        if not v or not v.isdigit() or not 1 <= int(v) <= len(paths):
+            print(f"{DIM}cancelled{RESET}")
+            return "spawn-shell: cancelled"
+        label, detail, tool_key, p, pr = paths[int(v) - 1]
+
+    res = _STEP_TOOLS[tool_key][1](ip, p, pr)               # hand off to the service's foothold tool
+    if "shell → " in res:                                   # a shell was actually spawned
+        save_scripts(ip, [{"id": tool_key, "port": p, "proto": pr, "output": res}])
+    return f"spawn-shell: {label} → {res}"
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11815,6 +11881,7 @@ _STEP_TOOLS = {
     "tftp-grab": ("sweep known filenames → configs/creds/secrets (raw UDP, in-memory grep)", _tool_tftp_grab),
     "tftp-write": ("test anonymous write (WRQ throwaway) — non-reversible, no DELETE", _tool_tftp_write),
     "tftp-next": ("manual TFTP steps (context-aware, reference only)", _tool_tftp_next),
+    "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
 def _mins(seconds: int) -> str:
@@ -11891,6 +11958,7 @@ _STEP_TOOL_RUNS = {
     "tftp-grab":        ("Python (raw UDP)", f"{_mins(_TFTPGRAB_DEADLINE)} min"),
     "tftp-write":       ("Python (raw UDP)", None),
     "tftp-next":        ("reference · no scan", None),
+    "spawn-shell":      ("router → service foothold", None),
 }
 
 
@@ -12257,6 +12325,7 @@ _OS_CHOICES = [
 # Privesc checklist per OS family (starter methodology — deeper pass later).
 _PRIVESC_STEPS = {
     "linux": [
+        ("Spawn a shell — pick a path across all exploited services", "spawn-shell"),
         "Automated enum (linpeas.sh / LinEnum.sh)",
         "sudo -l — sudo rights → GTFOBins",
         "SUID/SGID binaries (find / -perm -4000) → GTFOBins",
@@ -12269,6 +12338,7 @@ _PRIVESC_STEPS = {
         "Password reuse & creds in files / process memory",
     ],
     "windows": [
+        ("Spawn a shell — pick a path across all exploited services", "spawn-shell"),
         "Automated enum (winPEAS.exe / PrivescCheck)",
         "whoami /priv — token privileges (SeImpersonate → Potato)",
         "whoami /groups — group memberships",
@@ -12362,11 +12432,15 @@ def _render_os_checklist(ip: str, kind: str, title: str, steps_map: dict,
     print(f"\n{BOLD}{title} — checklist{RESET}  {DIM}{ip} · {os_label}{RESET}")
     print()
     for i, step in enumerate(steps, 1):
-        desc, _tool = _step_parts(step)
+        desc, tool_key = _step_parts(step)
         st = status.get(i)
         sym, col = _STEP_MARK.get(st, _STEP_MARK[None])
-        body = f"{col}{desc}{RESET}" if st in ("done", "skip") else desc
+        has_tool = bool(tool_key and tool_key in _STEP_TOOLS)
+        text = f"{BOLD}{desc}{RESET}" if has_tool else desc      # wired (runnable) → bold
+        body = f"{col}{text}{RESET}" if st in ("done", "skip") else text
         print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
+        if has_tool:
+            print(f"        {DIM}→ {_step_run_line(tool_key)}  ·  run with {BOLD}r {i}{RESET}")
 
 
 def _os_checklist_view(ip: str, kind: str, title: str, steps_map: dict,
@@ -12384,6 +12458,26 @@ def _os_checklist_view(ip: str, kind: str, title: str, steps_map: dict,
         prev = fetch_step_status(ip, 0, "", svc).get(n)
         set_step_status(ip, 0, "", svc, n, None if prev == want else want)
 
+    def _run(n):
+        steps = steps_map.get(cur["family"], steps_map["linux"])
+        if not 1 <= n <= len(steps):
+            print(f"{RED}✗ no step {n}{RESET}")
+            return
+        _desc, tool_key = _step_parts(steps[n - 1])
+        if not tool_key or tool_key not in _STEP_TOOLS:
+            print(f"{DIM}step {n} has no tool — do it manually{RESET}")
+            return
+        svc = f"{kind}:{cur['family']}"
+        prev = fetch_step_status(ip, 0, "", svc).get(n)
+        set_step_status(ip, 0, "", svc, n, "running")
+        try:
+            _STEP_TOOLS[tool_key][1](ip, 0, "")        # interactive foreground (spawns in a new tab)
+        except Exception as exc:                       # noqa: BLE001
+            print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
+            set_step_status(ip, 0, "", svc, n, prev)
+            return
+        set_step_status(ip, 0, "", svc, n, "done")
+
     def _handle(_c, v):
         if v == "":
             return "refresh"
@@ -12395,14 +12489,17 @@ def _os_checklist_view(ip: str, kind: str, title: str, steps_map: dict,
         if v.startswith("s") and v[1:].strip().isdigit():
             _toggle(int(v[1:].strip()), "skip")
             return "refresh"
+        if v.startswith("r") and v[1:].strip().isdigit():
+            _run(int(v[1:].strip()))
+            return "stay"                              # just the launch/interaction (no redraw)
         if v.isdigit():
             _toggle(int(v), "done")
             return "refresh"
-        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> done · s <n> skip · o · b{RESET}")
+        print(f"{RED}✗ unknown option{RESET} {DIM}— <n> done · s <n> skip · r <n> run · o · b{RESET}")
         return "stay"
 
     _run_view(f"{ip} {kind}",
-              "[Enter] refresh · <n> done · s <n> skip · [o] change OS · [b] back · [m] menu",
+              "[Enter] refresh · <n> done · s <n> skip · r <n> run · [o] change OS · [b] back · [m] menu",
               lambda: _render_os_checklist(ip, kind, title, steps_map, cur["family"], cur["label"]),
               _handle)
 
