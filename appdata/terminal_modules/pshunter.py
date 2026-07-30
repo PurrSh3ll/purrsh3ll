@@ -2290,6 +2290,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bm) mssql-banner: unauthenticated version disclosure (info)
+    if sid == "mssql-banner":
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"MSSQL: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bl) mysql-shell: a reverse shell was fired through the OUTFILE webshell
     if sid == "mysql-shell":
         if "shell → " in output:
@@ -3389,6 +3397,7 @@ _EXPLOIT_STEPS = {
         ("Manual steps & further research", "mysql-next"),
     ],
     "mssql": [
+        ("Banner: SQL Browser (1434) / TDS pre-login → version + instance", "mssql-banner"),
         "Try sa with blank / default, then known creds (impacket mssqlclient / netexec mssql)",
         "Enable & use xp_cmdshell for OS command execution → reverse shell",
         "Enumerate linked servers; EXECUTE AS / trustworthy DB for privilege abuse",
@@ -13144,6 +13153,129 @@ def _tool_mysql_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ MS SQL Server (1433 / 1434) ══ the version is discoverable unauthenticated: the SQL Browser
+# (UDP 1434, SSRP) advertises instances + version, and the TDS pre-login on 1433 returns version
+# bytes. Both are pure stdlib; auth / xp_cmdshell / queries later go through netexec (TDS binary).
+_MSSQL_RELEASE = {16: "2022", 15: "2019", 14: "2017", 13: "2016", 12: "2014",
+                  11: "2012", 10: "2008", 9: "2005", 8: "2000"}
+
+
+def _mssql_browser(ip: str, timeout: float = 3.0) -> "dict | None":
+    """Query the SQL Server Browser (UDP 1434, SSRP) → {ServerName, InstanceName, Version, tcp}
+    for the first instance, or None. Unauthenticated."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(b"\x02", (ip, 1434))
+        data, _ = s.recvfrom(4096)
+    except OSError:
+        return None
+    finally:
+        s.close()
+    if len(data) < 3 or data[0] != 0x05:
+        return None
+    length = data[1] | (data[2] << 8)
+    body = data[3:3 + length].decode("latin-1", "replace")
+    parts = body.split(";")
+    info = {}
+    for i in range(0, len(parts) - 1, 2):
+        if parts[i] and parts[i] not in info:
+            info[parts[i]] = parts[i + 1]
+    return info or None
+
+
+def _mssql_prelogin(ip: str, port: int, timeout: float = 6.0) -> "str | None":
+    """Send a TDS PRELOGIN and parse the VERSION token from the response → 'major.minor.build',
+    or None. Unauthenticated."""
+    import socket
+    import struct
+    # option table: VERSION(0), ENCRYPTION(1), INSTOPT(2), THREADID(3), MARS(4), TERMINATOR(0xff)
+    data = b"\x00" * 6 + b"\x00" + b"\x00" + b"\x00\x00\x00\x00" + b"\x00"
+    toks = (b"\x00" + struct.pack(">HH", 26, 6) + b"\x01" + struct.pack(">HH", 32, 1)
+            + b"\x02" + struct.pack(">HH", 33, 1) + b"\x03" + struct.pack(">HH", 34, 4)
+            + b"\x04" + struct.pack(">HH", 38, 1) + b"\xff")
+    payload = toks + data
+    pkt = bytes([0x12, 0x01]) + struct.pack(">H", 8 + len(payload)) + b"\x00\x00\x01\x00" + payload
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((ip, port))
+        s.sendall(pkt)
+        resp = s.recv(4096)
+    except OSError:
+        return None
+    finally:
+        s.close()
+    if len(resp) < 9 or resp[0] != 0x04:
+        return None
+    body = resp[8:]
+    i = 0
+    while i + 5 <= len(body):
+        tok = body[i]
+        if tok == 0xff:
+            break
+        off, ln = struct.unpack(">H", body[i + 1:i + 3])[0], struct.unpack(">H", body[i + 3:i + 5])[0]
+        if tok == 0x00 and off + 4 <= len(body):                # VERSION token
+            vb = body[off:off + ln]
+            if len(vb) >= 4:
+                return f"{vb[0]}.{vb[1]}.{(vb[2] << 8) | vb[3]}"
+        i += 5
+    return None
+
+
+def _tool_mssql_banner(ip: str, port: int, proto: str) -> str:
+    """MSSQL step 1 tool: fingerprint the server unauthenticated — query the SQL Browser (UDP 1434)
+    for instances + version, falling back to a TDS pre-login on the TCP port, map the version to a
+    release (2019 = 15.x …), record the service and query Exploit-DB. Read-only, no login. A host
+    that answers on neither raises. Authorised targets only."""
+    info = _mssql_browser(ip)
+    version = (info or {}).get("Version")
+    if not version:
+        version = _mssql_prelogin(ip, port if port != 1434 else 1433)
+    if not version:
+        raise RuntimeError(f"{ip} — no MSSQL response (SQL Browser 1434 filtered + TDS pre-login failed)")
+
+    try:
+        maj = int(version.split(".")[0])
+    except ValueError:
+        maj = 0
+    release = _MSSQL_RELEASE.get(maj, "")
+    product = "Microsoft SQL Server" + (f" {release}" if release else "")
+    save_services(ip, [{"port": port, "proto": proto, "name": "mssql",
+                        "product": product, "version": version}])
+
+    lines = [f"[*] Service: {product}  ·  version {version}"]
+    if info:
+        inst = info.get("InstanceName")
+        tcp = info.get("tcp")
+        if inst:
+            lines.append(f"[*] Instance: {inst}" + (f"  ·  tcp {tcp}" if tcp else "")
+                         + (f"  ·  {info['ServerName']}" if info.get("ServerName") else ""))
+
+    ss = shutil.which("searchsploit")
+    if ss:
+        proc = subprocess.run([ss, "-j", "-s", "-t", "Microsoft SQL Server", version],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 8:
+                break
+    else:
+        lines.append("· searchsploit not installed — check Exploit-DB for the version manually")
+    lines.append("· next: sa blank/default + reused creds (mssql-creds r2)")
+    return f"MSSQL banner — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13292,6 +13424,7 @@ _STEP_TOOLS = {
     "mysql-rce": ("INTO OUTFILE webshell → exec-verified RCE (FILE priv); UDF guidance", _tool_mysql_rce),
     "mysql-shell": ("MySQL foothold → reverse shell via the OUTFILE webshell (spawned)", _tool_mysql_shell),
     "mysql-next": ("manual MySQL steps (context-aware, reference only)", _tool_mysql_next),
+    "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13380,6 +13513,7 @@ _STEP_TOOL_RUNS = {
     "mysql-rce":        ("mysql CLI + HTTP verify", f"{_mins(_MYSQLRCE_DEADLINE)} min"),
     "mysql-shell":      ("Python (smart listener)", None),
     "mysql-next":       ("reference · no scan", None),
+    "mssql-banner":     ("Python (stdlib) + searchsploit", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
