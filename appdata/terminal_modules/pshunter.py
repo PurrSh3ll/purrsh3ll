@@ -2337,6 +2337,20 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL" if admin else "HIGH",
                 "summary": f"MSSQL creds: {shown}"[:140]}
 
+    # 2bu) ldap-enum: anonymous AD enumeration (exposed) → else domain/user info
+    if sid == "ldap-enum":
+        if re.search(r"^✗ ANON ", output, re.M):
+            mu = re.search(r"·\s*users:\s*(\d+)", output)
+            extra = f" · {mu.group(1)} users" if mu else ""
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"LDAP anonymous enumeration allowed{extra}"[:140]}
+        md = re.search(r"domain:\s*(\S+)", output)
+        mu = re.search(r"·\s*users:\s*(\d+)", output)
+        if md and md.group(1) != "?":
+            summ = f"AD domain {md.group(1)}" + (f" · {mu.group(1)} users" if mu else "")
+            return {"state": "INFO", "cve": None, "risk": "LOW", "summary": summ[:140]}
+        return None
+
     # 2bt) ssh-shell: a direct SSH session was opened with a proven cred
     if sid == "ssh-shell":
         if "shell → " in output:
@@ -3503,8 +3517,7 @@ _EXPLOIT_STEPS = {
     ],
     "ldap": [
         # ── enumerate ──
-        "Anonymous / authenticated bind → dump users, groups, computers, OUs, trusts (ldapsearch / windapsearch)",
-        "Read description / info / userPassword fields; extract naming context & password policy",
+        ("Bind (anon / reused cred) → domain, users, AS-REP flags, password policy", "ldap-enum"),
         "Map attack paths with BloodHound (LDAP collector) — ACLs, sessions, GPOs, delegation",
         # ── roast targets ──
         "Flag AS-REP (DONT_REQ_PREAUTH) and Kerberoast (servicePrincipalName) targets",
@@ -14108,6 +14121,89 @@ def _tool_ssh_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ LDAP / Active Directory (389 / 636 / 3268 / 3269) ══ AD enumeration over LDAP. netexec is the
+# engine (binary LDAP/BER); creds reused from the SMB phase unlock the rich enumeration.
+_LDAPENUM_DEADLINE = 180
+
+
+def _ldap_bind_args(user: str, secret: str) -> list:
+    """netexec auth args for a cred — pass-the-hash when the secret is an NT hash."""
+    if secret and re.fullmatch(r"[a-fA-F0-9]{32}", secret):
+        return ["-u", user, "-H", secret]
+    return ["-u", user, "-p", secret]
+
+
+def _ldap_run(ip: str, port: int, user: str, secret: str, extra: list, timeout: int = 120) -> tuple:
+    """Run netexec ldap with a cred (or anonymous) + extra flags. Returns (rc, ansi-stripped out)
+    or (None, '') if netexec is absent."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return (None, "")
+    cmd = [nxc, "ldap", ip, "--port", str(port)] + _ldap_bind_args(user, secret) + extra
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return (p.returncode, re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or "")))
+    except (OSError, subprocess.SubprocessError):
+        return (None, "")
+
+
+def _tool_ldap_enum(ip: str, port: int, proto: str) -> str:
+    """LDAP step 1 tool: bind to the DC (a reused domain cred if the SMB phase harvested one, else
+    anonymous) and enumerate the domain — naming context, DC name, users (flagging AS-REP-roastable
+    accounts), and the password policy (lockout threshold — read it BEFORE spraying). Flags when
+    anonymous bind/enumeration is allowed. netexec ldap. No netexec → raises. Authorised only."""
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required for LDAP/AD enumeration")
+
+    domcreds = [(d, u, s) for d, u, s in _gather_all_smb_creds() if s]
+    user, secret, anon = (domcreds[0][1], domcreds[0][2], False) if domcreds else ("", "", True)
+
+    rc, base = _ldap_run(ip, port, user, secret, [])
+    if rc is None:
+        raise RuntimeError(f"{ip}:{port} — netexec ldap did not run (down / not a DC?)")
+    md = re.search(r"\(domain:([^)]+)\)", base)
+    mn = re.search(r"\(name:([^)]+)\)", base)
+    domain = md.group(1) if md else ""
+    dcname = mn.group(1) if mn else ""
+    bound = anon and bool(re.search(r"\bLDAP\b.*\[\+\]", base)) or (not anon)
+
+    _rc, uout = _ldap_run(ip, port, user, secret, ["--users"])
+    ubody = _nxc_body(uout)
+    nusers = 0
+    mu = re.search(r"Enumerated (\d+) domain users", uout)
+    if mu:
+        nusers = int(mu.group(1))
+    users = []
+    for ln in ubody.splitlines():
+        t = ln.strip().split()
+        if t and t[0] not in ("-Username-", "[*]", "[+]") and re.match(r"^[\w.$-]+$", t[0]):
+            users.append(t[0])
+    users = users[:400]
+    asrep = re.findall(r"^([\w.$-]+).*(?:dont_req_preauth|DONT_REQ_PREAUTH)", ubody, re.M)
+
+    _rc, pol = _ldap_run(ip, port, user, secret, ["--pass-pol"])
+    ml = re.search(r"Minimum password length:\s*(\d+)", pol)
+    lt = re.search(r"(?:Account )?Lockout Threshold:\s*(\S+)", pol)
+
+    anon_enum = anon and (nusers > 0 or len(users) > 0)
+    lines = [f"[*] domain: {domain or '?'}  ·  DC: {dcname or '?'}  ·  bind: "
+             f"{'anonymous' if anon else user}"]
+    if anon_enum:
+        lines.append("✗ ANON anonymous LDAP enumeration allowed — users/domain readable unauthenticated")
+    if nusers or users:
+        lines.append(f"· users: {nusers or len(users)}"
+                     + (f"  (e.g. {', '.join(users[:8])})" if users else ""))
+    for u in asrep[:10]:
+        lines.append(f"· ASREP {u}  (no pre-auth → AS-REP roast, ldap-roast r2)")
+    if ml or lt:
+        lines.append(f"· pass-pol: lockout {lt.group(1) if lt else '?'} · minlen {ml.group(1) if ml else '?'}"
+                     f"  {DIM}(read before spraying){RESET}")
+    if not domain and not users:
+        lines.append("· no domain/user data returned — need a valid domain cred (SMB phase) or LDAPS")
+    lines.append("· next: AS-REP / Kerberoast (ldap-roast r2) · LAPS/gMSA/BloodHound (ldap-loot r3)")
+    return f"LDAP enum — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -14272,6 +14368,7 @@ _STEP_TOOLS = {
     "ssh-creds": ("reused/default SSH creds (netexec ssh / sshpass, fail2ban-aware)", _tool_ssh_creds),
     "ssh-shell": ("SSH foothold → direct interactive session (spawned)", _tool_ssh_shell),
     "ssh-next": ("manual SSH steps (context-aware, reference only)", _tool_ssh_next),
+    "ldap-enum": ("AD enum via netexec ldap — domain, users, AS-REP flags, password policy", _tool_ldap_enum),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -14370,6 +14467,7 @@ _STEP_TOOL_RUNS = {
     "ssh-creds":        ("netexec ssh / sshpass", f"{_mins(_SSHCREDS_DEADLINE)} min"),
     "ssh-shell":        ("ssh / sshpass", None),
     "ssh-next":         ("reference · no scan", None),
+    "ldap-enum":        ("netexec ldap", f"{_mins(_LDAPENUM_DEADLINE)} min"),
     "spawn-shell":      ("router → service foothold", None),
 }
 
