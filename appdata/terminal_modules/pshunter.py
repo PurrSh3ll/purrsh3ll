@@ -2290,6 +2290,14 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bh) mysql-banner: unauthenticated version disclosure (info)
+    if sid == "mysql-banner":
+        mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
+        if mv:
+            return {"state": "INFO", "cve": None, "risk": "LOW",
+                    "summary": f"MySQL: {mv.group(1).strip()}"[:140]}
+        return None
+
     # 2bg) telnet-sniff: cleartext telnet creds captured off the wire
     if sid == "telnet-sniff":
         hits = re.findall(r"^✗ SNIFF (.+)$", output, re.M)
@@ -3323,8 +3331,8 @@ _EXPLOIT_STEPS = {
         "Manual steps & further research",
     ],
     "mysql": [
+        ("Banner: handshake → version + auth plugin → searchsploit", "mysql-banner"),
         "Try root with no password, then default / reused creds",
-        "Version → searchsploit (e.g. CVE-2012-2122 auth bypass)",
         "Enumerate databases & users; dump app creds & password hashes",
         "Read local files with LOAD_FILE (needs FILE priv / secure_file_priv)",
         "Write a webshell with INTO OUTFILE into a writable web root",
@@ -12515,6 +12523,110 @@ def _tool_telnet_next(ip: str, port: int, proto: str) -> str:
     return "\n".join(L)
 
 
+# ══ MySQL / MariaDB (3306) ══ the initial handshake leaks the server version in cleartext (no
+# auth), so the banner is pure stdlib; auth/queries later go through netexec (binary protocol).
+def _recv_exact(sock, n: int) -> bytes:
+    """Read exactly n bytes from a socket (or fewer on EOF/timeout)."""
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf)
+
+
+def _mysql_handshake(ip: str, port: int, timeout: float = 8.0) -> dict:
+    """Read + parse the MySQL/MariaDB initial handshake (unauthenticated). Returns
+    {version, protocol, auth_plugin} or {error}. Raises on a connection failure."""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        try:
+            s.connect((ip, port))
+        except OSError as exc:
+            raise RuntimeError(f"no MySQL on {ip}:{port} ({exc})")
+        hdr = _recv_exact(s, 4)
+        if len(hdr) < 4:
+            raise RuntimeError("no handshake (not MySQL / TLS-only?)")
+        length = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16)
+        payload = _recv_exact(s, length)
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+    if not payload:
+        raise RuntimeError("empty handshake payload")
+    if payload[0] == 0xff:                                   # ERROR packet (e.g. host blocked)
+        code = payload[1] | (payload[2] << 8)
+        return {"error": f"{code} {payload[3:].decode('latin-1', 'replace').strip()}"}
+    try:
+        end = payload.index(0x00, 1)
+        version = payload[1:end].decode("latin-1", "replace")
+    except ValueError:
+        raise RuntimeError("malformed handshake (no version string)")
+    mplug = re.search(rb"([a-z0-9_]+_password)\x00?$", payload)
+    return {"version": version, "protocol": payload[0],
+            "auth_plugin": mplug.group(1).decode() if mplug else None}
+
+
+def _tool_mysql_banner(ip: str, port: int, proto: str) -> str:
+    """MySQL step 1 tool: read the unauthenticated initial handshake (stdlib) → server product,
+    exact version and default auth plugin (mysql_native_password vs caching_sha2_password), record
+    it as the service, query Exploit-DB (searchsploit) and flag old 5.x builds worth an auth-bypass
+    test. Read-only, no login. A host that doesn't speak MySQL raises. Authorised targets only."""
+    hs = _mysql_handshake(ip, port)
+    if "error" in hs:
+        return (f"MySQL banner — {ip}:{port}\n\n· server refused the handshake: {hs['error']}\n"
+                "· often 'Host is blocked' (too many bad auths) → mysqladmin flush-hosts, or come back later")
+    version = hs["version"]
+    low = version.lower()
+    if "mariadb" in low:
+        product = "MariaDB"
+        mnum = (re.search(r"(?:5\.5\.5-)?(\d+\.\d+\.\d+[\w.]*?)-?mariadb", version, re.I)
+                or re.search(r"(\d+\.\d+\.\d+)", version))
+    else:
+        product = "MySQL"
+        mnum = re.search(r"(\d+\.\d+\.\d+)", version)
+    vnum = mnum.group(1) if mnum else version
+    save_services(ip, [{"port": port, "proto": proto, "name": "mysql",
+                        "product": product, "version": vnum}])
+
+    lines = [f"[*] Handshake: {version}",
+             f"[*] Service: {product} {vnum}"
+             + (f"  ·  auth: {hs['auth_plugin']}" if hs["auth_plugin"] else "")]
+    if hs["auth_plugin"] == "caching_sha2_password":
+        lines.append("· caching_sha2_password (MySQL 8 default) — creds need netexec / a full client")
+    if re.match(r"5\.(1|5|6)\.", vnum):
+        lines.append("· old 5.x — worth an auth-bypass (repeated-login) test in mysql-creds")
+
+    ss = shutil.which("searchsploit")
+    if ss:
+        proc = subprocess.run([ss, "-j", "-s", "-t", product, vnum],
+                              capture_output=True, text=True, timeout=30)
+        try:
+            rows = json.loads(proc.stdout or "{}").get("RESULTS_EXPLOIT", [])
+        except ValueError:
+            rows = []
+        seen = set()
+        for r in rows[:20]:
+            edb = str(r.get("EDB-ID", "?"))
+            if edb in seen:
+                continue
+            seen.add(edb)
+            lines.append(f"[searchsploit] {(r.get('Title') or '').strip()}  (EDB-{edb})")
+            if len(seen) >= 8:
+                break
+    else:
+        lines.append("· searchsploit not installed — check Exploit-DB for the version manually")
+    return f"MySQL banner — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12653,6 +12765,7 @@ _STEP_TOOLS = {
     "telnet-shell": ("telnet foothold → auto-login interactive session (spawned)", _tool_telnet_shell),
     "telnet-sniff": ("passive cleartext-cred sniff on TCP/23 (raw socket, root, timed)", _tool_telnet_sniff),
     "telnet-next": ("manual telnet steps (context-aware, reference only)", _tool_telnet_next),
+    "mysql-banner": ("MySQL/MariaDB handshake → version + auth plugin → searchsploit (stdlib)", _tool_mysql_banner),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12735,6 +12848,7 @@ _STEP_TOOL_RUNS = {
     "telnet-shell":     ("Python (raw socket)", None),
     "telnet-sniff":     ("Python (raw AF_PACKET)", f"{_mins(_TELNETSNIFF_DEADLINE)} min"),
     "telnet-next":      ("reference · no scan", None),
+    "mysql-banner":     ("Python (stdlib) + searchsploit", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
