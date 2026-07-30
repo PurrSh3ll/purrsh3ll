@@ -3449,7 +3449,7 @@ _EXPLOIT_STEPS = {
         ("Banner + version → searchsploit; probe for a no-auth shell / backdoor prompt", "telnet-banner"),
         ("Default / known / reused creds; targeted, lockout-aware", "telnet-creds"),
         ("Sniff cleartext creds off the wire (passive; MITM stays manual)", "telnet-sniff"),
-        "Manual steps & further research",
+        ("Manual steps & further research", "telnet-next"),
     ],
     "irc": [
         "Connect; enumerate channels, users and the server software/version",
@@ -12421,6 +12421,100 @@ def _tool_telnet_sniff(ip: str, port: int, proto: str) -> str:
     return f"Telnet sniff — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── Telnet step 4: manual steps & further research (reference only, context-aware) ─
+def _tool_telnet_next(ip: str, port: int, proto: str) -> str:
+    """Telnet step-4 tool: NOT a scan — a read-only checklist of where to go on telnet, with this
+    host's own findings substituted in (a no-auth shell or proven creds to spawn, creds to reuse,
+    device/vendor angles, phase CVEs, MITM sniffing, and unconfirmed ⚠ hits). Pure DB synthesis."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    banner, sniff = by_sid.get("telnet-banner", ""), by_sid.get("telnet-sniff", "")
+
+    noauth = "✗ NOAUTH" in banner
+    mv = re.search(r"^\[\*\] Service:\s*(.+)$", banner, re.M)
+    ver = mv.group(1).strip() if mv else ""
+    creds = _gather_telnet_creds(ip)
+    sniffed = re.findall(r"^✗ SNIFF (.+)$", sniff, re.M)
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    reuse_svc = [n for (pnum, n) in ((22, "SSH"), (21, "FTP"), (445, "SMB"), (3389, "RDP"), (5985, "WinRM"))
+                 if (pnum, "tcp") in oports]
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            if ln.strip().startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {ln.strip()}")
+    warns = warns[:14]
+
+    sub = f"{DIM}version: {ver or 'unknown'}  ·  no-auth shell: {'yes' if noauth else 'no'}  ·  creds: {len(creds)}"
+    L = [f"Telnet {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET]
+
+    L.append(f"\n{BOLD}A. Land a shell{RESET}")
+    if noauth or creds:
+        why = "unauthenticated shell" if noauth else f"{len(creds)} proven cred(s)"
+        L.append(f"  {CYAN}ready{RESET} {DIM}({why}) → Privilege Escalation phase → spawn-shell (r1){RESET}")
+    else:
+        L.append(f"  {DIM}no foothold yet — try telnet-creds (r2), sniff (r3), or vendor defaults / "
+                 f"backdoor prompts below{RESET}")
+
+    L.append(f"\n{BOLD}B. Reuse these creds elsewhere{RESET}")
+    allc = list(dict.fromkeys([f"{u}:{p or '<blank>'}" for u, p in creds]
+                              + [s.strip() for s in sniffed]))
+    if allc:
+        L.append(f"  {CYAN}{', '.join(allc[:8])}{RESET}")
+        tgt = ", ".join(reuse_svc) if reuse_svc else "SSH / FTP / SMB / web / enable"
+        L.append(f"  {DIM}→ spray on {tgt}; try as enable/root; password reuse across the estate{RESET}")
+    else:
+        L.append(f"  {DIM}none yet — run telnet-creds (r2){RESET}")
+
+    L.append(f"\n{BOLD}C. Device / vendor angles (telnet ≈ routers, IoT, embedded){RESET}")
+    L.append(f"  {DIM}vendor default creds (admin/admin, root/calvin, ubnt/ubnt, Cisco enable) · "
+             f"backdoor prompts (some D-Link/Netis) · debug/AT consoles{RESET}")
+    L.append(f"  {DIM}exact banner → searchsploit '{ver or '<device>'}'; grab running-config / NVRAM once in{RESET}")
+
+    L.append(f"\n{BOLD}D. CVEs surfaced in this phase{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+    else:
+        L.append(f"  {DIM}none surfaced — searchsploit the banner / firmware version{RESET}")
+
+    L.append(f"\n{BOLD}E. Cleartext sniffing / MITM{RESET}")
+    if sniffed:
+        L.append(f"  {CYAN}captured:{RESET} {', '.join(s.strip() for s in sniffed[:6])}")
+    else:
+        L.append(f"  {DIM}on-segment? passive sniff (r3); switched → bettercap/arpspoof MITM first, then r3{RESET}")
+
+    L.append(f"\n{BOLD}F. Post-shell{RESET}")
+    L.append(f"  {DIM}enumerate + loot configs/creds; BusyBox/restricted shell → escape; "
+             f"reuse creds & pivot; kernel/firmware privesc{RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}after proving a cred, reuse it on SSH/SMB (r2 stores it); telnet is cleartext — "
+             f"note the exposure in the report{RESET}")
+    return "\n".join(L)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12558,6 +12652,7 @@ _STEP_TOOLS = {
     "telnet-creds": ("default + reused telnet creds (raw socket, probe-verified, lockout-safe)", _tool_telnet_creds),
     "telnet-shell": ("telnet foothold → auto-login interactive session (spawned)", _tool_telnet_shell),
     "telnet-sniff": ("passive cleartext-cred sniff on TCP/23 (raw socket, root, timed)", _tool_telnet_sniff),
+    "telnet-next": ("manual telnet steps (context-aware, reference only)", _tool_telnet_next),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12639,6 +12734,7 @@ _STEP_TOOL_RUNS = {
     "telnet-creds":     ("Python (raw socket)", f"{_mins(_TELNETCREDS_DEADLINE)} min"),
     "telnet-shell":     ("Python (raw socket)", None),
     "telnet-sniff":     ("Python (raw AF_PACKET)", f"{_mins(_TELNETSNIFF_DEADLINE)} min"),
+    "telnet-next":      ("reference · no scan", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -12718,7 +12814,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next", "telnet-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -12727,7 +12823,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next", "telnet-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
