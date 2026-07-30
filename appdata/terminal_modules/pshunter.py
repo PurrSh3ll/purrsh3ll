@@ -3165,22 +3165,26 @@ _EXPLOIT_STEPS = {
         "no_root_squash → plant a root-owned SUID binary for post-foothold privesc",
         "Match / forge local UID-GID to read restricted files (SSH keys, configs)",
         "NFSv4 hides exports from showmount — mount the root and browse",
+        "Manual steps & further research",
     ],
     "afp": [
         "Enumerate shares & server info (afp-showmount / afp-serverinfo)",
         "Try guest / anonymous, then known creds",
         "Mount & hunt Time Machine backups, keychains and configs for creds",
+        "Manual steps & further research",
     ],
     "rsync": [
         "List modules (rsync rsync://IP:873/)",
         "Access modules unauth; download everything, test upload to writable modules",
         "Read sensitive files (SSH keys, configs); write to a served/executable path if writable",
         "If auth is required, try known / reused creds",
+        "Manual steps & further research",
     ],
     "distcc": [
         "Confirm distccd (3632)",
         "CVE-2004-2687 → arbitrary command execution (distcc_exec or manual DIST protocol)",
         "Use the RCE to read files / stage a reverse shell, then pivot to local privesc",
+        "Manual steps & further research",
     ],
     "redis": [
         "Connect unauthenticated; note version, and INFO / CONFIG GET dir,dbfilename",
@@ -3189,49 +3193,58 @@ _EXPLOIT_STEPS = {
         "Writable dir → write an SSH key (CONFIG SET dir ~/.ssh, dbfilename authorized_keys)",
         "Writable web root → write a webshell via CONFIG SET dir + SAVE",
         "RCE via malicious module (MODULE LOAD) or master/slave replication (redis-rogue-server)",
+        "Manual steps & further research",
     ],
     "memcached": [
         "stats / stats items / stats slabs / stats cachedump (unauthenticated)",
         "Dump all keys and values — hunt for sessions, tokens and creds",
+        "Manual steps & further research",
     ],
     "elastic": [
         "GET / (version) and /_cat/indices?v — unauthenticated",
         "Dump indices & documents for creds and sensitive data (_search)",
         "Old versions → RCE (CVE-2014-3120, CVE-2015-1427 Groovy sandbox bypass)",
         "If auth is on, try default / known creds against the REST API and Kibana (5601)",
+        "Manual steps & further research",
     ],
     "mongodb": [
         "Connect unauthenticated (mongosh); if refused, try default / known creds",
         "show dbs / show collections; dump interesting collections for creds",
         "Note version → searchsploit; check for exposed admin / config data",
+        "Manual steps & further research",
     ],
     "couchdb": [
         "GET /_all_dbs and read documents unauthenticated; note version",
         "CVE-2017-12635 → create an admin user (privilege escalation)",
         "CVE-2017-12636 / EMONGO → RCE via query_server config; then reverse shell",
         "Erlang cookie reuse (with epmd) → node RCE",
+        "Manual steps & further research",
     ],
     "neo4j": [
         "Browser/API on 7474; try default neo4j:neo4j and known creds",
         "Cypher queries to dump nodes/relationships for creds & data",
         "APOC / version RCE (e.g. CVE-2021-34371, apoc.* file & shell functions)",
+        "Manual steps & further research",
     ],
     "influxdb": [
         "CVE-2019-20933 auth bypass (JWT signed with empty shared-secret)",
         "Enumerate databases (SHOW DATABASES) and dump measurements for creds/data",
         "If auth is on, try default / known creds against the HTTP API",
+        "Manual steps & further research",
     ],
     "amqp": [
         "Try default guest:guest, then known creds",
         "Reach the management UI (15672) for queues, vhosts, users",
         "Enumerate & drain queues — messages often carry creds / internal data",
         "Erlang cookie (with epmd 4369) → node RCE on RabbitMQ",
+        "Manual steps & further research",
     ],
     "epmd": [
         "List Erlang nodes & ports (epmd -names)",
         "Find / guess the Erlang cookie (~/.erlang.cookie, reused across nodes)",
         "Cookie → connect to the node and run erlang:os_cmd → RCE",
         "Common on RabbitMQ / CouchDB clusters — pivot into those",
+        "Manual steps & further research",
     ],
     "docker": [
         "Confirm the unauthenticated Docker API (2375/2376)",
@@ -3239,31 +3252,37 @@ _EXPLOIT_STEPS = {
         "Run a privileged container bind-mounting the host / → read/write host filesystem",
         "chroot the mount and add a user / SSH key / cron → root on the host",
         "Loot secrets from images, env vars and volumes",
+        "Manual steps & further research",
     ],
     "jdwp": [
         "Confirm the JDWP handshake (Java Debug Wire Protocol)",
         "Any-context RCE via the debugger (jdwp-shellifier / manual breakpoint)",
         "Execute Runtime.exec → reverse shell as the JVM's user",
+        "Manual steps & further research",
     ],
     "rmi": [
         "Enumerate the RMI registry — bound objects & remote methods (rmi-dumpregistry, BaRMIe)",
         "Java deserialization RCE against the endpoint (ysoserial gadget chains)",
         "JMX/RMI (if exposed) → MLet MBean → load a malicious MBean for RCE",
+        "Manual steps & further research",
     ],
     "ajp": [
         "Confirm AJP13 (8009) and the fronting Tomcat",
         "Ghostcat CVE-2020-1938 → read WEB-INF/web.xml, configs, source",
         "Chain to RCE if you can upload a JSP into a served path (ajpy / metasploit)",
+        "Manual steps & further research",
     ],
     "clamav": [
         "Confirm clamd (3310)",
         "Command execution via clamav-exec / known CVE (SCAN a crafted path)",
         "Use the RCE to stage a reverse shell as the clamav user",
+        "Manual steps & further research",
     ],
     "svn": [
         "Enumerate over svn:// (svn ls / svn log / svn info)",
         "Checkout the repo; read commit history & diffs for secrets and creds",
         "svn cat / svn up -r<n> old revisions of removed sensitive files",
+        "Manual steps & further research",
     ],
     "mysql": [
         "Try root with no password, then default / reused creds",
@@ -3272,6 +3291,7 @@ _EXPLOIT_STEPS = {
         "Read local files with LOAD_FILE (needs FILE priv / secure_file_priv)",
         "Write a webshell with INTO OUTFILE into a writable web root",
         "UDF (lib_mysqludf_sys) for OS command execution if the plugin dir is writable",
+        "Manual steps & further research",
     ],
     "mssql": [
         "Try sa with blank / default, then known creds (impacket mssqlclient / netexec mssql)",
@@ -3279,24 +3299,28 @@ _EXPLOIT_STEPS = {
         "Enumerate linked servers; EXECUTE AS / trustworthy DB for privilege abuse",
         "Coerce the service account's NetNTLM hash (xp_dirtree / xp_fileexist) → crack / relay",
         "Read/write files (OPENROWSET / bulk); loot connection strings",
+        "Manual steps & further research",
     ],
     "psql": [
         "Try postgres with blank / default, then known creds",
         "COPY … FROM/TO PROGRAM → OS command execution (9.3+) → reverse shell",
         "Read/write server files (pg_read_file / lo_import/lo_export / COPY)",
         "Enumerate databases & roles; dump app creds; check superuser",
+        "Manual steps & further research",
     ],
     "oracle": [
         "Enumerate the SID (oracle-sid-brute / odat sidguesser)",
         "Brute default accounts (scott/tiger, system/manager, dbsnmp/dbsnmp) — odat passwordguesser",
         "With creds → file read/write, privesc and RCE via odat (dbmsscheduler / externaltable)",
         "TNS poisoning / version CVEs on older listeners",
+        "Manual steps & further research",
     ],
     "mqtt": [
         "Connect anonymously and subscribe to all topics (# wildcard) — sniff for data/creds",
         "Enumerate topics & retained messages; look for device control / secrets",
         "Publish to control topics to influence devices; note impact",
         "If auth is on, try default / known creds against the broker",
+        "Manual steps & further research",
     ],
     "ldap": [
         # ── enumerate ──
@@ -3316,6 +3340,7 @@ _EXPLOIT_STEPS = {
         # ── relay / DCSync ──
         "Relay coerced auth to LDAP(S) when signing / channel-binding is off → RBCD / shadow cred",
         "With replication rights (DS-Replication-Get-Changes*) → DCSync all hashes",
+        "Manual steps & further research",
     ],
     "kerberos": [
         # ── no creds ──
@@ -3333,6 +3358,7 @@ _EXPLOIT_STEPS = {
         "Silver ticket (service key) / golden ticket (krbtgt) / diamond ticket",
         # ── critical ──
         "noPac (CVE-2021-42278/42287) & MS14-068 → impersonate a DC / domain admin",
+        "Manual steps & further research",
     ],
     "msrpc": [
         "Map endpoints via the endpoint mapper (rpcdump) → services & their dynamic ports",
@@ -3341,6 +3367,7 @@ _EXPLOIT_STEPS = {
         "ZeroLogon (MS-NRPC CVE-2020-1472) → reset the DC machine account → DCSync",
         "Remote exec with creds via Task Scheduler (atexec) or Service Control Manager (scmexec / smbexec)",
         "DRSUAPI → DCSync with replication rights; abuse other interfaces (EVEN6, WKSSVC) as found",
+        "Manual steps & further research",
     ],
     "snmp": [
         "Brute community strings with a wordlist (onesixtyone: public, private, community)",
@@ -3349,18 +3376,21 @@ _EXPLOIT_STEPS = {
         "Grab configs/creds: Cisco running-config (1.3.6.1.4.1.9.9.96), SNMPv3 USM users",
         "Writable (RW) community → tamper config, or NET-SNMP EXTEND / EXEC MIB → command execution",
         "SNMPv3 → enumerate & brute usernames / auth (snmpv3-brute)",
+        "Manual steps & further research",
     ],
     "ipmi": [
         "Dump BMC password hashes — RAKP auth flaw CVE-2013-4786 (ipmi_dumphashes)",
         "Crack the hashes offline (hashcat mode 7300)",
         "Cipher-0 auth bypass → add/modify a BMC admin, then get to the host console",
         "Default vendor creds (ADMIN/ADMIN, root/calvin on iDRAC)",
+        "Manual steps & further research",
     ],
     "dns": [
         "Zone transfer (AXFR) against each nameserver → full record dump",
         "Version query (version.bind CHAOS TXT)",
         "Reverse-lookup the subnet & brute-force subdomains → new hosts/vhosts",
         "Note internal names for /etc/hosts and vhost routing; check dynamic-update/cache-poison",
+        "Manual steps & further research",
     ],
     "smtp": [
         "Banner & exact version → searchsploit (Exim CVE-2019-10149, Postfix Shellshock)",
@@ -3369,22 +3399,26 @@ _EXPLOIT_STEPS = {
         "Authenticate with reused creds; read internal mail for creds & info",
         "Command injection / template / known MTA RCE → shell as the mail service",
         "Client-side: deliver a malicious attachment / link if a user reads mail",
+        "Manual steps & further research",
     ],
     "mail2": [
         "Banner & version (POP3/IMAP) → searchsploit",
         "Authenticate with reused / known creds",
         "Read mailboxes for credentials, tokens and internal information",
+        "Manual steps & further research",
     ],
     "telnet": [
         "Banner → identify the device / OS / service",
         "No-auth access or a backdoor prompt?",
         "Default / known creds; careful, targeted brute (lockout-aware)",
         "Sniff cleartext creds if you can MITM the segment",
+        "Manual steps & further research",
     ],
     "irc": [
         "Connect; enumerate channels, users and the server software/version",
         "UnrealIRCd 3.2.8.1 backdoor (CVE-2010-2075) → RCE",
         "searchsploit the ircd; try oper default creds",
+        "Manual steps & further research",
     ],
     "rdp": [
         "Check NLA & security layer; grab the machine/domain name (rdp-sec-check / nmap)",
@@ -3392,12 +3426,14 @@ _EXPLOIT_STEPS = {
         "BlueKeep CVE-2019-0708 (unpatched 7/2008R2) → RCE",
         "Valid creds → interactive session (xfreerdp; /cert:ignore, drive redirect for transfer)",
         "Post-access: dump creds, enable further access",
+        "Manual steps & further research",
     ],
     "vnc": [
         "Connect directly — is there any auth at all?",
         "Weak/short password → crack the VNC challenge-response",
         "Recover stored VNC passwords elsewhere (fixed-key DES) and decrypt",
         "Version CVE (e.g. RealVNC auth bypass) → view / control the desktop",
+        "Manual steps & further research",
     ],
     "ssh": [
         "Banner → exact version; searchsploit (libssh CVE-2018-10933 auth bypass, older OpenSSH)",
@@ -3408,54 +3444,65 @@ _EXPLOIT_STEPS = {
         "Restricted shell (rbash / lshell) → escape (ssh -t, command tricks) to a full shell",
         "authorized_keys / SSH-agent abuse for lateral movement & persistence",
         "Weak host key algorithms / Terrapin CVE-2023-48795 — note downgrade risk",
+        "Manual steps & further research",
     ],
     "squid": [
         "Use it as a proxy to reach internal hosts & ports (proxychains)",
         "Port-scan / access internal-only services through the proxy",
         "cachemgr info-leak (cache_object://) → internal targets & config",
         "Try creds if the proxy requires auth (reused)",
+        "Manual steps & further research",
     ],
     "cups": [
         "Admin web UI on 631/admin; note version",
         "Recent CUPS RCE chain (CVE-2024-47176 …) via a crafted printer/IPP",
         "Enumerate printers & captured jobs; read config for creds",
+        "Manual steps & further research",
     ],
     "jetdirect": [
         "PJL / PostScript access (PRET) — filesystem, NVRAM, display",
         "Read/write the printer filesystem; retrieve stored jobs & configs",
         "Extract stored credentials (LDAP/SMB pass-back), captured print jobs",
+        "Manual steps & further research",
     ],
     "rservices": [
         "rlogin / rsh / rexec via a trusted host or missing auth",
         "~/.rhosts or /etc/hosts.equiv abuse → log in as root without a password",
+        "Manual steps & further research",
     ],
     "x11": [
         "Confirm access is unauthenticated (xdpyinfo / x11-access)",
         "Screenshot the session (xwd); read window contents",
         "Keylog and inject keystrokes to run commands as the logged-in user",
+        "Manual steps & further research",
     ],
     "finger": [
         "Enumerate users (finger @IP; finger root@IP) — real names, last login, home",
         "Build a validated user list to feed brute-force / spray on other services",
+        "Manual steps & further research",
     ],
     "ident": [
         "Query the owner of each open port (ident-user-enum)",
         "Map services to local user accounts — pick brute-force targets",
+        "Manual steps & further research",
     ],
     "rtsp": [
         "Enumerate stream URLs (rtsp-url-brute / Cameradar)",
         "Default / weak camera creds; view the stream",
         "searchsploit the camera/DVR firmware for RCE",
+        "Manual steps & further research",
     ],
     "sip": [
         "Enumerate extensions & the PBX (svmap / svwar)",
         "Crack / spray extension passwords (svcrack); register a rogue endpoint",
         "Sniff SIP creds; test toll fraud / call interception",
+        "Manual steps & further research",
     ],
     "nntp": [
         "Banner & version → searchsploit",
         "List newsgroups and read articles for info",
         "Try auth / posting; check for an auth bypass",
+        "Manual steps & further research",
     ],
     "other": [
         "Grab the banner (nc / telnet / openssl s_client) and identify the service",
@@ -3464,6 +3511,7 @@ _EXPLOIT_STEPS = {
         "Try default / anonymous credentials",
         "Run the protocol's nmap scripts (--script '<name>-*') for quick wins",
         "Interact manually to understand the protocol; note it for deeper research",
+        "Manual steps & further research",
     ],
 }
 
