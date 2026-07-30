@@ -3157,6 +3157,7 @@ _EXPLOIT_STEPS = {
         ("Confirm UDP/69 (no auth) + path-traversal read", "tftp-probe"),
         ("Sweep known filenames (configs/boot/backups) → grep creds & secrets", "tftp-grab"),
         ("Test write access (WRQ throwaway) — non-reversible, no DELETE", "tftp-write"),
+        ("Manual steps & further research", "tftp-next"),
     ],
     "nfs": [
         "List exports & allowed clients (showmount -e; nmap nfs-*)",
@@ -11640,6 +11641,119 @@ def _tool_tftp_write(ip: str, port: int, proto: str) -> str:
     return f"TFTP write — {ip}:{port}/udp\n\n" + "\n".join(lines)
 
 
+# ── TFTP step 4: manual steps & further research (reference only, context-aware) ─
+def _tool_tftp_next(ip: str, port: int, proto: str) -> str:
+    """TFTP step-4 tool: NOT a scan — a read-only checklist of where to go from a TFTP foothold
+    (which is always indirect: TFTP gives a file read/write primitive, not a shell), with this
+    host's own findings substituted in — traversal read, harvested device creds to reuse, secrets
+    to crack, a writable surface, and unconfirmed ⚠ hits. Pure DB synthesis; no network."""
+    scripts = fetch_scripts(ip, port, proto)
+    by_sid = {}
+    for sid, out in scripts:
+        by_sid.setdefault(sid, out or "")
+    probe, grab, write = by_sid.get("tftp-probe", ""), by_sid.get("tftp-grab", ""), by_sid.get("tftp-write", "")
+
+    reachable = "it's a TFTP server" in probe
+    traversal = re.findall(r"^✗ VULN arbitrary file read via path traversal — (.+?) readable$", probe, re.M)
+    creds = re.findall(r"^✗ CRED (.+)$", grab, re.M)
+    secrets = re.findall(r"^✗ SECRET (.+)$", grab, re.M)
+    files = re.findall(r"^· FILE (\S+)", grab, re.M)
+    writable = re.findall(r"^✗ WRITABLE (\S+)", write, re.M)
+
+    oports = {(p, pr) for p, pr, _s in fetch_ports(ip)}
+    svc = []
+    if (22, "tcp") in oports:
+        svc.append("SSH")
+    if (23, "tcp") in oports:
+        svc.append("telnet")
+    if (161, "udp") in oports:
+        svc.append("SNMP")
+    if (80, "tcp") in oports or (443, "tcp") in oports:
+        svc.append("web-mgmt")
+
+    kev = _load_kev()
+    found = set()
+    for (p, pr, _sc, _st, cv, _rk, _sm) in fetch_vulns(ip):
+        if p == port and pr == proto and cv:
+            found |= {c.strip() for c in cv.split(",") if c.strip()}
+    for _sid, out in scripts:
+        found |= set(re.findall(r"CVE-\d{4}-\d{3,7}", out or ""))
+    found = sorted(found, key=_cve_sort_key)
+
+    warns = []
+    for sid, out in scripts:
+        for ln in (out or "").splitlines():
+            s = ln.strip()
+            if s.startswith("⚠"):
+                warns.append(f"{DIM}[{sid}]{RESET} {s}")
+    warns = warns[:14]
+
+    sub = f"{DIM}reachable: {'yes' if reachable else 'unknown'}  ·  traversal read: {'yes' if traversal else 'no'}"
+    sub += f"  ·  creds: {len(creds)}  ·  writable: {'yes' if writable else 'no'}"
+    L = [f"TFTP {ip} — manual steps {DIM}(reference only — nothing is scanned here){RESET}", sub + RESET,
+         f"{DIM}TFTP is a file read/write primitive, not a shell — the foothold is always indirect{RESET}"]
+
+    L.append(f"\n{BOLD}A. Pull more files{RESET}")
+    if traversal:
+        L.append(f"  {CYAN}traversal works{RESET} {DIM}({', '.join(traversal[:3])}) → read on: "
+                 f"/etc/shadow · ~/.ssh/id_rsa · app configs · (win) SAM/SYSTEM hives, unattend.xml{RESET}")
+    else:
+        L.append(f"  {DIM}no listing in TFTP — guess device-specific names: <hostname>-config, "
+                 f"<model>.cfg, mac-named phone cfgs; learn the hostname via SNMP then re-run tftp-grab (r2){RESET}")
+
+    L.append(f"\n{BOLD}B. Reuse harvested creds (the real foothold){RESET}")
+    if creds:
+        for c in creds[:8]:
+            L.append(f"  {CYAN}{c}{RESET}")
+        tgt = ", ".join(svc) if svc else "SSH / telnet / device web-UI / enable"
+        L.append(f"  {DIM}→ log in on {tgt}; try as enable/privilege-15; password-reuse across the estate{RESET}")
+    else:
+        L.append(f"  {DIM}none yet — run tftp-grab (r2); device configs carry enable/user creds{RESET}")
+
+    L.append(f"\n{BOLD}C. Abuse a writable server{RESET}")
+    if writable:
+        L.append(f"  {CYAN}writable{RESET} {DIM}({writable[0]}) — remember: no DELETE, footprint stays{RESET}")
+        L.append(f"  {DIM}overwrite a device config it will re-pull on reboot · drop authorized_keys / a "
+                 f"webshell if the root maps to a home/web dir · poison pxelinux.cfg/default for PXE boxes{RESET}")
+    else:
+        L.append(f"  {DIM}not proven writable — test with tftp-write (r3){RESET}")
+
+    L.append(f"\n{BOLD}D. Known TFTP daemon exploits{RESET}")
+    L.append(f"  {DIM}no version banner in TFTP → searchsploit 'tftp' / by daemon: SolarWinds, tftpd32/64, "
+             f"HP Intelligent Management, Distinct — dir-traversal & buffer overflows{RESET}")
+    if found:
+        for c in found:
+            ktag = f"  {RED}KEV{RESET}" if c in kev else ""
+            L.append(f"  {c}{ktag}  {DIM}https://nvd.nist.gov/vuln/detail/{c}{RESET}")
+
+    L.append(f"\n{BOLD}E. Secrets to crack{RESET}")
+    if secrets:
+        for s in secrets[:8]:
+            L.append(f"  {DIM}{s}{RESET}")
+        L.append(f"  {DIM}hashcat: type-5 -m 500 · type-9 -m 9200 · Juniper $9$ decodes offline{RESET}")
+    else:
+        L.append(f"  {DIM}none captured — device configs (r2) surface enable/user hashes & SNMP communities{RESET}")
+
+    L.append(f"\n{BOLD}F. Loot & pivot{RESET}")
+    if files:
+        L.append(f"  {CYAN}retrieved:{RESET} {', '.join(files[:6])}"
+                 + (f" {DIM}+{len(files) - 6}{RESET}" if len(files) > 6 else ""))
+    L.append(f"  {DIM}configs reveal topology, mgmt IPs, VLANs, SNMP — pivot to the devices they name{RESET}")
+    L.append(f"  {DIM}SNMP RW community → download/UPLOAD the running-config over SNMP (no TFTP write needed){RESET}")
+
+    L.append(f"\n{BOLD}G. Verify unconfirmed findings from this phase{RESET}")
+    if warns:
+        for w in warns:
+            L.append(f"  {w}")
+    else:
+        L.append(f"  {DIM}none flagged — nothing sat on the fence{RESET}")
+
+    L.append(f"\n{BOLD}H. Re-run & housekeeping{RESET}")
+    L.append(f"  {DIM}learned a hostname/model? re-run tftp-grab (r2) with device-specific filenames{RESET}")
+    L.append(f"  {DIM}clean up any ~pshw_* left by tftp-write (no DELETE — manual on the box){RESET}")
+    return "\n".join(L)
+
+
 # tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
 _STEP_TOOLS = {
     "http-headers": ("HTTP headers (stdlib, no redirects)", _tool_http_headers),
@@ -11700,6 +11814,7 @@ _STEP_TOOLS = {
     "tftp-probe": ("confirm UDP/69 + path-traversal read (raw UDP, content-verified)", _tool_tftp_probe),
     "tftp-grab": ("sweep known filenames → configs/creds/secrets (raw UDP, in-memory grep)", _tool_tftp_grab),
     "tftp-write": ("test anonymous write (WRQ throwaway) — non-reversible, no DELETE", _tool_tftp_write),
+    "tftp-next": ("manual TFTP steps (context-aware, reference only)", _tool_tftp_next),
 }
 
 def _mins(seconds: int) -> str:
@@ -11775,6 +11890,7 @@ _STEP_TOOL_RUNS = {
     "tftp-probe":       ("Python (raw UDP)", None),
     "tftp-grab":        ("Python (raw UDP)", f"{_mins(_TFTPGRAB_DEADLINE)} min"),
     "tftp-write":       ("Python (raw UDP)", None),
+    "tftp-next":        ("reference · no scan", None),
 }
 
 
@@ -11853,7 +11969,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
         return
     tlabel, runner = _STEP_TOOLS[tool_key]
 
-    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next"):  # foreground: interactive / print-now
+    if tool_key in ("foothold", "next-steps", "smb-foothold", "smb-next", "winrm-shell", "winrm-next", "ftp-foothold", "ftp-next", "tftp-next"):  # foreground: interactive / print-now
         prev = fetch_step_status(ip, port, proto, key).get(n)
         set_step_status(ip, port, proto, key, n, "running")
         try:
@@ -11862,7 +11978,7 @@ def _run_step_tool(ip: str, target: tuple, n: int) -> None:
             print(f"{RED}✗ {tool_key} error: {exc}{RESET}")
             set_step_status(ip, port, proto, key, n, prev)
             return
-        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next"):  # a list to read now, not a scan result
+        if tool_key in ("next-steps", "smb-next", "winrm-next", "ftp-next", "tftp-next"):  # a list to read now, not a scan result
             print("\n" + out)
             out = re.sub(r"\x1b\[[0-9;]*m", "", out)           # store clean text (no ANSI) in DETAILS
         save_scripts(ip, [{"id": tool_key, "port": port, "proto": proto, "output": out}])
