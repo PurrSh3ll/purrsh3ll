@@ -4917,6 +4917,8 @@ _STEP_COMMANDS = {
     "dns": {
         1: [
             "dig axfr @<RHOST> <DOMAIN>",
+            "dig ns <DOMAIN> @<RHOST> +short   # then try AXFR against each nameserver",
+            "host -l <DOMAIN> <RHOST>          # fallback when dig axfr fails",
             "fierce --domain <DOMAIN> --dns-servers <RHOST>",
         ],
         2: [
@@ -4924,6 +4926,7 @@ _STEP_COMMANDS = {
         ],
         3: [
             "dnsrecon -d <DOMAIN> -n <RHOST> -t brt -D /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt",
+            "dnsrecon -r <RANGE> -n <RHOST>   # reverse PTR sweep -> new internal hosts",
             "dnsenum --dnsserver <RHOST> <DOMAIN>",
         ],
         4: [
