@@ -4012,6 +4012,8 @@ _STEP_COMMANDS = {
         1: [  # Null / guest enumeration
             "enum4linux-ng -A <RHOST>",
             "nxc smb <RHOST> -u '' -p '' --shares",
+            "nxc smb <RHOST> -u 'guest' -p '' --shares",
+            "nxc smb <RHOST> -u '' -p '' --rid-brute",
             "smbclient -L //<RHOST>/ -N",
             "smbmap -H <RHOST> -u '' -p ''",
             "rpcclient -U '' -N <RHOST> -c 'enumdomusers;enumdomgroups;querydominfo'",
