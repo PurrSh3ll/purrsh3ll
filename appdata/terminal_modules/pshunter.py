@@ -4969,6 +4969,8 @@ _STEP_COMMANDS = {
     "mail2": {
         1: [
             "nc -nv <RHOST> 110   # POP3   |   nc -nv <RHOST> 143   # IMAP",
+            "openssl s_client -connect <RHOST>:995 -quiet   # POP3S",
+            "openssl s_client -connect <RHOST>:993 -quiet   # IMAPS",
             "searchsploit <PRODUCT> <VERSION>",
         ],
         2: [
@@ -4977,7 +4979,8 @@ _STEP_COMMANDS = {
             "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt imap://<RHOST>",
         ],
         3: [
-            "curl -sk 'pop3://<RHOST>' -u '<USER>:<PASS>'   # then RETR n",
+            "curl -sk 'pop3://<RHOST>/' -u '<USER>:<PASS>'   # LIST messages, then RETR n",
+            "curl -sk 'imap://<RHOST>' -u '<USER>:<PASS>'   # list mailboxes (Sent/Drafts often hold creds)",
             "curl -sk 'imap://<RHOST>/INBOX' -u '<USER>:<PASS>'",
         ],
         4: [
