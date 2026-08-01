@@ -4274,6 +4274,7 @@ _STEP_COMMANDS = {
         2: [
             "tftp <RHOST> -c get <PATH>",
             "for f in /etc/passwd running-config startup-config; do tftp <RHOST> -c get $f; done",
+            "msfconsole -q -x 'use auxiliary/scanner/tftp/tftpbrute; set RHOSTS <RHOST>; set DICTIONARY /usr/share/metasploit-framework/data/wordlists/tftp.txt; run; exit'",
         ],
         3: [
             "tftp <RHOST> -c put <LOCALFILE>",
@@ -4285,6 +4286,8 @@ _STEP_COMMANDS = {
     "nfs": {
         1: [
             "showmount -e <RHOST>",
+            "showmount -a <RHOST>",
+            "showmount -d <RHOST>",
             "nmap -sV -p111,2049 --script 'nfs-*' <RHOST>",
         ],
         2: [
@@ -4307,10 +4310,15 @@ _STEP_COMMANDS = {
     },
     "afp": {
         1: [
-            "nmap -sV -p548 --script 'afp-*' <RHOST>",
+            "nmap -sV -p548 --script 'afp-serverinfo,afp-showmount,afp-ls' <RHOST>",
+            "nmap -p548 --script afp-showmount,afp-ls --script-args 'afp.username=<USER>,afp.password=<PASS>,ls.maxdepth=2' <RHOST>",
+            "msfconsole -q -x 'use auxiliary/scanner/afp/afp_server_info; set RHOSTS <RHOST>; run; exit'",
+            "# note Machine Type (Netatalk = Unix/NAS) and UAMs (DHX2/Cleartxt/Guest → weak/guest auth)",
         ],
         2: [
             "# mount as guest / with creds (macOS):  open afp://<USER>:<PASS>@<RHOST>/",
+            "# Linux can't natively mount AFP — browse with creds via nmap afp-ls:",
+            "nmap -p548 --script afp-ls --script-args 'afp.username=<USER>,afp.password=<PASS>,ls.maxdepth=3' <RHOST>",
             "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt afp://<RHOST>",
         ],
         3: [
