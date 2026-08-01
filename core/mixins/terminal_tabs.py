@@ -25,6 +25,11 @@ _PSOPEN_RE = re.compile(r'\x1b\]1337;PSOPEN=(\{[^\x07]*\})\x07')
 # pshunter.db and the command/output are read from there, so untrusted scan
 # output travelling on this same channel can't inject a command to execute.
 _PSSPAWN_RE = re.compile(r'\x1b\]777;psspawn;(\d+)\x07')
+# pshunter phase-5 command playbook: open a new terminal tab with a chosen command
+# pre-typed on the prompt but NOT executed, so the operator fills in the <PLACEHOLDERS>
+# and presses Enter. Like psspawn the marker carries ONLY an integer id; the command
+# text is read back from pshunter.db's spawn_commands table (never off this channel).
+_PSSPAWNCMD_RE = re.compile(r'\x1b\]777;psspawncmd;(\d+)\x07')
 
 # Only the prompt is coloured — like a real Kali session (the typed command and
 # nmap's output stay default). Stock-Kali prompt for a normal user: frame green and
@@ -249,6 +254,11 @@ class TerminalTabsMixin:
                 self._spawn_pshunter_report(int(m.group(1)))
             except Exception:
                 logger.debug("failed to handle psspawn OSC payload", exc_info=True)
+        for m in _PSSPAWNCMD_RE.finditer(data):
+            try:
+                self._spawn_pshunter_command(int(m.group(1)))
+            except Exception:
+                logger.debug("failed to handle psspawncmd OSC payload", exc_info=True)
 
     def _spawn_pshunter_report(self, job_id: int):
         """Open a fresh terminal replaying a pshunter scan's command + output (for a
@@ -290,6 +300,34 @@ class TerminalTabsMixin:
         quoted = shlex.quote(report_path)
         self._add_new_terminal_tab(name=f"nmap #{job_id}",
                                    command=f"clear; cat {quoted}; rm -f {quoted}\n")
+
+    def _spawn_pshunter_command(self, cmd_id: int):
+        """Open a new terminal tab with a pshunter phase-5 command pre-typed on the prompt
+        but NOT executed: the operator fills in the <PLACEHOLDERS> and presses Enter. The
+        command text is read from pshunter.db's spawn_commands table by id (the OSC marker
+        only ever carries the id) and the row is consumed. Any newline is stripped so the
+        command can only ever be pre-typed, never auto-run — even if a forged marker with a
+        stale id were replayed, nothing executes without the operator pressing Enter."""
+        db_path = os.path.join(self.base_path, "appdata", "pshunter.db")
+        if not os.path.exists(db_path):
+            return
+        import sqlite3
+        conn = sqlite3.connect(db_path, timeout=10)
+        try:
+            row = conn.execute("SELECT command FROM spawn_commands WHERE id = ?",
+                               (cmd_id,)).fetchone()
+            conn.execute("DELETE FROM spawn_commands WHERE id = ?", (cmd_id,))  # one-shot
+            conn.commit()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return
+        command = row[0].replace("\n", " ").replace("\r", " ").strip()   # pre-type, never run
+        if not command:
+            return
+        # No trailing newline → _add_new_terminal_tab sendText()s it onto the prompt without
+        # submitting it, leaving it editable for the operator.
+        self._add_new_terminal_tab(name="cmd", command=command)
 
     def _add_new_terminal_tab(self, name=None, command=None, workdir=None):
         type(self).terminal_idx += 1
