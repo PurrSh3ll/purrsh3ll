@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
 
 from prompt_toolkit import PromptSession                       # noqa: E402
-from prompt_toolkit.application import Application             # noqa: E402
+from prompt_toolkit.application import Application, get_app    # noqa: E402
 from prompt_toolkit.completion import Completer, Completion    # noqa: E402
 from prompt_toolkit.filters import completion_is_selected, has_completions  # noqa: E402
 from prompt_toolkit.formatted_text import ANSI, HTML           # noqa: E402
@@ -453,14 +453,40 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     def _(event):
         event.current_buffer.validate_and_handle()
 
+    # Esc with the menu open: cancel the completion and force a repaint so the
+    # rows reserved for the menu are released — otherwise they linger as a gap
+    # above the toolbar when you return to the conversation.
+    @kb.add("escape", filter=has_completions, eager=True)
+    def _(event):
+        event.current_buffer.cancel_completion()
+        event.app.invalidate()
+
     session = PromptSession(
         history=PromptHistory(),
         completer=SlashCompleter(),
-        complete_while_typing=True,
+        # complete_while_typing=False so the menu's reserved rows are claimed only
+        # while a completion is actually active — not permanently, which left a big
+        # gap above the model toolbar. reserve_space_for_menu is the on-demand
+        # height the dropdown grows into (and collapses out of) during completion.
+        complete_while_typing=False,
+        reserve_space_for_menu=6,
         bottom_toolbar=toolbar,
         key_bindings=kb,
         style=style,
     )
+
+    # Auto-open the slash menu the moment the line looks like a command (starts
+    # with "/", no space yet) — so it still pops up as you type, Claude-Code style,
+    # without complete_while_typing (which would reserve the space permanently).
+    def _autocomplete_slash(buf) -> None:
+        text = buf.document.text_before_cursor
+        if text.startswith("/") and " " not in text:
+            if buf.complete_state is None:
+                buf.start_completion(select_first=False)
+        elif buf.complete_state is not None:
+            buf.cancel_completion()
+
+    session.default_buffer.on_text_changed += _autocomplete_slash
 
     # The welcome banner is shown as a live, blinking prompt message on the first
     # turn only; afterwards it scrolls away and the prompt is a plain "❯ ".
@@ -470,8 +496,17 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
               for v in ("open", "blink", "squint")}
 
     def banner_message():
+        # On submit, prompt_toolkit freezes the last-rendered frame into the
+        # scrollback. Force open eyes on that final (is_done) render so the banner
+        # left in history never looks stuck mid-blink/squint.
+        try:
+            done = get_app().is_done
+        except Exception:
+            done = False
         now = time.time()
-        if (now % BLINK_CYCLE) < BLINK_LEN:        # quick blink, often
+        if done:                                   # final frame kept in history
+            eyes = "open"
+        elif (now % BLINK_CYCLE) < BLINK_LEN:      # quick blink, often
             eyes = "blink"
         elif (now % SQUINT_CYCLE) < SQUINT_LEN:    # slower squint, now and then
             eyes = "squint"
