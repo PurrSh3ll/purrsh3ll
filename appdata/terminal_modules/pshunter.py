@@ -5084,13 +5084,16 @@ _STEP_COMMANDS = {
     "squid": {
         1: [
             "curl -sk -x http://<RHOST>:3128 http://<TARGET-INTERNAL>/",
+            "curl -sk -x http://<RHOST>:3128 http://127.0.0.1/   # SSRF: reach services bound to loopback on the Squid host",
             "# proxychains: add 'http <RHOST> 3128' to /etc/proxychains4.conf",
         ],
         2: [
             "proxychains nmap -sT -Pn -n <TARGET-INTERNAL>",
+            "git clone https://github.com/aancw/spose && python3 spose/spose.py --proxy http://<RHOST>:3128 --target <RHOST>   # Squid Pivoting Open Port Scanner (scans from the proxy's view)",
         ],
         3: [
             "curl -sk -x http://<RHOST>:3128 'cache_object://<RHOST>/menu'",
+            "for r in info config fqdncache objects active_requests; do echo \"== $r ==\"; curl -sk -x http://<RHOST>:3128 \"http://<RHOST>/squid-internal-mgr/$r\"; done   # modern cachemgr high-value reports",
         ],
         4: [
             "curl -sk -x http://<RHOST>:3128 --proxy-user <USER>:<PASS> http://<TARGET-INTERNAL>/",
