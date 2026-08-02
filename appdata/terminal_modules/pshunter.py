@@ -5247,13 +5247,16 @@ _STEP_COMMANDS = {
     "nntp": {
         1: [
             "nc -nv <RHOST> 119   # then: HELP / LIST",
+            "nmap -p119 -sV --script nntp-ntlm-info <RHOST>   # Windows NNTP leaks NetBIOS/DNS/domain/OS via null NTLM",
             "searchsploit <PRODUCT> <VERSION>",
         ],
         2: [
-            "# LIST newsgroups ; GROUP <name> ; ARTICLE n",
+            "printf 'LIST\\r\\nQUIT\\r\\n' | nc -q2 <RHOST> 119   # list newsgroups",
+            "printf 'GROUP <GROUP>\\r\\nARTICLE 1\\r\\nQUIT\\r\\n' | nc -q2 <RHOST> 119   # read an article",
         ],
         3: [
-            "# try AUTHINFO USER/PASS and posting; check for auth bypass",
+            "printf 'AUTHINFO USER <USER>\\r\\nAUTHINFO PASS <PASS>\\r\\nLIST\\r\\nQUIT\\r\\n' | nc -q2 <RHOST> 119   # try auth then re-list",
+            "# then test POST for unauthenticated posting / auth bypass",
         ],
         4: [
             "# HackTricks NNTP: https://book.hacktricks.xyz/network-services-pentesting/pentesting-nntp",
