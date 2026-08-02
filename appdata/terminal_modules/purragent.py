@@ -15,9 +15,11 @@ plumbing is reused from psai.py so purragent shares the app's profiles.
 """
 
 import argparse
+import io
 import json
 import os
 import sys
+import time
 
 # Reuse psai's provider/profile/LLM plumbing. psai lives in the same directory;
 # importing it is side-effect-free (its main() is guarded by __main__).
@@ -27,7 +29,7 @@ import psai  # noqa: E402
 from prompt_toolkit import PromptSession                       # noqa: E402
 from prompt_toolkit.application import Application             # noqa: E402
 from prompt_toolkit.completion import Completer, Completion    # noqa: E402
-from prompt_toolkit.formatted_text import HTML                 # noqa: E402
+from prompt_toolkit.formatted_text import ANSI, HTML           # noqa: E402
 from prompt_toolkit.history import InMemoryHistory             # noqa: E402
 from prompt_toolkit.key_binding import KeyBindings             # noqa: E402
 from prompt_toolkit.layout import Layout, Window               # noqa: E402
@@ -46,11 +48,21 @@ WELCOME   = "Welcome back Hacker!"
 VIOLET    = "#b46cff"     # single-colour fill for the paw logo + accents
 
 # Brand mark: purragent's logo, pre-rendered to a small monochrome glyph
-# silhouette (regenerate with `scripts/render_purragent_logo.py`).
-# purragent paints it VIOLET at render time.
-LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "purragent_logo.ans")
+# silhouette (regenerate with `scripts/render_purragent_logo.py`). purragent
+# paints it VIOLET at render time. The _blink variant has the eyes closed; the
+# welcome box swaps between them so the cat blinks on the first prompt.
+_HERE      = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH  = os.path.join(_HERE, "purragent_logo.ans")
+BLINK_PATH = os.path.join(_HERE, "purragent_logo_blink.ans")
 FALLBACK_PAW = "  _   _\n (_) (_)\n(_)   (_)\n  (___)"
+
+# Blink timing (seconds): eyes shut briefly once per cycle while the welcome
+# banner is on screen (the first prompt). The refresh rate is high so a repaint
+# reliably lands inside the short blink window — it's cheap because prompt_toolkit
+# only redraws changed cells, and nothing changes while the eyes are open.
+BLINK_CYCLE   = 4.5
+BLINK_LEN     = 0.16
+BLINK_REFRESH = 0.05
 
 # Slash commands offered in the / dropdown and listed by /help.
 SLASH = [
@@ -202,10 +214,11 @@ def pick_model(config: dict, current_name: str | None):
 
 # ── Banner + help ──────────────────────────────────────────────────────────────
 
-def _logo_text() -> Text:
-    """The logo silhouette, painted a single violet colour."""
+def _logo_text(blink: bool = False) -> Text:
+    """The logo silhouette (eyes-open, or eyes-closed when blink), painted violet."""
+    path = BLINK_PATH if blink else LOGO_PATH
     try:
-        with open(LOGO_PATH, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             art = f.read().rstrip("\n")
     except Exception:
         art = FALLBACK_PAW
@@ -227,12 +240,12 @@ def _model_status(profile: dict | None) -> Text:
     return t
 
 
-def print_banner(profile: dict | None) -> None:
+def _banner_panel(profile: dict | None, logo: Text) -> Panel:
     left = Table.grid(padding=0)
     left.add_column()
     left.add_row(Text(WELCOME, style="bold white"))
     left.add_row("")
-    left.add_row(_logo_text())
+    left.add_row(logo)
     left.add_row("")
     left.add_row(_model_status(profile))
 
@@ -249,17 +262,22 @@ def print_banner(profile: dict | None) -> None:
     body.add_column(vertical="middle", width=22)
     body.add_row(left, right)
 
-    console.print()
-    console.print(Panel(
+    return Panel(
         body,
         title=f"[bold {VIOLET}]{TOOL_NAME}[/] [dim]v{VERSION}[/]",
         title_align="left",
         border_style=VIOLET,
         padding=(1, 2),
         width=64,
-    ))
-    console.print("  [dim]type [cyan]/[/cyan] for commands · [cyan]/model[/cyan] "
-                  "to pick a model · a message to chat[/dim]\n")
+    )
+
+
+def _render_ansi(renderable) -> str:
+    """Render a rich renderable to an ANSI string (for use as a prompt message)."""
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, color_system="truecolor",
+            width=80).print(renderable)
+    return buf.getvalue()
 
 
 def print_help() -> None:
@@ -336,11 +354,31 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         style=style,
     )
 
+    # The welcome banner is shown as a live, blinking prompt message on the first
+    # turn only; afterwards it scrolls away and the prompt is a plain "❯ ".
+    hint = ("  \x1b[2mtype \x1b[36m/\x1b[0m\x1b[2m for commands · "
+            "\x1b[36m/model\x1b[0m\x1b[2m to pick a model · a message to chat\x1b[0m\n")
+    frame_open   = "\n" + _render_ansi(_banner_panel(profile, _logo_text(False))) + hint
+    frame_blink  = "\n" + _render_ansi(_banner_panel(profile, _logo_text(True)))  + hint
+
+    def banner_message():
+        shut = (time.time() % BLINK_CYCLE) < BLINK_LEN
+        return ANSI((frame_blink if shut else frame_open) + "\n❯ ")
+
+    plain_prompt = HTML("<prompt>❯ </prompt>")
+    first = True
+
     while True:
         try:
-            text = session.prompt(HTML("<prompt>❯ </prompt>")).strip()
+            if first:
+                text = session.prompt(banner_message,
+                                      refresh_interval=BLINK_REFRESH).strip()
+            else:
+                text = session.prompt(plain_prompt).strip()
+            first = False
         except KeyboardInterrupt:
-            continue          # Ctrl-C at the prompt: clear line, keep going
+            first = False     # Ctrl-C at the prompt: clear line, drop the banner
+            continue
         except EOFError:
             break             # Ctrl-D: quit
 
@@ -413,7 +451,6 @@ def main() -> None:
     state   = _load_state(base_dir)
     profile = _find_profile(config, state.get("profile", ""))
 
-    print_banner(profile)
     run_repl(base_dir, config, profile)
 
 
