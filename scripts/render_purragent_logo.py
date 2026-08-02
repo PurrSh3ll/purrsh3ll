@@ -25,29 +25,16 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _crop_to_content(img: Image.Image) -> Image.Image:
-    """Trim a uniform border (transparent OR near-white) down to the artwork."""
-    px = img.load()
-    w, h = img.size
-    mask = Image.new("L", (w, h), 0)
-    mpx = mask.load()
-    for y in range(h):
-        for x in range(w):
-            r, g, b, a = px[x, y]
-            near_white = a >= 40 and (0.299 * r + 0.587 * g + 0.114 * b) > 230
-            mpx[x, y] = 255 if (a >= 40 and not near_white) else 0
-    bbox = mask.getbbox()
-    return img.crop(bbox) if bbox else img
-
-
 def render(src: str, cols: int, mono: bool = False) -> str:
     img = Image.open(src).convert("RGBA")
-    img = _crop_to_content(img)
     w, h = img.size
-    # Half-block: 1 px per column horizontally, 2 px per row vertically. A square
-    # image reads as square in a terminal when cols == 2 * rows.
+    # Half-block: 1 px per column horizontally, 2 px per row vertically. The source
+    # is authored on the terminal's own grid (each source block = one target pixel),
+    # so we scale the WHOLE image with NEAREST — no crop, no blur. Cropping/LANCZOS
+    # shifted the grid and squished the art vertically. Blank border rows/cols are
+    # trimmed afterwards from the finished glyph lines instead.
     rows = max(1, round(cols * (h / w) / 2))
-    img = img.resize((cols, rows * 2), Image.LANCZOS)
+    img = img.resize((cols, rows * 2), Image.NEAREST)
     px = img.load()
 
     def opaque(a):
@@ -80,6 +67,12 @@ def render(src: str, cols: int, mono: bool = False) -> str:
             else:
                 cells.append(" ")
         lines.append("".join(cells).rstrip() if mono else "".join(cells))
+    # Drop fully-blank leading/trailing lines (image margins) without disturbing
+    # the grid alignment of the artwork itself.
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
     return "\n".join(lines) + "\n"
 
 
