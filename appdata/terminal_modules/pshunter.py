@@ -5274,7 +5274,8 @@ _STEP_COMMANDS = {
             "# look the port/protocol up in HackTricks: https://book.hacktricks.xyz/network-services-pentesting",
         ],
         4: [
-            "nmap -sV -p<RPORT> <RHOST>",
+            "nmap -sV --version-all -p<RPORT> <RHOST>   # full probe set when the banner is silent",
+            "nmap -sU -sV -p<RPORT> <RHOST>   # many 'other' services are UDP-only (invisible to nc/TCP -sV)",
         ],
         5: [
             "nmap -sV -p<RPORT> --script '<PROTO>-*' <RHOST>",
