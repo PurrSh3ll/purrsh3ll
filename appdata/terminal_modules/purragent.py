@@ -200,6 +200,10 @@ def select_option(title: str, options: list, start: int = 0):
 
     @kb.add("enter")
     def _(e):
+        cur = options[idx[0]]
+        disabled = cur[2] if len(cur) > 2 else False
+        if disabled:
+            return          # unavailable row (e.g. no function calling) — not selectable
         e.app.exit(result=idx[0])
 
     @kb.add("escape")
@@ -211,30 +215,37 @@ def select_option(title: str, options: list, start: int = 0):
         frags = [("class:title", f"  {title}\n\n")]
         for i, opt in enumerate(options):
             label, hint = opt[0], opt[1]
-            dim = opt[2] if len(opt) > 2 else False
+            disabled = opt[2] if len(opt) > 2 else False
             sel = i == idx[0]
-            style_cls = "class:sel" if sel else ("class:dim" if dim else "class:opt")
+            # Disabled rows stay red even when highlighted — they can't be chosen.
+            style_cls = ("class:disabled" if disabled
+                         else "class:sel" if sel else "class:opt")
             frags.append((style_cls, f"  {'❯' if sel else ' '} {label}"))
             if hint:
-                frags.append(("class:hint", f"   {hint}"))
+                frags.append(("class:hintdis" if disabled else "class:hint",
+                              f"   {hint}"))
             frags.append(("", "\n"))
         # Detail line for the highlighted row (shown on hover), if it has one.
         cur = options[idx[0]]
         detail = cur[3] if len(cur) > 3 else ""
+        cur_disabled = cur[2] if len(cur) > 2 else False
         if detail:
-            frags.append(("class:detail", f"\n  {detail}\n"))
+            frags.append(("class:detaildis" if cur_disabled else "class:detail",
+                          f"\n  {detail}\n"))
         frags.append(("class:footer", "\n  ↑/↓ move · enter select · esc cancel"))
         return frags
 
     control = FormattedTextControl(render, show_cursor=False)
     style = Style.from_dict({
-        "title":  "bold",
-        "sel":    "bold #d75fff",
-        "opt":    "",
-        "dim":    "#6a6a6a",
-        "hint":   "#7f7f7f",
-        "detail": "#b46cff",
-        "footer": "#7f7f7f italic",
+        "title":     "bold",
+        "sel":       "bold #d75fff",
+        "opt":       "",
+        "disabled":  "#6a6a6a",
+        "hint":      "#7f7f7f",
+        "hintdis":   "#6a6a6a",
+        "detail":    "#b46cff",
+        "detaildis": "bold #ff5f5f",
+        "footer":    "#7f7f7f italic",
     })
     app = Application(
         layout=Layout(Window(control, style="class:opt")),
