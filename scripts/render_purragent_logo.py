@@ -27,14 +27,13 @@ from PIL import Image
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _close_eyes(img: Image.Image) -> Image.Image:
-    """Fill the eye holes so the cat looks like it's blinking.
+def _eye_holes(img: Image.Image):
+    """Return the eyes as a list of pixel-lists.
 
-    Eyes are interior white holes (white pixels not reachable from the border).
-    Ear notches are holes too, so we only fill holes sitting below the artwork's
-    vertical midline — i.e. the eyes, not the ears.
+    Eyes are interior white holes (white not reachable from the border). Ear
+    notches are holes too, so we keep only holes below the artwork's vertical
+    midline — i.e. the eyes, not the ears.
     """
-    img = img.copy()
     px = img.load()
     w, h = img.size
 
@@ -42,13 +41,11 @@ def _close_eyes(img: Image.Image) -> Image.Image:
         r, g, b, a = px[x, y]
         return a >= 40 and (0.299 * r + 0.587 * g + 0.114 * b) < 140
 
-    # dark bbox → midline
     ys = [y for y in range(h) for x in range(w) if dark(x, y)]
     if not ys:
-        return img
+        return []
     midline = (min(ys) + max(ys)) / 2
 
-    # flood-fill background white from the border
     bg = [[False] * w for _ in range(h)]
     dq = deque()
     for x in range(w):
@@ -66,18 +63,45 @@ def _close_eyes(img: Image.Image) -> Image.Image:
             if 0 <= nx < w and 0 <= ny < h and not bg[ny][nx] and not dark(nx, ny):
                 bg[ny][nx] = True; dq.append((nx, ny))
 
-    # interior white holes below the midline → fill dark (closed eyes)
+    # connected components of interior white below the midline
+    seen = [[False] * w for _ in range(h)]
+    holes = []
     for y in range(h):
         for x in range(w):
-            if not dark(x, y) and not bg[y][x] and y > midline:
-                px[x, y] = (0, 0, 0, 255)
+            if (not dark(x, y) and not bg[y][x] and y > midline and not seen[y][x]):
+                comp = []; q = deque([(x, y)]); seen[y][x] = True
+                while q:
+                    cx, cy = q.popleft(); comp.append((cx, cy))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = cx + dx, cy + dy
+                        if (0 <= nx < w and 0 <= ny < h and not seen[ny][nx]
+                                and not dark(nx, ny) and not bg[ny][nx]):
+                            seen[ny][nx] = True; q.append((nx, ny))
+                holes.append(comp)
+    return holes
+
+
+def _close_eyes(img: Image.Image, squint: bool = False) -> Image.Image:
+    """Blink (fill eyes fully) or squint (fill all but a thin central slit)."""
+    img = img.copy()
+    px = img.load()
+    B = (0, 0, 0, 255)
+    for comp in _eye_holes(img):
+        ys = [y for _, y in comp]
+        lo, hi = min(ys), max(ys)
+        band = max(1, round((hi - lo + 1) / 6))     # central slit half-height
+        mid = (lo + hi) / 2
+        for (x, y) in comp:
+            if not squint or not (mid - band <= y <= mid + band):
+                px[x, y] = B
     return img
 
 
-def render(src: str, cols: int, mono: bool = False, blink: bool = False) -> str:
+def render(src: str, cols: int, mono: bool = False,
+           blink: bool = False, squint: bool = False) -> str:
     img = Image.open(src).convert("RGBA")
-    if blink:
-        img = _close_eyes(img)
+    if blink or squint:
+        img = _close_eyes(img, squint=squint)
     w, h = img.size
     # Half-block: 1 px per column horizontally, 2 px per row vertically. The source
     # is authored on the terminal's own grid (each source block = one target pixel),
@@ -134,16 +158,19 @@ def main() -> None:
                     help="truecolor render (default is mono shape-only)")
     ap.add_argument("--blink", action="store_true",
                     help="render the eyes-closed blink frame (-> _blink.ans)")
+    ap.add_argument("--squint", action="store_true",
+                    help="render the eyes-squinted frame (-> _squint.ans)")
     ap.add_argument("--src", default=os.path.join(
         ROOT, "scripts", "purragent_logo_src.png"))
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
+    variant = "_blink" if args.blink else "_squint" if args.squint else ""
     out = args.out or os.path.join(
-        ROOT, "appdata", "terminal_modules",
-        "purragent_logo_blink.ans" if args.blink else "purragent_logo.ans")
+        ROOT, "appdata", "terminal_modules", f"purragent_logo{variant}.ans")
 
-    art = render(args.src, args.cols, mono=not args.color, blink=args.blink)
+    art = render(args.src, args.cols, mono=not args.color,
+                 blink=args.blink, squint=args.squint)
     with open(out, "w", encoding="utf-8") as f:
         f.write(art)
     print(f"[ok] rendered {args.cols}-col logo -> {out}")
