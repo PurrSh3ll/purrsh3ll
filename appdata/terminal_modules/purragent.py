@@ -161,12 +161,27 @@ def _model_short(profile: dict) -> str:
     return m.rsplit("/", 1)[-1]
 
 
+def _model_has_tools(profile: dict, base_dir: str) -> bool:
+    """Whether this model supports function calling per the app's registry
+    (model_ctx_registry.json) — the capability itself, independent of the profile's
+    own tools_user_override. Reuses psai's registry logic with the override stripped."""
+    p = dict(profile)
+    p.pop("tools_user_override", None)
+    try:
+        return bool(psai._tools_enabled(p, base_dir))
+    except Exception:
+        return False
+
+
 # ── Inline arrow-key selector (Claude-Code-style) ──────────────────────────────
 
 def select_option(title: str, options: list, start: int = 0):
     """Render an inline list; navigate with ↑/↓, choose with Enter, cancel with Esc.
 
-    options: list of (label, hint). Returns the chosen index, or None if cancelled.
+    options: list of tuples. Each is (label, hint[, dim[, detail]]) where `dim`
+    greys the row (e.g. unavailable) and `detail` is a line shown at the bottom
+    only while that row is highlighted. Returns the chosen index, or None if
+    cancelled.
     """
     if not options:
         return None
@@ -193,15 +208,22 @@ def select_option(title: str, options: list, start: int = 0):
         e.app.exit(result=None)
 
     def render():
-        frags = [("class:title", f"  {title}\n")]
-        for i, (label, hint) in enumerate(options):
+        frags = [("class:title", f"  {title}\n\n")]
+        for i, opt in enumerate(options):
+            label, hint = opt[0], opt[1]
+            dim = opt[2] if len(opt) > 2 else False
             sel = i == idx[0]
-            frags.append(("class:sel" if sel else "class:opt",
-                          f"  {'❯' if sel else ' '} {label}"))
+            style_cls = "class:sel" if sel else ("class:dim" if dim else "class:opt")
+            frags.append((style_cls, f"  {'❯' if sel else ' '} {label}"))
             if hint:
                 frags.append(("class:hint", f"   {hint}"))
             frags.append(("", "\n"))
-        frags.append(("class:footer", "  ↑/↓ move · enter select · esc cancel"))
+        # Detail line for the highlighted row (shown on hover), if it has one.
+        cur = options[idx[0]]
+        detail = cur[3] if len(cur) > 3 else ""
+        if detail:
+            frags.append(("class:detail", f"\n  {detail}\n"))
+        frags.append(("class:footer", "\n  ↑/↓ move · enter select · esc cancel"))
         return frags
 
     control = FormattedTextControl(render, show_cursor=False)
@@ -209,7 +231,9 @@ def select_option(title: str, options: list, start: int = 0):
         "title":  "bold",
         "sel":    "bold #d75fff",
         "opt":    "",
+        "dim":    "#6a6a6a",
         "hint":   "#7f7f7f",
+        "detail": "#b46cff",
         "footer": "#7f7f7f italic",
     })
     app = Application(
@@ -224,11 +248,13 @@ def select_option(title: str, options: list, start: int = 0):
         return app.run()
 
 
-def pick_model(config: dict, current_name: str | None):
+def pick_model(config: dict, current_name: str | None, base_dir: str):
     """Show the profile picker.
 
-    Returns the chosen profile dict, the _NO_MODEL sentinel (detach, for
-    debugging), or None if the user cancelled.
+    Models without function calling (per the registry) are greyed out; the
+    highlighted row shows a note about its tool support. Returns the chosen
+    profile dict, the _NO_MODEL sentinel (detach, for debugging), or None if
+    the user cancelled.
     """
     profs = _profiles(config)
     if not profs:
@@ -237,9 +263,16 @@ def pick_model(config: dict, current_name: str | None):
             "[bold]AI Settings ▸ API Providers[/bold] first.")
         return None
     # First entry detaches the model — handy for debugging the shell itself.
-    options = [("No model", "detach — no LLM attached")]
-    options += [(p.get("name", "?"),
-                 f"{_model_short(p)} · {p.get('provider', '?')}") for p in profs]
+    options = [("No model", "detach — no LLM attached", False,
+                "no LLM attached — chat is disabled (debugging)")]
+    for p in profs:
+        has_tools = _model_has_tools(p, base_dir)
+        hint = f"{_model_short(p)} · {p.get('provider', '?')}"
+        detail = ("✓ function calling supported"
+                  if has_tools else
+                  "✗ function calling not supported")
+        # dim = greyed out when the model has no function calling
+        options.append((p.get("name", "?"), hint, not has_tools, detail))
     start = next((i + 1 for i, p in enumerate(profs)
                   if p.get("name") == current_name), 0)
     choice = select_option("Select a model", options, start=start)
@@ -557,7 +590,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 console.print("  [dim]conversation cleared[/dim]")
             elif cmd == "/model":
                 cur = ctx["profile"].get("name") if ctx["profile"] else None
-                chosen = pick_model(config, cur)
+                chosen = pick_model(config, cur, base_dir)
                 if chosen is _NO_MODEL:
                     ctx["profile"] = None
                     _save_state(base_dir, profile=None)
