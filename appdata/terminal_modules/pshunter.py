@@ -5210,11 +5210,14 @@ _STEP_COMMANDS = {
     },
     "rtsp": {
         1: [
-            "nmap -p554 --script rtsp-url-brute <RHOST>",
+            "nmap -p554 --script rtsp-methods,rtsp-url-brute <RHOST>",
             "cameradar -t <RHOST>",
+            "printf 'DESCRIBE rtsp://<RHOST>:554/ RTSP/1.0\\r\\nCSeq: 1\\r\\n\\r\\n' | nc -q2 <RHOST> 554   # 200 OK = no auth, 401 = creds required",
         ],
         2: [
-            "ffplay rtsp://<USER>:<PASS>@<RHOST>:554/<PATH>",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt rtsp://<RHOST> -s 554 -f   # default camera creds",
+            "ffplay -rtsp_transport tcp rtsp://<USER>:<PASS>@<RHOST>:554/<PATH>   # tcp transport is more reliable than udp",
+            "ffmpeg -rtsp_transport tcp -i rtsp://<USER>:<PASS>@<RHOST>:554/<PATH> -frames:v 1 shot.png   # grab a frame / record the feed",
         ],
         3: [
             "searchsploit <PRODUCT>",
