@@ -5198,6 +5198,8 @@ _STEP_COMMANDS = {
     "ident": {
         1: [
             "ident-user-enum <RHOST> 22 80 443 3306",
+            "ident-user-enum <RHOST> $(nmap -p- --min-rate 1000 -T4 <RHOST> -oG - | grep -oP '\\d+(?=/open)' | tr '\\n' ' ')   # every open port, not just the common ones",
+            "nmap -sTV --script auth-owners <RHOST>   # nmap auto-correlates service -> owning user during the scan",
         ],
         2: [
             "# map services → local users, then target brute/spray on the juiciest",
