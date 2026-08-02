@@ -488,12 +488,19 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
     session.default_buffer.on_text_changed += _autocomplete_slash
 
-    # The welcome banner is shown as a live, blinking prompt message on the first
-    # turn only; afterwards it scrolls away and the prompt is a plain "❯ ".
+    # The welcome banner is a live, blinking prompt message. It stays on screen
+    # (repainted in place) for as long as you only run slash commands — which add
+    # nothing to the conversation — and gives way to a plain "❯ " once you send the
+    # first real message. Rebuilt on demand so it tracks the current model + greeting.
     hint = ("  \x1b[2mtype \x1b[36m/\x1b[0m\x1b[2m for commands · "
             "\x1b[36m/model\x1b[0m\x1b[2m to pick a model · a message to chat\x1b[0m\n")
-    frames = {v: "\n" + _render_ansi(_banner_panel(profile, _logo_text(v), greeting)) + hint
-              for v in ("open", "blink", "squint")}
+
+    def build_frames() -> dict:
+        return {v: "\n" + _render_ansi(
+                    _banner_panel(ctx["profile"], _logo_text(v), greeting)) + hint
+                for v in ("open", "blink", "squint")}
+
+    frames = build_frames()
 
     def banner_message():
         # On submit, prompt_toolkit freezes the last-rendered frame into the
@@ -515,19 +522,23 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         return ANSI(frames[eyes] + "\n❯ ")
 
     plain_prompt = HTML("<prompt>❯ </prompt>")
-    first = True
+    conversation_started = False   # while False, keep the blinking welcome banner
 
     while True:
         try:
-            if first:
+            if not conversation_started:
+                # Persistent welcome screen: wipe + repaint so a single banner keeps
+                # blinking while you only run slash commands (they add nothing to the
+                # conversation). Rebuilt each turn to reflect the model / greeting.
+                sys.stdout.write("\x1b[2J\x1b[H")
+                sys.stdout.flush()
+                frames = build_frames()
                 text = session.prompt(banner_message,
                                       refresh_interval=BLINK_REFRESH).strip()
             else:
                 text = session.prompt(plain_prompt).strip()
-            first = False
         except KeyboardInterrupt:
-            first = False     # Ctrl-C at the prompt: clear line, drop the banner
-            continue
+            continue          # Ctrl-C: clear the line, stay put
         except EOFError:
             break             # Ctrl-D: quit
 
@@ -570,7 +581,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     _save_state(base_dir, greeting=greeting)
                     console.print(f"  [green]▸[/green] greeting set — "
                                   f"[bold]Welcome back {greeting}![/bold] "
-                                  "[dim](shown next launch)[/dim]")
+                                  "[dim](updates the banner)[/dim]")
             else:
                 console.print(f"  [yellow]unknown command:[/yellow] {cmd}  "
                               "[dim](/help for the list)[/dim]")
@@ -582,6 +593,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                           "[cyan]/model[/cyan] to choose one first.")
             continue
 
+        conversation_started = True   # first real message ends the welcome screen
         history.append({"role": "user", "content": text})
         try:
             reply = query_model(ctx["profile"], base_dir, history)
