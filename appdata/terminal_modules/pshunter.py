@@ -5229,13 +5229,16 @@ _STEP_COMMANDS = {
     "sip": {
         1: [
             "svmap <RHOST>",
-            "svwar -m INVITE -e 100-999 <RHOST>",
+            "svwar -m REGISTER -e 100-999 <RHOST>   # REGISTER is quieter than INVITE (INVITE rings the phones)",
+            "nmap -sU -p5060 --script sip-methods,sip-enum-users <RHOST>",
+            "msfconsole -q -x 'use auxiliary/scanner/sip/enumerator; set RHOSTS <RHOST>; run; exit'   # different result when the PBX filters UDP probes",
         ],
         2: [
             "svcrack -u <EXTENSION> -d /usr/share/wordlists/rockyou.txt <RHOST>",
         ],
         3: [
-            "# sniff SIP creds; test toll fraud / call interception",
+            "sipsak -vv -s sip:<RHOST>   # OPTIONS ping -> banner / PBX identification",
+            "# SIP over TCP: add --tcp to svmap/svwar when 5060/UDP is filtered; then sniff creds / test toll fraud / call interception",
         ],
         4: [
             "# HackTricks VoIP: https://book.hacktricks.xyz/network-services-pentesting/pentesting-voip",
