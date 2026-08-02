@@ -27,6 +27,7 @@ appdata/rag/
 appdata/api_keys.json
 appdata/api_profiles.json
 appdata/session.json
+appdata/purragent_state.json
 appdata/psnotes.txt
 appdata/ob_panel_state.json
 appdata/terminal_fifos/
