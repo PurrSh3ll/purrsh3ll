@@ -79,6 +79,7 @@ SLASH = [
     ("/mode",     "set how the agent runs (auto / semi-auto / confirm / plan)"),
     ("/mcp",      "manage MCP servers"),
     ("/hack",     "hacking toolkit"),
+    ("/upgrade",  "re-launch purragent as root (sudo)"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
     ("/help",     "show commands and usage"),
     ("/clear",    "clear the conversation"),
@@ -172,6 +173,14 @@ def _model_short(profile: dict) -> str:
     if m.lower().startswith("models/"):
         m = m[7:]
     return m.rsplit("/", 1)[-1]
+
+
+def _is_root() -> bool:
+    """True if the process is running with root privileges."""
+    try:
+        return os.geteuid() == 0
+    except AttributeError:      # non-POSIX
+        return False
 
 
 def _model_has_tools(profile: dict, base_dir: str) -> bool:
@@ -447,6 +456,22 @@ def print_help() -> None:
     show_view(_help_body())
 
 
+def elevate() -> None:
+    """Re-launch the whole process under sudo (root). Replaces this process, so
+    it does not return on success — sudo prompts for the password on the terminal.
+    No-op (with a note) if already root."""
+    if _is_root():
+        console.print("  [green]●[/green] already running as [bold]root[/bold].")
+        return
+    cmd = ["sudo", sys.executable] + sys.argv
+    console.print("  [dim]re-launching as root (sudo)… enter your password if asked[/dim]")
+    sys.stdout.flush()
+    try:
+        os.execvp("sudo", cmd)          # replaces this process
+    except Exception as e:
+        console.print(f"  [red]upgrade failed:[/red] {e}")
+
+
 def _skeleton_body(title: str, note: str) -> str:
     """A placeholder overlay for commands that aren't implemented yet."""
     return _render_ansi(Group(
@@ -517,14 +542,17 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     def toolbar():
         p = ctx["profile"]
         mode_seg = f"<style fg='#b46cff'>mode: {mode}</style>"
+        # Privilege indicator: red 'root' warns you're elevated, dim 'user' otherwise.
+        priv_seg = ("<style fg='#ff5f5f'>⚡ root</style>" if _is_root()
+                    else "<style fg='#7f7f7f'>user</style>")
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
-                        f"{mode_seg}   "
+                        f"{mode_seg}   {priv_seg}   "
                         "<style fg='#7f7f7f'>/exit to quit</style>")
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
-            f"  ·  <i>{p.get('name', '?')}</i>   {mode_seg}   "
+            f"  ·  <i>{p.get('name', '?')}</i>   {mode_seg}   {priv_seg}   "
             f"<style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
@@ -673,6 +701,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 show_view(_skeleton_body(
                     "purragent — hack",
                     "Hacking toolkit — quick offensive-security actions."))
+            elif cmd == "/upgrade":
+                elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/greeting":
                 name = text[len("/greeting"):].strip()
                 if not name:
