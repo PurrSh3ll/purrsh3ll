@@ -76,10 +76,23 @@ BLINK_REFRESH = 0.05
 # Slash commands offered in the / dropdown and listed by /help.
 SLASH = [
     ("/model",    "switch the attached model (or detach)"),
+    ("/mode",     "set how the agent runs (auto / semi-auto / confirm / plan)"),
+    ("/mcp",      "manage MCP servers"),
+    ("/hack",     "hacking toolkit"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
     ("/help",     "show commands and usage"),
     ("/clear",    "clear the conversation"),
     ("/exit",     "quit purragent"),
+]
+
+# Agent run modes (Claude-Code-style). Skeleton only for now — selecting a mode
+# is remembered but does not change behaviour yet.
+DEFAULT_MODE = "confirm"
+AGENT_MODES = [
+    ("auto",      "run commands automatically, without asking"),
+    ("semi-auto", "ask for permission only for risky actions"),
+    ("confirm",   "ask before running each command"),
+    ("plan",      "plan only — describe actions, don't execute"),
 ]
 
 # Commands shown in the welcome box's right column (the essentials).
@@ -294,6 +307,22 @@ def pick_model(config: dict, current_name: str | None, base_dir: str):
     return profs[choice - 1]
 
 
+def pick_mode(current: str | None):
+    """Pick the agent run mode (skeleton — the choice is inert for now).
+
+    Returns the chosen mode name, or None if cancelled.
+    """
+    options = [(name, hint) for name, hint in AGENT_MODES]
+    default_idx = next((i for i, (n, _) in enumerate(AGENT_MODES)
+                        if n == DEFAULT_MODE), 0)
+    start = next((i for i, (n, _) in enumerate(AGENT_MODES) if n == current),
+                 default_idx)
+    choice = select_option("Agent mode", options, start=start)
+    if choice is None:
+        return None
+    return AGENT_MODES[choice][0]
+
+
 # ── Banner + help ──────────────────────────────────────────────────────────────
 
 def _logo_text(variant: str = "open") -> Text:
@@ -418,6 +447,17 @@ def print_help() -> None:
     show_view(_help_body())
 
 
+def _skeleton_body(title: str, note: str) -> str:
+    """A placeholder overlay for commands that aren't implemented yet."""
+    return _render_ansi(Group(
+        Text(title, style=f"bold {VIOLET}"),
+        Text(""),
+        Text(note, style="dim"),
+        Text(""),
+        Text("Not implemented yet — coming soon.", style="yellow"),
+    ))
+
+
 # ── LLM query (reuses psai) ────────────────────────────────────────────────────
 
 def query_model(profile: dict, base_dir: str, history: list) -> str:
@@ -472,16 +512,19 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     ctx = {"profile": profile}
     history: list = []
     greeting = _load_state(base_dir).get("greeting") or DEFAULT_GREETING
+    mode = _load_state(base_dir).get("mode") or DEFAULT_MODE   # skeleton: inert
 
     def toolbar():
         p = ctx["profile"]
+        mode_seg = f"<style fg='#b46cff'>mode: {mode}</style>"
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
+                        f"{mode_seg}   "
                         "<style fg='#7f7f7f'>/exit to quit</style>")
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
-            f"  ·  <i>{p.get('name', '?')}</i>   "
+            f"  ·  <i>{p.get('name', '?')}</i>   {mode_seg}   "
             f"<style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
@@ -614,6 +657,22 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         f"  [green]▸[/green] now using "
                         f"[bold]{_model_short(chosen)}[/bold] "
                         f"[dim]· {chosen.get('provider')}[/dim]")
+            elif cmd == "/mode":
+                chosen = pick_mode(mode)
+                if chosen:
+                    mode = chosen
+                    _save_state(base_dir, mode=mode)
+                    console.print(f"  [green]▸[/green] agent mode set to "
+                                  f"[bold]{mode}[/bold] "
+                                  "[dim](not wired up yet)[/dim]")
+            elif cmd == "/mcp":
+                show_view(_skeleton_body(
+                    "purragent — MCP",
+                    "Manage MCP (Model Context Protocol) servers here."))
+            elif cmd == "/hack":
+                show_view(_skeleton_body(
+                    "purragent — hack",
+                    "Hacking toolkit — quick offensive-security actions."))
             elif cmd == "/greeting":
                 name = text[len("/greeting"):].strip()
                 if not name:
