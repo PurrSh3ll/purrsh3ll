@@ -17,7 +17,6 @@ plumbing is reused from psai.py so purragent shares the app's profiles.
 import argparse
 import json
 import os
-import re
 import sys
 
 # Reuse psai's provider/profile/LLM plumbing. psai lives in the same directory;
@@ -42,6 +41,7 @@ from rich.text import Text                                     # noqa: E402
 from rich import box                                           # noqa: E402
 
 TOOL_NAME = "purragent"
+VERSION   = "1.0.0"
 WELCOME   = "Welcome back Hacker!"
 VIOLET    = "#b46cff"     # single-colour fill for the paw logo + accents
 
@@ -202,19 +202,6 @@ def pick_model(config: dict, current_name: str | None):
 
 # ── Banner + help ──────────────────────────────────────────────────────────────
 
-def _app_version(base_dir: str) -> str:
-    """Read PurrSh3ll's bundled __version__ from core/update_checker.py."""
-    try:
-        path = os.path.join(base_dir, "core", "update_checker.py")
-        with open(path, encoding="utf-8") as f:
-            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', f.read())
-        if m:
-            return m.group(1)
-    except Exception:
-        pass
-    return "1.3.0"
-
-
 def _logo_text() -> Text:
     """The logo silhouette, painted a single violet colour."""
     try:
@@ -240,9 +227,7 @@ def _model_status(profile: dict | None) -> Text:
     return t
 
 
-def print_banner(base_dir: str, profile: dict | None) -> None:
-    version = _app_version(base_dir)
-
+def print_banner(profile: dict | None) -> None:
     left = Table.grid(padding=0)
     left.add_column()
     left.add_row(Text(WELCOME, style="bold white"))
@@ -267,7 +252,7 @@ def print_banner(base_dir: str, profile: dict | None) -> None:
     console.print()
     console.print(Panel(
         body,
-        title=f"[bold {VIOLET}]{TOOL_NAME}[/] [dim]v{version}[/]",
+        title=f"[bold {VIOLET}]{TOOL_NAME}[/] [dim]v{VERSION}[/]",
         title_align="left",
         border_style=VIOLET,
         padding=(1, 2),
@@ -428,7 +413,7 @@ def main() -> None:
     state   = _load_state(base_dir)
     profile = _find_profile(config, state.get("profile", ""))
 
-    print_banner(base_dir, profile)
+    print_banner(profile)
     run_repl(base_dir, config, profile)
 
 
