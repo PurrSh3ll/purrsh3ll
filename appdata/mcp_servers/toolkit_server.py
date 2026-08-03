@@ -222,13 +222,17 @@ def _tool_http_request(args):
     if not isinstance(url, str) or not url:
         raise ValueError("`url` must be a string")
     method = (args.get("method") or "GET").upper()
-    headers = args.get("headers") or {}
+    headers = {str(k): str(v) for k, v in (args.get("headers") or {}).items()}
     body = args.get("body")
     timeout = float(args.get("timeout", DEFAULT_HTTP_TIMEOUT))
     data = body.encode() if isinstance(body, str) else None
 
-    req = urllib.request.Request(url, data=data, method=method,
-                                 headers={str(k): str(v) for k, v in headers.items()})
+    # Default to a browser-like User-Agent — many sites (e.g. Wikimedia) reject
+    # urllib's default "Python-urllib/x.y" with 403. Caller can override it.
+    if not any(k.lower() == "user-agent" for k in headers):
+        headers["User-Agent"] = "Mozilla/5.0"
+
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
