@@ -885,8 +885,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 if debug:
                     console.print(
                         "  [green]▸[/green] debug [bold]on[/bold] "
-                        "[dim]— the exact request sent to the model (messages + "
-                        "tools, API key masked) prints before each reply[/dim]")
+                        "[dim]— dumps each request (messages + tools, key "
+                        "masked) before the reply[/dim]")
                 else:
                     console.print("  [yellow]▸[/yellow] debug [bold]off[/bold]")
             elif cmd == "/greeting":
@@ -925,6 +925,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         try:
             if use_tools and mcp.has_tools():
                 def _on_tool(kind, name, payload):
+                    if not debug:
+                        # Concise (Claude-Code-style): one line per call, no args
+                        # or result — just that a tool ran and which one.
+                        if kind == "call":
+                            _srv, short = mcp_client.split_namespaced(name)
+                            console.print(f"  [{VIOLET}]⚙[/{VIOLET}] "
+                                          f"[dim]running tool[/dim] "
+                                          f"[bold]{short}[/bold]")
+                        return
+                    # Debug: verbose — show arguments and the tool's result.
                     if kind == "call":
                         args = json.dumps(payload, ensure_ascii=False)
                         console.print(f"  [{VIOLET}]⚙ {name}[/{VIOLET}] "
