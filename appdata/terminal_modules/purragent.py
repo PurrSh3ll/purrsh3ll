@@ -624,6 +624,7 @@ def query_model(profile: dict, base_dir: str, history: list) -> str:
 # to the plain text path (query_model) with no tools.
 
 TOOL_LOOP_MAX_ROUNDS = 8
+_THINK_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"   # same braille frames pschat uses
 
 
 def _supports_tool_loop(profile: dict) -> bool:
@@ -643,10 +644,12 @@ def _openai_endpoint(profile: dict, base_dir: str):
     return endpoint, api_key
 
 
-def _chat_stream(endpoint: str, api_key: str, body: dict, on_text) -> dict:
+def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
+                 hide_thinking: bool = False) -> dict:
     """Stream one /chat/completions turn (SSE). Prints content deltas live via
-    on_text(piece); accumulates tool_call deltas. Returns an assistant message
-    dict {content, tool_calls} reconstructed from the stream."""
+    on_text(piece); accumulates tool_call deltas. Reasoning deltas drive a
+    'thinking…' spinner when hide_thinking is set, or print greyed inline when
+    not. Returns an assistant message dict {content, tool_calls}."""
     body = dict(body)
     body["stream"] = True
     headers = {
@@ -662,6 +665,21 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text) -> dict:
 
     content_parts: list = []
     tool_calls: dict = {}      # index -> {id, name, args}
+    thinking = {"on": False, "spin": 0}
+
+    def _end_thinking():
+        """Clear the spinner / close the greyed reasoning block once real output
+        (content or a tool call) starts."""
+        if not thinking["on"]:
+            return
+        if hide_thinking:
+            sys.stderr.write("\r" + " " * 44 + "\r")
+            sys.stderr.flush()
+        else:
+            sys.stdout.write("\033[0m\n")
+            sys.stdout.flush()
+        thinking["on"] = False
+
     try:
         resp = urllib.request.urlopen(req, timeout=120)
     except urllib.error.HTTPError as e:
@@ -685,11 +703,32 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text) -> dict:
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
+
+            # Reasoning / chain-of-thought: providers name it differently.
+            reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+            if reasoning:
+                if hide_thinking:
+                    thinking["spin"] += 1
+                    frame = _THINK_SPINNER[thinking["spin"] % len(_THINK_SPINNER)]
+                    sys.stderr.write(f"\r\033[90mthinking… {frame}\033[0m")
+                    sys.stderr.flush()
+                else:
+                    if not thinking["on"]:
+                        sys.stdout.write("\033[90m")   # grey the visible thinking
+                    sys.stdout.write(reasoning)
+                    sys.stdout.flush()
+                thinking["on"] = True
+
             piece = delta.get("content")
             if piece:
+                _end_thinking()
                 content_parts.append(piece)
                 on_text(piece)
-            for tc in delta.get("tool_calls") or []:
+
+            deltas = delta.get("tool_calls") or []
+            if deltas:
+                _end_thinking()
+            for tc in deltas:
                 slot = tool_calls.setdefault(tc.get("index", 0),
                                              {"id": None, "name": "", "args": ""})
                 if tc.get("id"):
@@ -700,6 +739,7 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text) -> dict:
                 if fn.get("arguments"):
                     slot["args"] += fn["arguments"]
 
+    _end_thinking()   # in case the stream ended still in the thinking phase
     msg = {"role": "assistant", "content": "".join(content_parts) or None}
     if tool_calls:
         msg["tool_calls"] = [
@@ -738,6 +778,7 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     temperature   = psai._profile_temperature(profile)
     custom_params = psai._parse_custom_params(profile)
     custom_system = profile.get("custom_system", "").strip()
+    hide_thinking = bool(profile.get("hide_thinking", False))
 
     sys_parts = [PURRAGENT_SYSTEM, _env_block()]
     if custom_system:
@@ -755,7 +796,7 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         if custom_params:
             body.update(custom_params)
 
-        message = _chat_stream(endpoint, api_key, body, on_text)
+        message = _chat_stream(endpoint, api_key, body, on_text, hide_thinking)
 
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
