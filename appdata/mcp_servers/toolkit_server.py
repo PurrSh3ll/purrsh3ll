@@ -50,6 +50,12 @@ def _truncate(text: str, limit: int = MAX_OUTPUT) -> str:
     return text[:limit] + f"\n… [truncated, {len(text) - limit} more chars]"
 
 
+def _resolve(path: str) -> str:
+    """Expand $VARS and a leading ~ so paths like ~/Desktop/x or $HOME/x — which
+    models commonly emit — land where the user expects (open() would not)."""
+    return os.path.expanduser(os.path.expandvars(path))
+
+
 # --------------------------------------------------------------------------- #
 # Tool implementations
 # --------------------------------------------------------------------------- #
@@ -59,12 +65,18 @@ def _tool_run_command(args):
         raise ValueError("`command` must be a non-empty string")
     timeout = args.get("timeout", DEFAULT_CMD_TIMEOUT)
     workdir = args.get("workdir") or None
-    if workdir and not os.path.isdir(workdir):
-        raise ValueError(f"workdir not found: {workdir}")
+    if workdir:
+        workdir = _resolve(workdir)
+        if not os.path.isdir(workdir):
+            raise ValueError(f"workdir not found: {workdir}")
     try:
         proc = subprocess.run(
             command, shell=True, cwd=workdir, capture_output=True,
             text=True, timeout=float(timeout),
+            # Isolate the child's stdin from the server's — otherwise a command
+            # that reads stdin (cat, ssh, a prompt…) would consume the JSON-RPC
+            # channel and break the MCP transport.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return f"exit code: (timeout after {timeout}s)\ncommand: {command}"
@@ -84,6 +96,7 @@ def _tool_read_file(args):
     path = args.get("path")
     if not isinstance(path, str) or not path:
         raise ValueError("`path` must be a string")
+    path = _resolve(path)
     if not os.path.isfile(path):
         raise ValueError(f"file not found: {path}")
     offset = int(args.get("offset", 0) or 0)      # 0-based starting line
@@ -109,6 +122,7 @@ def _tool_write_file(args):
         raise ValueError("`path` must be a string")
     if not isinstance(content, str):
         raise ValueError("`content` must be a string")
+    path = _resolve(path)
     append = bool(args.get("append", False))
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
@@ -129,6 +143,7 @@ def _tool_edit_file(args):
         raise ValueError("`old_string` must be a non-empty string")
     if not isinstance(new, str):
         raise ValueError("`new_string` must be a string")
+    path = _resolve(path)
     if not os.path.isfile(path):
         raise ValueError(f"file not found: {path}")
     replace_all = bool(args.get("replace_all", False))
@@ -147,7 +162,7 @@ def _tool_edit_file(args):
 
 
 def _tool_list_dir(args):
-    path = args.get("path", ".") or "."
+    path = _resolve(args.get("path", ".") or ".")
     if not os.path.isdir(path):
         raise ValueError(f"not a directory: {path}")
     rows = []
@@ -168,7 +183,7 @@ def _tool_grep(args):
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or pattern == "":
         raise ValueError("`pattern` must be a non-empty string")
-    path = args.get("path", ".") or "."
+    path = _resolve(args.get("path", ".") or ".")
     flags = re.IGNORECASE if args.get("ignore_case") else 0
     globpat = args.get("glob")
     try:
