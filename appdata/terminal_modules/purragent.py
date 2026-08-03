@@ -83,6 +83,7 @@ SLASH = [
     ("/mcp",      "manage MCP servers"),
     ("/hack",     "hacking toolkit"),
     ("/upgrade",  "re-launch purragent as root (sudo)"),
+    ("/debug",    "toggle showing the raw request sent to the model"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
     ("/help",     "show commands and usage"),
     ("/clear",    "clear the conversation"),
@@ -597,6 +598,9 @@ def _chat_once(endpoint: str, api_key: str, body: dict) -> dict:
     }
     req = urllib.request.Request(
         endpoint, data=json.dumps(body).encode(), headers=headers, method="POST")
+    # Under /debug this prints the exact on-the-wire request (masked key, full
+    # body incl. the tool schemas) — same dump psai uses for the text path.
+    psai._debug_dump_request("openai-compat (agent)", endpoint, "POST", headers, body)
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
@@ -695,6 +699,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     history: list = []
     greeting = _load_state(base_dir).get("greeting") or DEFAULT_GREETING
     mode = _load_state(base_dir).get("mode") or DEFAULT_MODE   # skeleton: inert
+    debug = False   # /debug: mirror pschat's --debug (dump the request to the model)
 
     # MCP client. Servers are spawned lazily on first use (chat or /mcp) so
     # launching purragent stays fast and costs nothing when MCP is unused.
@@ -710,14 +715,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         # Privilege indicator: red 'root' warns you're elevated, dim 'user' otherwise.
         priv_seg = ("<style fg='#ff5f5f'>⚡ root</style>" if _is_root()
                     else "<style fg='#7f7f7f'>user</style>")
+        # Only shown while /debug is on, so you always know the request is dumped.
+        dbg_seg = "   <style fg='#e5c07b'>debug</style>" if debug else ""
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
-                        f"{mode_seg}   {priv_seg}   "
+                        f"{mode_seg}   {priv_seg}{dbg_seg}   "
                         "<style fg='#7f7f7f'>/exit to quit</style>")
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
-            f"  ·  <i>{p.get('name', '?')}</i>   {mode_seg}   {priv_seg}   "
+            f"  ·  <i>{p.get('name', '?')}</i>   {mode_seg}   {priv_seg}{dbg_seg}   "
             f"<style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
@@ -870,6 +877,18 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     "Hacking toolkit — quick offensive-security actions."))
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
+            elif cmd == "/debug":
+                debug = not debug
+                # Flip psai's flag so BOTH paths dump: the plain text chat (via
+                # psai's streamers) and the agent tool loop (via _chat_once).
+                psai._DEBUG_PROMPT = debug
+                if debug:
+                    console.print(
+                        "  [green]▸[/green] debug [bold]on[/bold] "
+                        "[dim]— the exact request sent to the model (messages + "
+                        "tools, API key masked) prints before each reply[/dim]")
+                else:
+                    console.print("  [yellow]▸[/yellow] debug [bold]off[/bold]")
             elif cmd == "/greeting":
                 name = text[len("/greeting"):].strip()
                 if not name:
