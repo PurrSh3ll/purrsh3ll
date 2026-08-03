@@ -26,6 +26,9 @@ import time
 # importing it is side-effect-free (its main() is guarded by __main__).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
+import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol) client
+
+import urllib.request  # noqa: E402  — the tool-use loop's non-streaming chat call
 
 from prompt_toolkit import PromptSession                       # noqa: E402
 from prompt_toolkit.application import Application, get_app    # noqa: E402
@@ -483,6 +486,53 @@ def _skeleton_body(title: str, note: str) -> str:
     ))
 
 
+def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
+    """Overlay listing connected MCP servers and the tools each exposes."""
+    rows = mcp.status()
+    parts = [Text("purragent — MCP servers", style=f"bold {VIOLET}"), Text("")]
+    if not rows:
+        parts.append(Text("No MCP servers configured.", style="dim"))
+        parts.append(Text(""))
+        parts.append(Text.from_markup(
+            "Declare servers in [bold]appdata/mcp_servers.json[/bold]."))
+        return _render_ansi(Group(*parts))
+
+    for name, ok, label, tools in rows:
+        if ok:
+            head = Text()
+            head.append("● ", style="green")
+            head.append(name, style="bold white")
+            head.append(f"  {label}", style="dim")
+            parts.append(head)
+            if tools:
+                grid = Table.grid(padding=(0, 2))
+                grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
+                for srv in mcp.servers.values():
+                    if srv.name != name:
+                        continue
+                    for t in srv.tools:
+                        grid.add_row("  " + mcp_client._namespaced(name, t.get("name", "?")),
+                                     Text(t.get("description", ""), style="dim"))
+                parts.append(grid)
+            else:
+                parts.append(Text("    (no tools)", style="dim"))
+        else:
+            head = Text()
+            head.append("○ ", style="red")
+            head.append(name, style="bold white")
+            head.append(f"  {label}", style="red")
+            parts.append(head)
+        parts.append(Text(""))
+
+    note = ("Tools are offered to the model automatically when it supports "
+            "function calling."
+            if tools_ok else
+            "The attached model has no function calling — tools won't be used "
+            "until you pick one that does (/model).")
+    parts.append(Text(note, style="yellow" if not tools_ok else "dim"))
+    return _render_ansi(Group(*parts))
+
+
 # ── LLM query (reuses psai) ────────────────────────────────────────────────────
 
 def query_model(profile: dict, base_dir: str, history: list) -> str:
@@ -504,6 +554,113 @@ def query_model(profile: dict, base_dir: str, history: list) -> str:
 
     return psai._run_llm(provider, model, msgs, url, api_key,
                          disable_thinking, custom_params, hide_thinking, temperature)
+
+
+# ── Agentic tool-use loop (OpenAI-compatible + MCP tools) ──────────────────────
+# When MCP tools are available and the model supports function calling, we run a
+# small agent loop instead of the plain streaming chat: pass every server's tool
+# schemas to the model, execute whatever it calls (via the MCP client), feed the
+# results back, and repeat until it answers in plain text. This is non-streaming
+# (tool_calls need the full message), so the final answer is printed at once.
+#
+# Anthropic and Ollama-native use a different tool wire format; for now the loop
+# covers the OpenAI-compatible providers (openrouter/openai/groq/gemini/hf/…),
+# which is every provider psai routes through /chat/completions. Others fall back
+# to the plain text path (query_model) with no tools.
+
+TOOL_LOOP_MAX_ROUNDS = 8
+
+
+def _supports_tool_loop(profile: dict) -> bool:
+    """The tool loop only speaks the OpenAI /chat/completions tool format."""
+    return profile.get("provider", "") not in ("anthropic",)
+
+
+def _openai_endpoint(profile: dict, base_dir: str):
+    """(endpoint, api_key) for the profile's OpenAI-compatible chat endpoint."""
+    provider = profile.get("provider", "ollama")
+    url = profile.get("url", "") or psai._DEFAULT_URLS.get(provider, "")
+    if provider == "ollama":                     # native URL lacks the /v1 suffix
+        base = url.rstrip("/")
+        url = base if base.endswith("/v1") else base + "/v1"
+    endpoint = url.rstrip("/") + "/chat/completions"
+    api_key = psai._load_api_key(profile.get("name", ""), base_dir)
+    return endpoint, api_key
+
+
+def _chat_once(endpoint: str, api_key: str, body: dict) -> dict:
+    """One non-streaming /chat/completions POST; returns the parsed JSON."""
+    headers = {
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "User-Agent":    "Mozilla/5.0",
+    }
+    req = urllib.request.Request(
+        endpoint, data=json.dumps(body).encode(), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def query_model_with_tools(profile: dict, base_dir: str, history: list,
+                           mcp: "mcp_client.MCPManager", on_event) -> str:
+    """Run the agent loop and return the model's final text answer.
+
+    `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
+    the arguments dict) or 'result' (payload is the MCP result dict).
+    """
+    provider = profile.get("provider", "ollama")
+    model    = profile.get("model", "")
+    endpoint, api_key = _openai_endpoint(profile, base_dir)
+    temperature   = psai._profile_temperature(profile)
+    custom_params = psai._parse_custom_params(profile)
+    custom_system = profile.get("custom_system", "").strip()
+
+    sys_parts = [PURRAGENT_SYSTEM]
+    if custom_system:
+        sys_parts.append(custom_system)
+    # Local working copy of the transcript: the raw assistant tool-call messages
+    # and tool results live only here, not in the caller's plain history.
+    msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
+    tools = mcp.openai_tools()
+
+    for _round in range(TOOL_LOOP_MAX_ROUNDS):
+        body = {"model": model, "messages": msgs, "tools": tools,
+                "tool_choice": "auto", "stream": False}
+        if temperature is not None:
+            body["temperature"] = temperature
+        if custom_params:
+            body.update(custom_params)
+
+        data = _chat_once(endpoint, api_key, body)
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError):
+            err = data.get("error") or data
+            return f"[tool loop] unexpected response: {err}"
+
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return (message.get("content") or "").strip()
+
+        # Keep the assistant's tool-call turn in context, then answer each call.
+        msgs.append(message)
+        for tc in tool_calls:
+            fn   = tc.get("function", {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            on_event("call", name, args)
+            result = mcp.call(name, args)
+            on_event("result", name, result)
+            msgs.append({
+                "role": "tool",
+                "tool_call_id": tc.get("id"),
+                "content": result.get("text") or "(no output)",
+            })
+
+    return "[tool loop] stopped: reached the tool-call limit without a final answer."
 
 
 # ── History (↑ recalls your prompts, not slash commands) ───────────────────────
@@ -538,6 +695,14 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     history: list = []
     greeting = _load_state(base_dir).get("greeting") or DEFAULT_GREETING
     mode = _load_state(base_dir).get("mode") or DEFAULT_MODE   # skeleton: inert
+
+    # MCP client. Servers are spawned lazily on first use (chat or /mcp) so
+    # launching purragent stays fast and costs nothing when MCP is unused.
+    mcp = mcp_client.MCPManager(base_dir)
+
+    def ensure_mcp() -> None:
+        if not mcp.connected:
+            mcp.connect()
 
     def toolbar():
         p = ctx["profile"]
@@ -694,9 +859,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                   f"[bold]{mode}[/bold] "
                                   "[dim](not wired up yet)[/dim]")
             elif cmd == "/mcp":
-                show_view(_skeleton_body(
-                    "purragent — MCP",
-                    "Manage MCP (Model Context Protocol) servers here."))
+                console.print("  [dim]connecting to MCP servers…[/dim]")
+                ensure_mcp()
+                tools_ok = bool(ctx["profile"]) and _model_has_tools(
+                    ctx["profile"], base_dir)
+                show_view(_mcp_body(mcp, tools_ok))
             elif cmd == "/hack":
                 show_view(_skeleton_body(
                     "purragent — hack",
@@ -728,14 +895,42 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
         conversation_started = True   # first real message ends the welcome screen
         history.append({"role": "user", "content": text})
+
+        # Offer MCP tools only when the model can actually call functions and the
+        # provider speaks the OpenAI tool format; otherwise use the plain text path.
+        use_tools = (_supports_tool_loop(ctx["profile"])
+                     and _model_has_tools(ctx["profile"], base_dir))
+        if use_tools:
+            ensure_mcp()
+
         try:
-            reply = query_model(ctx["profile"], base_dir, history)
-            if reply:
-                history.append({"role": "assistant", "content": reply})
+            if use_tools and mcp.has_tools():
+                def _on_tool(kind, name, payload):
+                    if kind == "call":
+                        args = json.dumps(payload, ensure_ascii=False)
+                        console.print(f"  [{VIOLET}]⚙ {name}[/{VIOLET}] "
+                                      f"[dim]{args}[/dim]")
+                    else:
+                        out = (payload.get("text") or "").replace("\n", " ")
+                        if len(out) > 200:
+                            out = out[:200] + "…"
+                        mark = "red" if payload.get("is_error") else "green"
+                        console.print(f"    [{mark}]→[/{mark}] [dim]{out}[/dim]")
+
+                reply = query_model_with_tools(ctx["profile"], base_dir, history,
+                                               mcp, _on_tool)
+                if reply:
+                    console.print(reply, markup=False, highlight=False)
+                    history.append({"role": "assistant", "content": reply})
+            else:
+                reply = query_model(ctx["profile"], base_dir, history)
+                if reply:
+                    history.append({"role": "assistant", "content": reply})
         except (KeyboardInterrupt, SystemExit):
             # psai's streamers sys.exit(130) on Ctrl-C mid-reply; stay in the REPL.
             console.print("\n  [dim]interrupted[/dim]")
 
+    mcp.close()   # shut down any MCP server subprocesses we spawned
     console.print("  [dim]bye[/dim]")
 
 
