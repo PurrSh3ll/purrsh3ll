@@ -147,13 +147,20 @@ class MCPServer:
             return False
         return True
 
+    def alive(self) -> bool:
+        """True while the server subprocess is still running."""
+        return self.proc is not None and self.proc.poll() is None
+
     def call_tool(self, tool_name: str, arguments: dict) -> dict:
-        """Invoke a tool. Returns {'text': str, 'is_error': bool}."""
+        """Invoke a tool. Returns {'text', 'is_error'[, 'dead']}. `dead` is set
+        when the transport died (broken pipe / process exited), so the manager
+        knows it should respawn and retry."""
         try:
             result = self._request("tools/call", {"name": tool_name,
                                                   "arguments": arguments or {}})
         except Exception as e:
-            return {"text": f"tool call failed: {e}", "is_error": True}
+            return {"text": f"tool call failed: {e}", "is_error": True,
+                    "dead": not self.alive() or isinstance(e, (BrokenPipeError, OSError))}
         # MCP result: {"content": [{"type":"text","text":...}], "isError": bool}
         parts = []
         for block in result.get("content", []) or []:
@@ -191,6 +198,7 @@ class MCPManager:
         self.base_dir = base_dir
         self.servers: dict[str, MCPServer] = {}   # only successfully started ones
         self.failures: dict[str, str] = {}        # name -> error
+        self.specs: dict[str, dict] = {}          # name -> config (for respawning)
         self.connected = False
 
     def _config_path(self) -> str:
@@ -205,26 +213,37 @@ class MCPManager:
         except Exception:
             return {"servers": {}}
 
+    def _spawn(self, name: str):
+        """Start (or restart) one server from its saved spec. Returns the live
+        MCPServer or None, updating self.servers / self.failures."""
+        spec = self.specs.get(name)
+        if spec is None:
+            return None
+        srv = MCPServer(
+            name=name,
+            command=spec.get("command", "python3"),
+            args=spec.get("args", []),
+            cwd=self.base_dir,               # args are relative to the project root
+            env=os.environ.copy(),
+        )
+        if srv.start():
+            self.servers[name] = srv
+            self.failures.pop(name, None)
+            return srv
+        self.servers.pop(name, None)
+        self.failures[name] = srv.error or "unknown error"
+        return None
+
     def connect(self) -> None:
         """Start every enabled server (idempotent — re-running reconnects)."""
         self.close()
         self.servers.clear()
         self.failures.clear()
         cfg = self.load_config()
-        for name, spec in (cfg.get("servers") or {}).items():
-            if not spec.get("enabled", True):
-                continue
-            srv = MCPServer(
-                name=name,
-                command=spec.get("command", "python3"),
-                args=spec.get("args", []),
-                cwd=self.base_dir,           # args are relative to the project root
-                env=os.environ.copy(),
-            )
-            if srv.start():
-                self.servers[name] = srv
-            else:
-                self.failures[name] = srv.error or "unknown error"
+        self.specs = {name: spec for name, spec in (cfg.get("servers") or {}).items()
+                      if spec.get("enabled", True)}
+        for name in self.specs:
+            self._spawn(name)
         self.connected = True
 
     def has_tools(self) -> bool:
@@ -250,12 +269,28 @@ class MCPManager:
         return out
 
     def call(self, namespaced_name: str, arguments: dict) -> dict:
-        """Route a namespaced tool call to its owning server."""
+        """Route a namespaced tool call to its owning server. Self-healing: if the
+        server has died (crash / broken pipe), respawn it and retry once so a dead
+        transport doesn't turn every later call into an error."""
         server_name, tool_name = split_namespaced(namespaced_name)
-        srv = self.servers.get(server_name)
-        if srv is None:
+        if server_name not in self.specs:
             return {"text": f"no such MCP server: {server_name}", "is_error": True}
-        return srv.call_tool(tool_name, arguments)
+
+        srv = self.servers.get(server_name)
+        if srv is None or not srv.alive():          # (re)connect a missing/dead server
+            srv = self._spawn(server_name)
+        if srv is None:
+            return {"text": f"MCP server '{server_name}' is unavailable: "
+                            f"{self.failures.get(server_name, 'failed to start')}",
+                    "is_error": True}
+
+        result = srv.call_tool(tool_name, arguments)
+        if result.get("dead"):                      # transport died mid-call — retry once
+            srv = self._spawn(server_name)
+            if srv is not None:
+                result = srv.call_tool(tool_name, arguments)
+        result.pop("dead", None)
+        return result
 
     def status(self) -> list:
         """[(server, ok, info_or_error, [tool_names])] for the /mcp view."""
