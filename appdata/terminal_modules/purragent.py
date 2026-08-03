@@ -1033,8 +1033,14 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             elif cmd == "/help":
                 print_help()
             elif cmd == "/clear":
+                # Clear the model context AND wipe the screen + scrollback, then
+                # drop back to the fresh welcome banner — so no trace of the old
+                # conversation is left visible or scrollable.
                 history.clear()
-                console.print("  [dim]conversation cleared[/dim]")
+                if sys.stdout.isatty():
+                    sys.stdout.write("\x1b[3J\x1b[2J\x1b[H")   # scrollback + screen
+                    sys.stdout.flush()
+                conversation_started = False
             elif cmd == "/model":
                 cur = ctx["profile"].get("name") if ctx["profile"] else None
                 chosen = pick_model(config, cur, base_dir)
