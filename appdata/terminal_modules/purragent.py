@@ -1078,6 +1078,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if use_tools:
             ensure_mcp()
 
+        # Accumulate streamed text (and an interrupted flag) at this scope so the
+        # post-turn guard can close the turn coherently even on Ctrl-C.
+        streamed_text: list = []
+        interrupted = False
+
+        def _on_text(piece):
+            streamed_text.append(piece)
+            sys.stdout.write(piece)
+            sys.stdout.flush()
+
         try:
             if use_tools and mcp.has_tools():
                 def _on_tool(kind, name, payload):
@@ -1115,18 +1125,10 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         mark = "red" if payload.get("is_error") else "green"
                         console.print(f"    [{mark}]→[/{mark}] [dim]{out}[/dim]")
 
-                # Stream the answer live to stdout; track whether anything was
-                # written so we can terminate the line cleanly afterwards.
-                streamed = {"any": False}
-
-                def _on_text(piece):
-                    streamed["any"] = True
-                    sys.stdout.write(piece)
-                    sys.stdout.flush()
-
+                # The answer is streamed live via _on_text (defined above).
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
                                                mcp, _on_tool, _on_text)
-                if streamed["any"]:
+                if streamed_text:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
                 if reply:
@@ -1138,7 +1140,18 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     history.append({"role": "assistant", "content": reply})
         except (KeyboardInterrupt, SystemExit):
             # psai's streamers sys.exit(130) on Ctrl-C mid-reply; stay in the REPL.
+            interrupted = True
             console.print("\n  [dim]interrupted[/dim]")
+
+        # Keep the transcript well-formed: a user turn left without an assistant
+        # reply (e.g. Ctrl-C mid-generation) makes the model continue the *previous*
+        # question on the next prompt — and loop when tools are involved. Always
+        # close the turn with an assistant message (the partial text if we have it).
+        if history and history[-1].get("role") == "user":
+            partial = "".join(streamed_text).strip()
+            note = "[interrupted]" if interrupted else "[no response]"
+            history.append({"role": "assistant",
+                            "content": f"{partial}\n\n{note}" if partial else note})
 
     mcp.close()   # shut down any MCP server subprocesses we spawned
     console.print("  [dim]bye[/dim]")
