@@ -1,9 +1,14 @@
 {
   "servers": {
+    "toolkit": {
+      "command": "python3",
+      "args": ["appdata/mcp_servers/toolkit_server.py"],
+      "enabled": true
+    },
     "demo": {
       "command": "python3",
       "args": ["appdata/mcp_servers/demo_server.py"],
-      "enabled": true
+      "enabled": false
     }
   }
 }
