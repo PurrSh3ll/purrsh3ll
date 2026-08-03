@@ -206,6 +206,33 @@ def _model_has_tools(profile: dict, base_dir: str) -> bool:
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def _load_registry(base_dir: str) -> dict:
+    """Cached model_ctx_registry.json (read once — the toolbar checks caps often)."""
+    try:
+        with open(os.path.join(base_dir, "appdata", "model_ctx_registry.json"),
+                  encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _model_capability(profile: dict, base_dir: str, cap: str) -> bool:
+    """Whether the model supports `cap` ('vision' or 'audio'). Mirrors the tools
+    logic: a per-profile <cap>_user_override wins; otherwise the provider's list
+    of capable models in the registry decides."""
+    override = profile.get(f"{cap}_user_override")
+    if override is not None:
+        return bool(override)
+    model = profile.get("model", "")
+    if model.lower().startswith("models/"):     # Gemini prefix
+        model = model[7:]
+    if ":" in model:                            # OpenRouter :free / :variant suffix
+        model = model.split(":")[0]
+    section = _load_registry(base_dir).get(profile.get("provider", "").lower(), {})
+    return model.lower() in [m.lower() for m in (section.get(cap) or [])]
+
+
 # ── Inline arrow-key selector (Claude-Code-style) ──────────────────────────────
 
 def select_option(title: str, options: list, start: int = 0):
@@ -878,10 +905,15 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         "<style fg='#61afef'>/model</style> to choose   "
                         f"{mode_seg}   {priv_seg}{dbg_seg}   "
                         "<style fg='#7f7f7f'>/exit to quit</style>")
+        # Capability badges — shown only when the attached model supports them.
+        caps = [c for c in ("vision", "audio")
+                if _model_capability(p, base_dir, c)]
+        cap_seg = ("   " + " ".join(f"<style fg='#56b6c2'>{c}</style>" for c in caps)
+                   if caps else "")
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
-            f"  ·  <i>{p.get('name', '?')}</i>   {mode_seg}   {priv_seg}{dbg_seg}   "
-            f"<style fg='#7f7f7f'>/exit to quit</style>")
+            f"  ·  <i>{p.get('name', '?')}</i>{cap_seg}   {mode_seg}   "
+            f"{priv_seg}{dbg_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
         "prompt":         "bold #d75fff",
