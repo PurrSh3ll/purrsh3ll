@@ -403,10 +403,14 @@ def _model_status(profile: dict | None) -> Text:
     return t
 
 
-def _banner_panel(profile: dict | None, logo: Text, greeting: str) -> Panel:
+def _banner_panel(profile: dict | None, logo: Text, greeting: str,
+                  returning: bool = True) -> Panel:
     left = Table.grid(padding=0)
     left.add_column()
-    left.add_row(Text(f"Welcome back {greeting}!", style="bold white"))
+    # First ever launch greets differently — "back" would imply a return.
+    welcome = (f"Welcome back {greeting}!" if returning
+               else f"Welcome, {greeting}!")
+    left.add_row(Text(welcome, style="bold white"))
     left.add_row("")
     left.add_row(logo)
     left.add_row("")
@@ -885,9 +889,15 @@ class SlashCompleter(Completer):
 def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     ctx = {"profile": profile}
     history: list = []
-    greeting = _load_state(base_dir).get("greeting") or DEFAULT_GREETING
-    mode = _load_state(base_dir).get("mode") or DEFAULT_MODE   # skeleton: inert
+    _state = _load_state(base_dir)
+    greeting = _state.get("greeting") or DEFAULT_GREETING
+    mode = _state.get("mode") or DEFAULT_MODE   # skeleton: inert
     debug = False   # /debug: mirror pschat's --debug (dump the request to the model)
+
+    # First-ever launch: greet without "back". Mark it so later launches say "back".
+    first_launch = not _state.get("launched")
+    if first_launch:
+        _save_state(base_dir, launched=True)
 
     # MCP client. Servers are spawned lazily on first use (chat or /mcp) so
     # launching purragent stays fast and costs nothing when MCP is unused.
@@ -977,7 +987,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
     def build_frames() -> dict:
         return {v: "\n" + _render_ansi(
-                    _banner_panel(ctx["profile"], _logo_text(v), greeting)) + hint
+                    _banner_panel(ctx["profile"], _logo_text(v), greeting,
+                                  returning=not first_launch)) + hint
                 for v in ("open", "blink", "squint")}
 
     frames = build_frames()
