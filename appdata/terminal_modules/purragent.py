@@ -16,9 +16,13 @@ plumbing is reused from psai.py so purragent shares the app's profiles.
 
 import argparse
 import contextlib
+import functools
+import getpass
 import io
 import json
 import os
+import platform
+import shutil
 import sys
 import time
 
@@ -110,7 +114,9 @@ BANNER_COMMANDS = [
 # Light default persona; a profile's own custom_system is appended after it.
 PURRAGENT_SYSTEM = (
     "You are purragent, a console assistant for authorized penetration testing "
-    "and security research inside PurrSh3ll. Be concise and practical."
+    "and security research inside PurrSh3ll. Be concise and practical. "
+    "Basic host facts are given in the <env> block below — use them directly and "
+    "do not call tools to discover what is already there (user, home, OS, cwd, date)."
 )
 
 console = Console()
@@ -534,6 +540,52 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
     return _render_ansi(Group(*parts))
 
 
+# ── Environment block (host facts injected into every prompt) ──────────────────
+# Mirrors Claude Code's <env> block: give the model basic host facts up front so
+# it doesn't burn tool calls discovering the user, home, OS, cwd, etc. Gathered
+# from stdlib only (no subprocess), and deliberately WITHOUT any IP/network info.
+
+@functools.lru_cache(maxsize=1)
+def _env_facts() -> str:
+    """Static host facts, computed once per process (re-exec by /upgrade refreshes)."""
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = os.environ.get("USER", "?")
+    try:
+        uid = os.geteuid()
+        uid_s = f"uid {uid}, {'root' if uid == 0 else 'non-root'}"
+    except AttributeError:              # non-POSIX
+        uid_s = "non-POSIX"
+
+    distro = ""
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("PRETTY_NAME="):
+                    distro = line.split("=", 1)[1].strip().strip('"')
+                    break
+    except Exception:
+        pass
+    kernel = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
+    os_line = f"{distro} · {kernel}" if distro else kernel
+
+    return "\n".join([
+        f"user: {user} ({uid_s})",
+        f"home: {os.path.expanduser('~')}",
+        f"os: {os_line}",
+        f"shell: {os.environ.get('SHELL', '?')}",
+    ])
+
+
+def _env_block() -> str:
+    """The <env> block for the system prompt: cached static facts plus a live
+    cwd and date (so long sessions don't show a stale date)."""
+    from datetime import date
+    live = f"cwd: {os.getcwd()}\ndate: {date.today().isoformat()}"
+    return "<env>\n" + _env_facts() + "\n" + live + "\n</env>"
+
+
 # ── LLM query (reuses psai) ────────────────────────────────────────────────────
 
 def query_model(profile: dict, base_dir: str, history: list) -> str:
@@ -548,7 +600,7 @@ def query_model(profile: dict, base_dir: str, history: list) -> str:
     hide_thinking    = bool(profile.get("hide_thinking", False))
     temperature      = psai._profile_temperature(profile)
 
-    sys_parts = [PURRAGENT_SYSTEM]
+    sys_parts = [PURRAGENT_SYSTEM, _env_block()]
     if custom_system:
         sys_parts.append(custom_system)
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + history
@@ -605,6 +657,19 @@ def _chat_once(endpoint: str, api_key: str, body: dict) -> dict:
         return json.loads(resp.read().decode("utf-8", errors="replace"))
 
 
+def _tool_arg_preview(args: dict) -> str:
+    """A short single-line preview of a tool call's main argument (the command,
+    path, url, …) — shown after the tool name on the concise activity line."""
+    if not isinstance(args, dict) or not args:
+        return ""
+    # pattern before path so grep previews the regex, not its search dir
+    for key in ("command", "url", "pattern", "path", "query"):
+        val = args.get(key)
+        if val:
+            return " ".join(str(val).split())
+    return " ".join(str(next(iter(args.values()))).split())
+
+
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event) -> str:
     """Run the agent loop and return the model's final text answer.
@@ -619,7 +684,7 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     custom_params = psai._parse_custom_params(profile)
     custom_system = profile.get("custom_system", "").strip()
 
-    sys_parts = [PURRAGENT_SYSTEM]
+    sys_parts = [PURRAGENT_SYSTEM, _env_block()]
     if custom_system:
         sys_parts.append(custom_system)
     # Local working copy of the transcript: the raw assistant tool-call messages
@@ -926,13 +991,23 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             if use_tools and mcp.has_tools():
                 def _on_tool(kind, name, payload):
                     if not debug:
-                        # Concise (Claude-Code-style): one line per call, no args
-                        # or result — just that a tool ran and which one.
+                        # Concise (Claude-Code-style): one line per call — the tool
+                        # name plus a short preview of its main argument, clipped to
+                        # fit the terminal width on a single line.
                         if kind == "call":
                             _srv, short = mcp_client.split_namespaced(name)
-                            console.print(f"  [{VIOLET}]⚙[/{VIOLET}] "
-                                          f"[dim]running tool[/dim] "
-                                          f"[bold]{short}[/bold]")
+                            line = Text("  ")
+                            line.append("⚙", style=VIOLET)
+                            line.append(" running tool ", style="dim")
+                            line.append(short, style="bold")
+                            preview = _tool_arg_preview(payload)
+                            if preview:
+                                cols = shutil.get_terminal_size((80, 24)).columns
+                                room = max(12, cols - len(line) - 3)
+                                if len(preview) > room:
+                                    preview = preview[:room - 1] + "…"
+                                line.append("  " + preview, style="dim")
+                            console.print(line)
                         return
                     # Debug: verbose — show arguments and the tool's result.
                     if kind == "call":
