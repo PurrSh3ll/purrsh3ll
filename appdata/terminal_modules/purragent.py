@@ -338,10 +338,15 @@ def pick_model(config: dict, current_name: str | None, base_dir: str):
                 "no LLM attached — chat is disabled (debugging)")]
     for p in profs:
         has_tools = _model_has_tools(p, base_dir)
+        caps = [c for c in ("vision", "audio") if _model_capability(p, base_dir, c)]
         hint = f"{_model_short(p)} · {p.get('provider', '?')}"
+        if caps:                                    # show multimodal support per row
+            hint += " · " + " · ".join(caps)
         detail = ("✓ function calling supported"
                   if has_tools else
                   "✗ function calling not supported")
+        if caps:                                    # …and on the hover detail line
+            detail += "   ·   " + " · ".join(caps)
         # dim = greyed out when the model has no function calling
         options.append((p.get("name", "?"), hint, not has_tools, detail))
     start = next((i + 1 for i, p in enumerate(profs)
