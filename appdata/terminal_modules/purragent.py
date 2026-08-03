@@ -996,17 +996,20 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # fit the terminal width on a single line.
                         if kind == "call":
                             _srv, short = mcp_client.split_namespaced(name)
-                            # Whole line dimmed so tool activity stays ambient and
+                            # Grey the whole line so tool activity stays ambient and
                             # the model's answer / user's prompt read as primary.
-                            # `dim` (not a fixed grey) so it tracks the terminal theme.
-                            line = Text(f"  ⚙ running tool {short}", style="dim")
+                            # bright_black is the theme's grey palette slot (ANSI 8) —
+                            # visibly distinct from the default fg AND theme-adaptive,
+                            # unlike `dim`, which some terminals render like normal text.
+                            grey = "bright_black"
+                            line = Text(f"  ⚙ running tool {short}", style=grey)
                             preview = _tool_arg_preview(payload)
                             if preview:
                                 cols = shutil.get_terminal_size((80, 24)).columns
                                 room = max(12, cols - len(line) - 3)
                                 if len(preview) > room:
                                     preview = preview[:room - 1] + "…"
-                                line.append(f"  {preview}", style="dim")
+                                line.append(f"  {preview}", style=grey)
                             console.print(line)
                         return
                     # Debug: verbose — show arguments and the tool's result.
