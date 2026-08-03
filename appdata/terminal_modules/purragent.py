@@ -32,7 +32,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
 import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol) client
 
-import urllib.request  # noqa: E402  — the tool-use loop's non-streaming chat call
+import urllib.request  # noqa: E402  — the tool-use loop's streaming chat call
+import urllib.error     # noqa: E402  — HTTPError handling for the stream
 
 from prompt_toolkit import PromptSession                       # noqa: E402
 from prompt_toolkit.application import Application, get_app    # noqa: E402
@@ -613,8 +614,9 @@ def query_model(profile: dict, base_dir: str, history: list) -> str:
 # When MCP tools are available and the model supports function calling, we run a
 # small agent loop instead of the plain streaming chat: pass every server's tool
 # schemas to the model, execute whatever it calls (via the MCP client), feed the
-# results back, and repeat until it answers in plain text. This is non-streaming
-# (tool_calls need the full message), so the final answer is printed at once.
+# results back, and repeat until it answers in plain text. Each round is streamed
+# (SSE) — content deltas are printed live via on_text while tool_call deltas are
+# accumulated — so the answer appears token by token, like the plain chat path.
 #
 # Anthropic and Ollama-native use a different tool wire format; for now the loop
 # covers the OpenAI-compatible providers (openrouter/openai/groq/gemini/hf/…),
@@ -641,8 +643,12 @@ def _openai_endpoint(profile: dict, base_dir: str):
     return endpoint, api_key
 
 
-def _chat_once(endpoint: str, api_key: str, body: dict) -> dict:
-    """One non-streaming /chat/completions POST; returns the parsed JSON."""
+def _chat_stream(endpoint: str, api_key: str, body: dict, on_text) -> dict:
+    """Stream one /chat/completions turn (SSE). Prints content deltas live via
+    on_text(piece); accumulates tool_call deltas. Returns an assistant message
+    dict {content, tool_calls} reconstructed from the stream."""
+    body = dict(body)
+    body["stream"] = True
     headers = {
         "Content-Type":  "application/json",
         "Authorization": f"Bearer {api_key}",
@@ -653,8 +659,55 @@ def _chat_once(endpoint: str, api_key: str, body: dict) -> dict:
     # Under /debug this prints the exact on-the-wire request (masked key, full
     # body incl. the tool schemas) — same dump psai uses for the text path.
     psai._debug_dump_request("openai-compat (agent)", endpoint, "POST", headers, body)
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+    content_parts: list = []
+    tool_calls: dict = {}      # index -> {id, name, args}
+    try:
+        resp = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        on_text(f"[tool loop] HTTP {e.code}: {detail[:400]}")
+        return {"role": "assistant", "content": f"[tool loop] HTTP {e.code}"}
+
+    with resp:
+        for raw in resp:                       # SSE: one "data: {json}" per line
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                on_text(piece)
+            for tc in delta.get("tool_calls") or []:
+                slot = tool_calls.setdefault(tc.get("index", 0),
+                                             {"id": None, "name": "", "args": ""})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["name"] = fn["name"]
+                if fn.get("arguments"):
+                    slot["args"] += fn["arguments"]
+
+    msg = {"role": "assistant", "content": "".join(content_parts) or None}
+    if tool_calls:
+        msg["tool_calls"] = [
+            {"id": s["id"], "type": "function",
+             "function": {"name": s["name"], "arguments": s["args"]}}
+            for _i, s in sorted(tool_calls.items())
+        ]
+    return msg
 
 
 def _tool_arg_preview(args: dict) -> str:
@@ -671,11 +724,13 @@ def _tool_arg_preview(args: dict) -> str:
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
-                           mcp: "mcp_client.MCPManager", on_event) -> str:
+                           mcp: "mcp_client.MCPManager", on_event, on_text) -> str:
     """Run the agent loop and return the model's final text answer.
 
-    `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
-    the arguments dict) or 'result' (payload is the MCP result dict).
+    `on_event(kind, name, payload)` reports tool progress: kind is 'call' (payload
+    is the arguments dict) or 'result' (payload is the MCP result dict).
+    `on_text(piece)` receives streamed answer chunks as they arrive (the final
+    answer is streamed live, so the caller should not print the return value).
     """
     provider = profile.get("provider", "ollama")
     model    = profile.get("model", "")
@@ -694,18 +749,13 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
 
     for _round in range(TOOL_LOOP_MAX_ROUNDS):
         body = {"model": model, "messages": msgs, "tools": tools,
-                "tool_choice": "auto", "stream": False}
+                "tool_choice": "auto"}
         if temperature is not None:
             body["temperature"] = temperature
         if custom_params:
             body.update(custom_params)
 
-        data = _chat_once(endpoint, api_key, body)
-        try:
-            message = data["choices"][0]["message"]
-        except (KeyError, IndexError):
-            err = data.get("error") or data
-            return f"[tool loop] unexpected response: {err}"
+        message = _chat_stream(endpoint, api_key, body, on_text)
 
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
@@ -945,7 +995,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             elif cmd == "/debug":
                 debug = not debug
                 # Flip psai's flag so BOTH paths dump: the plain text chat (via
-                # psai's streamers) and the agent tool loop (via _chat_once).
+                # psai's streamers) and the agent tool loop (via _chat_stream).
                 psai._DEBUG_PROMPT = debug
                 if debug:
                     console.print(
@@ -1024,10 +1074,22 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         mark = "red" if payload.get("is_error") else "green"
                         console.print(f"    [{mark}]→[/{mark}] [dim]{out}[/dim]")
 
+                # Stream the answer live to stdout; track whether anything was
+                # written so we can terminate the line cleanly afterwards.
+                streamed = {"any": False}
+
+                def _on_text(piece):
+                    streamed["any"] = True
+                    sys.stdout.write(piece)
+                    sys.stdout.flush()
+
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
-                                               mcp, _on_tool)
+                                               mcp, _on_tool, _on_text)
+                if streamed["any"]:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
                 if reply:
-                    console.print(reply, markup=False, highlight=False)
+                    # Already streamed to screen — just keep it for context.
                     history.append({"role": "assistant", "content": reply})
             else:
                 reply = query_model(ctx["profile"], base_dir, history)
