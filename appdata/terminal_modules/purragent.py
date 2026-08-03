@@ -503,7 +503,6 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
             head = Text()
             head.append("● ", style="green")
             head.append(name, style="bold white")
-            head.append(f"  {label}", style="dim")
             parts.append(head)
             if tools:
                 grid = Table.grid(padding=(0, 2))
@@ -512,7 +511,9 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
                     if srv.name != name:
                         continue
                     for t in srv.tools:
-                        grid.add_row("  " + mcp_client._namespaced(name, t.get("name", "?")),
+                        # Show the bare tool name — the mcp__<server>__ prefix is
+                        # redundant here under the server's own heading.
+                        grid.add_row("  " + t.get("name", "?"),
                                      Text(t.get("description", ""), style="dim"))
                 parts.append(grid)
             else:
@@ -525,12 +526,11 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
             parts.append(head)
         parts.append(Text(""))
 
-    note = ("Tools are offered to the model automatically when it supports "
-            "function calling."
-            if tools_ok else
+    # Only warn when the attached model can't use tools; no note otherwise.
+    if not tools_ok:
+        parts.append(Text(
             "The attached model has no function calling — tools won't be used "
-            "until you pick one that does (/model).")
-    parts.append(Text(note, style="yellow" if not tools_ok else "dim"))
+            "until you pick one that does (/model).", style="yellow"))
     return _render_ansi(Group(*parts))
 
 
