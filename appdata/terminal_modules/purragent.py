@@ -556,43 +556,95 @@ def _drain_stdin() -> None:
         pass
 
 
-def show_view(body: str, hint: str = "esc / q / enter to return") -> None:
-    """Show content on the alternate screen buffer; any of Esc/q/Enter returns and
-    the previous screen is restored, leaving no clutter in scrollback. Uses plain
-    escapes + a raw key read (the standard pager approach — vim/less/htop)."""
+def _read_key(fd) -> str:
+    """Read one keypress from a raw (cbreak) fd and classify it. Uses os.read (NOT
+    sys.stdin.read, which buffers and would hide the tail of an escape sequence).
+    Returns 'up'/'down'/'pgup'/'pgdn'/'home'/'end'/'quit' or None (ignore).
+    On the alternate screen the mouse wheel arrives as arrow keys, so scrolling
+    the wheel maps straight onto up/down."""
     import select
+    ch = os.read(fd, 1)
+    simple = {b"q": "quit", b"Q": "quit", b"\r": "quit", b"\n": "quit",
+              b"\x03": "quit", b"": "quit",
+              b"j": "down", b"k": "up", b" ": "pgdn", b"g": "home", b"G": "end"}
+    if ch in simple:
+        return simple[ch]
+    if ch == b"\x1b":
+        seq = b""
+        while select.select([fd], [], [], 0.03)[0]:
+            seq += os.read(fd, 32)
+        if not seq:
+            return "quit"                     # lone Esc
+        return {b"[A": "up", b"OA": "up", b"[B": "down", b"OB": "down",
+                b"[5~": "pgup", b"[6~": "pgdn",
+                b"[H": "home", b"[1~": "home", b"OH": "home",
+                b"[F": "end", b"[4~": "end", b"OF": "end"}.get(seq)
+    return None
+
+
+def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
+    """Show content on the alternate screen buffer as a scrollable pager: content
+    taller than the terminal scrolls with the arrow keys / mouse wheel, PgUp/PgDn,
+    Home/End (and j/k, space, g/G); Esc/q/Enter returns and restores the previous
+    screen, leaving no clutter in scrollback."""
     import termios
     import tty
 
-    content = body.rstrip("\n") + f"\r\n\r\n\x1b[7m {hint} \x1b[0m"
-    content = content.replace("\n", "\r\n")
     if not sys.stdin.isatty():
         return
-    with _alt_screen():
-        sys.stdout.write(content)
+    lines = body.rstrip("\n").split("\n")
+    size = shutil.get_terminal_size((80, 24))
+    page = max(1, size.lines - 1)             # last row reserved for the status bar
+    max_off = max(0, len(lines) - page)
+    offset = 0
+
+    def status_bar() -> str:
+        if max_off > 0:
+            last = min(offset + page, len(lines))
+            text = (f" {offset + 1}-{last}/{len(lines)}   "
+                    "↑/↓ scroll · space/PgDn page · g/G top/bottom · q return ")
+        else:
+            text = f" {hint} "
+        return f"\x1b[7m{text}\x1b[0m\x1b[K"
+
+    def render() -> None:
+        visible = lines[offset:offset + page]
+        visible = visible + [""] * (page - len(visible))    # pad to pin status bar
+        out = ["\x1b[H"]                       # home; per-line \x1b[K avoids a flicker-y full clear
+        for ln in visible:
+            out.append(ln + "\x1b[0m\x1b[K\r\n")
+        out.append(status_bar())
+        sys.stdout.write("".join(out))
         sys.stdout.flush()
+
+    with _alt_screen():
         fd = sys.stdin.fileno()
         old = termios.tcgetattr(fd)
         try:
             tty.setcbreak(fd)
-            # Read raw bytes with os.read (NOT sys.stdin.read, which buffers: it
-            # would swallow the rest of an escape sequence, hiding it from select
-            # and making an arrow key look like a lone Esc).
+            render()
             while True:
-                ch = os.read(fd, 1)
-                if ch == b"\x1b":
-                    # Lone Esc (return) vs an escape sequence: on the alternate
-                    # screen the mouse wheel arrives as arrow keys (\x1b[A/\x1b[B).
-                    # If more bytes follow immediately, it's a sequence — drain and
-                    # ignore it (stay in the view) instead of exiting on Esc.
-                    extra = b""
-                    while select.select([fd], [], [], 0.03)[0]:
-                        extra += os.read(fd, 32)
-                    if not extra:
-                        break                 # lone Esc → return
-                    continue                  # wheel/arrow sequence → keep showing
-                if ch in (b"q", b"Q", b"\r", b"\n", b" ", b"\x03", b""):
+                key = _read_key(fd)
+                if key == "quit":
                     break
+                if max_off == 0 or key is None:
+                    continue                   # nothing to scroll / unknown key
+                prev = offset
+                if key == "down":
+                    offset += 1
+                elif key == "up":
+                    offset -= 1
+                elif key == "pgdn":
+                    offset += page
+                elif key == "pgup":
+                    offset -= page
+                elif key == "home":
+                    offset = 0
+                elif key == "end":
+                    offset = max_off
+                offset = max(0, min(offset, max_off))
+                if offset != prev:
+                    render()
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
             termios.tcflush(fd, termios.TCIFLUSH)   # drop any leftover input
