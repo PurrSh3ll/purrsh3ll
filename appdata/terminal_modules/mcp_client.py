@@ -127,6 +127,49 @@ def delete_token(base_dir: str, name: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Tool cache — an enabled HTTP server's pulled tool list is stored here so the
+# /mcp view can show it without re-fetching every time. Gitignored (derived data).
+# --------------------------------------------------------------------------- #
+def _tools_cache_path(base_dir: str) -> str:
+    return os.path.join(base_dir, "appdata", "mcp_cache.json")
+
+
+def load_tools_cache(base_dir: str) -> dict:
+    try:
+        with open(_tools_cache_path(base_dir), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def get_server_tools(base_dir: str, name: str) -> list:
+    return load_tools_cache(base_dir).get(name, []) or []
+
+
+def save_server_tools(base_dir: str, name: str, tools: list) -> None:
+    data = load_tools_cache(base_dir)
+    data[name] = tools
+    path = _tools_cache_path(base_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def delete_server_tools(base_dir: str, name: str) -> None:
+    data = load_tools_cache(base_dir)
+    if name in data:
+        del data[name]
+        path = _tools_cache_path(base_dir)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------- #
 # HTTP liveness probe — for connect-only (already-running) MCP servers reached
 # by URL. "Alive" = the server answers the MCP handshake. Supports SSE (what
 # Burp's MCP server uses) and the newer Streamable HTTP transport. This only
@@ -153,7 +196,8 @@ def _probe_sse(url: str, token: str, timeout: float):
     except urllib.error.URLError as e:
         return False, "cannot reach server (is it running?)"
     except Exception as e:
-        return False, f"error: {e}"
+        return False, ("timed out (server slow to respond)"
+                       if "timed out" in str(e).lower() else f"error: {e}")
 
     deadline = time.time() + timeout
     event = None
@@ -204,7 +248,8 @@ def _probe_streamable(url: str, token: str, timeout: float):
     except urllib.error.URLError as e:
         return False, "cannot reach server (is it running?)"
     except Exception as e:
-        return False, f"error: {e}"
+        return False, ("timed out (server slow to respond)"
+                       if "timed out" in str(e).lower() else f"error: {e}")
     # Body is JSON, or SSE-framed (`data: {json}`) — pull the first JSON object.
     for candidate in ([body] if body.lstrip().startswith("{")
                       else [ln[5:].strip() for ln in body.splitlines()
@@ -222,7 +267,82 @@ def _probe_streamable(url: str, token: str, timeout: float):
     return False, "no initialize response"
 
 
-def probe_http(url: str, token: str = "", timeout: float = 8.0):
+def _extract_jsonrpc(body: str, want_id=None):
+    """Pull one JSON-RPC message out of an HTTP body that is either raw JSON or
+    SSE-framed (`data: {json}` lines). Returns the message with the matching id,
+    or None."""
+    stripped = body.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        candidates = [body]
+    else:
+        candidates = [ln[5:].strip() for ln in body.splitlines()
+                      if ln.startswith("data:")]
+    for c in candidates:
+        try:
+            msg = json.loads(c)
+        except Exception:
+            continue
+        if want_id is None or msg.get("id") == want_id:
+            return msg
+    return None
+
+
+def _post_json(url: str, headers: dict, payload: dict, timeout: float):
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, dict(resp.headers), resp.read().decode("utf-8", errors="replace")
+
+
+def fetch_http_tools(url: str, token: str = "", timeout: float = 15.0):
+    """Pull an HTTP MCP server's tool list (Streamable HTTP): initialize →
+    notifications/initialized → tools/list, carrying the session id if the server
+    issues one. Returns (tools, error) — tools is a list of raw MCP tool dicts."""
+    if "sse" in url.lower():
+        return [], "SSE transport not supported yet (use a Streamable HTTP endpoint)"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "Mozilla/5.0",
+    }
+    headers.update(_auth_headers(token))
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                       "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}}
+    try:
+        _status, rh, body = _post_json(url, headers, init, timeout)
+        msg = _extract_jsonrpc(body, 1)
+        if not msg or "result" not in msg:
+            err = (msg or {}).get("error", "no response")
+            return [], f"initialize failed: {err}"
+        session = rh.get("Mcp-Session-Id") or rh.get("mcp-session-id")
+        hdrs = dict(headers)
+        hdrs["MCP-Protocol-Version"] = PROTOCOL_VERSION
+        if session:
+            hdrs["Mcp-Session-Id"] = session
+        try:                                          # best-effort ack
+            _post_json(url, hdrs, {"jsonrpc": "2.0",
+                                   "method": "notifications/initialized"}, timeout)
+        except Exception:
+            pass
+        _status, _rh2, body2 = _post_json(
+            url, hdrs, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, timeout)
+        msg2 = _extract_jsonrpc(body2, 2)
+        if not msg2 or "result" not in msg2:
+            err = (msg2 or {}).get("error", "no response")
+            return [], f"tools/list failed: {err}"
+        return (msg2["result"].get("tools", []) or []), ""
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return [], f"unauthorized (HTTP {e.code}) — token required or invalid"
+        return [], f"HTTP {e.code}"
+    except urllib.error.URLError:
+        return [], "cannot reach server (is it running?)"
+    except Exception as e:
+        return [], f"error: {e}"
+
+
+def probe_http(url: str, token: str = "", timeout: float = 15.0):
     """Liveness for an HTTP MCP server. Picks SSE vs Streamable by URL hint and
     falls back to the other. Returns (ok: bool, info: str)."""
     sse_first = "sse" in url.lower()
@@ -442,10 +562,54 @@ class MCPManager:
             delete_token(self.base_dir, name)
         return ok, info
 
+    def enable_server(self, name: str):
+        """Turn a server on. For an HTTP server this pulls its tool list and
+        caches it (so /mcp can show it); the tools are NOT wired into the agent
+        yet — that's a later step. Returns (status, info): status is
+        'enabled' | 'missing' | 'builtin' | 'error'."""
+        cfg = self.load_config()
+        servers = cfg.get("servers") or {}
+        spec = servers.get(name)
+        if spec is None:
+            return "missing", ""
+        if is_builtin_server(spec):
+            return "builtin", ""              # always on, nothing to do
+        if "url" in spec:
+            tools, err = fetch_http_tools(spec["url"], load_token(self.base_dir, name))
+            if err:
+                return "error", err
+            save_server_tools(self.base_dir, name, tools)
+            spec["enabled"] = True
+            self._save_config(cfg)
+            return "enabled", f"{len(tools)} tools"
+        # stdio (non-built-in) — just flip the flag; it spawns on next connect.
+        spec["enabled"] = True
+        self._save_config(cfg)
+        return "enabled", ""
+
+    def disable_server(self, name: str) -> str:
+        """Turn a server off (keeps its cached tools so re-enabling is cheap).
+        Returns 'disabled' | 'missing' | 'builtin'."""
+        cfg = self.load_config()
+        servers = cfg.get("servers") or {}
+        spec = servers.get(name)
+        if spec is None:
+            return "missing"
+        if is_builtin_server(spec):
+            return "builtin"
+        spec["enabled"] = False
+        self._save_config(cfg)
+        srv = self.servers.pop(name, None)
+        if srv is not None:
+            srv.close()
+        self.specs.pop(name, None)
+        self.failures.pop(name, None)
+        return "disabled"
+
     def remove_server(self, name: str) -> str:
-        """Delete a user-added server from the config and drop its stored token.
-        Returns a status: 'removed', 'missing', or 'builtin' (a bundled server
-        that can't be removed)."""
+        """Delete a user-added server from the config and drop ALL of its data:
+        stored token and cached tools. Returns 'removed', 'missing', or 'builtin'
+        (a bundled server that can't be removed)."""
         cfg = self.load_config()
         servers = cfg.get("servers") or {}
         spec = servers.get(name)
@@ -457,6 +621,7 @@ class MCPManager:
         cfg["servers"] = servers
         self._save_config(cfg)
         delete_token(self.base_dir, name)
+        delete_server_tools(self.base_dir, name)
         # Also drop any live/spec state so it disappears without a full reconnect.
         srv = self.servers.pop(name, None)
         if srv is not None:
@@ -483,10 +648,16 @@ class MCPManager:
             if is_http:
                 # HTTP servers are cheap to probe (no subprocess), so check
                 # liveness even when disabled — the user still wants to know if
-                # the endpoint is reachable.
+                # the endpoint is reachable. Enabled ones also show their cached
+                # tool list (pulled at enable time; not wired into the agent yet).
                 row["probed"] = True
                 ok, info = self.probe_server(name, spec)
                 row["alive"], row["detail"] = bool(ok), info
+                if enabled:
+                    row["tools"] = [
+                        {"name": t.get("name", "?"),
+                         "description": t.get("description", "")}
+                        for t in get_server_tools(self.base_dir, name)]
             elif enabled:
                 row["probed"] = True
                 srv = self.servers.get(name)
@@ -495,7 +666,10 @@ class MCPManager:
                     ver = srv.server_info.get("version", "")
                     row["alive"] = True
                     row["detail"] = f"{nm} {ver}".strip() or "connected"
-                    row["tools"] = [t.get("name", "?") for t in srv.tools]
+                    row["tools"] = [
+                        {"name": t.get("name", "?"),
+                         "description": t.get("description", "")}
+                        for t in srv.tools]
                 else:
                     row["detail"] = self.failures.get(name, "not connected")
             # else: a disabled stdio server isn't spawned, so it stays unprobed.

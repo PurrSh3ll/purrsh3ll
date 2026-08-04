@@ -101,10 +101,15 @@ SLASH = [
 # Second-level completions offered after "<command> " (e.g. "/mcp add").
 SLASH_SUBCOMMANDS = {
     "/mcp": [
-        ("add",    "add a connect-only MCP server by URL"),
-        ("remove", "remove an MCP server (and its stored token)"),
+        ("add",     "add a connect-only MCP server by URL"),
+        ("enable",  "enable a server (pull its tools)"),
+        ("disable", "disable a server"),
+        ("remove",  "remove an MCP server (and all its data)"),
     ],
 }
+
+# /mcp subcommands whose third slot is an existing server name.
+_MCP_NAME_SUBS = ("remove", "rm", "delete", "enable", "disable")
 
 # Agent run modes (Claude-Code-style). Skeleton only for now — selecting a mode
 # is remembered but does not change behaviour yet.
@@ -789,18 +794,17 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
         head.append(f"   ·   {tag}", style=tag_style)
         parts.append(head)
 
-        # Connect-only servers show their URL; connected stdio servers list tools.
+        # HTTP servers show their URL; every server lists its tools (stdio: live;
+        # enabled HTTP: pulled + cached at enable time).
         if r["is_http"] and r["url"]:
             parts.append(Text(f"    {r['url']}", style="dim"))
-        elif r["alive"]:
-            srv = mcp.servers.get(name)
-            if srv is not None and srv.tools:
-                grid = Table.grid(padding=(0, 2))
-                grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
-                for t in srv.tools:
-                    grid.add_row("  " + t.get("name", "?"),
-                                 Text(t.get("description", ""), style="dim"))
-                parts.append(grid)
+        if r["tools"]:
+            grid = Table.grid(padding=(0, 2))
+            grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
+            for t in r["tools"]:
+                grid.add_row("  " + t.get("name", "?"),
+                             Text(t.get("description", ""), style="dim"))
+            parts.append(grid)
         parts.append(Text(""))
 
     # Only warn when the attached model can't use tools; no note otherwise.
@@ -1231,13 +1235,10 @@ class PromptHistory(InMemoryHistory):
 
 # ── Slash completer (arrow-navigable dropdown) ─────────────────────────────────
 
-_MCP_REMOVE_ALIASES = ("remove", "rm", "delete")
-
-
 class SlashCompleter(Completer):
     def __init__(self, servers_provider=None):
-        # Callable returning the current MCP server names, for completing
-        # "/mcp remove <name>". Defaults to none.
+        # Callable returning [(name, enabled)] for non-built-in MCP servers, for
+        # completing "/mcp <enable|disable|remove> <name>". Defaults to none.
         self._servers = servers_provider or (lambda: [])
 
     def get_completions(self, document, complete_event):
@@ -1245,11 +1246,19 @@ class SlashCompleter(Completer):
         if not text.startswith("/"):
             return
         parts = text.split(" ")
-        # Third slot: "/mcp remove <partial>" → complete existing server names.
+        # Third slot: "/mcp <enable|disable|remove> <partial>" → server names,
+        # filtered by what makes sense (enable→disabled, disable→enabled).
         if (len(parts) == 3 and parts[0].lower() == "/mcp"
-                and parts[1].lower() in _MCP_REMOVE_ALIASES):
-            word = parts[2]
-            for name in self._servers():
+                and parts[1].lower() in _MCP_NAME_SUBS):
+            sub, word = parts[1].lower(), parts[2]
+            items = self._servers()
+            if sub == "enable":
+                names = [n for n, en in items if not en]
+            elif sub == "disable":
+                names = [n for n, en in items if en]
+            else:                                     # remove
+                names = [n for n, _ in items]
+            for name in names:
                 if name.startswith(word):
                     yield Completion(name, start_position=-len(word),
                                      display=name, display_meta="MCP server")
@@ -1348,7 +1357,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         history=PromptHistory(),
         completer=SlashCompleter(
             servers_provider=lambda: [
-                n for n, s in mcp.load_config().get("servers", {}).items()
+                (n, bool(s.get("enabled", True)))
+                for n, s in mcp.load_config().get("servers", {}).items()
                 if not mcp_client.is_builtin_server(s)]),
         # complete_while_typing=False so the menu's reserved rows are claimed only
         # while a completion is actually active — not permanently, which left a big
@@ -1372,7 +1382,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         top = text.startswith("/") and len(parts) == 1
         sub = len(parts) == 2 and parts[0].lower() in SLASH_SUBCOMMANDS
         name = (len(parts) == 3 and parts[0].lower() == "/mcp"
-                and parts[1].lower() in _MCP_REMOVE_ALIASES)
+                and parts[1].lower() in _MCP_NAME_SUBS)
         if top or sub or name:
             if buf.complete_state is None:
                 buf.start_completion(select_first=False)
@@ -1485,6 +1495,53 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 sub = parts[1].lower() if len(parts) > 1 else ""
                 if sub == "add":
                     _mcp_add(mcp, base_dir, parts[2:])
+                elif sub == "enable":
+                    name = parts[2] if len(parts) > 2 else ""
+                    if not name:
+                        names = [n for n, s in
+                                 mcp.load_config().get("servers", {}).items()
+                                 if not mcp_client.is_builtin_server(s)
+                                 and not s.get("enabled", True)]
+                        console.print("  [yellow]usage:[/yellow] /mcp enable <name>"
+                                      + (f"  [dim]— disabled: {', '.join(names)}[/dim]"
+                                         if names else
+                                         "  [dim](no disabled servers)[/dim]"))
+                    else:
+                        console.print(f"  [dim]enabling {name} — fetching tools…[/dim]")
+                        status, info = mcp.enable_server(name)
+                        if status == "enabled":
+                            console.print(f"  [green]▸[/green] [bold]{name}[/bold] "
+                                          "enabled"
+                                          + (f" [dim]— {info}[/dim]" if info else ""))
+                        elif status == "builtin":
+                            console.print(f"  [dim]{name} is built-in — always "
+                                          "enabled[/dim]")
+                        elif status == "error":
+                            console.print(f"  [red]○[/red] couldn't enable "
+                                          f"[bold]{name}[/bold] — [dim]{info}[/dim]")
+                        else:
+                            console.print(f"  [yellow]no such server:[/yellow] {name}")
+                elif sub == "disable":
+                    name = parts[2] if len(parts) > 2 else ""
+                    if not name:
+                        names = [n for n, s in
+                                 mcp.load_config().get("servers", {}).items()
+                                 if not mcp_client.is_builtin_server(s)
+                                 and s.get("enabled", True)]
+                        console.print("  [yellow]usage:[/yellow] /mcp disable <name>"
+                                      + (f"  [dim]— enabled: {', '.join(names)}[/dim]"
+                                         if names else
+                                         "  [dim](no servers to disable)[/dim]"))
+                    else:
+                        status = mcp.disable_server(name)
+                        if status == "disabled":
+                            console.print(f"  [yellow]▸[/yellow] [bold]{name}[/bold] "
+                                          "disabled")
+                        elif status == "builtin":
+                            console.print(f"  [yellow]{name}[/yellow] is built-in "
+                                          "[dim]— can't be disabled[/dim]")
+                        else:
+                            console.print(f"  [yellow]no such server:[/yellow] {name}")
                 elif sub in ("remove", "rm", "delete"):
                     name = parts[2] if len(parts) > 2 else ""
                     if not name:

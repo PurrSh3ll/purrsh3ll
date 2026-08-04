@@ -27,6 +27,7 @@ appdata/rag/
 appdata/api_keys.json
 appdata/api_profiles.json
 appdata/mcp_tokens.json
+appdata/mcp_cache.json
 appdata/session.json
 appdata/purragent_state.json
 appdata/psnotes.txt
