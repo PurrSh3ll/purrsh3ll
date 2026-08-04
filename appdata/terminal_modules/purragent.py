@@ -405,7 +405,9 @@ def select_option(title: str, options: list, start: int = 0):
     )
     # Runs on the alternate screen so the list vanishes on exit (no clutter).
     with _alt_screen():
-        return app.run()
+        result = app.run()
+    _drain_stdin()   # discard any stray wheel/arrow bytes so the next prompt is clean
+    return result
 
 
 def pick_model(config: dict, current_name: str | None, base_dir: str):
@@ -541,10 +543,24 @@ def _render_ansi(renderable) -> str:
     return buf.getvalue()
 
 
+def _drain_stdin() -> None:
+    """Discard any bytes waiting on stdin. On the alternate screen many terminals
+    send the mouse wheel as arrow-key escape sequences (xterm 'alternateScroll');
+    if an overlay leaves some of those bytes unread they corrupt the next prompt,
+    so we flush the input queue when returning to the REPL."""
+    try:
+        import termios
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass
+
+
 def show_view(body: str, hint: str = "esc / q / enter to return") -> None:
     """Show content on the alternate screen buffer; any of Esc/q/Enter returns and
     the previous screen is restored, leaving no clutter in scrollback. Uses plain
     escapes + a raw key read (the standard pager approach — vim/less/htop)."""
+    import select
     import termios
     import tty
 
@@ -559,12 +575,27 @@ def show_view(body: str, hint: str = "esc / q / enter to return") -> None:
         old = termios.tcgetattr(fd)
         try:
             tty.setcbreak(fd)
+            # Read raw bytes with os.read (NOT sys.stdin.read, which buffers: it
+            # would swallow the rest of an escape sequence, hiding it from select
+            # and making an arrow key look like a lone Esc).
             while True:
-                ch = sys.stdin.read(1)
-                if ch in ("\x1b", "q", "Q", "\r", "\n", " ", "\x03", ""):
+                ch = os.read(fd, 1)
+                if ch == b"\x1b":
+                    # Lone Esc (return) vs an escape sequence: on the alternate
+                    # screen the mouse wheel arrives as arrow keys (\x1b[A/\x1b[B).
+                    # If more bytes follow immediately, it's a sequence — drain and
+                    # ignore it (stay in the view) instead of exiting on Esc.
+                    extra = b""
+                    while select.select([fd], [], [], 0.03)[0]:
+                        extra += os.read(fd, 32)
+                    if not extra:
+                        break                 # lone Esc → return
+                    continue                  # wheel/arrow sequence → keep showing
+                if ch in (b"q", b"Q", b"\r", b"\n", b" ", b"\x03", b""):
                     break
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            termios.tcflush(fd, termios.TCIFLUSH)   # drop any leftover input
 
 
 def _erase_prompt_line() -> None:
@@ -1148,12 +1179,29 @@ class PromptHistory(InMemoryHistory):
 
 # ── Slash completer (arrow-navigable dropdown) ─────────────────────────────────
 
+_MCP_REMOVE_ALIASES = ("remove", "rm", "delete")
+
+
 class SlashCompleter(Completer):
+    def __init__(self, servers_provider=None):
+        # Callable returning the current MCP server names, for completing
+        # "/mcp remove <name>". Defaults to none.
+        self._servers = servers_provider or (lambda: [])
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
             return
         parts = text.split(" ")
+        # Third slot: "/mcp remove <partial>" → complete existing server names.
+        if (len(parts) == 3 and parts[0].lower() == "/mcp"
+                and parts[1].lower() in _MCP_REMOVE_ALIASES):
+            word = parts[2]
+            for name in self._servers():
+                if name.startswith(word):
+                    yield Completion(name, start_position=-len(word),
+                                     display=name, display_meta="MCP server")
+            return
         if len(parts) >= 2:
             # Completing a subcommand: "/<cmd> <partial>" (only the first slot).
             subs = SLASH_SUBCOMMANDS.get(parts[0].lower())
@@ -1246,7 +1294,10 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
     session = PromptSession(
         history=PromptHistory(),
-        completer=SlashCompleter(),
+        completer=SlashCompleter(
+            servers_provider=lambda: [
+                n for n, s in mcp.load_config().get("servers", {}).items()
+                if not mcp_client.is_builtin_server(s)]),
         # complete_while_typing=False so the menu's reserved rows are claimed only
         # while a completion is actually active — not permanently, which left a big
         # gap above the model toolbar. reserve_space_for_menu is the on-demand
@@ -1264,11 +1315,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     def _autocomplete_slash(buf) -> None:
         text = buf.document.text_before_cursor
         parts = text.split(" ")
-        # Trigger on a top-level "/cmd" or on the subcommand slot of a command
-        # that has subcommands (e.g. "/mcp ", "/mcp ad").
+        # Trigger on a top-level "/cmd", on a subcommand slot ("/mcp ", "/mcp ad"),
+        # or on the "/mcp remove <name>" slot (server-name completion).
         top = text.startswith("/") and len(parts) == 1
         sub = len(parts) == 2 and parts[0].lower() in SLASH_SUBCOMMANDS
-        if top or sub:
+        name = (len(parts) == 3 and parts[0].lower() == "/mcp"
+                and parts[1].lower() in _MCP_REMOVE_ALIASES)
+        if top or sub or name:
             if buf.complete_state is None:
                 buf.start_completion(select_first=False)
         elif buf.complete_state is not None:
@@ -1383,12 +1436,26 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 elif sub in ("remove", "rm", "delete"):
                     name = parts[2] if len(parts) > 2 else ""
                     if not name:
-                        console.print("  [yellow]usage:[/yellow] /mcp remove <name>")
-                    elif mcp.remove_server(name):
-                        console.print(f"  [green]▸[/green] removed [bold]{name}[/bold] "
-                                      "[dim](and its stored token)[/dim]")
+                        names = [n for n, s in
+                                 mcp.load_config().get("servers", {}).items()
+                                 if not mcp_client.is_builtin_server(s)]
+                        if names:
+                            console.print("  [yellow]usage:[/yellow] /mcp remove "
+                                          "<name>  [dim]— available: "
+                                          f"{', '.join(names)}[/dim]")
+                        else:
+                            console.print("  [dim]no removable MCP servers "
+                                          "(built-ins can't be removed)[/dim]")
                     else:
-                        console.print(f"  [yellow]no such server:[/yellow] {name}")
+                        status = mcp.remove_server(name)
+                        if status == "removed":
+                            console.print(f"  [green]▸[/green] removed [bold]{name}"
+                                          "[/bold] [dim](and its stored token)[/dim]")
+                        elif status == "builtin":
+                            console.print(f"  [yellow]{name}[/yellow] is built-in "
+                                          "[dim]— can't be removed[/dim]")
+                        else:
+                            console.print(f"  [yellow]no such server:[/yellow] {name}")
                 else:
                     console.print("  [dim]connecting to MCP servers…[/dim]")
                     mcp.connect()   # refresh so freshly added/removed servers show

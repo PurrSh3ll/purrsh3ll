@@ -34,6 +34,13 @@ _NS_PREFIX = "mcp"
 _KEYRING_SERVICE = "purrsh3ll"   # same store the app uses for model API keys
 
 
+def is_builtin_server(spec: dict) -> bool:
+    """True for a server bundled with purragent (its script lives under
+    appdata/mcp_servers/). Built-ins can't be removed by the user."""
+    marker = os.path.join("appdata", "mcp_servers")
+    return any(marker in str(a) for a in (spec.get("args") or []))
+
+
 def _namespaced(server: str, tool: str) -> str:
     return f"{_NS_PREFIX}{_NS_SEP}{server}{_NS_SEP}{tool}"
 
@@ -435,16 +442,20 @@ class MCPManager:
             delete_token(self.base_dir, name)
         return ok, info
 
-    def remove_server(self, name: str) -> bool:
-        """Delete a server from the config and drop its stored token. Returns
-        True if it existed."""
+    def remove_server(self, name: str) -> str:
+        """Delete a user-added server from the config and drop its stored token.
+        Returns a status: 'removed', 'missing', or 'builtin' (a bundled server
+        that can't be removed)."""
         cfg = self.load_config()
         servers = cfg.get("servers") or {}
-        existed = name in servers
-        if existed:
-            del servers[name]
-            cfg["servers"] = servers
-            self._save_config(cfg)
+        spec = servers.get(name)
+        if spec is None:
+            return "missing"
+        if is_builtin_server(spec):
+            return "builtin"
+        del servers[name]
+        cfg["servers"] = servers
+        self._save_config(cfg)
         delete_token(self.base_dir, name)
         # Also drop any live/spec state so it disappears without a full reconnect.
         srv = self.servers.pop(name, None)
@@ -452,7 +463,7 @@ class MCPManager:
             srv.close()
         self.specs.pop(name, None)
         self.failures.pop(name, None)
-        return existed
+        return "removed"
 
     def overview(self) -> list:
         """Rich per-server state for the /mcp view — every configured server
