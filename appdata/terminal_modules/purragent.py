@@ -31,6 +31,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
 import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol) client
+import tool_retriever  # noqa: E402  — client-side RAG for semantic tool discovery
 
 import urllib.request  # noqa: E402  — the tool-use loop's streaming chat call
 import urllib.error     # noqa: E402  — HTTPError handling for the stream
@@ -90,6 +91,8 @@ SLASH = [
     ("/upgrade",  "re-launch purragent as root (sudo)"),
     ("/debug",    "toggle showing the raw request sent to the model"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
+    ("/context",  "show how much of the context window is used"),
+    ("/setcontext", "set the max context this session (e.g. /setcontext 32k)"),
     ("/help",     "show commands and usage"),
     ("/clear",    "clear the conversation"),
     ("/exit",     "quit purragent"),
@@ -233,6 +236,84 @@ def _model_capability(profile: dict, base_dir: str, cap: str) -> bool:
     return model.lower() in [m.lower() for m in (section.get(cap) or [])]
 
 
+# ── Context window (size the model advertises + live usage estimate) ────────────
+
+# Local-host providers serve their own num_ctx (Ollama's real default ~4096);
+# cloud providers get a large modern window. Mirrors core/controller.py so the
+# value here matches the GUI's live CTX bar for a model missing from the registry.
+_LOCAL_CTX_PROVIDERS = frozenset({"ollama", "llamacpp", "lmstudio", "jan", "koboldcpp"})
+
+
+def _model_context(profile: dict, base_dir: str):
+    """The model's context window (tokens), resolved exactly like the rest of the
+    app: explicit profile `context_tokens` override → model_ctx_registry.json
+    (exact then prefix match, then provider default via psai) → a provider-based
+    fallback (local host 4096, cloud 200k). Only None when there is no profile,
+    so — like the GUI — an unknown model still shows a sensible number."""
+    if not profile:
+        return None
+    try:
+        val = psai._get_ctx_window(profile, base_dir)
+    except Exception:
+        val = None
+    if val:
+        return val
+    provider = (profile.get("provider", "") or "").lower()
+    return 4096 if provider in _LOCAL_CTX_PROVIDERS else 200_000
+
+
+def _effective_max_context(ctx: dict, base_dir: str):
+    """Session override if set, else the model's registry context size."""
+    return ctx.get("max_context") or _model_context(ctx.get("profile"), base_dir)
+
+
+def _fmt_ctx(n) -> str:
+    if not n:
+        return "?"
+    return f"{round(n / 1000)}k" if n >= 1000 else str(n)
+
+
+def _parse_ctx_number(s: str):
+    """Parse '32000', '32k', '128k', '1m' → int tokens, or None if invalid."""
+    s = (s or "").strip().lower().replace(",", "").replace("_", "")
+    if not s:
+        return None
+    mult = 1
+    if s.endswith("k"):
+        mult, s = 1000, s[:-1]
+    elif s.endswith("m"):
+        mult, s = 1_000_000, s[:-1]
+    try:
+        val = int(float(s) * mult)
+    except ValueError:
+        return None
+    return val if val > 0 else None
+
+
+def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
+                             mcp, use_tools: bool) -> int:
+    """Rough token estimate (~4 chars/token) of what a prompt now sends: the
+    system prompt (+ <env>, + discovery guide & tool catalog when tools are on)
+    plus the whole conversation history. An estimate, not an exact tokenizer."""
+    parts = [PURRAGENT_SYSTEM, _env_block()]
+    if use_tools and mcp is not None:
+        try:
+            all_tools = mcp.all_tools()
+        except Exception:
+            all_tools = []
+        if all_tools:
+            parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
+    custom = (profile.get("custom_system", "") or "").strip() if profile else ""
+    if custom:
+        parts.append(custom)
+    for m in history:
+        c = m.get("content")
+        if isinstance(c, str) and c:
+            parts.append(c)
+    total_chars = sum(len(p) for p in parts)
+    return total_chars // 4
+
+
 # ── Inline arrow-key selector (Claude-Code-style) ──────────────────────────────
 
 def select_option(title: str, options: list, start: int = 0):
@@ -339,13 +420,18 @@ def pick_model(config: dict, current_name: str | None, base_dir: str):
     for p in profs:
         has_tools = _model_has_tools(p, base_dir)
         caps = [c for c in ("vision", "audio") if _model_capability(p, base_dir, c)]
+        maxc = _model_context(p, base_dir)
         hint = f"{_model_short(p)} · {p.get('provider', '?')}"
+        if maxc:                                    # context window per row
+            hint += f" · {_fmt_ctx(maxc)} ctx"
         if caps:                                    # show multimodal support per row
             hint += " · " + " · ".join(caps)
         detail = ("✓ function calling supported"
                   if has_tools else
                   "✗ function calling not supported")
-        if caps:                                    # …and on the hover detail line
+        if maxc:                                    # …and on the hover detail line
+            detail += f"   ·   {maxc:,} token context"
+        if caps:
             detail += "   ·   " + " · ".join(caps)
         # dim = greyed out when the model has no function calling
         options.append((p.get("name", "?"), hint, not has_tools, detail))
@@ -799,12 +885,90 @@ def _tool_arg_preview(args: dict) -> str:
     return " ".join(str(next(iter(args.values()))).split())
 
 
+# ── Semantic tool discovery ────────────────────────────────────────────────────
+# Instead of sending every tool's full schema every round, the model sees a short
+# CATALOG of capabilities plus one meta-function, `request_tool`. When it wants to
+# act it describes the need in natural language; the client's RAG retriever
+# (tool_retriever) matches that need against each tool's long description and
+# example queries and surfaces the best matches (with full schemas) for the model
+# to call. Retrieved tools accumulate for the rest of the turn (so a tool used
+# twice isn't rediscovered), and the meta-function is withdrawn after a few
+# discovery rounds so a model can't spin forever describing needs.
+
+DISCOVERY_MAX_ROUNDS = 3     # how many times request_tool may be used per turn
+RETRIEVE_TOP_N       = 3     # tools surfaced per request_tool call
+MAX_ACTIVE_TOOLS     = 12    # cap on accumulated full schemas (context budget)
+
+META_TOOL_NAME = "request_tool"
+_META_TOOL = {
+    "type": "function",
+    "function": {
+        "name": META_TOOL_NAME,
+        "description": (
+            "Request a tool by describing, in natural language, what you need to "
+            "do. The matching tools (with their full parameters) will then be "
+            "provided so you can call them. Use this whenever you need to act on "
+            "the system — do not guess tool names."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "need": {
+                    "type": "string",
+                    "description": (
+                        "A natural-language description of the action or "
+                        "capability you need, e.g. 'scan a host for open ports' "
+                        "or 'read a configuration file'."
+                    ),
+                },
+            },
+            "required": ["need"],
+        },
+    },
+}
+
+_DISCOVERY_GUIDE = (
+    "TOOLS: you can act on the system through tools, but they are not listed "
+    "directly. Below is a catalog of the capabilities available to you. To use "
+    "one, call the `request_tool` function with a natural-language description of "
+    "what you need; the matching tools will then be given to you with their "
+    "parameters, and you can call them. If one of the provided tools already fits "
+    "the task, call it directly — only call `request_tool` again if none of them "
+    "fit. If the task needs no tool, just answer normally."
+)
+
+
+def _catalog_block(all_tools: list) -> str:
+    """The always-visible capability catalog (short descriptions only, no tool
+    names — the model reaches capabilities via request_tool, not by name)."""
+    lines = "\n".join(f"- {t['short']}" for t in all_tools)
+    return "<tool_catalog>\n" + lines + "\n</tool_catalog>"
+
+
+_TOOL_RETRIEVER = None
+
+
+def _get_retriever(base_dir: str, all_tools: list):
+    """Lazily build/refresh the shared tool retriever. Returns it, or None if
+    embeddings are unavailable (caller then falls back to sending all schemas)."""
+    global _TOOL_RETRIEVER
+    try:
+        if _TOOL_RETRIEVER is None:
+            _TOOL_RETRIEVER = tool_retriever.ToolRetriever(base_dir)
+        if _TOOL_RETRIEVER.build(all_tools):
+            return _TOOL_RETRIEVER
+    except Exception:
+        return None
+    return None
+
+
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text) -> str:
     """Run the agent loop and return the model's final text answer.
 
-    `on_event(kind, name, payload)` reports tool progress: kind is 'call' (payload
-    is the arguments dict) or 'result' (payload is the MCP result dict).
+    `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
+    the arguments dict), 'result' (payload is the MCP result dict), or 'search'
+    (a request_tool discovery — payload is {'need', 'hits'}).
     `on_text(piece)` receives streamed answer chunks as they arrive (the final
     answer is streamed live, so the caller should not print the return value).
     """
@@ -816,17 +980,33 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     custom_system = profile.get("custom_system", "").strip()
     hide_thinking = bool(profile.get("hide_thinking", False))
 
+    all_tools = mcp.all_tools()
+    retriever = _get_retriever(base_dir, all_tools)
+    discovery = retriever is not None      # False → fall back to sending all schemas
+
     sys_parts = [PURRAGENT_SYSTEM, _env_block()]
+    if discovery:
+        sys_parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
     if custom_system:
         sys_parts.append(custom_system)
     # Local working copy of the transcript: the raw assistant tool-call messages
     # and tool results live only here, not in the caller's plain history.
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
-    tools = mcp.openai_tools()
+
+    # Accumulating set of full schemas the model may call. In discovery mode it
+    # starts empty and grows as request_tool surfaces tools; in fallback mode it
+    # holds every tool up front (classic behaviour).
+    active: dict = {} if discovery else {t["name"]: t["schema"] for t in all_tools}
+    discovery_rounds = 0
 
     for _round in range(TOOL_LOOP_MAX_ROUNDS):
-        body = {"model": model, "messages": msgs, "tools": tools,
-                "tool_choice": "auto"}
+        offer_meta = discovery and discovery_rounds < DISCOVERY_MAX_ROUNDS
+        tools_field = ([_META_TOOL] if offer_meta else []) + list(active.values())
+
+        body = {"model": model, "messages": msgs}
+        if tools_field:
+            body["tools"] = tools_field
+            body["tool_choice"] = "auto"
         if temperature is not None:
             body["temperature"] = temperature
         if custom_params:
@@ -843,16 +1023,46 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         for tc in tool_calls:
             fn   = tc.get("function", {})
             name = fn.get("name", "")
+            call_id = tc.get("id")
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
+
+            if name == META_TOOL_NAME:
+                # Discovery: retrieve tools matching the described need and add
+                # their schemas to the active set (poprawka 1 — they persist).
+                need = (args.get("need") or args.get("description") or "").strip()
+                hits = retriever.retrieve(need, RETRIEVE_TOP_N) if retriever else []
+                surfaced = []
+                for hname, _score in hits:
+                    if hname not in active:
+                        schema = mcp.schema_for(hname)
+                        if schema is not None:
+                            active[hname] = schema
+                    surfaced.append(mcp_client.split_namespaced(hname)[1])
+                # Bound the context: drop the oldest schemas past the cap.
+                while len(active) > MAX_ACTIVE_TOOLS:
+                    active.pop(next(iter(active)))
+                discovery_rounds += 1
+                on_event("search", need, {"hits": surfaced})
+                if surfaced:
+                    ack = ("Matching tools now available to call: "
+                           + ", ".join(surfaced) + ". Call one if it fits, or "
+                           "call request_tool again to refine.")
+                else:
+                    ack = ("No matching tools were found. Try describing the need "
+                           "differently, or answer without a tool.")
+                msgs.append({"role": "tool", "tool_call_id": call_id,
+                             "content": ack})
+                continue
+
             on_event("call", name, args)
             result = mcp.call(name, args)
             on_event("result", name, result)
             msgs.append({
                 "role": "tool",
-                "tool_call_id": tc.get("id"),
+                "tool_call_id": call_id,
                 "content": result.get("text") or "(no output)",
             })
 
@@ -887,7 +1097,7 @@ class SlashCompleter(Completer):
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
 def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
-    ctx = {"profile": profile}
+    ctx = {"profile": profile, "max_context": None}   # max_context: session override
     history: list = []
     _state = _load_state(base_dir)
     greeting = _state.get("greeting") or DEFAULT_GREETING
@@ -925,9 +1135,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 if _model_capability(p, base_dir, c)]
         cap_seg = ("   " + " ".join(f"<style fg='#56b6c2'>{c}</style>" for c in caps)
                    if caps else "")
+        # Context window the model advertises; a trailing '*' means a session
+        # override is in effect (set with /setcontext).
+        maxc = _effective_max_context(ctx, base_dir)
+        ctx_seg = ""
+        if maxc:
+            star = "*" if ctx.get("max_context") else ""
+            ctx_seg = f"   <style fg='#98c379'>ctx {_fmt_ctx(maxc)}{star}</style>"
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
-            f"  ·  <i>{p.get('name', '?')}</i>{cap_seg}   {mode_seg}   "
+            f"  ·  <i>{p.get('name', '?')}</i>{cap_seg}{ctx_seg}   {mode_seg}   "
             f"{priv_seg}{dbg_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
@@ -1057,11 +1274,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 chosen = pick_model(config, cur, base_dir)
                 if chosen is _NO_MODEL:
                     ctx["profile"] = None
+                    ctx["max_context"] = None   # drop any /setcontext override
                     _save_state(base_dir, profile=None)
                     console.print("  [yellow]○[/yellow] model detached "
                                   "[dim](no LLM attached)[/dim]")
                 elif chosen:
                     ctx["profile"] = chosen
+                    ctx["max_context"] = None   # new model → back to its own context
                     _save_state(base_dir, profile=chosen.get("name"))
                     console.print(
                         f"  [green]▸[/green] now using "
@@ -1099,6 +1318,53 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         "masked) before the reply[/dim]")
                 else:
                     console.print("  [yellow]▸[/yellow] debug [bold]off[/bold]")
+            elif cmd == "/context":
+                p = ctx["profile"]
+                if not p:
+                    console.print("  [yellow]No model attached.[/yellow] "
+                                  "[dim]/model to choose one[/dim]")
+                else:
+                    maxc = _effective_max_context(ctx, base_dir)
+                    use_tools = (_supports_tool_loop(p)
+                                 and _model_has_tools(p, base_dir))
+                    used = _estimate_context_tokens(p, base_dir, history,
+                                                    mcp, use_tools)
+                    over = (" [yellow](session override)[/yellow]"
+                            if ctx.get("max_context") else "")
+                    if not maxc:
+                        console.print(
+                            f"  context used: [bold]~{used:,}[/bold] tokens  "
+                            "[dim](model max unknown — set it with "
+                            "/setcontext <n>)[/dim]")
+                    else:
+                        pct = min(100, round(used * 100 / maxc)) if maxc else 0
+                        filled = min(20, round(pct / 5))
+                        bar = "█" * filled + "░" * (20 - filled)
+                        col = "green" if pct < 75 else "yellow" if pct < 90 else "red"
+                        console.print(
+                            f"  context  [bold]~{used:,}[/bold] / {maxc:,} tokens"
+                            f"  [dim]({pct}%)[/dim]{over}")
+                        console.print(f"  [{col}]{bar}[/{col}]  "
+                                      "[dim]estimate (~4 chars/token)[/dim]")
+            elif cmd == "/setcontext":
+                arg = text[len("/setcontext"):].strip()
+                if not arg:
+                    maxc = _effective_max_context(ctx, base_dir)
+                    cur = f"{maxc:,}" if maxc else "unknown"
+                    console.print(f"  [dim]current max context:[/dim] "
+                                  f"[bold]{cur}[/bold]  [dim]usage: /setcontext "
+                                  "<number>  (e.g. 32000 or 32k)[/dim]")
+                else:
+                    n = _parse_ctx_number(arg)
+                    if not n:
+                        console.print("  [yellow]invalid number.[/yellow] "
+                                      "[dim]e.g. /setcontext 32000 or "
+                                      "/setcontext 128k[/dim]")
+                    else:
+                        ctx["max_context"] = n
+                        console.print(f"  [green]▸[/green] max context set to "
+                                      f"[bold]{n:,}[/bold] tokens "
+                                      "[dim](this session only)[/dim]")
             elif cmd == "/greeting":
                 name = text[len("/greeting"):].strip()
                 if not name:
@@ -1149,6 +1415,19 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # Concise (Claude-Code-style): one line per call — the tool
                         # name plus a short preview of its main argument, clipped to
                         # fit the terminal width on a single line.
+                        if kind == "search":
+                            grey = "bright_black"
+                            hits = ", ".join(payload.get("hits") or []) or "no match"
+                            need = " ".join(str(name).split())
+                            line = Text("  🔍 finding tool  ", style=grey)
+                            cols = shutil.get_terminal_size((80, 24)).columns
+                            room = max(12, cols - len(line) - len(hits) - 6)
+                            if len(need) > room:
+                                need = need[:room - 1] + "…"
+                            line.append(f"{need}", style=grey)
+                            line.append(f"  → {hits}", style=grey)
+                            console.print(line)
+                            return
                         if kind == "call":
                             _srv, short = mcp_client.split_namespaced(name)
                             # Grey the whole line so tool activity stays ambient and
@@ -1168,7 +1447,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                             console.print(line)
                         return
                     # Debug: verbose — show arguments and the tool's result.
-                    if kind == "call":
+                    if kind == "search":
+                        hits = ", ".join(payload.get("hits") or []) or "(no match)"
+                        console.print(f"  [{VIOLET}]🔍 request_tool[/{VIOLET}] "
+                                      f"[dim]need={name!r}[/dim] → [dim]{hits}[/dim]")
+                    elif kind == "call":
                         args = json.dumps(payload, ensure_ascii=False)
                         console.print(f"  [{VIOLET}]⚙ {name}[/{VIOLET}] "
                                       f"[dim]{args}[/dim]")

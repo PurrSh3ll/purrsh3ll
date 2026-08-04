@@ -250,13 +250,63 @@ def _tool_http_request(args):
                      f"--- headers ---\n{hdr_lines}\n--- body ---\n{payload}")
 
 
-# name -> (handler, description, inputSchema)
+# Each tool carries THREE descriptions, for a three-stage tool-selection design:
+#
+#   short  — a one-line "what it does". Cheap enough that the client can send the
+#            whole catalog of these to the model so it knows what capabilities
+#            exist (grounding), without paying for full schemas.
+#   normal — the model-facing description used when the tool is actually offered
+#            for execution (this is the classic MCP `description`; parameters go
+#            with it via inputSchema).
+#   long   — a rich, keyword- and scenario-heavy description NOT meant for the
+#            model directly. The client indexes it in a vector DB (RAG) and, when
+#            the model describes the tool it needs in natural language, retrieves
+#            the best-matching tools by semantic similarity against these. Written
+#            to overlap with how a model would phrase a need (synonyms, use cases,
+#            CLI names) so retrieval recall stays high.
+#
+# Each tool also carries `examples`: a handful of natural-language requests the
+# tool satisfies. Matching a model's short phrasing against these example queries
+# (query-to-query) tends to retrieve better than matching it against long prose,
+# so the client can index them alongside (or instead of) the long description.
+#
+# name -> (handler, short, normal, long, examples, inputSchema)
 TOOLS = {
     "run_command": (
         _tool_run_command,
+        # short
+        "Run a shell command on the local host and capture its output.",
+        # normal
         "Run a shell command on the local host and return its exit code, stdout "
         "and stderr. Use for recon/tools (nmap, curl, git…) and anything not "
         "covered by the file tools.",
+        # long
+        "Executes an arbitrary shell command on the local machine through the "
+        "system shell and returns the exit code together with captured stdout and "
+        "stderr. This is the general-purpose escape hatch for anything the "
+        "dedicated file and web tools do not cover: running command-line security "
+        "and reconnaissance tools (nmap, masscan, nikto, gobuster, ffuf, dirb, "
+        "whatweb, sqlmap, hydra, netcat/nc, dig, whois, ping, traceroute), "
+        "inspecting the system (ps, ss, netstat, ip, ifconfig, id, whoami, uname, "
+        "env, systemctl), managing packages or services, running git, and piping "
+        "or chaining several commands together. Reach for it whenever the task is "
+        "phrased as run, execute, launch, invoke, call, shell out, use the "
+        "terminal, run a scan, or names a specific CLI program. Supports an "
+        "optional working directory and a timeout so a long-running or hung "
+        "command cannot block the agent. Not the right tool for reading or writing "
+        "files as data — prefer read_file and write_file for that. Keywords: "
+        "shell, bash, sh, terminal, command line, execute, run program, "
+        "subprocess, CLI tool, scan, recon, system command.",
+        # examples
+        [
+            "run an nmap scan against a host",
+            "execute a shell command in the terminal",
+            "check which ports are open on a machine",
+            "run a git command",
+            "launch gobuster to brute-force directories",
+            "show the running processes on the system",
+            "use a command-line tool that has no dedicated tool here",
+        ],
         {
             "type": "object",
             "properties": {
@@ -272,8 +322,32 @@ TOOLS = {
     ),
     "read_file": (
         _tool_read_file,
+        # short
+        "Read the contents of a text file.",
+        # normal
         "Read a text file. Optionally start at line `offset` and read `limit` "
         "lines (for large files).",
+        # long
+        "Opens a text file on disk and returns its contents, optionally limited to "
+        "a range of lines via a starting offset and a line limit so large files "
+        "can be read a page at a time. Use it whenever the task involves looking "
+        "at, viewing, opening, inspecting, displaying, printing or cat-ing an "
+        "existing file — configuration files, logs, source code, wordlists, scan "
+        "output saved to disk, notes, files under /etc, or any UTF-8/text "
+        "document. Prefer it over running cat/head/tail/less through the shell "
+        "because it handles encoding, paging and output-size caps cleanly. Not for "
+        "listing a directory (use list_dir) nor for searching many files for a "
+        "pattern (use grep). Keywords: open file, view file, cat, read, show "
+        "contents, inspect file, print file, load file, head, tail, display file.",
+        # examples
+        [
+            "read the contents of a configuration file",
+            "show me what is inside /etc/passwd",
+            "open a log file and display it",
+            "view the source code of a script",
+            "cat a file on disk",
+            "load a wordlist from a file",
+        ],
         {
             "type": "object",
             "properties": {
@@ -288,8 +362,31 @@ TOOLS = {
     ),
     "write_file": (
         _tool_write_file,
+        # short
+        "Create, overwrite, or append to a file.",
+        # normal
         "Create or overwrite a file with the given content (set append=true to "
         "append). Parent directories are created as needed.",
+        # long
+        "Writes text content to a file, creating any missing parent directories "
+        "along the way. By default it creates a new file or overwrites an existing "
+        "one; set append=true to add to the end instead of replacing it. Use it "
+        "whenever the task is to create, save, generate, output, store, dump or "
+        "append content to a file — writing a report or notes, saving scan results "
+        "or a payload to disk, creating a script or configuration file, generating "
+        "a wordlist, or logging output for later. For changing only part of an "
+        "existing file rather than replacing the whole thing, prefer edit_file. "
+        "Keywords: create file, save, write, output to file, generate file, store, "
+        "dump to disk, append, make a file, save results, redirect to file.",
+        # examples
+        [
+            "save the scan results to a file",
+            "create a new script file",
+            "write a report to disk",
+            "append a line to a log file",
+            "generate a configuration file",
+            "store some output in a file",
+        ],
         {
             "type": "object",
             "properties": {
@@ -303,8 +400,31 @@ TOOLS = {
     ),
     "edit_file": (
         _tool_edit_file,
+        # short
+        "Replace an exact piece of text inside an existing file.",
+        # normal
         "Replace an exact string in a file. old_string must be unique unless "
         "replace_all=true. Fails if old_string is missing or ambiguous.",
+        # long
+        "Performs a precise search-and-replace inside an existing file: it finds "
+        "an exact substring (old_string) and replaces it with new_string. The "
+        "match must be unique unless replace_all=true is passed, in which case "
+        "every occurrence is replaced. Use it for surgical edits that keep the "
+        "rest of the file intact — changing a value in a config, patching a line "
+        "of code, fixing a setting, toggling a flag, or updating a single entry — "
+        "rather than rewriting the whole file with write_file. It fails safely if "
+        "the target text is missing or ambiguous, so it will not silently corrupt "
+        "a file. Keywords: edit, modify, change, replace text, patch, update line, "
+        "substitute, find and replace, tweak file, alter, fix in file.",
+        # examples
+        [
+            "change a value in a configuration file",
+            "replace a string inside a file",
+            "patch a line of code",
+            "update a single setting in a file",
+            "fix a typo in a file",
+            "toggle a flag in the config",
+        ],
         {
             "type": "object",
             "properties": {
@@ -321,7 +441,29 @@ TOOLS = {
     ),
     "list_dir": (
         _tool_list_dir,
+        # short
+        "List the entries of a directory.",
+        # normal
         "List a directory's entries with type and size.",
+        # long
+        "Lists the contents of a directory, showing each entry's name, whether it "
+        "is a file or a subdirectory, and file sizes. Use it whenever the task is "
+        "to see, browse, explore, enumerate or inspect what is inside a folder — "
+        "checking which files exist before reading them, exploring a target's "
+        "filesystem, discovering the name of a file, or getting an overview of a "
+        "directory's structure. It is not recursive and does not search inside "
+        "files: to find text within files use grep, and to read one file use "
+        "read_file. Keywords: list directory, ls, dir, browse folder, show files, "
+        "enumerate directory, what is in this folder, contents of directory, file "
+        "listing, directory tree.",
+        # examples
+        [
+            "list the files in a directory",
+            "show me what is in this folder",
+            "browse the contents of a directory",
+            "what files exist in the target's home directory",
+            "enumerate a directory before reading its files",
+        ],
         {
             "type": "object",
             "properties": {
@@ -332,8 +474,33 @@ TOOLS = {
     ),
     "grep": (
         _tool_grep,
+        # short
+        "Search inside files for a text pattern (regex).",
+        # normal
         "Search file contents for a regular expression under a path. Returns "
         "matching lines as path:line: text. Skips binary and VCS dirs.",
+        # long
+        "Recursively searches the contents of files under a given path for lines "
+        "matching a regular expression, returning each hit as path:line: text. It "
+        "can match case-insensitively and can be restricted to files matching a "
+        "glob such as *.py or *.conf, and it automatically skips binary files and "
+        "version-control/build directories. Use it whenever the task is to find, "
+        "search, look for, locate or grep some text, string, pattern, keyword, "
+        "credential, token, IP address, URL or piece of code across one or many "
+        "files — hunting for secrets in a codebase, finding where a configuration "
+        "value is set, locating a function definition, or scanning logs for a "
+        "term. To read a whole file use read_file; to list a directory use "
+        "list_dir. Keywords: grep, search text, find string, pattern match, regex "
+        "search, look for, locate in files, scan files for, find keyword, ripgrep.",
+        # examples
+        [
+            "search for a password across the codebase",
+            "find where a configuration value is set",
+            "grep for a string in a set of files",
+            "locate a function definition in the source",
+            "scan log files for an IP address",
+            "find every file that mentions a keyword",
+        ],
         {
             "type": "object",
             "properties": {
@@ -351,8 +518,34 @@ TOOLS = {
     ),
     "http_request": (
         _tool_http_request,
+        # short
+        "Make an HTTP request and return the response.",
+        # normal
         "Make an HTTP request and return the status, response headers and body. "
         "Use for web/API reconnaissance.",
+        # long
+        "Sends an HTTP or HTTPS request to a URL and returns the response status "
+        "code, response headers and body. It supports GET, POST, PUT and other "
+        "methods, custom request headers, and a request body for POST/PUT, and it "
+        "sends a browser-like User-Agent by default so servers that reject scripts "
+        "still respond (the caller can override it). Use it for web and API "
+        "reconnaissance and interaction: fetching a web page or API endpoint, "
+        "checking response headers and status codes, probing for technologies or "
+        "security headers, calling a REST/JSON API, downloading text content, "
+        "testing an endpoint, or sending crafted requests. For a full "
+        "browser-driven crawl or for binary/non-text downloads prefer run_command "
+        "with curl or wget. Keywords: http, https, web request, fetch url, curl, "
+        "wget, download page, api call, rest, json, get, post, request headers, "
+        "web recon, hit an endpoint, probe url.",
+        # examples
+        [
+            "fetch a web page",
+            "check the HTTP response headers of a site",
+            "call a REST or JSON API endpoint",
+            "download the text content of a URL",
+            "send a POST request to test an API",
+            "probe a URL for its security headers",
+        ],
         {
             "type": "object",
             "properties": {
@@ -384,9 +577,20 @@ def _error(req_id, code, message):
 
 
 def _tools_list():
+    # `description` stays the standard model-facing (normal) text so any vanilla
+    # MCP client still works. `shortDescription` / `longDescription` are extra
+    # fields our own client reads for the catalog and the RAG index; unknown
+    # fields are ignored by clients that don't care about them.
     return [
-        {"name": name, "description": desc, "inputSchema": schema}
-        for name, (_h, desc, schema) in TOOLS.items()
+        {
+            "name": name,
+            "description": normal,
+            "shortDescription": short,
+            "longDescription": long,
+            "exampleQueries": examples,
+            "inputSchema": schema,
+        }
+        for name, (_h, short, normal, long, examples, schema) in TOOLS.items()
     ]
 
 
@@ -475,8 +679,19 @@ def selftest():
         resp = handle_message(req)
         result = resp.get("result", {})
         if label == "tools/list":
-            names = [t["name"] for t in result.get("tools", [])]
+            tools = result.get("tools", [])
+            names = [t["name"] for t in tools]
             print(f"[{label}] -> {names}")
+            # Confirm every tool exposes all three descriptions.
+            for t in tools:
+                have = [k for k in ("shortDescription", "description",
+                                    "longDescription") if t.get(k)]
+                mark = "ok" if len(have) == 3 else f"MISSING {set(('shortDescription','description','longDescription')) - set(have)}"
+                print(f"    {t['name']:<13} short/normal/long: {mark} "
+                      f"({len(t.get('shortDescription',''))}/"
+                      f"{len(t.get('description',''))}/"
+                      f"{len(t.get('longDescription',''))} chars) "
+                      f"examples: {len(t.get('exampleQueries', []))}")
         else:
             text = result.get("content", [{}])[0].get("text", "")
             print(f"[{label}] -> {text.splitlines()[0] if text else ''}")

@@ -268,6 +268,52 @@ class MCPManager:
                 })
         return out
 
+    def _openai_schema(self, server: str, t: dict) -> dict:
+        """One namespaced OpenAI function schema from a raw MCP tool dict."""
+        return {
+            "type": "function",
+            "function": {
+                "name": _namespaced(server, t.get("name", "")),
+                "description": t.get("description", ""),
+                "parameters": t.get("inputSchema",
+                                    {"type": "object", "properties": {}}),
+            },
+        }
+
+    def all_tools(self) -> list:
+        """Every aggregated tool with its three descriptions and ready-made
+        OpenAI schema. Feeds the discovery flow: `short` for the always-visible
+        catalog, `long` + `examples` for the retriever's index, and `schema` for
+        the tools actually surfaced to the model.
+
+        Returns a list of dicts:
+            {name (namespaced), short, normal, long, examples, schema}
+        """
+        out = []
+        for name, srv in self.servers.items():
+            for t in srv.tools:
+                normal = t.get("description", "")
+                out.append({
+                    "name": _namespaced(name, t.get("name", "")),
+                    "short": t.get("shortDescription") or normal,
+                    "normal": normal,
+                    "long": t.get("longDescription") or normal,
+                    "examples": t.get("exampleQueries") or [],
+                    "schema": self._openai_schema(name, t),
+                })
+        return out
+
+    def schema_for(self, namespaced_name: str):
+        """The OpenAI function schema for one namespaced tool, or None."""
+        server_name, tool_name = split_namespaced(namespaced_name)
+        srv = self.servers.get(server_name)
+        if srv is None:
+            return None
+        for t in srv.tools:
+            if t.get("name") == tool_name:
+                return self._openai_schema(server_name, t)
+        return None
+
     def call(self, namespaced_name: str, arguments: dict) -> dict:
         """Route a namespaced tool call to its owning server. Self-healing: if the
         server has died (crash / broken pipe), respawn it and retry once so a dead
