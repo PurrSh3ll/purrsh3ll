@@ -98,6 +98,14 @@ SLASH = [
     ("/exit",     "quit purragent"),
 ]
 
+# Second-level completions offered after "<command> " (e.g. "/mcp add").
+SLASH_SUBCOMMANDS = {
+    "/mcp": [
+        ("add",    "add a connect-only MCP server by URL"),
+        ("remove", "remove an MCP server (and its stored token)"),
+    ],
+}
+
 # Agent run modes (Claude-Code-style). Skeleton only for now — selecting a mode
 # is remembered but does not change behaviour yet.
 DEFAULT_MODE = "confirm"
@@ -1143,7 +1151,18 @@ class PromptHistory(InMemoryHistory):
 class SlashCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        if not text.startswith("/") or " " in text:
+        if not text.startswith("/"):
+            return
+        parts = text.split(" ")
+        if len(parts) >= 2:
+            # Completing a subcommand: "/<cmd> <partial>" (only the first slot).
+            subs = SLASH_SUBCOMMANDS.get(parts[0].lower())
+            if subs and len(parts) == 2:
+                word = parts[1]
+                for sub, hint in subs:
+                    if sub.startswith(word):
+                        yield Completion(sub, start_position=-len(word),
+                                         display=sub, display_meta=hint)
             return
         for cmd, hint in SLASH:
             if cmd.startswith(text):
@@ -1244,7 +1263,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # without complete_while_typing (which would reserve the space permanently).
     def _autocomplete_slash(buf) -> None:
         text = buf.document.text_before_cursor
-        if text.startswith("/") and " " not in text:
+        parts = text.split(" ")
+        # Trigger on a top-level "/cmd" or on the subcommand slot of a command
+        # that has subcommands (e.g. "/mcp ", "/mcp ad").
+        top = text.startswith("/") and len(parts) == 1
+        sub = len(parts) == 2 and parts[0].lower() in SLASH_SUBCOMMANDS
+        if top or sub:
             if buf.complete_state is None:
                 buf.start_completion(select_first=False)
         elif buf.complete_state is not None:
