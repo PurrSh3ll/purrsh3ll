@@ -19,6 +19,10 @@ import queue
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
+import urllib.request
+from urllib.parse import urljoin
 
 PROTOCOL_VERSION = "2024-11-05"
 CLIENT_NAME = "purragent"
@@ -26,6 +30,8 @@ CLIENT_VERSION = "1.0.0"
 
 _NS_SEP = "__"          # mcp__<server>__<tool>
 _NS_PREFIX = "mcp"
+
+_KEYRING_SERVICE = "purrsh3ll"   # same store the app uses for model API keys
 
 
 def _namespaced(server: str, tool: str) -> str:
@@ -38,6 +44,190 @@ def split_namespaced(name: str):
     if len(parts) >= 3 and parts[0] == _NS_PREFIX:
         return parts[1], _NS_SEP.join(parts[2:])
     return None, name
+
+
+# --------------------------------------------------------------------------- #
+# Token storage — mirrors how the app stores model API keys: OS keyring first
+# (service "purrsh3ll", key "mcp:<server>"), falling back to a gitignored JSON
+# file. Tokens never touch mcp_servers.json (which is tracked in git).
+# --------------------------------------------------------------------------- #
+def _token_key(name: str) -> str:
+    return f"mcp:{name}"
+
+
+def _token_json_path(base_dir: str) -> str:
+    return os.path.join(base_dir, "appdata", "mcp_tokens.json")
+
+
+def load_token(base_dir: str, name: str) -> str:
+    try:
+        import keyring
+        val = keyring.get_password(_KEYRING_SERVICE, _token_key(name)) or ""
+        if val:
+            return val
+    except Exception:
+        pass
+    try:
+        with open(_token_json_path(base_dir), encoding="utf-8") as f:
+            return json.load(f).get(name, "") or ""
+    except Exception:
+        return ""
+
+
+def save_token(base_dir: str, name: str, token: str) -> None:
+    if not token:
+        return
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, _token_key(name), token)
+        return
+    except Exception:
+        pass
+    # Fallback JSON store (gitignored). Written 0600 so the token isn't world-readable.
+    path = _token_json_path(base_dir)
+    data = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    data[name] = token
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def delete_token(base_dir: str, name: str) -> None:
+    try:
+        import keyring
+        keyring.delete_password(_KEYRING_SERVICE, _token_key(name))
+    except Exception:
+        pass
+    path = _token_json_path(base_dir)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if name in data:
+            del data[name]
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# HTTP liveness probe — for connect-only (already-running) MCP servers reached
+# by URL. "Alive" = the server answers the MCP handshake. Supports SSE (what
+# Burp's MCP server uses) and the newer Streamable HTTP transport. This only
+# checks reachability; pulling tools over HTTP is a later phase.
+# --------------------------------------------------------------------------- #
+def _auth_headers(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def _probe_sse(url: str, token: str, timeout: float):
+    """Open the SSE stream and treat receiving the MCP `endpoint` handshake event
+    as alive (only an MCP/SSE server emits it). Returns (ok, info)."""
+    headers = {"Accept": "text/event-stream", "User-Agent": "Mozilla/5.0"}
+    headers.update(_auth_headers(token))
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return False, f"unauthorized (HTTP {e.code}) — token required or invalid"
+        if e.code == 405:
+            return None, "not SSE"        # signal caller to try streamable
+        return False, f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return False, "cannot reach server (is it running?)"
+    except Exception as e:
+        return False, f"error: {e}"
+
+    deadline = time.time() + timeout
+    event = None
+    try:
+        for raw in resp:
+            if time.time() > deadline:
+                break
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:") and event == "endpoint":
+                return True, "SSE"
+            elif line == "":
+                event = None
+    except Exception as e:
+        return False, f"stream error: {e}"
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return False, "no MCP handshake (endpoint event) — not an MCP/SSE server?"
+
+
+def _probe_streamable(url: str, token: str, timeout: float):
+    """POST an `initialize` request (Streamable HTTP). Alive = a JSON-RPC result
+    comes back. Returns (ok, info)."""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "Mozilla/5.0",
+    }
+    headers.update(_auth_headers(token))
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                       "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}}
+    req = urllib.request.Request(url, data=json.dumps(init).encode(),
+                                 headers=headers, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        if e.code == 405:
+            return None, "not streamable"     # wrong transport — let caller try SSE
+        if e.code in (401, 403):
+            return False, f"unauthorized (HTTP {e.code}) — token required or invalid"
+        return False, f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return False, "cannot reach server (is it running?)"
+    except Exception as e:
+        return False, f"error: {e}"
+    # Body is JSON, or SSE-framed (`data: {json}`) — pull the first JSON object.
+    for candidate in ([body] if body.lstrip().startswith("{")
+                      else [ln[5:].strip() for ln in body.splitlines()
+                            if ln.startswith("data:")]):
+        try:
+            msg = json.loads(candidate)
+        except Exception:
+            continue
+        if "result" in msg:
+            info = (msg["result"] or {}).get("serverInfo", {}) or {}
+            label = f"{info.get('name', 'mcp')} {info.get('version', '')}".strip()
+            return True, label or "connected"
+        if "error" in msg:
+            return False, f"initialize error: {msg['error'].get('message', msg['error'])}"
+    return False, "no initialize response"
+
+
+def probe_http(url: str, token: str = "", timeout: float = 8.0):
+    """Liveness for an HTTP MCP server. Picks SSE vs Streamable by URL hint and
+    falls back to the other. Returns (ok: bool, info: str)."""
+    sse_first = "sse" in url.lower()
+    order = (_probe_sse, _probe_streamable) if sse_first else (_probe_streamable, _probe_sse)
+    last = (False, "probe failed")
+    for fn in order:
+        ok, info = fn(url, token, timeout)
+        if ok is None:                    # transport mismatch — try the other one
+            last = (False, info)
+            continue
+        return ok, info                   # alive, or a genuine failure — both final
+    return last
 
 
 # --------------------------------------------------------------------------- #
@@ -213,11 +403,114 @@ class MCPManager:
         except Exception:
             return {"servers": {}}
 
+    def _save_config(self, cfg: dict) -> None:
+        path = self._config_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, path)             # atomic — never leave a half-written file
+
+    # -- add / remove connect-only (HTTP) servers --------------------------- #
+    def add_server(self, name: str, url: str, token: str = "",
+                   transport: str = "sse"):
+        """Register an already-running MCP server reached by URL, probe whether
+        it's alive, and persist it. The token (if any) is stored via the app's
+        secret store, never in mcp_servers.json. Returns (ok, info)."""
+        ok, info = probe_http(url, token)
+        cfg = self.load_config()
+        cfg.setdefault("servers", {})[name] = {
+            "transport": transport,
+            "url": url,
+            "has_token": bool(token),     # hint only; the token lives in the keyring
+            # New servers are added disabled by default — the user enables them
+            # explicitly (separate command). The add-time probe below still reports
+            # whether it's reachable right now.
+            "enabled": False,
+        }
+        self._save_config(cfg)
+        if token:
+            save_token(self.base_dir, name, token)
+        else:
+            delete_token(self.base_dir, name)
+        return ok, info
+
+    def remove_server(self, name: str) -> bool:
+        """Delete a server from the config and drop its stored token. Returns
+        True if it existed."""
+        cfg = self.load_config()
+        servers = cfg.get("servers") or {}
+        existed = name in servers
+        if existed:
+            del servers[name]
+            cfg["servers"] = servers
+            self._save_config(cfg)
+        delete_token(self.base_dir, name)
+        # Also drop any live/spec state so it disappears without a full reconnect.
+        srv = self.servers.pop(name, None)
+        if srv is not None:
+            srv.close()
+        self.specs.pop(name, None)
+        self.failures.pop(name, None)
+        return existed
+
+    def overview(self) -> list:
+        """Rich per-server state for the /mcp view — every configured server
+        (enabled AND disabled). Each row is a dict:
+            {name, spec, enabled, is_http, url, alive, detail, tools}
+        `alive` is a live check (HTTP probe / stdio process); `detail` is the
+        server version on success or the failure reason; `tools` are the tool
+        names for a connected stdio server. Disabled servers are not probed."""
+        cfg = self.load_config()
+        out = []
+        for name, spec in (cfg.get("servers") or {}).items():
+            enabled = bool(spec.get("enabled", True))
+            is_http = "url" in spec
+            row = {"name": name, "spec": spec, "enabled": enabled,
+                   "is_http": is_http, "url": spec.get("url", ""),
+                   "alive": False, "detail": "", "tools": [], "probed": False}
+            if is_http:
+                # HTTP servers are cheap to probe (no subprocess), so check
+                # liveness even when disabled — the user still wants to know if
+                # the endpoint is reachable.
+                row["probed"] = True
+                ok, info = self.probe_server(name, spec)
+                row["alive"], row["detail"] = bool(ok), info
+            elif enabled:
+                row["probed"] = True
+                srv = self.servers.get(name)
+                if srv is not None and srv.alive():
+                    nm = srv.server_info.get("name", "")
+                    ver = srv.server_info.get("version", "")
+                    row["alive"] = True
+                    row["detail"] = f"{nm} {ver}".strip() or "connected"
+                    row["tools"] = [t.get("name", "?") for t in srv.tools]
+                else:
+                    row["detail"] = self.failures.get(name, "not connected")
+            # else: a disabled stdio server isn't spawned, so it stays unprobed.
+            out.append(row)
+        return out
+
+    def probe_server(self, name: str, spec: dict = None):
+        """(ok, info) liveness for one server. HTTP servers are probed over the
+        network; stdio servers are considered alive if their process is up."""
+        if spec is None:
+            spec = self.load_config().get("servers", {}).get(name, {})
+        if "url" in spec:
+            return probe_http(spec["url"], load_token(self.base_dir, name))
+        srv = self.servers.get(name)
+        if srv is not None and srv.alive():
+            return True, "alive"
+        return False, self.failures.get(name, "not connected")
+
     def _spawn(self, name: str):
         """Start (or restart) one server from its saved spec. Returns the live
         MCPServer or None, updating self.servers / self.failures."""
         spec = self.specs.get(name)
         if spec is None:
+            return None
+        if "url" in spec:
+            # Connect-only (HTTP) server — there is no subprocess to launch.
             return None
         srv = MCPServer(
             name=name,
@@ -242,7 +535,9 @@ class MCPManager:
         cfg = self.load_config()
         self.specs = {name: spec for name, spec in (cfg.get("servers") or {}).items()
                       if spec.get("enabled", True)}
-        for name in self.specs:
+        for name, spec in self.specs.items():
+            if "url" in spec:
+                continue        # HTTP (connect-only) servers aren't spawned here
             self._spawn(name)
         self.connected = True
 
@@ -339,7 +634,9 @@ class MCPManager:
         return result
 
     def status(self) -> list:
-        """[(server, ok, info_or_error, [tool_names])] for the /mcp view."""
+        """[(server, ok, info_or_error, [tool_names])] for the /mcp view. HTTP
+        (connect-only) servers are probed live; stdio servers report their spawn
+        state and tool list."""
         rows = []
         for name, srv in self.servers.items():
             info = srv.server_info.get("name", "") or ""
@@ -349,6 +646,12 @@ class MCPManager:
                          [t.get("name", "?") for t in srv.tools]))
         for name, err in self.failures.items():
             rows.append((name, False, err, []))
+        # Connect-only HTTP servers: not spawned, so probe each for liveness.
+        for name, spec in self.specs.items():
+            if "url" not in spec:
+                continue
+            ok, info = self.probe_server(name, spec)
+            rows.append((name, ok, info, []))
         return rows
 
     def close(self) -> None:

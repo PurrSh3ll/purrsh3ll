@@ -33,7 +33,7 @@ import urllib.request
 from datetime import datetime, timezone  # noqa: F401  (available for future tools)
 
 PROTOCOL_VERSION = "2024-11-05"
-SERVER_NAME = "purr-toolkit"
+SERVER_NAME = "purrtools"
 SERVER_VERSION = "0.1.0"
 
 MAX_OUTPUT = 20000          # chars: cap on any single tool's returned text

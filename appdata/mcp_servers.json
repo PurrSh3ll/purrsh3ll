@@ -1,13 +1,35 @@
 {
   "servers": {
-    "toolkit": {
+    "purrtools": {
       "command": "python3",
-      "args": ["appdata/mcp_servers/toolkit_server.py"],
+      "args": [
+        "appdata/mcp_servers/toolkit_server.py"
+      ],
       "enabled": true
     },
     "demo": {
       "command": "python3",
-      "args": ["appdata/mcp_servers/demo_server.py"],
+      "args": [
+        "appdata/mcp_servers/demo_server.py"
+      ],
+      "enabled": false
+    },
+    "deepwiki": {
+      "transport": "streamable",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "has_token": false,
+      "enabled": true
+    },
+    "offline_demo": {
+      "transport": "streamable",
+      "url": "http://127.0.0.1:59999/mcp",
+      "has_token": false,
+      "enabled": true
+    },
+    "sample": {
+      "transport": "sse",
+      "url": "http://127.0.0.1:4444",
+      "has_token": false,
       "enabled": false
     }
   }

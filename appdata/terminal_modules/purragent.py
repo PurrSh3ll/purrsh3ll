@@ -616,9 +616,50 @@ def _skeleton_body(title: str, note: str) -> str:
     ))
 
 
+def _mcp_add(mcp: "mcp_client.MCPManager", base_dir: str, args: list) -> None:
+    """Interactive `/mcp add` for a connect-only (URL) MCP server. `args` may
+    prefill [name, url]; the token is read hidden and stored via the secret
+    store (never in mcp_servers.json). Probes liveness and reports alive/dead."""
+    name = args[0] if len(args) > 0 else ""
+    url = args[1] if len(args) > 1 else ""
+    try:
+        if not name:
+            name = input("  name: ").strip()
+        if not url:
+            url = input("  url (e.g. http://127.0.0.1:9876/sse): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print("\n  [dim]cancelled[/dim]")
+        return
+    if not name or not url:
+        console.print("  [yellow]name and url are required.[/yellow]  "
+                      "[dim]usage: /mcp add <name> <url>[/dim]")
+        return
+    if not (url.startswith("http://") or url.startswith("https://")):
+        console.print("  [yellow]url must start with http:// or https://[/yellow]  "
+                      "[dim](connect-only — start the server yourself first)[/dim]")
+        return
+    try:
+        token = getpass.getpass("  token (press enter to skip): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        token = ""
+    console.print("  [dim]probing…[/dim]")
+    ok, info = mcp.add_server(name, url, token)
+    mcp.connect()                      # refresh so /mcp reflects the new server
+    if ok:
+        console.print(f"  [green]●[/green] [bold]{name}[/bold] [green]alive[/green] "
+                      f"— [dim]{info}[/dim]")
+    else:
+        console.print(f"  [red]○[/red] [bold]{name}[/bold] [red]dead[/red] — "
+                      f"[dim]{info}[/dim]")
+    console.print(f"  [dim]added as[/dim] [yellow]disabled[/yellow] "
+                  "[dim]— enable it to use its tools[/dim]")
+
+
 def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
-    """Overlay listing connected MCP servers and the tools each exposes."""
-    rows = mcp.status()
+    """Overlay listing every configured MCP server with a uniform status line:
+    alive (green) / dead (red) / disabled, its version, and its enabled state.
+    Connected stdio servers also list their tools."""
+    rows = mcp.overview()
     parts = [Text("purragent — MCP servers", style=f"bold {VIOLET}"), Text("")]
     if not rows:
         parts.append(Text("No MCP servers configured.", style="dim"))
@@ -627,32 +668,48 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
             "Declare servers in [bold]appdata/mcp_servers.json[/bold]."))
         return _render_ansi(Group(*parts))
 
-    for name, ok, label, tools in rows:
-        if ok:
-            head = Text()
+    for r in rows:
+        name = r["name"]
+        head = Text()
+        # A server that wasn't probed (a disabled stdio server, never spawned) —
+        # show only its disabled state, no alive/dead.
+        if not r["probed"]:
+            head.append("○ ", style="bright_black")
+            head.append(name, style="bold white")
+            head.append("   disabled", style="yellow")
+            parts.append(head)
+            parts.append(Text(""))
+            continue
+
+        # Probed: liveness (green alive / red dead) + the enabled/disabled tag.
+        if r["alive"]:
             head.append("● ", style="green")
             head.append(name, style="bold white")
-            parts.append(head)
-            if tools:
-                grid = Table.grid(padding=(0, 2))
-                grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
-                for srv in mcp.servers.values():
-                    if srv.name != name:
-                        continue
-                    for t in srv.tools:
-                        # Show the bare tool name — the mcp__<server>__ prefix is
-                        # redundant here under the server's own heading.
-                        grid.add_row("  " + t.get("name", "?"),
-                                     Text(t.get("description", ""), style="dim"))
-                parts.append(grid)
-            else:
-                parts.append(Text("    (no tools)", style="dim"))
+            head.append("   alive", style="bold green")
+            if r["detail"]:
+                head.append(f" · {r['detail']}", style="dim")
         else:
-            head = Text()
             head.append("○ ", style="red")
             head.append(name, style="bold white")
-            head.append(f"  {label}", style="red")
-            parts.append(head)
+            head.append("   dead", style="bold red")
+            if r["detail"]:
+                head.append(f" — {r['detail']}", style="red")
+        tag, tag_style = ("enabled", "dim") if r["enabled"] else ("disabled", "yellow")
+        head.append(f"   ·   {tag}", style=tag_style)
+        parts.append(head)
+
+        # Connect-only servers show their URL; connected stdio servers list tools.
+        if r["is_http"] and r["url"]:
+            parts.append(Text(f"    {r['url']}", style="dim"))
+        elif r["alive"]:
+            srv = mcp.servers.get(name)
+            if srv is not None and srv.tools:
+                grid = Table.grid(padding=(0, 2))
+                grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
+                for t in srv.tools:
+                    grid.add_row("  " + t.get("name", "?"),
+                                 Text(t.get("description", ""), style="dim"))
+                parts.append(grid)
         parts.append(Text(""))
 
     # Only warn when the attached model can't use tools; no note otherwise.
@@ -1295,11 +1352,25 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                   f"[bold]{mode}[/bold] "
                                   "[dim](not wired up yet)[/dim]")
             elif cmd == "/mcp":
-                console.print("  [dim]connecting to MCP servers…[/dim]")
-                ensure_mcp()
-                tools_ok = bool(ctx["profile"]) and _model_has_tools(
-                    ctx["profile"], base_dir)
-                show_view(_mcp_body(mcp, tools_ok))
+                parts = text.split()
+                sub = parts[1].lower() if len(parts) > 1 else ""
+                if sub == "add":
+                    _mcp_add(mcp, base_dir, parts[2:])
+                elif sub in ("remove", "rm", "delete"):
+                    name = parts[2] if len(parts) > 2 else ""
+                    if not name:
+                        console.print("  [yellow]usage:[/yellow] /mcp remove <name>")
+                    elif mcp.remove_server(name):
+                        console.print(f"  [green]▸[/green] removed [bold]{name}[/bold] "
+                                      "[dim](and its stored token)[/dim]")
+                    else:
+                        console.print(f"  [yellow]no such server:[/yellow] {name}")
+                else:
+                    console.print("  [dim]connecting to MCP servers…[/dim]")
+                    mcp.connect()   # refresh so freshly added/removed servers show
+                    tools_ok = bool(ctx["profile"]) and _model_has_tools(
+                        ctx["profile"], base_dir)
+                    show_view(_mcp_body(mcp, tools_ok))
             elif cmd == "/hack":
                 show_view(_skeleton_body(
                     "purragent — hack",
