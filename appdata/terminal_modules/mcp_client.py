@@ -455,6 +455,202 @@ def call_http_tool(url: str, token: str, tool_name: str, arguments: dict,
         return {"text": f"error: {e}", "is_error": True}
 
 
+# --------------------------------------------------------------------------- #
+# Old HTTP+SSE transport (MCP 2024-11-05) — used by e.g. Burp's MCP server.
+# Unlike Streamable HTTP this is stateful: the client opens a long-lived GET
+# event stream, learns a POST endpoint from the `endpoint` event, and reads
+# JSON-RPC responses back off the stream (correlated by id). We use a transient
+# connection per operation (open → handshake → do → close), which keeps it
+# simple and bounded while still speaking the protocol correctly.
+# --------------------------------------------------------------------------- #
+class _SSEConnection:
+    """Transient client for the MCP HTTP+SSE transport. Open it, issue requests,
+    then close it. Responses arrive on the event stream and are matched by id."""
+
+    def __init__(self, url: str, token: str, timeout: float):
+        self.url = url
+        self.token = token
+        self.timeout = timeout
+        self._resp = None
+        self._endpoint = None
+        self._q: "queue.Queue" = queue.Queue()
+        self._reader = None
+        self._id = 0
+
+    def open(self):
+        headers = {"Accept": "text/event-stream", "User-Agent": "Mozilla/5.0"}
+        headers.update(_auth_headers(self.token))
+        req = urllib.request.Request(self.url, headers=headers, method="GET")
+        self._resp = urllib.request.urlopen(req, timeout=self.timeout)
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+        deadline = time.monotonic() + self.timeout
+        while self._endpoint is None:            # wait for the endpoint handshake
+            if time.monotonic() > deadline:
+                raise TimeoutError("no endpoint event from SSE server")
+            time.sleep(0.02)
+        return self
+
+    def _read_loop(self):
+        event, data_lines = None, []
+        try:
+            for raw in self._resp:               # SSE is line-framed, blank-delimited
+                line = raw.decode("utf-8", "replace").rstrip("\r\n")
+                if line == "":
+                    data = "\n".join(data_lines)
+                    if event == "endpoint":
+                        self._endpoint = urljoin(self.url, data.strip())
+                    elif data:                   # default event type is 'message'
+                        try:
+                            self._q.put(json.loads(data))
+                        except Exception:
+                            pass
+                    event, data_lines = None, []
+                elif line.startswith(":"):       # comment / heartbeat
+                    continue
+                elif line.startswith("event:"):
+                    event = line[6:].strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+        except Exception:
+            pass
+
+    def _post(self, payload: dict):
+        headers = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+        headers.update(_auth_headers(self.token))
+        req = urllib.request.Request(self._endpoint, data=json.dumps(payload).encode(),
+                                     headers=headers, method="POST")
+        urllib.request.urlopen(req, timeout=self.timeout).read()
+
+    def request(self, method: str, params: dict = None):
+        self._id += 1
+        rid = self._id
+        self._post({"jsonrpc": "2.0", "id": rid, "method": method,
+                    "params": params or {}})
+        deadline = time.monotonic() + self.timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"no response to {method!r} in {self.timeout}s")
+            try:
+                msg = self._q.get(timeout=min(remaining, 1.0))
+            except queue.Empty:
+                continue
+            if msg.get("id") == rid:
+                if "error" in msg:
+                    raise RuntimeError(f"{method} error: {msg['error']}")
+                return msg.get("result", {})
+
+    def notify(self, method: str, params: dict = None):
+        self._post({"jsonrpc": "2.0", "method": method, "params": params or {}})
+
+    def close(self):
+        try:
+            self._resp.close()
+        except Exception:
+            pass
+
+
+def _sse_handshake(conn: "_SSEConnection"):
+    conn.request("initialize", {
+        "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+        "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}})
+    try:
+        conn.notify("notifications/initialized")
+    except Exception:
+        pass
+
+
+def fetch_sse_tools(url: str, token: str = "", timeout: float = 15.0):
+    """Pull an SSE MCP server's tool list. Returns (tools, error)."""
+    try:
+        conn = _SSEConnection(url, token, timeout).open()
+    except Exception as e:
+        return [], f"cannot open SSE stream: {e}"
+    try:
+        _sse_handshake(conn)
+        tools = (conn.request("tools/list").get("tools", []) or [])
+        for t in tools:
+            if isinstance(t, dict) and not t.get("shortDescription"):
+                t["shortDescription"] = _short_from_description(
+                    t.get("description", ""), t.get("name", ""))
+        return tools, ""
+    except Exception as e:
+        return [], f"error: {e}"
+    finally:
+        conn.close()
+
+
+def call_sse_tool(url: str, token: str, tool_name: str, arguments: dict,
+                  timeout: float = 30.0) -> dict:
+    """Invoke a tool on an SSE MCP server. Returns {'text', 'is_error'}."""
+    try:
+        conn = _SSEConnection(url, token, timeout).open()
+    except Exception as e:
+        return {"text": f"cannot open SSE stream: {e}", "is_error": True}
+    try:
+        _sse_handshake(conn)
+        result = conn.request("tools/call",
+                              {"name": tool_name, "arguments": arguments or {}})
+        parts = [b.get("text", "") for b in (result.get("content") or [])
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        return {"text": "\n".join(parts).strip() or "(no output)",
+                "is_error": bool(result.get("isError", False))}
+    except Exception as e:
+        return {"text": f"tool call failed: {e}", "is_error": True}
+    finally:
+        conn.close()
+
+
+def detect_http_transport(url: str, token: str = "", timeout: float = 8.0):
+    """Return 'streamable' | 'sse' | None. Uses only safe handshakes (initialize
+    / SSE endpoint) — never a tool call — so it has no side effects."""
+    def try_streamable() -> bool:
+        try:
+            headers = {"Content-Type": "application/json",
+                       "Accept": "application/json, text/event-stream",
+                       "User-Agent": "Mozilla/5.0"}
+            headers.update(_auth_headers(token))
+            _s, _rh, body = _post_json(url, headers, {
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                           "clientInfo": {"name": CLIENT_NAME,
+                                          "version": CLIENT_VERSION}}}, timeout)
+            msg = _extract_jsonrpc(body, 1)
+            return bool(msg and "result" in msg)
+        except Exception:
+            return False
+
+    def try_sse() -> bool:
+        try:
+            _SSEConnection(url, token, timeout).open().close()
+            return True
+        except Exception:
+            return False
+
+    order = (["sse", "streamable"] if "sse" in url.lower()
+             else ["streamable", "sse"])
+    for t in order:
+        if (t == "streamable" and try_streamable()) or (t == "sse" and try_sse()):
+            return t
+    return None
+
+
+def fetch_url_tools(url: str, token: str = "", timeout: float = 15.0):
+    """Fetch an HTTP MCP server's tools, auto-selecting Streamable vs old SSE and
+    falling back to the other transport. Returns (tools, error)."""
+    prefer_sse = "sse" in url.lower()
+    primary = fetch_sse_tools if prefer_sse else fetch_http_tools
+    fallback = fetch_http_tools if prefer_sse else fetch_sse_tools
+    tools, err = primary(url, token, timeout)
+    if not err:
+        return tools, ""
+    tools2, err2 = fallback(url, token, timeout)
+    if not err2:
+        return tools2, ""
+    return [], err                               # report the primary error
+
+
 def probe_http(url: str, token: str = "", timeout: float = 15.0):
     """Liveness for an HTTP MCP server. Picks SSE vs Streamable by URL hint and
     falls back to the other. Returns (ok: bool, info: str)."""
@@ -645,6 +841,7 @@ class MCPManager:
         self.servers: dict[str, MCPServer] = {}   # only successfully started ones
         self.failures: dict[str, str] = {}        # name -> error
         self.specs: dict[str, dict] = {}          # name -> config (for respawning)
+        self._http_transports: dict[str, str] = {}   # url server -> streamable|sse
         self.connected = False
 
     def _config_path(self) -> str:
@@ -704,7 +901,7 @@ class MCPManager:
         if is_builtin_server(spec):
             return "builtin", ""              # always on, nothing to do
         if "url" in spec:
-            tools, err = fetch_http_tools(spec["url"], load_token(self.base_dir, name))
+            tools, err = fetch_url_tools(spec["url"], load_token(self.base_dir, name))
             if err:
                 return "error", err
             save_server_tools(self.base_dir, name, tools)
@@ -729,7 +926,7 @@ class MCPManager:
             return "builtin", "", []
         if "url" not in spec:
             return "stdio", "", []                # nothing to fetch — just a flag flip
-        tools, err = fetch_http_tools(
+        tools, err = fetch_url_tools(
             spec["url"], load_token(self.base_dir, name), timeout=timeout)
         if err:
             return "error", err, []
@@ -973,6 +1170,16 @@ class MCPManager:
                 return self._openai_schema(server_name, t)
         return None
 
+    def _resolve_transport(self, name: str, spec: dict, token: str) -> str:
+        """Which HTTP transport an attached server speaks. Prefers a persisted
+        `transport` in the spec, then a per-session cache, else detects it once
+        (safe handshake — never a tool call) and caches. Defaults to streamable."""
+        t = spec.get("transport") or self._http_transports.get(name)
+        if not t:
+            t = detect_http_transport(spec["url"], token) or "streamable"
+            self._http_transports[name] = t
+        return t
+
     def call(self, namespaced_name: str, arguments: dict) -> dict:
         """Route a namespaced tool call to its owning server. Self-healing: if the
         server has died (crash / broken pipe), respawn it and retry once so a dead
@@ -984,8 +1191,12 @@ class MCPManager:
 
         if "url" in spec:                               # attached HTTP server
             timeout = TOOL_CALL_TIMEOUTS.get(tool_name, HTTP_CALL_TIMEOUT)
-            return call_http_tool(spec["url"], load_token(self.base_dir, server_name),
-                                  tool_name, arguments, timeout=timeout)
+            token = load_token(self.base_dir, server_name)
+            if self._resolve_transport(server_name, spec, token) == "sse":
+                return call_sse_tool(spec["url"], token, tool_name, arguments,
+                                     timeout=timeout)
+            return call_http_tool(spec["url"], token, tool_name, arguments,
+                                  timeout=timeout)
 
         srv = self.servers.get(server_name)
         if srv is None or not srv.alive():          # (re)connect a missing/dead server
