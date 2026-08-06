@@ -2259,7 +2259,7 @@ def build_menu(main_window):
             f_name     = QLineEdit(d.get("name", ""))
             f_name.setPlaceholderText("e.g. local-fast")
             f_provider = QComboBox()
-            f_provider.addItems(_PROVIDER_TYPES)
+            f_provider.addItems(sorted(_PROVIDER_TYPES))   # list providers A→Z
             if d.get("provider") in _PROVIDER_TYPES:
                 f_provider.setCurrentText(d["provider"])
             try:
