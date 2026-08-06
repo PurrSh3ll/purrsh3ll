@@ -1064,6 +1064,18 @@ def _erase_prompt_line() -> None:
         sys.stdout.flush()
 
 
+def _pause_after_command() -> None:
+    """On the welcome screen every REPL turn wipes the screen to repaint the
+    blinking banner, which would erase a command's printed output before it can
+    be read. Wait for Enter so the user actually sees it first."""
+    if not sys.stdin.isatty():
+        return
+    try:
+        input("  \x1b[38;5;244mpress enter to continue…\x1b[0m ")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 def _help_body() -> str:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
@@ -1121,6 +1133,14 @@ def _mcp_add(mcp: "mcp_client.MCPManager", base_dir: str, args: list) -> None:
     try:
         if not name:
             name = input("  name: ").strip()
+        # Reject a duplicate name up front — before asking for the url/token — so
+        # the user isn't led through the whole flow only to be turned away, and a
+        # built-in (e.g. purrtools) can't be overwritten.
+        if name and name in (mcp.load_config().get("servers") or {}):
+            console.print(f"  [yellow]a server named [bold]{name}[/bold] already "
+                          "exists.[/yellow]  [dim]/mcp remove it first, or pick "
+                          "another name[/dim]")
+            return
         if not url:
             url = input("  url (e.g. http://127.0.0.1:9876/sse): ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -2026,6 +2046,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     tools_ok = bool(ctx["profile"]) and _model_has_tools(
                         ctx["profile"], base_dir)
                     _mcp_view(mcp, tools_ok)
+                # Text subcommands print to the main screen; on the welcome banner
+                # the next repaint clears it, so pause to let the message be read.
+                if not conversation_started and sub in (
+                        "add", "enable", "disable", "remove", "rm", "delete"):
+                    _pause_after_command()
             elif cmd == "/hack":
                 show_view(_skeleton_body(
                     "purragent — hack",
