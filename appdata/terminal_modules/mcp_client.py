@@ -317,6 +317,32 @@ def _short_from_description(desc: str, tool_name: str = "",
     return first
 
 
+def _index_text_from_tool(t: dict) -> str:
+    """Compose RAG-index text for an attached tool from ONLY what the server
+    provides — title, description, and input-schema parameter names/descriptions.
+    Deterministic and authoritative (no LLM). Used when a server offers no
+    purrsh3ll longDescription of its own (built-in tools keep their hand-written
+    long + examples)."""
+    parts = []
+    name = (t.get("name") or "").strip()
+    title = (t.get("title") or "").strip()
+    if title and title.lower() != name.lower():
+        parts.append(title)
+    desc = (t.get("description") or "").strip()
+    if desc:
+        parts.append(desc)
+    props = (t.get("inputSchema") or {}).get("properties") or {}
+    bits = []
+    if isinstance(props, dict):
+        for pname, pinfo in props.items():
+            pdesc = ((pinfo.get("description") or "").strip()
+                     if isinstance(pinfo, dict) else "")
+            bits.append(f"{pname}: {pdesc}" if pdesc else str(pname))
+    if bits:
+        parts.append("Parameters — " + "; ".join(bits))
+    return "\n".join(parts).strip()
+
+
 def fetch_http_tools(url: str, token: str = "", timeout: float = 15.0):
     """Pull an HTTP MCP server's tool list (Streamable HTTP): initialize →
     notifications/initialized → tools/list, carrying the session id if the server
@@ -859,11 +885,18 @@ class MCPManager:
         for name, srv in self.servers.items():
             for t in srv.tools:
                 normal = t.get("description", "")
+                # Built-in tools ship their own short/long/examples; attached
+                # servers usually don't, so derive them from what MCP gives us
+                # (description + inputSchema) — no LLM.
                 out.append({
                     "name": _namespaced(name, t.get("name", "")),
-                    "short": t.get("shortDescription") or normal,
+                    "short": (t.get("shortDescription")
+                              or _short_from_description(normal, t.get("name", ""))
+                              or normal),
                     "normal": normal,
-                    "long": t.get("longDescription") or normal,
+                    "long": (t.get("longDescription")
+                             or _index_text_from_tool(t)
+                             or normal),
                     "examples": t.get("exampleQueries") or [],
                     "schema": self._openai_schema(name, t),
                 })
