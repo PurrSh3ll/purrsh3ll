@@ -220,6 +220,29 @@ def _tool_grep(args):
     return _truncate("\n".join(hits) if hits else "(no matches)")
 
 
+def _tool_find_files(args):
+    pattern = args.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        raise ValueError("`pattern` must be a non-empty string")
+    path = _resolve(args.get("path", ".") or ".")
+    if not os.path.isdir(path):
+        raise ValueError(f"not a directory: {path}")
+    limit = int(args.get("max_results", 200) or 200)
+    ignore_case = bool(args.get("ignore_case"))
+    pat = pattern.lower() if ignore_case else pattern
+    hits = []
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".venv")]
+        for fn in files:
+            name = fn.lower() if ignore_case else fn
+            if fnmatch.fnmatchcase(name, pat):
+                hits.append(os.path.join(root, fn))
+                if len(hits) >= limit:
+                    hits.append(f"… [stopped at {limit} matches]")
+                    return _truncate("\n".join(hits))
+    return _truncate("\n".join(hits) if hits else "(no matches)")
+
+
 def _tool_http_request(args):
     url = args.get("url")
     if not isinstance(url, str) or not url:
@@ -282,7 +305,9 @@ TOOLS = {
         # normal
         "Run a shell command on the local host and return its exit code, stdout "
         "and stderr. Use for recon/tools (nmap, curl, git…) and anything not "
-        "covered by the file tools.",
+        "covered by the file tools. Each call runs in a fresh shell — `cd` does "
+        "not carry over between calls, so pass `workdir`, use absolute paths, or "
+        "chain commands with `&&`.",
         # long
         "Executes an arbitrary shell command on the local machine through the "
         "system shell and returns the exit code together with captured stdout and "
@@ -514,6 +539,52 @@ TOOLS = {
                                 "description": "Case-insensitive match (default false)."},
                 "glob": {"type": "string",
                          "description": "Only search files matching this glob (e.g. *.py)."},
+            },
+            "required": ["pattern"],
+        },
+    ),
+    "find_files": (
+        _tool_find_files,
+        # short
+        "Find files by name pattern (glob) under a directory.",
+        # normal
+        "Recursively find files whose NAME matches a glob (e.g. *.conf, nginx.conf, "
+        "id_rsa) under a path. Returns the matching file paths. Skips VCS/build "
+        "dirs. Use grep to search file CONTENTS instead.",
+        # long
+        "Recursively walks a directory and returns the paths of files whose name "
+        "matches a shell glob pattern such as *.conf, *.py, id_rsa, *.key or "
+        "backup*.sql, optionally case-insensitively, skipping version-control and "
+        "build directories. Use it whenever the task is to find, locate, discover "
+        "or search for a file BY ITS NAME — answering questions like where is a "
+        "configuration file, find every file with a given extension, locate SSH "
+        "keys or credentials files by filename, list all logs, or figure out where "
+        "something lives on disk before reading it. It matches names, not contents "
+        "(use grep to search inside files) and, unlike list_dir, it descends into "
+        "subdirectories. It is the structured, reliable alternative to running "
+        "`find` or `ls -R` through the shell. Keywords: find file, locate file, "
+        "where is, search by name, filename, wildcard, glob, find command, ls -R, "
+        "discover files, *.ext, look for a file.",
+        # examples
+        [
+            "find all .conf files under /etc",
+            "where is the nginx configuration file",
+            "locate files named id_rsa",
+            "find every python file in this project",
+            "search for a file by name",
+            "list all .log files on the system",
+        ],
+        {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string",
+                            "description": "Filename glob to match (e.g. *.conf, nginx.conf)."},
+                "path": {"type": "string",
+                         "description": "Directory to search under (default: current)."},
+                "ignore_case": {"type": "boolean",
+                                "description": "Case-insensitive name match (default false)."},
+                "max_results": {"type": "integer",
+                                "description": "Stop after this many matches (default 200)."},
             },
             "required": ["pattern"],
         },
