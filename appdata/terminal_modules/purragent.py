@@ -24,6 +24,7 @@ import os
 import platform
 import shutil
 import sys
+import threading
 import time
 
 # Reuse psai's provider/profile/LLM plumbing. psai lives in the same directory;
@@ -1550,6 +1551,43 @@ def _tool_status(result: dict) -> tuple:
     return "✓", "green", "ok"
 
 
+class _ToolSpinner:
+    """A background braille spinner shown while a blocking tool call / HTTP
+    response is awaited, so the user sees progress between the 'running tool'
+    line and its result. Animates one line on stderr; stop() clears it and joins
+    the thread so the following status line never races the spinner."""
+
+    def __init__(self, label: str = "waiting for result"):
+        self._label = label
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self) -> "_ToolSpinner":
+        if sys.stderr.isatty():
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        i = 0
+        while not self._stop.is_set():
+            frame = _THINK_SPINNER[i % len(_THINK_SPINNER)]
+            sys.stderr.write(f"\r\033[90m    {frame} {self._label}…\033[0m\x1b[K")
+            sys.stderr.flush()
+            i += 1
+            if self._stop.wait(0.09):
+                break
+        sys.stderr.write("\r\x1b[K")          # clear the spinner line
+        sys.stderr.flush()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._stop.set()
+        self._thread.join(timeout=0.5)
+        self._thread = None
+
+
 # ── Semantic tool discovery ────────────────────────────────────────────────────
 # Instead of sending every tool's full schema every round, the model sees a short
 # CATALOG of capabilities plus one meta-function, `request_tool`. When it wants to
@@ -2316,6 +2354,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         # post-turn guard can close the turn coherently even on Ctrl-C.
         streamed_text: list = []
         interrupted = False
+        tool_spin = {"obj": None}
+
+        def _stop_tool_spin():
+            if tool_spin["obj"] is not None:
+                tool_spin["obj"].stop()
+                tool_spin["obj"] = None
 
         def _on_text(piece):
             streamed_text.append(piece)
@@ -2330,6 +2374,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # name plus a short preview of its main argument, clipped to
                         # fit the terminal width on a single line.
                         if kind == "search":
+                            _stop_tool_spin()
                             grey = "bright_black"
                             hits = ", ".join(payload.get("hits") or []) or "no match"
                             need = " ".join(str(name).split())
@@ -2359,8 +2404,10 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                     preview = preview[:room - 1] + "…"
                                 line.append(f"  {preview}", style=grey)
                             console.print(line)
+                            tool_spin["obj"] = _ToolSpinner().start()   # await result
                             return
                         if kind == "result":
+                            _stop_tool_spin()
                             glyph, gstyle, label = _tool_status(payload)
                             status = Text("    ⎿ ", style="bright_black")
                             status.append(glyph, style=gstyle)
@@ -2386,6 +2433,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # The answer is streamed live via _on_text (defined above).
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
                                                mcp, _on_tool, _on_text)
+                _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
@@ -2398,6 +2446,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     history.append({"role": "assistant", "content": reply})
         except (KeyboardInterrupt, SystemExit):
             # psai's streamers sys.exit(130) on Ctrl-C mid-reply; stay in the REPL.
+            _stop_tool_spin()          # clear the spinner if we broke mid tool call
             interrupted = True
             console.print("\n  [dim]interrupted[/dim]")
 
