@@ -902,7 +902,11 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                     row = rows[sel]
                     lines = _mcp_detail_lines(row)
                     max_off = max(0, len(lines) - page)
-                    offset = max(0, min(det_off, max_off))
+                    # Clamp det_off itself (not just a derived offset) so presses
+                    # past the top/bottom don't pile up — otherwise you'd have to
+                    # press back the same number of times before the view moves.
+                    det_off = max(0, min(det_off, max_off))
+                    offset = det_off
                     # Contextual enable/disable hint (built-ins can't be toggled).
                     if mcp_client.is_builtin_server(row["spec"]):
                         tog = ""
