@@ -87,7 +87,7 @@ SLASH = [
     ("/model",    "switch the attached model (or detach)"),
     ("/mode",     "set how the agent runs (auto / semi-auto / confirm / plan)"),
     ("/mcp",      "manage MCP servers"),
-    ("/hack",     "hacking toolkit"),
+    ("/hack",     "run the auto-hacking loop against a target"),
     ("/upgrade",  "re-launch purragent as root (sudo)"),
     ("/debug",    "toggle showing the raw request sent to the model"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
@@ -123,9 +123,11 @@ AGENT_MODES = [
 
 # Commands shown in the welcome box's right column (the essentials).
 BANNER_COMMANDS = [
-    ("/model", "switch model"),
-    ("/help",  "show help"),
-    ("/exit",  "quit"),
+    ("/model",   "switch model"),
+    ("/help",    "show help"),
+    ("/mcp",     "MCP servers"),
+    ("/upgrade", "run as root"),
+    ("/hack",    "hack a target"),
 ]
 
 # Light default persona; a profile's own custom_system is appended after it.
@@ -519,7 +521,7 @@ def _banner_panel(profile: dict | None, logo: Text, greeting: str,
 
     cmds = Table.grid(padding=(0, 2))
     cmds.add_column(style="cyan", no_wrap=True)
-    cmds.add_column(style="dim", no_wrap=True)
+    cmds.add_column(style="grey50", no_wrap=True)
     cmds.add_row(Text("Commands", style="bold white"), "")
     for cmd, hint in BANNER_COMMANDS:
         cmds.add_row(cmd, hint)
@@ -529,7 +531,7 @@ def _banner_panel(profile: dict | None, logo: Text, greeting: str,
     # just-in-time tool discovery — tools are pulled only when asked for).
     right = Group(
         Text("Small cat, big claws", style=f"bold {VIOLET}"),
-        Text("MCP-Zero hack agent", style="dim"),
+        Text("MCP-Zero hack agent", style="grey50"),
         Text("─" * 20, style=VIOLET),
         cmds,
     )
@@ -1793,8 +1795,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # (repainted in place) for as long as you only run slash commands — which add
     # nothing to the conversation — and gives way to a plain "❯ " once you send the
     # first real message. Rebuilt on demand so it tracks the current model + greeting.
-    hint = ("  \x1b[2mtype \x1b[36m/\x1b[0m\x1b[2m for commands · "
-            "\x1b[36m/model\x1b[0m\x1b[2m to pick a model · a message to chat\x1b[0m\n")
+    hint = ("  \x1b[38;5;244mtype \x1b[36m/\x1b[0m\x1b[38;5;244m for commands · "
+            "\x1b[36m/model\x1b[0m\x1b[38;5;244m to pick a model · a message to chat"
+            "\x1b[0m\n")
 
     def build_frames() -> dict:
         return {v: "\n" + _render_ansi(
@@ -1973,7 +1976,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             elif cmd == "/hack":
                 show_view(_skeleton_body(
                     "purragent — hack",
-                    "Hacking toolkit — quick offensive-security actions."))
+                    "Auto-hacking mode — runs an agent loop that attacks a "
+                    "chosen target."))
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
