@@ -1239,8 +1239,11 @@ def _mcp_body(rows: list, tools_ok: bool) -> str:
 
 # ── Environment block (host facts injected into every prompt) ──────────────────
 # Mirrors Claude Code's <env> block: give the model basic host facts up front so
-# it doesn't burn tool calls discovering the user, home, OS, cwd, etc. Gathered
-# from stdlib only (no subprocess), and deliberately WITHOUT any IP/network info.
+# it doesn't burn tool calls discovering the user, home, OS, cwd, etc. Static
+# facts come from stdlib only (no subprocess). Local network interfaces ARE
+# included on purpose — a security agent benefits from knowing its own position
+# (which subnet it's on, the default route) to scope work against authorised
+# targets. We still make NO outbound calls (no public-IP lookup).
 
 @functools.lru_cache(maxsize=1)
 def _env_facts() -> str:
@@ -1269,18 +1272,88 @@ def _env_facts() -> str:
 
     return "\n".join([
         f"user: {user} ({uid_s})",
+        f"host: {platform.node() or '?'}",
         f"home: {os.path.expanduser('~')}",
         f"os: {os_line}",
         f"shell: {os.environ.get('SHELL', '?')}",
     ])
 
 
+def _netmask_to_cidr(mask: str) -> int:
+    """Dotted-quad netmask → prefix length (255.255.255.0 → 24)."""
+    try:
+        return sum(bin(int(o)).count("1") for o in mask.split("."))
+    except Exception:
+        return 0
+
+
+def _default_route() -> tuple:
+    """(iface, gateway_ip) for the IPv4 default route on Linux via /proc/net/route,
+    or ('', '') if it can't be read."""
+    try:
+        with open("/proc/net/route", encoding="utf-8") as f:
+            next(f)                                    # skip the header row
+            for line in f:
+                cols = line.split()
+                if len(cols) >= 3 and cols[1] == "00000000":   # destination 0.0.0.0
+                    gw = ".".join(str(int(cols[2][i:i + 2], 16))
+                                  for i in (6, 4, 2, 0))        # little-endian hex
+                    return cols[0], gw
+    except Exception:
+        pass
+    return "", ""
+
+
+def _net_facts() -> str:
+    """Live network view: each up, non-loopback interface's IPv4 as address/CIDR,
+    the default-route interface marked, plus the default gateway. Best-effort via
+    psutil; returns '' if unavailable so the <env> block simply omits it."""
+    try:
+        import socket
+        import psutil
+    except Exception:
+        return ""
+    try:
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+    except Exception:
+        return ""
+    default_if, gateway = _default_route()
+    lines = []
+    for name in sorted(addrs):
+        if name == "lo":
+            continue
+        st = stats.get(name)
+        if st is not None and not st.isup:             # skip down interfaces
+            continue
+        for a in addrs[name]:
+            if (a.family == socket.AF_INET and a.address
+                    and not a.address.startswith("127.")):
+                cidr = _netmask_to_cidr(a.netmask or "")
+                ip = f"{a.address}/{cidr}" if cidr else a.address
+                mark = "  (default)" if name == default_if else ""
+                lines.append(f"  {name}: {ip}{mark}")
+                break                                  # one IPv4 per interface is enough
+    if not lines:
+        return ""
+    out = ["network:"] + lines
+    if gateway:
+        out.append(f"  gateway: {gateway}")
+    return "\n".join(out)
+
+
 def _env_block() -> str:
-    """The <env> block for the system prompt: cached static facts plus a live
-    cwd and date (so long sessions don't show a stale date)."""
+    """The <env> block for the system prompt: cached static facts, a live cwd/date
+    (so long sessions don't show a stale date), and the live network view (VPNs /
+    DHCP leases can change mid-session, so it's recomputed each prompt)."""
     from datetime import date
-    live = f"cwd: {os.getcwd()}\ndate: {date.today().isoformat()}"
-    return "<env>\n" + _env_facts() + "\n" + live + "\n</env>"
+    parts = ["<env>", _env_facts(),
+             f"cwd: {os.getcwd()}", f"date: {date.today().isoformat()}"]
+    net = _net_facts()
+    if net:
+        parts.append(net)
+    parts.append("</env>")
+    return "\n".join(parts)
 
 
 # ── LLM query (reuses psai) ────────────────────────────────────────────────────
