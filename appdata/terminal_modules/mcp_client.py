@@ -294,6 +294,29 @@ def _post_json(url: str, headers: dict, payload: dict, timeout: float):
         return resp.status, dict(resp.headers), resp.read().decode("utf-8", errors="replace")
 
 
+SHORT_DESC_MAXLEN = 100     # chars: catalog one-liner cap
+
+
+def _short_from_description(desc: str, tool_name: str = "",
+                           maxlen: int = SHORT_DESC_MAXLEN) -> str:
+    """Derive a one-line catalog short from a tool's description: first sentence
+    (up to the first period), whitespace collapsed, truncated to `maxlen`. No
+    model — purely extractive. Falls back to the tool name when there's no usable
+    description."""
+    text = " ".join((desc or "").split())          # collapse newlines/runs
+    if not text:
+        return tool_name or ""
+    dot = text.find(". ")
+    if dot == -1 and text.endswith("."):
+        dot = len(text) - 1
+    first = (text[:dot] if dot != -1 else text).strip().rstrip(".").strip()
+    if not first:
+        first = text
+    if len(first) > maxlen:
+        first = first[:maxlen - 1].rstrip() + "…"
+    return first
+
+
 def fetch_http_tools(url: str, token: str = "", timeout: float = 15.0):
     """Pull an HTTP MCP server's tool list (Streamable HTTP): initialize →
     notifications/initialized → tools/list, carrying the session id if the server
@@ -331,7 +354,14 @@ def fetch_http_tools(url: str, token: str = "", timeout: float = 15.0):
         if not msg2 or "result" not in msg2:
             err = (msg2 or {}).get("error", "no response")
             return [], f"tools/list failed: {err}"
-        return (msg2["result"].get("tools", []) or []), ""
+        tools = msg2["result"].get("tools", []) or []
+        # Build a catalog one-liner now (extractive, no model) so it is cached
+        # with the tools; server-provided shortDescription is left untouched.
+        for t in tools:
+            if isinstance(t, dict) and not t.get("shortDescription"):
+                t["shortDescription"] = _short_from_description(
+                    t.get("description", ""), t.get("name", ""))
+        return tools, ""
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             return [], f"unauthorized (HTTP {e.code}) — token required or invalid"
