@@ -630,13 +630,19 @@ class MCPManager:
         self.failures.pop(name, None)
         return "removed"
 
-    def overview(self) -> list:
+    def overview(self, probe: bool = True) -> list:
         """Rich per-server state for the /mcp view — every configured server
         (enabled AND disabled). Each row is a dict:
-            {name, spec, enabled, is_http, url, alive, detail, tools}
+            {name, spec, enabled, is_http, url, alive, detail, tools, pending}
         `alive` is a live check (HTTP probe / stdio process); `detail` is the
         server version on success or the failure reason; `tools` are the tool
-        names for a connected stdio server. Disabled servers are not probed."""
+        names for a connected stdio server. Disabled servers are not probed.
+
+        When `probe` is False, HTTP servers are left un-probed (`pending=True`,
+        `alive` unknown) so the caller can run the network probes in background
+        threads and render a live 'connecting…' state instead of blocking on
+        each (potentially slow) endpoint. stdio liveness is always resolved —
+        it's a local process poll, not a network round-trip."""
         cfg = self.load_config()
         out = []
         for name, spec in (cfg.get("servers") or {}).items():
@@ -644,20 +650,25 @@ class MCPManager:
             is_http = "url" in spec
             row = {"name": name, "spec": spec, "enabled": enabled,
                    "is_http": is_http, "url": spec.get("url", ""),
-                   "alive": False, "detail": "", "tools": [], "probed": False}
+                   "alive": False, "detail": "", "tools": [],
+                   "probed": False, "pending": False}
             if is_http:
-                # HTTP servers are cheap to probe (no subprocess), so check
-                # liveness even when disabled — the user still wants to know if
-                # the endpoint is reachable. Enabled ones also show their cached
-                # tool list (pulled at enable time; not wired into the agent yet).
-                row["probed"] = True
-                ok, info = self.probe_server(name, spec)
-                row["alive"], row["detail"] = bool(ok), info
+                # HTTP servers are checked even when disabled — the user still
+                # wants to know if the endpoint is reachable. Enabled ones also
+                # show their cached tool list (pulled at enable time; not wired
+                # into the agent yet). The liveness probe itself may be slow, so
+                # it can be deferred to the caller (`probe=False`).
                 if enabled:
                     row["tools"] = [
                         {"name": t.get("name", "?"),
                          "description": t.get("description", "")}
                         for t in get_server_tools(self.base_dir, name)]
+                if probe:
+                    row["probed"] = True
+                    ok, info = self.probe_server(name, spec)
+                    row["alive"], row["detail"] = bool(ok), info
+                else:
+                    row["pending"] = True     # network probe deferred to caller
             elif enabled:
                 row["probed"] = True
                 srv = self.servers.get(name)
@@ -676,13 +687,15 @@ class MCPManager:
             out.append(row)
         return out
 
-    def probe_server(self, name: str, spec: dict = None):
+    def probe_server(self, name: str, spec: dict = None, timeout: float = 15.0):
         """(ok, info) liveness for one server. HTTP servers are probed over the
-        network; stdio servers are considered alive if their process is up."""
+        network (bounded by `timeout`); stdio servers are considered alive if
+        their process is up."""
         if spec is None:
             spec = self.load_config().get("servers", {}).get(name, {})
         if "url" in spec:
-            return probe_http(spec["url"], load_token(self.base_dir, name))
+            return probe_http(spec["url"], load_token(self.base_dir, name),
+                              timeout=timeout)
         srv = self.servers.get(name)
         if srv is not None and srv.alive():
             return True, "alive"

@@ -564,13 +564,14 @@ def _drain_stdin() -> None:
 def _read_key(fd) -> str:
     """Read one keypress from a raw (cbreak) fd and classify it. Uses os.read (NOT
     sys.stdin.read, which buffers and would hide the tail of an escape sequence).
-    Returns 'up'/'down'/'pgup'/'pgdn'/'home'/'end'/'quit' or None (ignore).
+    Returns 'up'/'down'/'pgup'/'pgdn'/'home'/'end'/'refresh'/'quit' or None.
     On the alternate screen the mouse wheel arrives as arrow keys, so scrolling
     the wheel maps straight onto up/down."""
     import select
     ch = os.read(fd, 1)
     simple = {b"q": "quit", b"Q": "quit", b"\r": "quit", b"\n": "quit",
               b"\x03": "quit", b"": "quit",
+              b"r": "refresh", b"R": "refresh",
               b"j": "down", b"k": "up", b" ": "pgdn", b"g": "home", b"G": "end"}
     if ch in simple:
         return simple[ch]
@@ -653,6 +654,127 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
             termios.tcflush(fd, termios.TCIFLUSH)   # drop any leftover input
+
+
+MCP_PROBE_TIMEOUT = 20.0   # hard cap (s) on a background HTTP liveness probe
+
+
+def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
+    """Live /mcp overlay. Opens instantly: stdio liveness is resolved up front
+    (a local process poll), while each HTTP endpoint is probed in a background
+    thread (in parallel, each capped at MCP_PROBE_TIMEOUT). HTTP servers show a
+    '◍ connecting… Ns' countdown that flips to alive/dead as its probe returns.
+    'r' re-probes everything; scroll / q behave like show_view."""
+    import select
+    import termios
+    import threading
+    import tty
+
+    base_rows = mcp.overview(probe=False)
+    http = [r for r in base_rows if r.get("pending")]
+
+    # No tty (or nothing to probe in background) → static pager, probe inline.
+    if not sys.stdin.isatty() or not http:
+        show_view(_mcp_body(mcp.overview(probe=True), tools_ok))
+        return
+
+    results: dict = {}                 # name -> (alive, detail); absent = in flight
+    started: dict = {}                 # name -> monotonic start (for the countdown)
+    lock = threading.Lock()
+
+    def launch() -> None:
+        with lock:
+            results.clear()
+        now = time.monotonic()
+        for r in http:
+            started[r["name"]] = now
+        for r in http:
+            def worker(name=r["name"], spec=r["spec"]) -> None:
+                ok, info = mcp.probe_server(name, spec, timeout=MCP_PROBE_TIMEOUT)
+                with lock:
+                    results[name] = (bool(ok), info)
+            threading.Thread(target=worker, daemon=True).start()
+
+    def resolve() -> list:
+        """Merge live probe results / countdowns into the base rows."""
+        now = time.monotonic()
+        out = []
+        for r in base_rows:
+            if r.get("pending"):
+                r = dict(r)
+                with lock:
+                    res = results.get(r["name"])
+                if res is not None:
+                    r["alive"], r["detail"], r["probed"] = res[0], res[1], True
+                    r["connecting"] = None
+                else:
+                    r["probed"] = True
+                    rem = MCP_PROBE_TIMEOUT - (now - started.get(r["name"], now))
+                    r["connecting"] = max(0, round(rem))
+            out.append(r)
+        return out
+
+    launch()
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    offset = 0
+    with _alt_screen():
+        try:
+            tty.setcbreak(fd)
+            while True:
+                rows = resolve()
+                waiting = any(r.get("connecting") is not None for r in rows)
+                lines = _mcp_body(rows, tools_ok).rstrip("\n").split("\n")
+                size = shutil.get_terminal_size((80, 24))
+                page = max(1, size.lines - 1)
+                max_off = max(0, len(lines) - page)
+                offset = max(0, min(offset, max_off))
+
+                visible = lines[offset:offset + page]
+                visible = visible + [""] * (page - len(visible))
+                out = ["\x1b[H"]
+                for ln in visible:
+                    out.append(ln + "\x1b[0m\x1b[K\r\n")
+                if max_off > 0:
+                    last = min(offset + page, len(lines))
+                    status = (f" {offset + 1}-{last}/{len(lines)}   "
+                              "↑/↓ scroll · r refresh · q return ")
+                else:
+                    status = " ↑/↓ scroll · r refresh · q return "
+                out.append(f"\x1b[7m{status}\x1b[0m\x1b[K")
+                sys.stdout.write("".join(out))
+                sys.stdout.flush()
+
+                # While probes run, wake every 0.25s to tick the countdown; once
+                # everything is resolved, block until the next keypress (no busy
+                # loop, keeps the prompt cache / CPU quiet).
+                tick = 0.25 if waiting else None
+                if not select.select([fd], [], [], tick)[0]:
+                    continue
+                key = _read_key(fd)
+                if key == "quit":
+                    break
+                if key == "refresh":
+                    launch()
+                    offset = 0
+                    continue
+                if max_off == 0 or key is None:
+                    continue
+                if key == "down":
+                    offset += 1
+                elif key == "up":
+                    offset -= 1
+                elif key == "pgdn":
+                    offset += page
+                elif key == "pgup":
+                    offset -= page
+                elif key == "home":
+                    offset = 0
+                elif key == "end":
+                    offset = max_off
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            termios.tcflush(fd, termios.TCIFLUSH)
 
 
 def _erase_prompt_line() -> None:
@@ -751,11 +873,12 @@ def _mcp_add(mcp: "mcp_client.MCPManager", base_dir: str, args: list) -> None:
                   "[dim]— enable it to use its tools[/dim]")
 
 
-def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
+def _mcp_body(rows: list, tools_ok: bool) -> str:
     """Overlay listing every configured MCP server with a uniform status line:
-    alive (green) / dead (red) / disabled, its version, and its enabled state.
-    Connected stdio servers also list their tools."""
-    rows = mcp.overview()
+    connecting (cyan) / alive (green) / dead (red) / disabled, its version, and
+    its enabled state. Connected stdio servers also list their tools. `rows`
+    comes from MCPManager.overview(); a row may carry a `connecting` countdown
+    (seconds left) while its background liveness probe is still in flight."""
     parts = [Text("purragent — MCP servers", style=f"bold {VIOLET}"), Text("")]
     if not rows:
         parts.append(Text("No MCP servers configured.", style="dim"))
@@ -767,18 +890,20 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
     for r in rows:
         name = r["name"]
         head = Text()
-        # A server that wasn't probed (a disabled stdio server, never spawned) —
-        # show only its disabled state, no alive/dead.
-        if not r["probed"]:
+        if r.get("connecting") is not None:
+            # Background probe still running — show a live countdown, not a verdict.
+            head.append("◍ ", style="cyan")
+            head.append(name, style="bold white")
+            head.append(f"   connecting… {r['connecting']}s", style="cyan")
+        elif not r["probed"]:
+            # A disabled stdio server, never spawned — no alive/dead to show.
             head.append("○ ", style="bright_black")
             head.append(name, style="bold white")
             head.append("   disabled", style="yellow")
             parts.append(head)
             parts.append(Text(""))
             continue
-
-        # Probed: liveness (green alive / red dead) + the enabled/disabled tag.
-        if r["alive"]:
+        elif r["alive"]:
             head.append("● ", style="green")
             head.append(name, style="bold white")
             head.append("   alive", style="bold green")
@@ -790,12 +915,11 @@ def _mcp_body(mcp: "mcp_client.MCPManager", tools_ok: bool) -> str:
             head.append("   dead", style="bold red")
             if r["detail"]:
                 head.append(f" — {r['detail']}", style="red")
+
+        # Shared trailer: enabled/disabled tag, URL (HTTP), and tool list.
         tag, tag_style = ("enabled", "dim") if r["enabled"] else ("disabled", "yellow")
         head.append(f"   ·   {tag}", style=tag_style)
         parts.append(head)
-
-        # HTTP servers show their URL; every server lists its tools (stdio: live;
-        # enabled HTTP: pulled + cached at enable time).
         if r["is_http"] and r["url"]:
             parts.append(Text(f"    {r['url']}", style="dim"))
         if r["tools"]:
@@ -1566,11 +1690,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         else:
                             console.print(f"  [yellow]no such server:[/yellow] {name}")
                 else:
-                    console.print("  [dim]connecting to MCP servers…[/dim]")
+                    # Spawn stdio servers (local, fast) so they show alive at
+                    # once; the live view probes HTTP endpoints in the background.
                     mcp.connect()   # refresh so freshly added/removed servers show
                     tools_ok = bool(ctx["profile"]) and _model_has_tools(
                         ctx["profile"], base_dir)
-                    show_view(_mcp_body(mcp, tools_ok))
+                    _mcp_view(mcp, tools_ok)
             elif cmd == "/hack":
                 show_view(_skeleton_body(
                     "purragent — hack",
