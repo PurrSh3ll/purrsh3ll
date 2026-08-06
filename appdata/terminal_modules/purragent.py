@@ -855,19 +855,22 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
         try:
             tty.setcbreak(fd)
             while True:
-                rows = resolve()
-
-                # Advance an in-flight enable. The fetch runs in a daemon thread
-                # and has no side effects, so we commit (cache + flip) here in the
-                # main thread only if it finished and wasn't cancelled; a timeout
-                # just abandons the worker (it dies on its own socket timeout).
+                # Advance an in-flight enable BEFORE resolving the rows, so that
+                # when the fetch finishes we commit + rebuild base_rows and the
+                # very next render (same iteration) already shows the new tools —
+                # no keypress needed. The fetch runs in a daemon thread and has no
+                # side effects, so we commit (cache + flip) here in the main thread
+                # only if it finished and wasn't cancelled; a timeout just abandons
+                # the worker (it dies on its own socket timeout).
                 if job is not None:
                     res = job["result"]
                     if res is not None:
                         st, info, tools = res
                         if st == "ready":
                             mcp.enable_commit(job["name"], tools)
-                            notice = _toggle_notice("enabled", info)
+                            notice = ("  ✓ refreshed" + (f" · {info}" if info else "")
+                                      if job.get("verb") == "refreshing"
+                                      else _toggle_notice("enabled", info))
                         else:
                             notice = _toggle_notice(st, info)
                         base_rows = mcp.overview(probe=False)
@@ -877,6 +880,7 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                         notice = "  ✗ timed out — enable cancelled"
                         job = None
 
+                rows = resolve()
                 waiting = (job is not None
                            or any(r.get("connecting") is not None for r in rows))
                 size = shutil.get_terminal_size((80, 24))
@@ -909,13 +913,13 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                     if job is not None:
                         rem = max(0, round(ENABLE_TIMEOUT
                                            - (time.monotonic() - job["started"])))
-                        footer = (f" enabling {job['name']}… {rem}s"
+                        footer = (f" {job['verb']} {job['name']}… {rem}s"
                                   "   ·   d/Esc cancel ")
                     else:
                         scroll = (f"{offset + 1}-{min(offset + page, len(lines))}"
                                   f"/{len(lines)}   ↑/↓ scroll · "
                                   if max_off > 0 else "")
-                        footer = f" {scroll}{tog}← back · r refresh · q return{notice} "
+                        footer = f" {scroll}{tog}esc back · r refresh{notice} "
 
                 visible = lines[offset:offset + page]
                 visible = visible + [""] * (page - len(visible))
@@ -935,7 +939,22 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                 if key is not None:
                     notice = ""                    # a keypress dismisses the last result
                 if key == "refresh":
-                    launch()
+                    launch()                       # re-probe liveness (both views)
+                    # In a server's detail view, also re-pull its tools from the
+                    # server (an enabled HTTP server), reusing the background job.
+                    if mode == "detail" and job is None:
+                        row = rows[sel]
+                        if (row["is_http"] and row["enabled"]
+                                and not mcp_client.is_builtin_server(row["spec"])):
+                            newjob = {"name": row["name"], "started": time.monotonic(),
+                                      "result": None, "verb": "refreshing"}
+                            job = newjob
+
+                            def _refresh_worker(j=newjob, nm=row["name"]) -> None:
+                                j["result"] = mcp.enable_fetch(
+                                    nm, timeout=ENABLE_TIMEOUT)
+                            threading.Thread(target=_refresh_worker,
+                                             daemon=True).start()
                     continue
                 if mode == "list":
                     if key == "quit":
@@ -953,9 +972,9 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                     elif key in ("enter", "right"):
                         mode, det_off = "detail", 0
                 elif job is not None:              # an enable is in flight
-                    # d / Esc(q) / ← cancel it (safe: the fetch has no side
+                    # d / Esc (or q) cancel it (safe: the fetch has no side
                     # effects and we never committed); scrolling still works.
-                    if key in ("quit", "left", "disable"):
+                    if key in ("quit", "disable"):
                         job = None
                         notice = "  cancelled"
                     elif key == "down":
@@ -971,7 +990,7 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                     elif key == "end":
                         det_off = max_off
                 else:                              # detail — scroll / toggle / back
-                    if key in ("quit", "left"):
+                    if key == "quit":              # esc / q — the ← arrow no longer backs
                         mode = "list"
                     elif key in ("enable", "disable"):
                         row = rows[sel]
@@ -993,7 +1012,7 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                         else:                      # enable HTTP: fetch tools in the
                             # background so the view stays live and cancellable.
                             newjob = {"name": name, "started": time.monotonic(),
-                                      "result": None}
+                                      "result": None, "verb": "enabling"}
                             job = newjob
 
                             def _enable_worker(j=newjob, nm=name) -> None:
