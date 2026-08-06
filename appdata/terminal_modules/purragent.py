@@ -1940,6 +1940,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     sys.stdout.flush()
                 conversation_started = False
             elif cmd == "/model":
+                # Re-read from disk so profiles added or edited in the GUI
+                # (File ▸ AI Settings ▸ Profiles) show up without restarting.
+                config = psai._load_config(base_dir)
                 cur = ctx["profile"].get("name") if ctx["profile"] else None
                 chosen = pick_model(config, cur, base_dir)
                 if chosen is _NO_MODEL:
@@ -2135,6 +2138,21 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             continue
 
         # Plain message → query the attached model (needs one selected first).
+        # Re-read the attached profile from disk first, so edits made in the GUI
+        # (hide_thinking, temperature, key, url, custom_system…) take effect
+        # without restarting — the profile is matched by name.
+        if ctx["profile"]:
+            fresh = _find_profile(psai._load_config(base_dir),
+                                  ctx["profile"].get("name", ""))
+            if fresh is None:
+                # Renamed or removed in AI Settings — detach with a note.
+                ctx["profile"] = None
+                ctx["max_context"] = None
+                console.print("  [yellow]○[/yellow] the attached model profile is "
+                              "gone [dim](renamed or removed in AI Settings) — type "
+                              "[/dim][cyan]/model[/cyan][dim] to pick one[/dim]")
+            else:
+                ctx["profile"] = fresh
         if not ctx["profile"]:
             console.print("  [yellow]No model selected.[/yellow] Type "
                           "[cyan]/model[/cyan] to choose one first.")
