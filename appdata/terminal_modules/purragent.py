@@ -1532,6 +1532,24 @@ def _tool_arg_preview(args: dict) -> str:
     return " ".join(str(next(iter(args.values()))).split())
 
 
+def _tool_status(result: dict) -> tuple:
+    """Reliable (no-heuristic) status for a finished tool call → (glyph, style,
+    label). Uses only the call-level error flag and run_command's structured
+    'exit code:' line; anything else degrades to a plain ok/failed."""
+    text = (result.get("text") or "").strip()
+    first = text.split("\n", 1)[0].strip()
+    if first.startswith("exit code:"):
+        rest = first[len("exit code:"):].strip()
+        if rest.startswith("(timeout"):
+            return "⏱", "yellow", "timed out"
+        if rest == "0":
+            return "✓", "green", "ok"
+        return "✗", "red", f"exit {rest}"
+    if result.get("is_error"):
+        return "✗", "red", "failed"
+    return "✓", "green", "ok"
+
+
 # ── Semantic tool discovery ────────────────────────────────────────────────────
 # Instead of sending every tool's full schema every round, the model sees a short
 # CATALOG of capabilities plus one meta-function, `request_tool`. When it wants to
@@ -2288,6 +2306,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                     preview = preview[:room - 1] + "…"
                                 line.append(f"  {preview}", style=grey)
                             console.print(line)
+                            return
+                        if kind == "result":
+                            glyph, gstyle, label = _tool_status(payload)
+                            status = Text("    ⎿ ", style="bright_black")
+                            status.append(glyph, style=gstyle)
+                            status.append(f" {label}", style="bright_black")
+                            console.print(status)
                         return
                     # Debug: verbose — show arguments and the tool's result.
                     if kind == "search":
