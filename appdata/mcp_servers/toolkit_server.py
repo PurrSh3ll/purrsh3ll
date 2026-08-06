@@ -37,7 +37,10 @@ SERVER_NAME = "purrtools"
 SERVER_VERSION = "0.1.0"
 
 MAX_OUTPUT = 20000          # chars: cap on any single tool's returned text
-DEFAULT_CMD_TIMEOUT = 60    # seconds
+# Fixed per-call cap. The model cannot override these — no tool exposes a
+# `timeout` argument — so every call is bounded the same way (and matches the
+# client's 30s transport cap in mcp_client.MCPServer).
+DEFAULT_CMD_TIMEOUT = 30    # seconds
 DEFAULT_HTTP_TIMEOUT = 30   # seconds
 MAX_GREP_HITS = 200
 
@@ -63,7 +66,7 @@ def _tool_run_command(args):
     command = args.get("command")
     if not isinstance(command, str) or not command.strip():
         raise ValueError("`command` must be a non-empty string")
-    timeout = args.get("timeout", DEFAULT_CMD_TIMEOUT)
+    timeout = DEFAULT_CMD_TIMEOUT          # fixed; not model-controllable
     workdir = args.get("workdir") or None
     if workdir:
         workdir = _resolve(workdir)
@@ -224,7 +227,7 @@ def _tool_http_request(args):
     method = (args.get("method") or "GET").upper()
     headers = {str(k): str(v) for k, v in (args.get("headers") or {}).items()}
     body = args.get("body")
-    timeout = float(args.get("timeout", DEFAULT_HTTP_TIMEOUT))
+    timeout = float(DEFAULT_HTTP_TIMEOUT)  # fixed; not model-controllable
     data = body.encode() if isinstance(body, str) else None
 
     # Default to a browser-like User-Agent — many sites (e.g. Wikimedia) reject
@@ -292,8 +295,9 @@ TOOLS = {
         "or chaining several commands together. Reach for it whenever the task is "
         "phrased as run, execute, launch, invoke, call, shell out, use the "
         "terminal, run a scan, or names a specific CLI program. Supports an "
-        "optional working directory and a timeout so a long-running or hung "
-        "command cannot block the agent. Not the right tool for reading or writing "
+        "optional working directory; every call is capped at a fixed 30-second "
+        "timeout so a long-running or hung command cannot block the agent. Not the "
+        "right tool for reading or writing "
         "files as data — prefer read_file and write_file for that. Keywords: "
         "shell, bash, sh, terminal, command line, execute, run program, "
         "subprocess, CLI tool, scan, recon, system command.",
@@ -312,8 +316,6 @@ TOOLS = {
             "properties": {
                 "command": {"type": "string",
                             "description": "The shell command to run."},
-                "timeout": {"type": "number",
-                            "description": f"Seconds before timeout (default {DEFAULT_CMD_TIMEOUT})."},
                 "workdir": {"type": "string",
                             "description": "Directory to run in (default: current)."},
             },
@@ -556,8 +558,6 @@ TOOLS = {
                             "description": "Request headers as a key/value object."},
                 "body": {"type": "string",
                          "description": "Request body (for POST/PUT)."},
-                "timeout": {"type": "number",
-                            "description": f"Seconds before timeout (default {DEFAULT_HTTP_TIMEOUT})."},
             },
             "required": ["url"],
         },
