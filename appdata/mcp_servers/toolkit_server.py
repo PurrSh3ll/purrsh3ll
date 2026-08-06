@@ -103,7 +103,7 @@ def _tool_read_file(args):
     if not os.path.isfile(path):
         raise ValueError(f"file not found: {path}")
     offset = int(args.get("offset", 0) or 0)      # 0-based starting line
-    limit = args.get("limit")                     # number of lines (None = all)
+    limit = args.get("limit")                     # number of lines (None/<=0 = all)
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
@@ -111,7 +111,9 @@ def _tool_read_file(args):
         raise ValueError(f"could not read file: {e}")
     if offset:
         lines = lines[offset:]
-    if limit is not None:
+    # Models commonly pass limit=0 to mean "no limit" — treat any non-positive
+    # value as "read all" rather than returning zero lines.
+    if limit is not None and int(limit) > 0:
         lines = lines[:int(limit)]
     body = "".join(lines)
     header = f"{path} ({os.path.getsize(path)} bytes)\n"
