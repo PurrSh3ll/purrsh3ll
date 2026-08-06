@@ -22,6 +22,8 @@ import io
 import json
 import os
 import platform
+import re
+import shlex
 import shutil
 import sys
 import threading
@@ -112,9 +114,10 @@ SLASH_SUBCOMMANDS = {
 # /mcp subcommands whose third slot is an existing server name.
 _MCP_NAME_SUBS = ("remove", "rm", "delete", "enable", "disable")
 
-# Agent run modes (Claude-Code-style). Skeleton only for now — selecting a mode
-# is remembered but does not change behaviour yet.
-DEFAULT_MODE = "confirm"
+# Agent run modes (Claude-Code-style). Wired into the tool loop via _needs_confirm
+# and query_model_with_tools(mode=…): plan disables tools, confirm/semi-auto gate
+# execution, auto runs freely.
+DEFAULT_MODE = "auto"
 AGENT_MODES = [
     ("auto",      "run commands automatically, without asking"),
     ("semi-auto", "ask for permission only for risky actions"),
@@ -464,10 +467,7 @@ def pick_model(config: dict, current_name: str | None, base_dir: str):
 
 
 def pick_mode(current: str | None):
-    """Pick the agent run mode (skeleton — the choice is inert for now).
-
-    Returns the chosen mode name, or None if cancelled.
-    """
+    """Pick the agent run mode. Returns the chosen mode name, or None if cancelled."""
     options = [(name, hint) for name, hint in AGENT_MODES]
     default_idx = next((i for i, (n, _) in enumerate(AGENT_MODES)
                         if n == DEFAULT_MODE), 0)
@@ -477,6 +477,149 @@ def pick_mode(current: str | None):
     if choice is None:
         return None
     return AGENT_MODES[choice][0]
+
+
+# ── Run-mode gate: decides which tool calls need the user's OK ──────────────────
+# plan  → tools are never offered (function calling off; the model just plans).
+# auto  → run everything without asking.
+# confirm → ask before every tool call.
+# semi-auto → ask only for risky actions, decided by a deterministic, fail-closed
+#   classifier: read-only tools/commands run automatically; anything that changes
+#   local state — or that we can't positively classify as read-only — asks.
+
+PLAN_MODE_NOTE = (
+    "You are in PLAN mode. Do NOT call any tools. Produce a concise, numbered plan "
+    "of the concrete steps and exact shell commands you would run to accomplish the "
+    "task, each with a short rationale. The user will switch to another mode to "
+    "actually execute."
+)
+
+# Tools that only read/inspect — safe to run unattended in semi-auto.
+_READONLY_TOOLS = {"read_file", "list_dir", "grep", "find_files"}
+
+# Base commands that only read/inspect the system (recon included). Anything NOT
+# here makes run_command ask — the allowlist fails closed, so we never need to
+# enumerate every dangerous command.
+_READONLY_BINS = {
+    "cd", "pushd", "popd", "true", "false", "test", "sleep", "seq",
+    "ls", "dir", "cat", "head", "tail", "less", "more", "stat", "file", "wc",
+    "sort", "uniq", "cut", "tr", "column", "tac", "nl", "fold", "rev",
+    "grep", "egrep", "fgrep", "rg", "ag", "find", "locate", "which", "whereis",
+    "type", "tree", "readlink", "realpath", "basename", "dirname",
+    "echo", "printf", "pwd", "date", "cal", "uptime", "uname", "hostname",
+    "whoami", "id", "groups", "who", "w", "last", "lscpu", "lsblk", "lsusb",
+    "lspci", "env", "printenv", "du", "df", "free", "ps", "pstree", "top",
+    "lsof", "vmstat", "ss", "netstat", "ip", "ifconfig", "route", "arp",
+    "dig", "nslookup", "host", "whois", "ping", "traceroute", "tracepath",
+    "mtr", "curl", "wget", "nmap", "masscan", "nc", "ncat", "netcat",
+    "awk", "sed", "xxd", "hexdump", "od", "strings", "base64", "base32",
+    "md5sum", "sha1sum", "sha256sum", "cksum", "git", "jq", "yq",
+    "nikto", "whatweb", "gobuster", "feroxbuster", "dirb", "dirsearch", "ffuf",
+    "wpscan", "enum4linux", "smbclient", "smbmap", "dnsrecon", "dnsenum",
+    "sslscan", "sslyze", "testssl.sh", "nuclei", "httpx", "subfinder", "amass",
+}
+
+# High-signal dangerous constructs → confirm with a clear reason (the allowlist
+# would already flag most of these, but an explicit reason is better UX).
+_DANGER_PATTERNS = [
+    (re.compile(r'(^|[\s;&|(])(sudo|doas|su)([\s;&|)]|$)'), "runs with elevated privileges (sudo)"),
+    (re.compile(r'(^|[\s;&|(])(rm|rmdir|shred|unlink)([\s;&|)]|$)'), "deletes files"),
+    (re.compile(r'(^|[\s;&|(])(dd|mkfs\S*|fdisk|parted|wipefs|blkdiscard|sgdisk)([\s;&|)]|$)'), "writes to disks/partitions"),
+    (re.compile(r'(^|[\s;&|(])(mv|cp|ln|tee|truncate|touch|install|rsync)([\s;&|)]|$)'), "creates/moves/overwrites files"),
+    (re.compile(r'(^|[\s;&|(])(chmod|chown|chgrp)([\s;&|)]|$)'), "changes permissions/ownership"),
+    (re.compile(r'(^|[\s;&|(])(kill|pkill|killall)([\s;&|)]|$)'), "kills processes"),
+    (re.compile(r'(^|[\s;&|(])(systemctl|service|initctl|rc-service)([\s;&|)]|$)'), "controls system services"),
+    (re.compile(r'(^|[\s;&|(])(apt|apt-get|aptitude|dpkg|pip|pip3|pipx|npm|gem|snap|flatpak|pacman|yum|dnf|brew)([\s;&|)]|$)'), "changes installed packages"),
+    (re.compile(r'(^|[\s;&|(])(mount|umount|swapon|swapoff)([\s;&|)]|$)'), "changes mounts"),
+    (re.compile(r'(^|[\s;&|(])(reboot|shutdown|halt|poweroff|init|telinit)([\s;&|)]|$)'), "reboots or powers off the host"),
+    (re.compile(r'(^|[\s;&|(])(useradd|userdel|usermod|groupadd|groupdel|passwd|chpasswd|adduser|deluser)([\s;&|)]|$)'), "modifies users/groups"),
+    (re.compile(r'(^|[\s;&|(])(iptables|ip6tables|nft|ufw|firewall-cmd)([\s;&|)]|$)'), "changes firewall rules"),
+    (re.compile(r'(^|[\s;&|(])(crontab|at)([\s;&|)]|$)'), "schedules jobs"),
+    (re.compile(r':\s*\(\s*\)\s*\{.*[|&].*\}'), "looks like a fork bomb"),
+    (re.compile(r'\|\s*(sudo\s+)?(sh|bash|zsh|dash|python\d?|perl|ruby)\b'), "pipes output into an interpreter"),
+]
+
+
+def _has_write_redirect(cmd: str) -> bool:
+    """True if the command redirects output into a file (not /dev/null or an fd
+    dup like 2>&1) — i.e. it writes somewhere."""
+    for m in re.finditer(r'\d*>>?', cmd):
+        rest = cmd[m.end():].lstrip()
+        if rest[:1] == "&" or rest.startswith("/dev/null"):
+            continue
+        return True
+    return False
+
+
+def _classify_command(command: str):
+    """(needs_confirm, reason) for a run_command shell string in semi-auto."""
+    cmd = command.strip()
+    if not cmd:
+        return False, ""
+    for pat, why in _DANGER_PATTERNS:
+        if pat.search(cmd):
+            return True, why
+    if _has_write_redirect(cmd):
+        return True, "redirects output into a file"
+    bins = []
+    for seg in re.split(r'[;&|]+', cmd):
+        seg = seg.strip()
+        if not seg:
+            continue
+        try:
+            toks = shlex.split(seg)
+        except ValueError:
+            return True, "command could not be parsed safely"
+        if toks:
+            bins.append(os.path.basename(toks[0]))
+    if bins and all(b in _READONLY_BINS for b in bins):
+        return False, ""
+    unknown = next((b for b in bins if b not in _READONLY_BINS), cmd[:30])
+    return True, f"not a known read-only command ({unknown})"
+
+
+def _needs_confirm(mode: str, name: str, args: dict):
+    """(confirm?, reason) for a resolved tool call under the given run mode."""
+    if mode == "auto":
+        return False, ""
+    if mode == "confirm":
+        return True, ""
+    if mode != "semi-auto":
+        return False, ""
+    tool = mcp_client.split_namespaced(name)[1]
+    if tool in _READONLY_TOOLS:
+        return False, ""
+    if tool == "run_command":
+        return _classify_command(str(args.get("command", "")))
+    if tool == "http_request":
+        method = str(args.get("method", "GET")).upper()
+        if method in ("GET", "HEAD", "OPTIONS"):
+            return False, ""
+        return True, f"{method} request may change server state"
+    if tool in ("write_file", "edit_file"):
+        return True, "modifies a file on disk"
+    return True, "external / unclassified tool"       # fail-closed
+
+
+def _confirm_action(name: str, args: dict, reason: str) -> bool:
+    """Prompt the user to approve a tool call. Returns True to run it."""
+    tool = mcp_client.split_namespaced(name)[1]
+    preview = _tool_arg_preview(args)
+    line = Text("  ⚠ confirm  ", style="yellow")
+    line.append(tool, style=f"bold {VIOLET}")
+    if preview:
+        line.append(f"  {preview}", style="bright_black")
+    console.print(line)
+    if reason:
+        console.print(Text(f"      {reason}", style="bright_black"))
+    try:
+        ans = input("      run this? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in ("y", "yes"):
+        return True
+    console.print(Text("      skipped", style="bright_black"))
+    return False
 
 
 # ── Banner + help ──────────────────────────────────────────────────────────────
@@ -1725,7 +1868,8 @@ class _StreamTrimmer:
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
-                           mcp: "mcp_client.MCPManager", on_event, on_text) -> str:
+                           mcp: "mcp_client.MCPManager", on_event, on_text,
+                           mode: str = "auto", on_confirm=None) -> str:
     """Run the agent loop and return the model's final text answer.
 
     `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
@@ -1733,7 +1877,11 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     (a request_tool discovery — payload is {'need', 'hits'}).
     `on_text(piece)` receives streamed answer chunks as they arrive (the final
     answer is streamed live, so the caller should not print the return value).
+    `mode` is the run mode: 'plan' (no tools, just plan), 'auto', 'confirm', or
+    'semi-auto'. `on_confirm(name, args, reason) -> bool` is asked before a tool
+    call the mode flags as needing approval; returning False skips it.
     """
+    planning = (mode == "plan")
     provider = profile.get("provider", "ollama")
     model    = profile.get("model", "")
     endpoint, api_key = _openai_endpoint(profile, base_dir)
@@ -1747,7 +1895,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     discovery = retriever is not None      # False → fall back to sending all schemas
 
     sys_parts = [PURRAGENT_SYSTEM, _env_block()]
-    if discovery:
+    if planning:
+        sys_parts.append(PLAN_MODE_NOTE)
+    elif discovery:
         sys_parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
     if custom_system:
         sys_parts.append(custom_system)
@@ -1769,8 +1919,10 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                    None)
 
     for _round in range(TOOL_LOOP_MAX_ROUNDS):
-        offer_meta = discovery and discovery_rounds < DISCOVERY_MAX_ROUNDS
-        tools_field = ([_META_TOOL] if offer_meta else []) + list(active.values())
+        offer_meta = (not planning and discovery
+                      and discovery_rounds < DISCOVERY_MAX_ROUNDS)
+        tools_field = ([] if planning
+                       else ([_META_TOOL] if offer_meta else []) + list(active.values()))
 
         body = {"model": model, "messages": msgs}
         if tools_field:
@@ -1869,6 +2021,17 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                                      "it using that exact name and only its declared "
                                      "parameters (do not invent argument names).")})
                     continue
+
+            # Run-mode gate: ask the user before flagged calls (confirm / semi-auto).
+            need, reason = _needs_confirm(mode, name, args)
+            if need and on_confirm is not None and not on_confirm(name, args, reason):
+                msgs.append({
+                    "role": "tool", "tool_call_id": call_id,
+                    "content": ("The user declined to run this action. Do not retry "
+                                "it as-is; propose an alternative or ask the user how "
+                                "to proceed."),
+                })
+                continue
 
             on_event("call", name, args)
             result = mcp.call(name, args)
@@ -2152,9 +2315,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 if chosen:
                     mode = chosen
                     _save_state(base_dir, mode=mode)
-                    console.print(f"  [green]▸[/green] agent mode set to "
-                                  f"[bold]{mode}[/bold] "
-                                  "[dim](not wired up yet)[/dim]")
+                    hint = next((h for n, h in AGENT_MODES if n == mode), "")
+                    console.print(f"  [green]▸[/green] agent mode: "
+                                  f"[bold]{mode}[/bold] [dim]— {hint}[/dim]")
             elif cmd == "/mcp":
                 parts = text.split()
                 sub = parts[1].lower() if len(parts) > 1 else ""
@@ -2439,7 +2602,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
                 # The answer is streamed live via _on_text (defined above).
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
-                                               mcp, _on_tool, _on_text)
+                                               mcp, _on_tool, _on_text,
+                                               mode=mode, on_confirm=_confirm_action)
                 _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
