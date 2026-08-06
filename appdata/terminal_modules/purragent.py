@@ -674,7 +674,9 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
 
 
 MCP_PROBE_TIMEOUT = 20.0   # hard cap (s) on a background HTTP liveness probe
-ENABLE_TIMEOUT = 20.0      # hard cap (s) on a background enable (tool fetch)
+ENABLE_TIMEOUT = 60.0      # hard cap (s) on a background enable (tool fetch);
+                           # generous because it's non-blocking + cancellable, and
+                           # some servers (e.g. GitMCP) take ~20s+ to list tools
 
 
 def _mcp_row(r: dict, selected: bool, namew: int) -> Text:
