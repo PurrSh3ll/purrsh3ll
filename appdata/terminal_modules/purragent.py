@@ -565,8 +565,9 @@ def _read_key(fd) -> str:
     """Read one keypress from a raw (cbreak) fd and classify it. Uses os.read (NOT
     sys.stdin.read, which buffers and would hide the tail of an escape sequence).
     Returns 'up'/'down'/'left'/'right'/'pgup'/'pgdn'/'home'/'end'/'enter'/
-    'refresh'/'quit' or None. Enter maps to 'enter' (an "open"/confirm, distinct
-    from 'quit') so callers can drill in; q/Esc/Ctrl-C are 'quit'.
+    'refresh'/'enable'/'disable'/'quit' or None. Enter maps to 'enter' (an
+    "open"/confirm, distinct from 'quit') so callers can drill in; q/Esc/Ctrl-C
+    are 'quit'.
     On the alternate screen the mouse wheel arrives as arrow keys, so scrolling
     the wheel maps straight onto up/down."""
     import select
@@ -574,6 +575,7 @@ def _read_key(fd) -> str:
     simple = {b"q": "quit", b"Q": "quit", b"\r": "enter", b"\n": "enter",
               b"\x03": "quit", b"": "quit",
               b"r": "refresh", b"R": "refresh",
+              b"e": "enable", b"E": "enable", b"d": "disable", b"D": "disable",
               b"j": "down", b"k": "up", b" ": "pgdn", b"g": "home", b"G": "end"}
     if ch in simple:
         return simple[ch]
@@ -660,6 +662,7 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
 
 
 MCP_PROBE_TIMEOUT = 20.0   # hard cap (s) on a background HTTP liveness probe
+ENABLE_TIMEOUT = 20.0      # hard cap (s) on a background enable (tool fetch)
 
 
 def _mcp_row(r: dict, selected: bool, namew: int) -> Text:
@@ -772,10 +775,22 @@ def _mcp_detail_lines(r: dict) -> list:
     return _render_ansi(Group(*parts)).rstrip("\n").split("\n")
 
 
+def _toggle_notice(status: str, info: str) -> str:
+    """A short result line for an enable/disable action inside the /mcp view."""
+    return {
+        "enabled":  "  ✓ enabled" + (f" · {info}" if info else ""),
+        "disabled": "  ✓ disabled",
+        "builtin":  "  built-in — can't change",
+        "error":    f"  ✗ {info[:44]}",
+        "missing":  "  ✗ no such server",
+    }.get(status, "")
+
+
 def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
     """Live /mcp overlay, two levels like the model picker. The top level lists
     servers only (status, version, enabled, tool count) — navigate with ↑/↓ and
-    press Enter/→ to open a server and see its tools; ←/q go back. Opens
+    press Enter/→ to open a server and see its tools; ←/q go back. Inside a
+    server, 'e'/'d' enable/disable it (built-ins can't be toggled). Opens
     instantly: stdio liveness is a local poll, while each HTTP endpoint is probed
     in a background thread (parallel, capped at MCP_PROBE_TIMEOUT) and shows a
     live '◍ connecting… Ns' countdown that flips to alive/dead. 'r' re-probes."""
@@ -834,12 +849,36 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
     sel = 0                            # highlighted server index
     list_off = 0                       # list viewport scroll
     det_off = 0                        # detail viewport scroll
+    notice = ""                        # transient enable/disable result line
+    job = None                         # in-flight background enable (cancellable)
     with _alt_screen():
         try:
             tty.setcbreak(fd)
             while True:
                 rows = resolve()
-                waiting = any(r.get("connecting") is not None for r in rows)
+
+                # Advance an in-flight enable. The fetch runs in a daemon thread
+                # and has no side effects, so we commit (cache + flip) here in the
+                # main thread only if it finished and wasn't cancelled; a timeout
+                # just abandons the worker (it dies on its own socket timeout).
+                if job is not None:
+                    res = job["result"]
+                    if res is not None:
+                        st, info, tools = res
+                        if st == "ready":
+                            mcp.enable_commit(job["name"], tools)
+                            notice = _toggle_notice("enabled", info)
+                        else:
+                            notice = _toggle_notice(st, info)
+                        base_rows = mcp.overview(probe=False)
+                        http = [r for r in base_rows if r.get("pending")]
+                        job = None
+                    elif time.monotonic() - job["started"] >= ENABLE_TIMEOUT:
+                        notice = "  ✗ timed out — enable cancelled"
+                        job = None
+
+                waiting = (job is not None
+                           or any(r.get("connecting") is not None for r in rows))
                 size = shutil.get_terminal_size((80, 24))
                 page = max(1, size.lines - 1)
 
@@ -856,15 +895,27 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                     offset = max(0, min(list_off, max_off))
                     footer = " ↑/↓ move · → open · r refresh · q return "
                 else:
-                    lines = _mcp_detail_lines(rows[sel])
+                    row = rows[sel]
+                    lines = _mcp_detail_lines(row)
                     max_off = max(0, len(lines) - page)
                     offset = max(0, min(det_off, max_off))
-                    if max_off > 0:
-                        last = min(offset + page, len(lines))
-                        footer = (f" {offset + 1}-{last}/{len(lines)}   "
-                                  "↑/↓ scroll · ← back · q return ")
+                    # Contextual enable/disable hint (built-ins can't be toggled).
+                    if mcp_client.is_builtin_server(row["spec"]):
+                        tog = ""
+                    elif row["enabled"]:
+                        tog = "d disable · "
                     else:
-                        footer = " ← back · r refresh · q return "
+                        tog = "e enable · "
+                    if job is not None:
+                        rem = max(0, round(ENABLE_TIMEOUT
+                                           - (time.monotonic() - job["started"])))
+                        footer = (f" enabling {job['name']}… {rem}s"
+                                  "   ·   d/Esc cancel ")
+                    else:
+                        scroll = (f"{offset + 1}-{min(offset + page, len(lines))}"
+                                  f"/{len(lines)}   ↑/↓ scroll · "
+                                  if max_off > 0 else "")
+                        footer = f" {scroll}{tog}← back · r refresh · q return{notice} "
 
                 visible = lines[offset:offset + page]
                 visible = visible + [""] * (page - len(visible))
@@ -881,6 +932,8 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                 if not select.select([fd], [], [], tick)[0]:
                     continue
                 key = _read_key(fd)
+                if key is not None:
+                    notice = ""                    # a keypress dismisses the last result
                 if key == "refresh":
                     launch()
                     continue
@@ -899,9 +952,55 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
                         sel = len(rows) - 1
                     elif key in ("enter", "right"):
                         mode, det_off = "detail", 0
-                else:                              # detail — scroll tools / go back
+                elif job is not None:              # an enable is in flight
+                    # d / Esc(q) / ← cancel it (safe: the fetch has no side
+                    # effects and we never committed); scrolling still works.
+                    if key in ("quit", "left", "disable"):
+                        job = None
+                        notice = "  cancelled"
+                    elif key == "down":
+                        det_off += 1
+                    elif key == "up":
+                        det_off -= 1
+                    elif key == "pgdn":
+                        det_off += page
+                    elif key == "pgup":
+                        det_off -= page
+                    elif key == "home":
+                        det_off = 0
+                    elif key == "end":
+                        det_off = max_off
+                else:                              # detail — scroll / toggle / back
                     if key in ("quit", "left"):
                         mode = "list"
+                    elif key in ("enable", "disable"):
+                        row = rows[sel]
+                        name = row["name"]
+                        want = (key == "enable")
+                        if mcp_client.is_builtin_server(row["spec"]):
+                            notice = "  built-in — can't change"
+                        elif row["enabled"] == want:
+                            notice = f"  already {'enabled' if want else 'disabled'}"
+                        elif not want:             # disable is instant (no network)
+                            notice = _toggle_notice(mcp.disable_server(name), "")
+                            base_rows = mcp.overview(probe=False)
+                            http = [r for r in base_rows if r.get("pending")]
+                        elif not row["is_http"]:   # enable a non-HTTP server: instant
+                            st, info = mcp.enable_server(name)
+                            notice = _toggle_notice(st, info)
+                            base_rows = mcp.overview(probe=False)
+                            http = [r for r in base_rows if r.get("pending")]
+                        else:                      # enable HTTP: fetch tools in the
+                            # background so the view stays live and cancellable.
+                            newjob = {"name": name, "started": time.monotonic(),
+                                      "result": None}
+                            job = newjob
+
+                            def _enable_worker(j=newjob, nm=name) -> None:
+                                j["result"] = mcp.enable_fetch(
+                                    nm, timeout=ENABLE_TIMEOUT)
+                            threading.Thread(target=_enable_worker,
+                                             daemon=True).start()
                     elif key == "down":
                         det_off += 1
                     elif key == "up":

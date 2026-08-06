@@ -587,6 +587,37 @@ class MCPManager:
         self._save_config(cfg)
         return "enabled", ""
 
+    def enable_fetch(self, name: str, timeout: float = 20.0):
+        """Network half of enabling an HTTP server: pull its tool list WITHOUT
+        touching the config or cache. Returns (status, info, tools) where status
+        is 'ready' | 'missing' | 'builtin' | 'stdio' | 'error'. Because it has no
+        side effects, an in-flight call is safe to abandon (cancel / timeout) —
+        the caller commits separately via enable_commit() only if it wants to."""
+        spec = (self.load_config().get("servers") or {}).get(name)
+        if spec is None:
+            return "missing", "", []
+        if is_builtin_server(spec):
+            return "builtin", "", []
+        if "url" not in spec:
+            return "stdio", "", []                # nothing to fetch — just a flag flip
+        tools, err = fetch_http_tools(
+            spec["url"], load_token(self.base_dir, name), timeout=timeout)
+        if err:
+            return "error", err, []
+        return "ready", f"{len(tools)} tools", tools
+
+    def enable_commit(self, name: str, tools: list) -> str:
+        """Commit an enable prepared by enable_fetch: cache the tools and flip the
+        flag. Instant (no network). Returns 'enabled' | 'missing'."""
+        cfg = self.load_config()
+        spec = (cfg.get("servers") or {}).get(name)
+        if spec is None:
+            return "missing"
+        save_server_tools(self.base_dir, name, tools)
+        spec["enabled"] = True
+        self._save_config(cfg)
+        return "enabled"
+
     def disable_server(self, name: str) -> str:
         """Turn a server off (keeps its cached tools so re-enabling is cheap).
         Returns 'disabled' | 'missing' | 'builtin'."""
