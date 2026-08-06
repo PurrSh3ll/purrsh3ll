@@ -59,6 +59,13 @@ def _resolve(path: str) -> str:
     return os.path.expanduser(os.path.expandvars(path))
 
 
+def _arg_path(args: dict, default=None):
+    """Read a path argument, accepting `file_path` as an alias for `path`. Many
+    models (trained on Claude-Code-style tools, which use file_path) emit that
+    name — accepting it avoids a wasted round and a confusing error."""
+    return args.get("path") or args.get("file_path") or default
+
+
 # --------------------------------------------------------------------------- #
 # Tool implementations
 # --------------------------------------------------------------------------- #
@@ -96,7 +103,7 @@ def _tool_run_command(args):
 
 
 def _tool_read_file(args):
-    path = args.get("path")
+    path = _arg_path(args)
     if not isinstance(path, str) or not path:
         raise ValueError("`path` must be a string")
     path = _resolve(path)
@@ -121,7 +128,7 @@ def _tool_read_file(args):
 
 
 def _tool_write_file(args):
-    path = args.get("path")
+    path = _arg_path(args)
     content = args.get("content", "")
     if not isinstance(path, str) or not path:
         raise ValueError("`path` must be a string")
@@ -139,7 +146,7 @@ def _tool_write_file(args):
 
 
 def _tool_edit_file(args):
-    path = args.get("path")
+    path = _arg_path(args)
     old = args.get("old_string")
     new = args.get("new_string", "")
     if not isinstance(path, str) or not path:
@@ -167,7 +174,7 @@ def _tool_edit_file(args):
 
 
 def _tool_list_dir(args):
-    path = _resolve(args.get("path", ".") or ".")
+    path = _resolve(_arg_path(args, "."))
     if not os.path.isdir(path):
         raise ValueError(f"not a directory: {path}")
     rows = []
@@ -188,7 +195,7 @@ def _tool_grep(args):
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or pattern == "":
         raise ValueError("`pattern` must be a non-empty string")
-    path = _resolve(args.get("path", ".") or ".")
+    path = _resolve(_arg_path(args, "."))
     flags = re.IGNORECASE if args.get("ignore_case") else 0
     globpat = args.get("glob")
     try:
@@ -226,7 +233,7 @@ def _tool_find_files(args):
     pattern = args.get("pattern")
     if not isinstance(pattern, str) or not pattern:
         raise ValueError("`pattern` must be a non-empty string")
-    path = _resolve(args.get("path", ".") or ".")
+    path = _resolve(_arg_path(args, "."))
     if not os.path.isdir(path):
         raise ValueError(f"not a directory: {path}")
     limit = int(args.get("max_results", 200) or 200)
