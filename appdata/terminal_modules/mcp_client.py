@@ -398,6 +398,63 @@ def fetch_http_tools(url: str, token: str = "", timeout: float = 15.0):
         return [], f"error: {e}"
 
 
+def call_http_tool(url: str, token: str, tool_name: str, arguments: dict,
+                   timeout: float = 30.0) -> dict:
+    """Invoke a tool on an HTTP (Streamable) MCP server: initialize →
+    notifications/initialized → tools/call, carrying the session id. Returns
+    {'text', 'is_error'} — the same shape as the stdio path. Stateless (a fresh
+    handshake per call) to keep it simple and robust; no long-lived session."""
+    if "sse" in url.lower():
+        return {"text": "SSE transport not supported yet (use a Streamable HTTP "
+                        "endpoint)", "is_error": True}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "Mozilla/5.0",
+    }
+    headers.update(_auth_headers(token))
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                       "clientInfo": {"name": CLIENT_NAME, "version": CLIENT_VERSION}}}
+    try:
+        _status, rh, body = _post_json(url, headers, init, timeout)
+        msg = _extract_jsonrpc(body, 1)
+        if not msg or "result" not in msg:
+            err = (msg or {}).get("error", "no response")
+            return {"text": f"initialize failed: {err}", "is_error": True}
+        session = rh.get("Mcp-Session-Id") or rh.get("mcp-session-id")
+        hdrs = dict(headers)
+        hdrs["MCP-Protocol-Version"] = PROTOCOL_VERSION
+        if session:
+            hdrs["Mcp-Session-Id"] = session
+        try:                                          # best-effort ack
+            _post_json(url, hdrs, {"jsonrpc": "2.0",
+                                   "method": "notifications/initialized"}, timeout)
+        except Exception:
+            pass
+        _status, _rh2, body2 = _post_json(url, hdrs, {
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments or {}}}, timeout)
+        msg2 = _extract_jsonrpc(body2, 2)
+        if not msg2 or "result" not in msg2:
+            err = (msg2 or {}).get("error", "no response")
+            return {"text": f"tool call failed: {err}", "is_error": True}
+        result = msg2["result"]
+        parts = [b.get("text", "") for b in (result.get("content") or [])
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        return {"text": "\n".join(parts).strip() or "(no output)",
+                "is_error": bool(result.get("isError", False))}
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return {"text": f"unauthorized (HTTP {e.code}) — token required or invalid",
+                    "is_error": True}
+        return {"text": f"HTTP {e.code}", "is_error": True}
+    except urllib.error.URLError:
+        return {"text": "cannot reach server (is it running?)", "is_error": True}
+    except Exception as e:
+        return {"text": f"error: {e}", "is_error": True}
+
+
 def probe_http(url: str, token: str = "", timeout: float = 15.0):
     """Liveness for an HTTP MCP server. Picks SSE vs Streamable by URL hint and
     falls back to the other. Returns (ok: bool, info: str)."""
@@ -419,6 +476,10 @@ def probe_http(url: str, token: str = "", timeout: float = 15.0):
 # internal timeout (see toolkit_server) so the tool returns its clean result
 # first. Keyed by bare tool name.
 TOOL_CALL_TIMEOUTS = {"http_request": 125.0}
+
+# Default per-call cap for attached HTTP MCP tools (no transport thread caps them
+# like stdio does, so the urllib timeout is the bound). Matches the 30s default.
+HTTP_CALL_TIMEOUT = 30.0
 
 
 # --------------------------------------------------------------------------- #
@@ -839,26 +900,15 @@ class MCPManager:
         self.connected = True
 
     def has_tools(self) -> bool:
-        return any(s.tools for s in self.servers.values())
+        return bool(self.all_tools())
 
     def tool_count(self) -> int:
-        return sum(len(s.tools) for s in self.servers.values())
+        return len(self.all_tools())
 
     def openai_tools(self) -> list:
-        """Aggregated tools as OpenAI function-calling schemas (namespaced)."""
-        out = []
-        for name, srv in self.servers.items():
-            for t in srv.tools:
-                out.append({
-                    "type": "function",
-                    "function": {
-                        "name": _namespaced(name, t.get("name", "")),
-                        "description": t.get("description", ""),
-                        "parameters": t.get("inputSchema",
-                                            {"type": "object", "properties": {}}),
-                    },
-                })
-        return out
+        """Aggregated tools as OpenAI function-calling schemas (namespaced),
+        across both spawned stdio servers and enabled HTTP servers."""
+        return [e["schema"] for e in self.all_tools()]
 
     def _openai_schema(self, server: str, t: dict) -> dict:
         """One namespaced OpenAI function schema from a raw MCP tool dict."""
@@ -882,34 +932,44 @@ class MCPManager:
             {name (namespaced), short, normal, long, examples, schema}
         """
         out = []
-        for name, srv in self.servers.items():
+        for name, srv in self.servers.items():           # spawned stdio servers
             for t in srv.tools:
-                normal = t.get("description", "")
-                # Built-in tools ship their own short/long/examples; attached
-                # servers usually don't, so derive them from what MCP gives us
-                # (description + inputSchema) — no LLM.
-                out.append({
-                    "name": _namespaced(name, t.get("name", "")),
-                    "short": (t.get("shortDescription")
-                              or _short_from_description(normal, t.get("name", ""))
-                              or normal),
-                    "normal": normal,
-                    "long": (t.get("longDescription")
-                             or _index_text_from_tool(t)
-                             or normal),
-                    "examples": t.get("exampleQueries") or [],
-                    "schema": self._openai_schema(name, t),
-                })
+                out.append(self._tool_entry(name, t))
+        for name, spec in self.specs.items():             # enabled HTTP servers
+            if "url" not in spec:
+                continue
+            for t in get_server_tools(self.base_dir, name):   # from the tool cache
+                if isinstance(t, dict) and t.get("name"):
+                    out.append(self._tool_entry(name, t))
         return out
+
+    def _tool_entry(self, server: str, t: dict) -> dict:
+        """Aggregated tool dict {name, short, normal, long, examples, schema} for
+        one raw MCP tool. Built-in tools ship their own short/long/examples;
+        attached servers usually don't, so those are derived from what MCP gives
+        us (description + inputSchema) — no LLM."""
+        normal = t.get("description", "")
+        return {
+            "name": _namespaced(server, t.get("name", "")),
+            "short": (t.get("shortDescription")
+                      or _short_from_description(normal, t.get("name", ""))
+                      or normal),
+            "normal": normal,
+            "long": (t.get("longDescription")
+                     or _index_text_from_tool(t)
+                     or normal),
+            "examples": t.get("exampleQueries") or [],
+            "schema": self._openai_schema(server, t),
+        }
 
     def schema_for(self, namespaced_name: str):
         """The OpenAI function schema for one namespaced tool, or None."""
         server_name, tool_name = split_namespaced(namespaced_name)
         srv = self.servers.get(server_name)
-        if srv is None:
-            return None
-        for t in srv.tools:
-            if t.get("name") == tool_name:
+        tools = (srv.tools if srv is not None
+                 else get_server_tools(self.base_dir, server_name))   # HTTP: cache
+        for t in tools:
+            if isinstance(t, dict) and t.get("name") == tool_name:
                 return self._openai_schema(server_name, t)
         return None
 
@@ -918,8 +978,14 @@ class MCPManager:
         server has died (crash / broken pipe), respawn it and retry once so a dead
         transport doesn't turn every later call into an error."""
         server_name, tool_name = split_namespaced(namespaced_name)
-        if server_name not in self.specs:
+        spec = self.specs.get(server_name)
+        if spec is None:
             return {"text": f"no such MCP server: {server_name}", "is_error": True}
+
+        if "url" in spec:                               # attached HTTP server
+            timeout = TOOL_CALL_TIMEOUTS.get(tool_name, HTTP_CALL_TIMEOUT)
+            return call_http_tool(spec["url"], load_token(self.base_dir, server_name),
+                                  tool_name, arguments, timeout=timeout)
 
         srv = self.servers.get(server_name)
         if srv is None or not srv.alive():          # (re)connect a missing/dead server
