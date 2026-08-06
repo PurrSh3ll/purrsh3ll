@@ -517,12 +517,22 @@ def _banner_panel(profile: dict | None, logo: Text, greeting: str,
     left.add_row("")
     left.add_row(_model_status(profile))
 
-    right = Table.grid(padding=(0, 2))
-    right.add_column(style="cyan", no_wrap=True)
-    right.add_column(style="dim", no_wrap=True)
-    right.add_row(Text("Commands", style="bold white"), "")
+    cmds = Table.grid(padding=(0, 2))
+    cmds.add_column(style="cyan", no_wrap=True)
+    cmds.add_column(style="dim", no_wrap=True)
+    cmds.add_row(Text("Commands", style="bold white"), "")
     for cmd, hint in BANNER_COMMANDS:
-        right.add_row(cmd, hint)
+        cmds.add_row(cmd, hint)
+
+    # A one-line pitch above the commands: playful identity + the architecture
+    # that makes a small local model punch above its weight (RAG-driven
+    # just-in-time tool discovery — tools are pulled only when asked for).
+    right = Group(
+        Text("Small cat, big claws", style=f"bold {VIOLET}"),
+        Text("MCP-Zero hack agent", style="dim"),
+        Text("─" * 20, style=VIOLET),
+        cmds,
+    )
 
     body = Table(show_header=False, box=box.MINIMAL, show_edge=False,
                  pad_edge=False, padding=(0, 2))
