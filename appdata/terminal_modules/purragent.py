@@ -1514,6 +1514,41 @@ def _get_retriever(base_dir: str, all_tools: list):
     return None
 
 
+class _StreamTrimmer:
+    """Live-text filter that swallows turns which stream only whitespace — the
+    blank lines local models tend to emit right before a tool call. Real content
+    still flows through live; whitespace is held back and flushed only just before
+    the next visible character, so leading/trailing blank lines never hit the
+    screen. Turn boundaries are marked by end_turn() (called on tool-call turns)."""
+
+    def __init__(self, sink):
+        self._sink = sink            # the real on_text (writes stdout + records)
+        self._pending = ""           # whitespace seen but not yet flushed
+        self._seen = False           # any visible char emitted this turn?
+
+    def feed(self, piece: str) -> None:
+        out = []
+        for ch in piece:
+            if ch.isspace():
+                self._pending += ch          # hold — might be trailing noise
+            else:
+                if self._pending:
+                    out.append(self._pending)
+                    self._pending = ""
+                out.append(ch)
+                self._seen = True
+        if out:
+            self._sink("".join(out))
+
+    def end_turn(self) -> None:
+        """Close a tool-call turn: drop its trailing whitespace, and if it did
+        show narration, terminate that line so the tool events start cleanly."""
+        self._pending = ""
+        if self._seen:
+            self._sink("\n")
+        self._seen = False
+
+
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text) -> str:
     """Run the agent loop and return the model's final text answer.
@@ -1550,6 +1585,13 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     # holds every tool up front (classic behaviour).
     active: dict = {} if discovery else {t["name"]: t["schema"] for t in all_tools}
     discovery_rounds = 0
+    trimmer = _StreamTrimmer(on_text)   # swallow the blank lines around tool calls
+    # The universal escape hatch, handed over only when a discovery round finds
+    # nothing — so the model still prefers the safer specialised tools, but is
+    # never stranded when RAG can't match its need.
+    run_cmd = next((t for t in all_tools
+                    if mcp_client.split_namespaced(t["name"])[1] == "run_command"),
+                   None)
 
     for _round in range(TOOL_LOOP_MAX_ROUNDS):
         offer_meta = discovery and discovery_rounds < DISCOVERY_MAX_ROUNDS
@@ -1564,12 +1606,15 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         if custom_params:
             body.update(custom_params)
 
-        message = _chat_stream(endpoint, api_key, body, on_text, hide_thinking)
+        message = _chat_stream(endpoint, api_key, body, trimmer.feed, hide_thinking)
 
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
             return (message.get("content") or "").strip()
 
+        # A tool-call turn — discard its trailing whitespace so no blank lines
+        # land between the streamed text and the tool-activity lines.
+        trimmer.end_turn()
         # Keep the assistant's tool-call turn in context, then answer each call.
         msgs.append(message)
         for tc in tool_calls:
@@ -1593,6 +1638,12 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                         if schema is not None:
                             active[hname] = schema
                     surfaced.append(mcp_client.split_namespaced(hname)[1])
+                # Nothing matched — surface run_command as a fallback so the model
+                # can still act (via a shell command) instead of getting stuck.
+                if not surfaced and run_cmd is not None:
+                    if run_cmd["name"] not in active:
+                        active[run_cmd["name"]] = run_cmd["schema"]
+                    surfaced.append("run_command")
                 # Bound the context: drop the oldest schemas past the cap.
                 while len(active) > MAX_ACTIVE_TOOLS:
                     active.pop(next(iter(active)))
