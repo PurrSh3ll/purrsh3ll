@@ -1359,6 +1359,13 @@ def _env_block() -> str:
 
 # ── LLM query (reuses psai) ────────────────────────────────────────────────────
 
+# purragent pins a low sampling temperature for EVERY model, ignoring whatever a
+# profile is configured with. Tool selection and argument-filling are precise,
+# single-right-answer tasks, so we favour consistency over variance — this cut the
+# stray, self-corrected tool calls we saw in testing.
+AGENT_TEMPERATURE = 0.2
+
+
 def query_model(profile: dict, base_dir: str, history: list) -> str:
     provider = profile.get("provider", "ollama")
     model    = profile.get("model", "")
@@ -1369,7 +1376,7 @@ def query_model(profile: dict, base_dir: str, history: list) -> str:
     custom_system    = profile.get("custom_system", "").strip()
     disable_thinking = bool(profile.get("disable_thinking", False)) and not custom_params
     hide_thinking    = bool(profile.get("hide_thinking", False))
-    temperature      = psai._profile_temperature(profile)
+    temperature      = AGENT_TEMPERATURE   # pinned; not inherited from the profile
 
     sys_parts = [PURRAGENT_SYSTEM, _env_block()]
     if custom_system:
@@ -1730,7 +1737,7 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     provider = profile.get("provider", "ollama")
     model    = profile.get("model", "")
     endpoint, api_key = _openai_endpoint(profile, base_dir)
-    temperature   = psai._profile_temperature(profile)
+    temperature   = AGENT_TEMPERATURE      # pinned; not inherited from the profile
     custom_params = psai._parse_custom_params(profile)
     custom_system = profile.get("custom_system", "").strip()
     hide_thinking = bool(profile.get("hide_thinking", False))
