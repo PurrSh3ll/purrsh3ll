@@ -1998,7 +1998,8 @@ def build_menu(main_window):
         _PROVIDER_TYPES    = ["ollama", "openai", "anthropic", "groq", "gemini",
                               "openrouter", "huggingface", "mistral", "deepseek",
                               "xai", "cerebras", "together", "perplexity", "fireworks",
-                              "llamacpp", "lmstudio", "jan", "koboldcpp"]
+                              "nvidia", "zai",
+                              "llamacpp", "lmstudio", "jan", "koboldcpp", "custom"]
         _PROVIDER_BASE_URL = {
             "ollama":       "http://localhost:11434",
             "openai":       "https://api.openai.com/v1",
@@ -2014,6 +2015,8 @@ def build_menu(main_window):
             "together":     "https://api.together.xyz/v1",
             "perplexity":   "https://api.perplexity.ai",
             "fireworks":    "https://api.fireworks.ai/inference/v1",
+            "nvidia":       "https://integrate.api.nvidia.com/v1",
+            "zai":          "https://api.z.ai/api/paas/v4",
             "llamacpp":     "http://localhost:8080/v1",
             "lmstudio":     "http://localhost:1234/v1",
             "jan":          "http://localhost:1337/v1",
