@@ -564,12 +564,14 @@ def _drain_stdin() -> None:
 def _read_key(fd) -> str:
     """Read one keypress from a raw (cbreak) fd and classify it. Uses os.read (NOT
     sys.stdin.read, which buffers and would hide the tail of an escape sequence).
-    Returns 'up'/'down'/'pgup'/'pgdn'/'home'/'end'/'refresh'/'quit' or None.
+    Returns 'up'/'down'/'left'/'right'/'pgup'/'pgdn'/'home'/'end'/'enter'/
+    'refresh'/'quit' or None. Enter maps to 'enter' (an "open"/confirm, distinct
+    from 'quit') so callers can drill in; q/Esc/Ctrl-C are 'quit'.
     On the alternate screen the mouse wheel arrives as arrow keys, so scrolling
     the wheel maps straight onto up/down."""
     import select
     ch = os.read(fd, 1)
-    simple = {b"q": "quit", b"Q": "quit", b"\r": "quit", b"\n": "quit",
+    simple = {b"q": "quit", b"Q": "quit", b"\r": "enter", b"\n": "enter",
               b"\x03": "quit", b"": "quit",
               b"r": "refresh", b"R": "refresh",
               b"j": "down", b"k": "up", b" ": "pgdn", b"g": "home", b"G": "end"}
@@ -582,6 +584,7 @@ def _read_key(fd) -> str:
         if not seq:
             return "quit"                     # lone Esc
         return {b"[A": "up", b"OA": "up", b"[B": "down", b"OB": "down",
+                b"[C": "right", b"OC": "right", b"[D": "left", b"OD": "left",
                 b"[5~": "pgup", b"[6~": "pgdn",
                 b"[H": "home", b"[1~": "home", b"OH": "home",
                 b"[F": "end", b"[4~": "end", b"OF": "end"}.get(seq)
@@ -631,8 +634,8 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
             render()
             while True:
                 key = _read_key(fd)
-                if key == "quit":
-                    break
+                if key in ("quit", "enter"):
+                    break                      # Enter also returns from the pager
                 if max_off == 0 or key is None:
                     continue                   # nothing to scroll / unknown key
                 prev = offset
@@ -659,12 +662,123 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
 MCP_PROBE_TIMEOUT = 20.0   # hard cap (s) on a background HTTP liveness probe
 
 
+def _mcp_row(r: dict, selected: bool, namew: int) -> Text:
+    """One compact server line for the /mcp list (status + version + enabled +
+    tool count, no tool listing). The selected row gets a violet '❯' cursor."""
+    t = Text()
+    t.append("❯ " if selected else "  ", style=f"bold {VIOLET}")
+    name_style = f"bold {VIOLET}" if selected else "bold white"
+    name = r["name"].ljust(namew + 2)
+    if r.get("connecting") is not None:
+        t.append("◍ ", style="cyan")
+        t.append(name, style=name_style)
+        t.append(f"connecting… {r['connecting']}s", style="cyan")
+    elif not r["probed"]:
+        t.append("○ ", style="bright_black")
+        t.append(name, style=name_style)
+        t.append("disabled", style="yellow")
+        return t                       # a never-spawned stdio server — nothing else
+    elif r["alive"]:
+        t.append("● ", style="green")
+        t.append(name, style=name_style)
+        t.append("alive", style="bold green")
+        if r["detail"]:
+            t.append(f" · {r['detail'][:32]}", style="dim")
+    else:
+        t.append("○ ", style="red")
+        t.append(name, style=name_style)
+        t.append("dead", style="bold red")
+        if r["detail"]:
+            t.append(f" — {r['detail'][:32]}", style="red")
+    tag, tag_style = ("enabled", "dim") if r["enabled"] else ("disabled", "yellow")
+    t.append(f"   ·   {tag}", style=tag_style)
+    n = len(r["tools"])
+    if n:
+        t.append(f"  ·  {n} tool{'s' if n != 1 else ''}", style="dim")
+    return t
+
+
+def _mcp_list_lines(rows: list, sel: int, tools_ok: bool) -> list:
+    """The top-level /mcp screen: one line per server, no tools. Returns rendered
+    ANSI lines; server i is always at line index 2 (title + blank) + i."""
+    parts = [Text("purragent — MCP servers", style=f"bold {VIOLET}"), Text("")]
+    if not rows:
+        parts.append(Text("No MCP servers configured.", style="dim"))
+    else:
+        namew = max(len(r["name"]) for r in rows)
+        for i, r in enumerate(rows):
+            parts.append(_mcp_row(r, i == sel, namew))
+    if not tools_ok:
+        parts.append(Text(""))
+        parts.append(Text(
+            "The attached model has no function calling — tools won't be used "
+            "until you pick one that does (/model).", style="yellow"))
+    return _render_ansi(Group(*parts)).rstrip("\n").split("\n")
+
+
+def _mcp_detail_lines(r: dict) -> list:
+    """The drill-in screen for one server: full status header, URL, and its tool
+    list (or an explanation of why there's nothing to show)."""
+    name = r["name"]
+    parts = [Text(f"purragent — {name}", style=f"bold {VIOLET}"), Text("")]
+    head = Text()
+    if r.get("connecting") is not None:
+        head.append("◍ ", style="cyan")
+        head.append(f"connecting… {r['connecting']}s", style="cyan")
+    elif not r["probed"]:
+        head.append("○ ", style="bright_black")
+        head.append("disabled", style="yellow")
+    elif r["alive"]:
+        head.append("● ", style="green")
+        head.append("alive", style="bold green")
+        if r["detail"]:
+            head.append(f" · {r['detail']}", style="dim")
+    else:
+        head.append("○ ", style="red")
+        head.append("dead", style="bold red")
+        if r["detail"]:
+            head.append(f" — {r['detail']}", style="red")
+    tag, tag_style = ("enabled", "dim") if r["enabled"] else ("disabled", "yellow")
+    head.append(f"   ·   {tag}", style=tag_style)
+    parts.append(head)
+    if r["is_http"] and r["url"]:
+        parts.append(Text(f"{r['url']}", style="dim"))
+    parts.append(Text(""))
+
+    tools = r["tools"]
+    if tools:
+        parts.append(Text(f"{len(tools)} tool{'s' if len(tools) != 1 else ''}",
+                          style="bold white"))
+        parts.append(Text(""))
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
+        grid.add_column(style="dim")
+        for t in tools:
+            grid.add_row("  " + t.get("name", "?"),
+                         Text(t.get("description", ""), style="dim"))
+        parts.append(grid)
+    else:
+        if r.get("connecting") is not None:
+            msg = "still connecting — tools will appear once it responds."
+        elif not r["probed"]:
+            msg = f"disabled — /mcp enable {name} to pull its tools."
+        elif not r["alive"]:
+            msg = "unreachable — no tools to show."
+        elif not r["enabled"]:
+            msg = f"not enabled — /mcp enable {name} to pull and cache its tools."
+        else:
+            msg = "this server exposes no tools."
+        parts.append(Text(msg, style="dim"))
+    return _render_ansi(Group(*parts)).rstrip("\n").split("\n")
+
+
 def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
-    """Live /mcp overlay. Opens instantly: stdio liveness is resolved up front
-    (a local process poll), while each HTTP endpoint is probed in a background
-    thread (in parallel, each capped at MCP_PROBE_TIMEOUT). HTTP servers show a
-    '◍ connecting… Ns' countdown that flips to alive/dead as its probe returns.
-    'r' re-probes everything; scroll / q behave like show_view."""
+    """Live /mcp overlay, two levels like the model picker. The top level lists
+    servers only (status, version, enabled, tool count) — navigate with ↑/↓ and
+    press Enter/→ to open a server and see its tools; ←/q go back. Opens
+    instantly: stdio liveness is a local poll, while each HTTP endpoint is probed
+    in a background thread (parallel, capped at MCP_PROBE_TIMEOUT) and shows a
+    live '◍ connecting… Ns' countdown that flips to alive/dead. 'r' re-probes."""
     import select
     import termios
     import threading
@@ -673,8 +787,7 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
     base_rows = mcp.overview(probe=False)
     http = [r for r in base_rows if r.get("pending")]
 
-    # No tty (or nothing to probe in background) → static pager, probe inline.
-    if not sys.stdin.isatty() or not http:
+    if not sys.stdin.isatty():         # no tty → can't drive an interactive view
         show_view(_mcp_body(mcp.overview(probe=True), tools_ok))
         return
 
@@ -717,61 +830,90 @@ def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
     launch()
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    offset = 0
+    mode = "list"                      # "list" (servers) or "detail" (one server's tools)
+    sel = 0                            # highlighted server index
+    list_off = 0                       # list viewport scroll
+    det_off = 0                        # detail viewport scroll
     with _alt_screen():
         try:
             tty.setcbreak(fd)
             while True:
                 rows = resolve()
                 waiting = any(r.get("connecting") is not None for r in rows)
-                lines = _mcp_body(rows, tools_ok).rstrip("\n").split("\n")
                 size = shutil.get_terminal_size((80, 24))
                 page = max(1, size.lines - 1)
-                max_off = max(0, len(lines) - page)
-                offset = max(0, min(offset, max_off))
+
+                if mode == "list":
+                    if rows:
+                        sel %= len(rows)
+                    lines = _mcp_list_lines(rows, sel, tools_ok)
+                    max_off = max(0, len(lines) - page)
+                    sel_line = 2 + (sel if rows else 0)   # keep the cursor on-screen
+                    if sel_line < list_off:
+                        list_off = sel_line
+                    elif sel_line >= list_off + page:
+                        list_off = sel_line - page + 1
+                    offset = max(0, min(list_off, max_off))
+                    footer = " ↑/↓ move · → open · r refresh · q return "
+                else:
+                    lines = _mcp_detail_lines(rows[sel])
+                    max_off = max(0, len(lines) - page)
+                    offset = max(0, min(det_off, max_off))
+                    if max_off > 0:
+                        last = min(offset + page, len(lines))
+                        footer = (f" {offset + 1}-{last}/{len(lines)}   "
+                                  "↑/↓ scroll · ← back · q return ")
+                    else:
+                        footer = " ← back · r refresh · q return "
 
                 visible = lines[offset:offset + page]
                 visible = visible + [""] * (page - len(visible))
                 out = ["\x1b[H"]
                 for ln in visible:
                     out.append(ln + "\x1b[0m\x1b[K\r\n")
-                if max_off > 0:
-                    last = min(offset + page, len(lines))
-                    status = (f" {offset + 1}-{last}/{len(lines)}   "
-                              "↑/↓ scroll · r refresh · q return ")
-                else:
-                    status = " ↑/↓ scroll · r refresh · q return "
-                out.append(f"\x1b[7m{status}\x1b[0m\x1b[K")
+                out.append(f"\x1b[7m{footer}\x1b[0m\x1b[K")
                 sys.stdout.write("".join(out))
                 sys.stdout.flush()
 
-                # While probes run, wake every 0.25s to tick the countdown; once
-                # everything is resolved, block until the next keypress (no busy
-                # loop, keeps the prompt cache / CPU quiet).
+                # While probes run, tick every 0.25s to update the countdown; once
+                # resolved, block on the next keypress (no busy loop / cache churn).
                 tick = 0.25 if waiting else None
                 if not select.select([fd], [], [], tick)[0]:
                     continue
                 key = _read_key(fd)
-                if key == "quit":
-                    break
                 if key == "refresh":
                     launch()
-                    offset = 0
                     continue
-                if max_off == 0 or key is None:
-                    continue
-                if key == "down":
-                    offset += 1
-                elif key == "up":
-                    offset -= 1
-                elif key == "pgdn":
-                    offset += page
-                elif key == "pgup":
-                    offset -= page
-                elif key == "home":
-                    offset = 0
-                elif key == "end":
-                    offset = max_off
+                if mode == "list":
+                    if key == "quit":
+                        break
+                    if not rows:
+                        continue
+                    if key == "up":
+                        sel = (sel - 1) % len(rows)
+                    elif key == "down":
+                        sel = (sel + 1) % len(rows)
+                    elif key == "home":
+                        sel = 0
+                    elif key == "end":
+                        sel = len(rows) - 1
+                    elif key in ("enter", "right"):
+                        mode, det_off = "detail", 0
+                else:                              # detail — scroll tools / go back
+                    if key in ("quit", "left"):
+                        mode = "list"
+                    elif key == "down":
+                        det_off += 1
+                    elif key == "up":
+                        det_off -= 1
+                    elif key == "pgdn":
+                        det_off += page
+                    elif key == "pgup":
+                        det_off -= page
+                    elif key == "home":
+                        det_off = 0
+                    elif key == "end":
+                        det_off = max_off
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
             termios.tcflush(fd, termios.TCIFLUSH)
