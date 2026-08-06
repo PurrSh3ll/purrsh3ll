@@ -41,7 +41,7 @@ MAX_OUTPUT = 20000          # chars: cap on any single tool's returned text
 # `timeout` argument — so every call is bounded the same way (and matches the
 # client's 30s transport cap in mcp_client.MCPServer).
 DEFAULT_CMD_TIMEOUT = 30    # seconds
-DEFAULT_HTTP_TIMEOUT = 30   # seconds
+DEFAULT_HTTP_TIMEOUT = 120  # seconds (web/API calls can legitimately be slow)
 MAX_GREP_HITS = 200
 
 

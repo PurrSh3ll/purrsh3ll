@@ -357,6 +357,14 @@ def probe_http(url: str, token: str = "", timeout: float = 15.0):
     return last
 
 
+# Per-call transport cap. Every tool is bounded by the server's default timeout
+# (30s); tools listed here get a longer client-side wait so the transport does
+# not clip a legitimately slow call. The value must exceed the tool's own
+# internal timeout (see toolkit_server) so the tool returns its clean result
+# first. Keyed by bare tool name.
+TOOL_CALL_TIMEOUTS = {"http_request": 125.0}
+
+
 # --------------------------------------------------------------------------- #
 # One server subprocess
 # --------------------------------------------------------------------------- #
@@ -406,8 +414,10 @@ class MCPServer:
         self.proc.stdin.write(json.dumps(msg) + "\n")
         self.proc.stdin.flush()
 
-    def _request(self, method: str, params: dict = None):
-        """Send a request and wait for the response with the matching id."""
+    def _request(self, method: str, params: dict = None, timeout: float = None):
+        """Send a request and wait for the response with the matching id. `timeout`
+        overrides the server's default per-request cap (used for slow tools)."""
+        wait = self.timeout if timeout is None else timeout
         self._id += 1
         req_id = self._id
         self._send({"jsonrpc": "2.0", "id": req_id, "method": method,
@@ -415,10 +425,10 @@ class MCPServer:
         # Drain messages until we see our id (skip stray notifications).
         while True:
             try:
-                msg = self._q.get(timeout=self.timeout)
+                msg = self._q.get(timeout=wait)
             except queue.Empty:
                 raise TimeoutError(f"{self.name}: no response to {method!r} "
-                                   f"in {self.timeout}s")
+                                   f"in {wait}s")
             if msg.get("id") == req_id:
                 if "error" in msg:
                     err = msg["error"]
@@ -468,13 +478,15 @@ class MCPServer:
         """True while the server subprocess is still running."""
         return self.proc is not None and self.proc.poll() is None
 
-    def call_tool(self, tool_name: str, arguments: dict) -> dict:
+    def call_tool(self, tool_name: str, arguments: dict,
+                  timeout: float = None) -> dict:
         """Invoke a tool. Returns {'text', 'is_error'[, 'dead']}. `dead` is set
         when the transport died (broken pipe / process exited), so the manager
-        knows it should respawn and retry."""
+        knows it should respawn and retry. `timeout` overrides the default cap."""
         try:
             result = self._request("tools/call", {"name": tool_name,
-                                                  "arguments": arguments or {}})
+                                                  "arguments": arguments or {}},
+                                   timeout=timeout)
         except Exception as e:
             return {"text": f"tool call failed: {e}", "is_error": True,
                     "dead": not self.alive() or isinstance(e, (BrokenPipeError, OSError))}
@@ -854,11 +866,12 @@ class MCPManager:
                             f"{self.failures.get(server_name, 'failed to start')}",
                     "is_error": True}
 
-        result = srv.call_tool(tool_name, arguments)
+        call_timeout = TOOL_CALL_TIMEOUTS.get(tool_name)
+        result = srv.call_tool(tool_name, arguments, timeout=call_timeout)
         if result.get("dead"):                      # transport died mid-call — retry once
             srv = self._spawn(server_name)
             if srv is not None:
-                result = srv.call_tool(tool_name, arguments)
+                result = srv.call_tool(tool_name, arguments, timeout=call_timeout)
         result.pop("dead", None)
         return result
 
