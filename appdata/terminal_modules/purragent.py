@@ -1610,6 +1610,23 @@ def _catalog_block(all_tools: list) -> str:
     return "<tool_catalog>\n" + lines + "\n</tool_catalog>"
 
 
+def _resolve_tool_name(name: str, all_tools: list):
+    """Map a loose/fabricated tool reference to a real namespaced tool name, or
+    None. Matches (case-insensitively) the exact namespaced name, the bare tool
+    name, or the tool's short catalog description — covering models that ignore
+    request_tool and call a tool by its description or without the namespace."""
+    if not name:
+        return None
+    key = name.strip().lower().rstrip(".")
+    for t in all_tools:
+        full = t["name"]
+        bare = mcp_client.split_namespaced(full)[1]
+        short = (t.get("short") or "").strip().lower().rstrip(".")
+        if key in (full.lower(), bare.lower(), short):
+            return full
+    return None
+
+
 _TOOL_RETRIEVER = None
 
 
@@ -1772,6 +1789,41 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                 msgs.append({"role": "tool", "tool_call_id": call_id,
                              "content": ack})
                 continue
+
+            # Robustness: some models ignore request_tool and fabricate a call
+            # using a catalog line (the tool's description) or an undiscovered
+            # name. Routing that straight to mcp.call fails cryptically ("no such
+            # MCP server: None"), which models then misread as a server outage.
+            if name not in active:
+                resolved = _resolve_tool_name(name, all_tools)
+                if resolved is None:
+                    on_event("result", name, {"text": f"unknown tool: {name}",
+                                              "is_error": True})
+                    msgs.append({"role": "tool", "tool_call_id": call_id,
+                                 "content": (
+                                     f"No tool named '{name}' exists. Tools are not "
+                                     "called by their description. Call request_tool "
+                                     "with what you need, then call the tool by the "
+                                     "exact name provided.")})
+                    continue
+                if resolved not in active:
+                    active[resolved] = mcp.schema_for(resolved)
+                    while len(active) > MAX_ACTIVE_TOOLS:
+                        active.pop(next(iter(active)))
+                bare = mcp_client.split_namespaced(resolved)[1]
+                if name in (resolved, bare):
+                    name = resolved          # real name, loose form — run it below
+                else:
+                    # Called by description: the arguments are likely fabricated
+                    # too, so surface the real tool and ask for a clean retry.
+                    on_event("search", name, {"hits": [bare]})
+                    msgs.append({"role": "tool", "tool_call_id": call_id,
+                                 "content": (
+                                     f"'{name}' is not a callable tool name. The tool "
+                                     f"you want is now available as '{resolved}'. Call "
+                                     "it using that exact name and only its declared "
+                                     "parameters (do not invent argument names).")})
+                    continue
 
             on_event("call", name, args)
             result = mcp.call(name, args)
