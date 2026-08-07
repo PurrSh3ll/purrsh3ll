@@ -95,7 +95,7 @@ SLASH = [
     ("/debug",    "toggle showing the raw request sent to the model"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
     ("/context",  "show how much of the context window is used"),
-    ("/setcontext", "set the max context this session (e.g. /setcontext 32k)"),
+    ("/setcontext", "set the max context this session (e.g. 32k, or 'default' to reset)"),
     ("/help",     "show commands and usage"),
     ("/clear",    "clear the conversation"),
     ("/exit",     "quit purragent"),
@@ -331,6 +331,65 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
             parts.append(c)
     total_chars = sum(len(p) for p in parts)
     return total_chars // 4
+
+
+def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
+    """Alt-screen view of context-window usage, broken down by section — opened by
+    /context, dismissed with q/Esc (like the /mcp view)."""
+    p = ctx.get("profile")
+    if not p:
+        console.print("  [yellow]No model attached.[/yellow] "
+                      "[dim]/model to choose one[/dim]")
+        return
+    use_tools = _supports_tool_loop(p) and _model_has_tools(p, base_dir)
+    sys_chars = len(PURRAGENT_SYSTEM) + len(_env_block())
+    cat_chars = 0
+    if use_tools and mcp is not None:
+        try:
+            all_tools = mcp.all_tools()
+        except Exception:
+            all_tools = []
+        if all_tools:
+            cat_chars = len(_DISCOVERY_GUIDE) + len(_catalog_block(all_tools))
+    custom_chars = len((p.get("custom_system", "") or "").strip())
+    hist_chars = sum(len(m.get("content")) for m in history
+                     if isinstance(m.get("content"), str))
+    sections = [
+        ("system prompt + env", sys_chars),
+        ("tool catalog",        cat_chars),
+        ("custom instructions", custom_chars),
+        ("conversation",        hist_chars),
+    ]
+    used = sum(c for _, c in sections) // 4
+    maxc = _effective_max_context(ctx, base_dir)
+
+    parts = [Text(f"Context — {_model_short(p)}", style=f"bold {VIOLET}"), Text("")]
+    if maxc:
+        pct = min(100, round(used * 100 / maxc))
+        filled = min(32, round(pct * 32 / 100))
+        col = "green" if pct < 75 else "yellow" if pct < 90 else "red"
+        head = Text()
+        head.append(f"~{used:,}", style="bold")
+        head.append(f" / {maxc:,} tokens   ")
+        head.append(f"({pct}%)", style="bright_black")
+        if ctx.get("max_context"):
+            head.append("   session override", style="yellow")
+        parts += [head, Text("█" * filled + "░" * (32 - filled), style=col)]
+    else:
+        parts.append(Text(f"~{used:,} tokens used  (model max unknown — "
+                          "set it with /setcontext <n>)"))
+    parts += [Text(""), Text("breakdown", style="bright_black")]
+    for label, chars in sections:
+        toks = chars // 4
+        share = f"{round(toks * 100 / used)}%" if used else "0%"
+        row = Text("  ")
+        row.append(f"{label:<22}", style="bright_black")
+        row.append(f"~{toks:>8,} tok")
+        row.append(f"   {share:>4}", style="bright_black")
+        parts.append(row)
+    parts += [Text(""),
+              Text("estimate (~4 chars/token) · q to return", style="bright_black")]
+    show_view(_render_ansi(Group(*parts)), hint="context usage · q to return")
 
 
 # ── Inline arrow-key selector (Claude-Code-style) ──────────────────────────────
@@ -1761,7 +1820,10 @@ _META_TOOL = {
             "Request a tool by describing, in natural language, what you need to "
             "do. The matching tools (with their full parameters) will then be "
             "provided so you can call them. Use this whenever you need to act on "
-            "the system — do not guess tool names."
+            "the system — do not guess tool names. Describe the CAPABILITY only, "
+            "in a few words; never put the actual data (file contents, target "
+            "names, payloads, arguments) in the request — that dilutes the match. "
+            "Save the data for when you call the real tool."
         ),
         "parameters": {
             "type": "object",
@@ -1769,9 +1831,12 @@ _META_TOOL = {
                 "need": {
                     "type": "string",
                     "description": (
-                        "A natural-language description of the action or "
-                        "capability you need, e.g. 'scan a host for open ports' "
-                        "or 'read a configuration file'."
+                        "A short capability phrase describing the action you "
+                        "need, NOT the data it will operate on. Good: 'write text "
+                        "to a file', 'scan a host for open ports', 'read a "
+                        "configuration file'. Bad: 'create cats.txt with the "
+                        "content \"...\"' — leave the filename/content/payload out "
+                        "and provide them later as the tool's arguments."
                     ),
                 },
             },
@@ -2426,33 +2491,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 else:
                     console.print("  [yellow]▸[/yellow] debug [bold]off[/bold]")
             elif cmd == "/context":
-                p = ctx["profile"]
-                if not p:
-                    console.print("  [yellow]No model attached.[/yellow] "
-                                  "[dim]/model to choose one[/dim]")
-                else:
-                    maxc = _effective_max_context(ctx, base_dir)
-                    use_tools = (_supports_tool_loop(p)
-                                 and _model_has_tools(p, base_dir))
-                    used = _estimate_context_tokens(p, base_dir, history,
-                                                    mcp, use_tools)
-                    over = (" [yellow](session override)[/yellow]"
-                            if ctx.get("max_context") else "")
-                    if not maxc:
-                        console.print(
-                            f"  context used: [bold]~{used:,}[/bold] tokens  "
-                            "[dim](model max unknown — set it with "
-                            "/setcontext <n>)[/dim]")
-                    else:
-                        pct = min(100, round(used * 100 / maxc)) if maxc else 0
-                        filled = min(20, round(pct / 5))
-                        bar = "█" * filled + "░" * (20 - filled)
-                        col = "green" if pct < 75 else "yellow" if pct < 90 else "red"
-                        console.print(
-                            f"  context  [bold]~{used:,}[/bold] / {maxc:,} tokens"
-                            f"  [dim]({pct}%)[/dim]{over}")
-                        console.print(f"  [{col}]{bar}[/{col}]  "
-                                      "[dim]estimate (~4 chars/token)[/dim]")
+                _context_view(ctx, base_dir, history, mcp)
             elif cmd == "/setcontext":
                 arg = text[len("/setcontext"):].strip()
                 if not arg:
@@ -2460,13 +2499,19 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     cur = f"{maxc:,}" if maxc else "unknown"
                     console.print(f"  [dim]current max context:[/dim] "
                                   f"[bold]{cur}[/bold]  [dim]usage: /setcontext "
-                                  "<number>  (e.g. 32000 or 32k)[/dim]")
+                                  "<number>  (e.g. 32000 or 32k, or 'default')[/dim]")
+                elif arg.lower() in ("default", "reset", "auto", "model"):
+                    ctx["max_context"] = None       # drop the override → model default
+                    maxc = _effective_max_context(ctx, base_dir)
+                    cur = f"{maxc:,}" if maxc else "unknown"
+                    console.print(f"  [green]▸[/green] max context reset to the model "
+                                  f"default [bold]{cur}[/bold]")
                 else:
                     n = _parse_ctx_number(arg)
                     if not n:
                         console.print("  [yellow]invalid number.[/yellow] "
-                                      "[dim]e.g. /setcontext 32000 or "
-                                      "/setcontext 128k[/dim]")
+                                      "[dim]e.g. /setcontext 32000, 128k, or "
+                                      "'default'[/dim]")
                     else:
                         ctx["max_context"] = n
                         console.print(f"  [green]▸[/green] max context set to "
