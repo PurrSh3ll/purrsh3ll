@@ -333,8 +333,24 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
     return total_chars // 4
 
 
+def _tools_reservation_chars(all_tools: list) -> int:
+    """Rough char reservation for the `tools` request field during discovery: the
+    request_tool meta-schema plus RETRIEVE_TOP_N average-sized tool schemas (we
+    can't know which get surfaced, so we budget the average). These JSON schemas
+    ride in `tools`, not in `messages`, but they still consume the context
+    window — so /context counts them as fixed per-prompt overhead."""
+    meta = len(json.dumps(_META_TOOL))
+    if not all_tools:
+        return meta
+    sizes = [len(json.dumps(t.get("schema", {}))) for t in all_tools]
+    avg = (sum(sizes) / len(sizes)) if sizes else 0
+    return meta + int(RETRIEVE_TOP_N * avg)
+
+
 def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
-    """Alt-screen view of context-window usage, broken down by section — opened by
+    """Alt-screen view of context-window usage, split into two groups: the fixed
+    overhead sent on every prompt (system prompt, catalog, custom instructions
+    and the tools-field reservation) and the conversation that grows. Opened by
     /context, dismissed with q/Esc (like the /mcp view)."""
     p = ctx.get("profile")
     if not p:
@@ -343,7 +359,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
         return
     use_tools = _supports_tool_loop(p) and _model_has_tools(p, base_dir)
     sys_chars = len(PURRAGENT_SYSTEM) + len(_env_block())
-    cat_chars = 0
+    cat_chars = tools_chars = 0
     if use_tools and mcp is not None:
         try:
             all_tools = mcp.all_tools()
@@ -351,17 +367,24 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
             all_tools = []
         if all_tools:
             cat_chars = len(_DISCOVERY_GUIDE) + len(_catalog_block(all_tools))
+            tools_chars = _tools_reservation_chars(all_tools)
     custom_chars = len((p.get("custom_system", "") or "").strip())
     hist_chars = sum(len(m.get("content")) for m in history
                      if isinstance(m.get("content"), str))
-    sections = [
-        ("system prompt + env", sys_chars),
-        ("tool catalog",        cat_chars),
-        ("custom instructions", custom_chars),
-        ("conversation",        hist_chars),
+
+    fixed = [
+        ("system prompt + env",                   sys_chars),
+        ("tool catalog (names + descriptions)",   cat_chars),
+        ("custom instructions",                   custom_chars),
+        ("tools reservation (request_tool + 3)",  tools_chars),
     ]
-    used = sum(c for _, c in sections) // 4
+    fixed_chars = sum(c for _, c in fixed)
+    total_chars = fixed_chars + hist_chars
+    used = total_chars // 4
     maxc = _effective_max_context(ctx, base_dir)
+
+    def share(chars: int) -> str:
+        return f"{round((chars // 4) * 100 / used)}%" if used else "0%"
 
     parts = [Text(f"Context — {_model_short(p)}", style=f"bold {VIOLET}"), Text("")]
     if maxc:
@@ -378,17 +401,37 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
     else:
         parts.append(Text(f"~{used:,} tokens used  (model max unknown — "
                           "set it with /setcontext <n>)"))
-    parts += [Text(""), Text("breakdown", style="bright_black")]
-    for label, chars in sections:
-        toks = chars // 4
-        share = f"{round(toks * 100 / used)}%" if used else "0%"
-        row = Text("  ")
-        row.append(f"{label:<22}", style="bright_black")
-        row.append(f"~{toks:>8,} tok")
-        row.append(f"   {share:>4}", style="bright_black")
-        parts.append(row)
+    parts.append(Text(""))
+
+    tbl = Table(box=box.SIMPLE_HEAD, show_header=True,
+                header_style="bright_black", pad_edge=False, expand=False)
+    tbl.add_column("")
+    tbl.add_column("tokens", justify="right")
+    tbl.add_column("share", justify="right")
+
+    def item(label: str, chars: int) -> None:
+        tbl.add_row(f"  {label}", f"~{chars // 4:,}", share(chars))
+
+    tbl.add_row(Text("EVERY PROMPT · fixed overhead", style=f"bold {VIOLET}"),
+                "", "")
+    for label, chars in fixed:
+        item(label, chars)
+    tbl.add_row(Text("  subtotal", style="bright_black"),
+                Text(f"~{fixed_chars // 4:,}", style="bright_black"),
+                Text(share(fixed_chars), style="bright_black"))
+    tbl.add_row("", "", "")
+    tbl.add_row(Text("CONVERSATION · grows each turn", style=f"bold {VIOLET}"),
+                "", "")
+    item("messages so far", hist_chars)
+    tbl.add_row("", "", "")
+    tbl.add_row(Text("TOTAL", style="bold"),
+                Text(f"~{used:,}", style="bold"),
+                Text("100%" if used else "0%", style="bold"))
+    parts.append(tbl)
+
     parts += [Text(""),
-              Text("estimate (~4 chars/token) · q to return", style="bright_black")]
+              Text("estimate (~4 chars/token) · tools reservation is an average, "
+                   "actual varies · q to return", style="bright_black")]
     show_view(_render_ansi(Group(*parts)), hint="context usage · q to return")
 
 
