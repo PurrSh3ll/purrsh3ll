@@ -2195,8 +2195,9 @@ class _StreamTrimmer:
 # fails we fall back to it too — so /hack always prints the announcement.
 
 _HACK_ANNOUNCEMENT = (
-    "Hacking mode enabled. Tell me everything you know about the target — "
-    "IP address, website/URL, open ports, credentials, and the goal."
+    "Hacking mode enabled — it works on a single target at a time. Tell me "
+    "everything you know about the target — IP address, website/URL, open ports, "
+    "credentials, and the goal."
 )
 
 _HACK_TRANSLATE_INSTRUCTIONS = (
@@ -2205,6 +2206,24 @@ _HACK_TRANSLATE_INSTRUCTIONS = (
     "sure, return it unchanged. Output ONLY the translated message — no preamble, "
     "no quotes, no notes.\n\nMessage:\n" + _HACK_ANNOUNCEMENT
 )
+
+# Objective of the engagement, chosen right after enabling hacking mode. Each is
+# picked to be objectively checkable by the agent later. Tuple: (menu label, menu
+# hint, toolbar shortcode).
+_HACK_GOALS = [
+    ("Find the flag",          "CTF / HTB — capture a flag string",  "flag"),
+    ("Get highest privileges", "root / SYSTEM / Administrator",       "privesc"),
+    ("Confirm vulnerability",  "prove a specific vuln (PoC)",         "vuln"),
+    ("Get system access",      "initial foothold / command exec",     "access"),
+]
+
+
+def _select_hack_goal():
+    """Arrow-key menu of the engagement objective. Returns the chosen goal tuple
+    (label, hint, shortcode), or None if cancelled (Esc)."""
+    opts = [(label, hint) for label, hint, _code in _HACK_GOALS]
+    idx = select_option("What is the objective?", opts)
+    return None if idx is None else _HACK_GOALS[idx]
 
 
 def _hack_intro_message(profile: dict, base_dir: str, history: list,
@@ -2253,10 +2272,10 @@ def _hack_intro_message(profile: dict, base_dir: str, history: list,
 
 
 def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
-    """/hack — enable hacking mode. Confirm, then have the model greet the user in
-    their language and ask for target info (IP, site, ports, creds, everything they
-    know). Returns the announcement text (truthy) if enabled — the caller waits for
-    the target at the next prompt; None if it was declined/cancelled/no model."""
+    """/hack — enable hacking mode. Confirm, pick the objective, then have the model
+    greet the user in their language and ask for target info (IP, site, ports, creds,
+    everything they know). Returns (announcement, goal_shortcode) if enabled — the
+    caller waits for the target next; (None, None) if declined/cancelled/no model."""
     line = Text("  ⚠ enable hacking mode?", style="yellow")
     line.append("  authorised offensive engagement against a target you specify.",
                 style="bright_black")
@@ -2267,13 +2286,21 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
         ans = ""
     if ans not in ("y", "yes"):
         console.print(Text("      cancelled", style="bright_black"))
-        return None
+        return None, None
 
     profile = ctx.get("profile")
     if not profile:
         console.print("  [yellow]No model selected.[/yellow] Type "
                       "[cyan]/model[/cyan] to choose one first.")
-        return None
+        return None, None
+
+    # Objective for this engagement (arrow keys). Cancelling here cancels enabling.
+    goal = _select_hack_goal()
+    if goal is None:
+        console.print(Text("      cancelled", style="bright_black"))
+        return None, None
+    label, _hint, code = goal
+    console.print(Text(f"  🎯 objective: {label}", style=f"bold {VIOLET}"))
 
     console.print(Text("  ⚙ enabling hacking mode…", style="bright_black"))
     # Fixed announcement, translated into the user's language (English fallback), so
@@ -2282,7 +2309,7 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     console.print()
     console.print(Text(msg, style=VIOLET))
     console.print()
-    return msg
+    return msg, code
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
@@ -2551,6 +2578,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     mode = _state.get("mode") or DEFAULT_MODE   # skeleton: inert
     debug = False   # /debug: mirror pschat's --debug (dump the request to the model)
     hack_mode = False   # /hack: hacking mode on → shows in the toolbar; /hack again disables
+    hack_goal = None    # /hack: chosen objective shortcode (flag/privesc/vuln/access)
 
     # First-ever launch: greet without "back". Mark it so later launches say "back".
     first_launch = not _state.get("launched")
@@ -2578,8 +2606,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     else "<style fg='#7f7f7f'>user</style>")
         # Only shown while /debug is on, so you always know the request is dumped.
         dbg_seg = "   <style fg='#e5c07b'>debug</style>" if debug else ""
-        # Active offensive engagement — shown while hacking mode is on (/hack).
-        hack_seg = "   <style fg='#ff5f5f'>⚑ hacking</style>" if hack_mode else ""
+        # Active offensive engagement — shown while hacking mode is on (/hack), with
+        # the chosen objective shortcode (flag/privesc/vuln/access).
+        hack_seg = ""
+        if hack_mode:
+            goal_txt = f" · {hack_goal}" if hack_goal else ""
+            hack_seg = f"   <style fg='#ff5f5f'>⚑ hacking{goal_txt}</style>"
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
@@ -2863,16 +2895,20 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         ans = ""
                     if ans in ("y", "yes"):
                         hack_mode = False
+                        hack_goal = None
                         awaiting_target = False
                         console.print("SKELETON OK")
                     else:
                         console.print(Text("      cancelled", style="bright_black"))
-                elif _run_hack(ctx, base_dir, history, mcp, debug):
-                    hack_mode = True          # lights up the toolbar
-                    awaiting_target = True     # next plain message is the target info
-                    # End the welcome banner: otherwise the next turn clears the
-                    # screen (\x1b[2J) and wipes the intro we just printed.
-                    conversation_started = True
+                else:
+                    msg, goal = _run_hack(ctx, base_dir, history, mcp, debug)
+                    if msg:
+                        hack_mode = True          # lights up the toolbar
+                        hack_goal = goal          # objective shortcode on the toolbar
+                        awaiting_target = True     # next plain message is the target
+                        # End the welcome banner: otherwise the next turn clears the
+                        # screen (\x1b[2J) and wipes the intro we just printed.
+                        conversation_started = True
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
@@ -3091,10 +3127,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     sys.stdout.flush()
                 if hack_signal["requested"] and not hack_mode:
                     # Model proposed hacking mode. Discard its detour reply and run
-                    # the exact same flow as /hack (confirm + announcement).
-                    msg = _run_hack(ctx, base_dir, history, mcp, debug)
+                    # the exact same flow as /hack (confirm + objective + announce).
+                    msg, goal = _run_hack(ctx, base_dir, history, mcp, debug)
                     if msg:
                         hack_mode = True
+                        hack_goal = goal
                         awaiting_target = True
                         conversation_started = True
                         # Close the user's turn: the announcement is its answer.
