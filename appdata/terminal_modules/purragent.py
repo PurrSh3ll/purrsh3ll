@@ -366,10 +366,10 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                      if isinstance(m.get("content"), str))
 
     fixed = [
-        ("system prompt + env",                   sys_chars),
-        ("tool catalog (names + descriptions)",   cat_chars),
-        ("custom instructions",                   custom_chars),
-        ("tools reservation (request_tool + 3)",  tools_chars),
+        ("system prompt&env",       sys_chars),
+        ("tool catalog",            cat_chars),
+        ("custom instructions",     custom_chars),
+        ("mcp tools (reserved)",    tools_chars),
     ]
     fixed_chars = sum(c for _, c in fixed)
     maxc = _effective_max_context(ctx, base_dir)
@@ -441,7 +441,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                 Text(share(conversation_chars), style="bold"))
     item("recent conversation", recent_chars)
     item("summarized conversation", summarized_chars)
-    item("memory lookup", memory_chars)
+    item("memory lookup (reserved)", memory_chars)
     tbl.add_section()
     tbl.add_row(Text("FINDINGS", style=f"bold {VIOLET}"),
                 Text(f"~{findings_chars // 4:,}", style="bold"),
