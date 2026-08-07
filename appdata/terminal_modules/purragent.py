@@ -372,7 +372,11 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
         ("tools reservation (request_tool + 3)",  tools_chars),
     ]
     fixed_chars = sum(c for _, c in fixed)
-    total_chars = fixed_chars + hist_chars
+    # Engagement working data injected into context (findings DB, discovered
+    # ports/services, recon summary of what's been found) — the same whether it's
+    # a pentest, a CTF, Hack The Box or learning. Not wired yet — reserved at 0.
+    findings_chars = 0
+    total_chars = fixed_chars + hist_chars + findings_chars
     used = total_chars // 4
     maxc = _effective_max_context(ctx, base_dir)
 
@@ -420,6 +424,10 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
     tbl.add_row(Text("CONVERSATION", style=f"bold {VIOLET}"),
                 Text(f"~{hist_chars // 4:,}", style="bold"),
                 Text(share(hist_chars), style="bold"))
+    tbl.add_section()
+    tbl.add_row(Text("FINDINGS", style=f"bold {VIOLET}"),
+                Text(f"~{findings_chars // 4:,}", style="bold"),
+                Text(share(findings_chars), style="bold"))
     parts.append(tbl)
 
     parts += [Text(""),
