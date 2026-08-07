@@ -1157,6 +1157,7 @@ class MCPManager:
                      or normal),
             "examples": t.get("exampleQueries") or [],
             "schema": self._openai_schema(server, t),
+            "builtin": is_builtin_server(self.specs.get(server, {})),
         }
 
     def schema_for(self, namespaced_name: str):

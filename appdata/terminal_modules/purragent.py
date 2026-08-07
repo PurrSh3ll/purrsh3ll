@@ -1846,21 +1846,56 @@ _META_TOOL = {
 }
 
 _DISCOVERY_GUIDE = (
-    "TOOLS: you can act on the system through tools, but they are not listed "
-    "directly. Below is a catalog of the capabilities available to you. To use "
-    "one, call the `request_tool` function with a natural-language description of "
-    "what you need; the matching tools will then be given to you with their "
-    "parameters, and you can call them. If one of the provided tools already fits "
-    "the task, call it directly — only call `request_tool` again if none of them "
-    "fit. If the task needs no tool, just answer normally."
+    "TOOLS: you can act on the system through tools. The catalog below has two "
+    "sections. The 'built-in' tools are listed with their exact name and "
+    "parameters (required bare, optional in [brackets]) — call these DIRECTLY by "
+    "that exact name with those arguments; do not use request_tool for them. For "
+    "the 'others' section, only capabilities are shown, not names: call the "
+    "`request_tool` function with a natural-language description of what you "
+    "need, and the matching tools will be given to you with their parameters so "
+    "you can call them. If a tool you were already given fits, call it directly — "
+    "only call `request_tool` again if none fit. If the task needs no tool, just "
+    "answer normally."
 )
 
 
+def _catalog_signature(tool: dict) -> str:
+    """`write_file(path, content, [append])` — the tool's bare name plus its
+    parameter list, required params bare and optional ones in [brackets], read
+    from the OpenAI schema. Used only for built-ins, which the model calls
+    directly by name (so it needs the argument names up front)."""
+    bare = mcp_client.split_namespaced(tool["name"])[1]
+    params = (tool.get("schema", {}).get("function", {})
+              .get("parameters", {}) or {})
+    props = list((params.get("properties") or {}).keys())
+    required = set(params.get("required") or [])
+    rendered = ", ".join(p if p in required else f"[{p}]" for p in props)
+    return f"{bare}({rendered})"
+
+
 def _catalog_block(all_tools: list) -> str:
-    """The always-visible capability catalog (short descriptions only, no tool
-    names — the model reaches capabilities via request_tool, not by name)."""
-    lines = "\n".join(f"- {t['short']}" for t in all_tools)
-    return "<tool_catalog>\n" + lines + "\n</tool_catalog>"
+    """The always-visible capability catalog, split into two sections:
+
+    - built-in: `name(params) — description`, so the model can call these
+      directly by their exact name (they never pass through request_tool);
+    - others: `- description` only, reached via request_tool, which surfaces
+      their full schema on demand.
+
+    Only names + one-line descriptions are sent here — never full schemas — so
+    the context stays small even though the model can act on any tool."""
+    builtin = [t for t in all_tools if t.get("builtin")]
+    others = [t for t in all_tools if not t.get("builtin")]
+    blocks = []
+    if builtin:
+        rows = "\n".join(f"- {_catalog_signature(t)} — {t['short']}"
+                         for t in builtin)
+        blocks.append("built-in (call these directly by their exact name):\n"
+                      + rows)
+    if others:
+        rows = "\n".join(f"- {t['short']}" for t in others)
+        blocks.append("others (call request_tool to obtain one of these):\n"
+                      + rows)
+    return "<tool_catalog>\n" + "\n\n".join(blocks) + "\n</tool_catalog>"
 
 
 def _resolve_tool_name(name: str, all_tools: list):
