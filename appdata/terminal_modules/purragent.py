@@ -2154,6 +2154,165 @@ class _StreamTrimmer:
         self._seen = False
 
 
+# ── /hack — enter hacking mode ─────────────────────────────────────────────────
+# The intro is produced by a *forced* function call: we hand the model a single
+# tool and make it fill `message`, so the greeting is structured (and later can
+# carry structured target fields) rather than free chat. Small / reasoning models
+# (e.g. qwen3) sometimes stream only their reasoning and skip the forced call,
+# returning nothing usable — so if that happens we retry as a plain completion,
+# which reliably produces the text. Same shared rules drive both paths.
+
+_HACK_MESSAGE_RULES = (
+    "(1) State that hacking mode is now enabled. (2) Write it in the SAME language "
+    "the user has been using in the conversation; if there is no prior "
+    "conversation, use English. (3) Ask the user to share everything they know "
+    "about the target — IP address, website/URL, open ports, credentials, scope, "
+    "rules of engagement, the goal. (4) If the conversation already mentions one "
+    "or more targets, name "
+    "them and ask whether this engagement concerns that target or a new one. Keep "
+    "it short and direct."
+)
+
+_HACK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "enter_hack_mode",
+        "description": ("Announce that hacking mode is enabled and ask the user "
+                        "for target information. Call this exactly once."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The text shown to the user. " + _HACK_MESSAGE_RULES,
+                },
+            },
+            "required": ["message"],
+        },
+    },
+}
+
+_HACK_SYS_FORCED = (
+    "The user just enabled hacking mode in the PurrSh3ll security console — an "
+    "authorised offensive-security engagement. Respond ONLY by calling "
+    "enter_hack_mode with a `message` that follows its rules; write no text "
+    "outside the tool call."
+)
+_HACK_SYS_PLAIN = (
+    "The user just enabled hacking mode in the PurrSh3ll security console — an "
+    "authorised offensive-security engagement. Reply with a single message to the "
+    "user, directly (no preamble, no tool calls). Rules for the message: "
+    + _HACK_MESSAGE_RULES
+)
+
+
+def _hack_intro_message(profile: dict, base_dir: str, history: list,
+                        mcp, debug: bool) -> str | None:
+    """Ask the model to announce hack mode and request target info, in the user's
+    language. Primary path: a forced enter_hack_mode(message=…) tool call. If that
+    yields nothing (reasoning models sometimes skip the forced call), fall back to
+    a plain completion. Returns the message text, or None if both fail."""
+    endpoint, api_key = _openai_endpoint(profile, base_dir)
+    model         = profile.get("model", "")
+    custom_params = psai._parse_custom_params(profile)
+    custom_system = profile.get("custom_system", "").strip()
+    hide_thinking = bool(profile.get("hide_thinking", False))
+
+    def _base_body(intro: str) -> dict:
+        # The instruction goes in a final USER turn (not the system prompt): the
+        # prior chat ends on an assistant turn, and asking a model to generate with
+        # no trailing user turn yields empty/garbage output on many templates
+        # (qwen3 included). Ending on a real user turn fixes that.
+        sys_parts = [PURRAGENT_SYSTEM, _env_block()]
+        if custom_system:
+            sys_parts.append(custom_system)
+        body = {"model": model,
+                "messages": [{"role": "system", "content": "\n\n".join(sys_parts)}]
+                            + list(history)
+                            + [{"role": "user", "content": intro}],
+                "temperature": AGENT_TEMPERATURE}
+        if custom_params:
+            body.update(custom_params)
+        return body
+
+    def _noop(_piece):        # suppress streaming; we print the message once, clean
+        pass
+
+    def _run(body: dict):
+        try:
+            return _chat_stream(endpoint, api_key, body, _noop,
+                                hide_thinking=hide_thinking)
+        except Exception as e:
+            console.print(f"  [red]hack intro failed:[/red] [dim]{e}[/dim]")
+            return None
+
+    def _clean(text) -> str:
+        # _chat_stream returns "[tool loop] HTTP …" as content on an HTTP error —
+        # that's not a real message, so don't surface it as the announcement.
+        t = (text or "").strip()
+        return "" if t.startswith("[tool loop]") else t
+
+    # 1) Structured: force the model to fill enter_hack_mode(message=…).
+    if _supports_tool_loop(profile) and _model_has_tools(profile, base_dir):
+        body = _base_body(_HACK_SYS_FORCED)
+        body["tools"] = [_HACK_TOOL]
+        body["tool_choice"] = {"type": "function",
+                               "function": {"name": "enter_hack_mode"}}
+        result = _run(body)
+        if result:
+            for tc in (result.get("tool_calls") or []):
+                try:
+                    args = json.loads(tc.get("function", {}).get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    continue
+                m = (args.get("message") or "").strip()
+                if m:
+                    return m
+            m = _clean(result.get("content"))
+            if m:
+                return m
+
+    # 2) Fallback: plain completion — reliable when forced tool calls flake. The
+    # `/no_think` soft switch stops qwen3-style reasoning models from spending the
+    # whole reply on thinking and returning empty content (other models ignore it).
+    result = _run(_base_body(_HACK_SYS_PLAIN + "\n\n/no_think"))
+    return _clean(result.get("content")) or None if result else None
+
+
+def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool) -> bool:
+    """/hack — enable hacking mode. Confirm, then have the model greet the user in
+    their language and ask for target info (IP, site, ports, creds, everything they
+    know). Returns True if the intro was shown and we should now wait for the user's
+    target details at the normal chat prompt; False if it was cancelled/failed."""
+    line = Text("  ⚠ enable hacking mode?", style="yellow")
+    line.append("  authorised offensive engagement against a target you specify.",
+                style="bright_black")
+    console.print(line)
+    try:
+        ans = input("      enable? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans not in ("y", "yes"):
+        console.print(Text("      cancelled", style="bright_black"))
+        return False
+
+    profile = ctx.get("profile")
+    if not profile:
+        console.print("  [yellow]No model selected.[/yellow] Type "
+                      "[cyan]/model[/cyan] to choose one first.")
+        return False
+
+    console.print(Text("  ⚙ enabling hacking mode…", style="bright_black"))
+    msg = _hack_intro_message(profile, base_dir, history, mcp, debug)
+    if not msg:
+        console.print("  [yellow]no response from the model — try again.[/yellow]")
+        return False
+    console.print()
+    console.print(Text(msg, style=VIOLET))
+    console.print()
+    return True
+
+
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text,
                            mode: str = "auto", on_confirm=None) -> str:
@@ -2544,6 +2703,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
     plain_prompt = HTML("<prompt>❯ </prompt>")
     conversation_started = False   # while False, keep the blinking welcome banner
+    awaiting_target = False        # /hack: next plain message carries the target info
 
     while True:
         try:
@@ -2699,10 +2859,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         "add", "enable", "disable", "remove", "rm", "delete"):
                     _pause_after_command()
             elif cmd == "/hack":
-                show_view(_skeleton_body(
-                    "purragent — hack",
-                    "Auto-hacking mode — runs an agent loop that attacks a "
-                    "chosen target."))
+                awaiting_target = _run_hack(ctx, base_dir, history, mcp, debug)
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
@@ -2759,6 +2916,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             else:
                 console.print(f"  [yellow]unknown command:[/yellow] {cmd}  "
                               "[dim](/help for the list)[/dim]")
+            continue
+
+        # /hack skeleton: after the intro, the next normal chat message is the
+        # user's target info. Acknowledge it and hand control straight back to the
+        # normal prompt — no special target prompt, and (for now) nothing is sent
+        # to the model. Real engagement setup will replace this print later.
+        if awaiting_target:
+            awaiting_target = False
+            conversation_started = True
+            console.print("SKELETON OK")
             continue
 
         # Plain message → query the attached model (needs one selected first).
