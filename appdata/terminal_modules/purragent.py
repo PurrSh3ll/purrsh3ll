@@ -2032,6 +2032,39 @@ _META_TOOL = {
     },
 }
 
+ENABLE_HACK_TOOL_NAME = "enable_hacking_mode"
+_ENABLE_HACK_TOOL = {
+    "type": "function",
+    "function": {
+        "name": ENABLE_HACK_TOOL_NAME,
+        "description": (
+            "Switch the console into hacking mode when the user clearly wants to "
+            "start an authorised offensive engagement against a specific target "
+            "(attack it, pentest it, a CTF / Hack The Box box). Set enable=true to "
+            "propose it — the user is still asked to confirm. Do NOT put target "
+            "details here; they are collected after confirmation. Do not call this "
+            "for general security questions or explanations."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "enable": {
+                    "type": "boolean",
+                    "description": ("true to turn hacking mode on (the user then "
+                                    "confirms); false does nothing."),
+                },
+            },
+            "required": ["enable"],
+        },
+    },
+}
+
+_HACK_TRIGGER_GUIDE = (
+    "HACKING MODE: if the user clearly wants to start an offensive engagement "
+    "against a specific target (attack it, pentest it, a CTF/HTB box), call "
+    "enable_hacking_mode with enable=true instead of guessing tools — the user "
+    "then confirms. Don't call it for general security questions or explanations."
+)
+
 _DISCOVERY_GUIDE = (
     "TOOLS: you can act on the system through tools. The catalog below has two "
     "sections. The 'built-in' tools are listed with their exact name and "
@@ -2254,7 +2287,8 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool) -> bool
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text,
-                           mode: str = "auto", on_confirm=None) -> str:
+                           mode: str = "auto", on_confirm=None,
+                           offer_hack: bool = False, on_hack=None) -> str:
     """Run the agent loop and return the model's final text answer.
 
     `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
@@ -2265,6 +2299,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     `mode` is the run mode: 'plan' (no tools, just plan), 'auto', 'confirm', or
     'semi-auto'. `on_confirm(name, args, reason) -> bool` is asked before a tool
     call the mode flags as needing approval; returning False skips it.
+    `offer_hack` adds the enable_hacking_mode tool (only when hacking is off); if
+    the model calls it with enable=true, `on_hack()` is invoked and the turn ends
+    so the caller can run the /hack flow.
     """
     planning = (mode == "plan")
     provider = profile.get("provider", "ollama")
@@ -2284,6 +2321,8 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         sys_parts.append(PLAN_MODE_NOTE)
     elif discovery:
         sys_parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
+    if offer_hack and not planning:
+        sys_parts.append(_HACK_TRIGGER_GUIDE)
     if custom_system:
         sys_parts.append(custom_system)
     # Local working copy of the transcript: the raw assistant tool-call messages
@@ -2307,7 +2346,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         offer_meta = (not planning and discovery
                       and discovery_rounds < DISCOVERY_MAX_ROUNDS)
         tools_field = ([] if planning
-                       else ([_META_TOOL] if offer_meta else []) + list(active.values()))
+                       else ([_META_TOOL] if offer_meta else [])
+                       + ([_ENABLE_HACK_TOOL] if offer_hack else [])
+                       + list(active.values()))
 
         body = {"model": model, "messages": msgs}
         if tools_field:
@@ -2370,6 +2411,18 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            "differently, or answer without a tool.")
                 msgs.append({"role": "tool", "tool_call_id": call_id,
                              "content": ack})
+                continue
+
+            if name == ENABLE_HACK_TOOL_NAME:
+                # Model proposes hacking mode. Hand control to the /hack flow (same
+                # as if the user typed /hack): signal the caller and end the turn —
+                # the REPL then runs the confirm + announcement. enable=false (or no
+                # handler) is a no-op the model can keep going from.
+                if bool(args.get("enable")) and on_hack is not None:
+                    on_hack()
+                    return (message.get("content") or "").strip()
+                msgs.append({"role": "tool", "tool_call_id": call_id,
+                             "content": "Hacking mode was not enabled."})
                 continue
 
             # Robustness: some models ignore request_tool and fabricate a call
@@ -2945,6 +2998,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         streamed_text: list = []
         interrupted = False
         tool_spin = {"obj": None}
+        # Set by the tool loop if the model calls enable_hacking_mode(enable=true);
+        # a mutable holder because a closure can't rebind run_repl's locals.
+        hack_signal = {"requested": False}
+
+        def _on_hack():
+            hack_signal["requested"] = True
 
         def _stop_tool_spin():
             if tool_spin["obj"] is not None:
@@ -3023,7 +3082,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # The answer is streamed live via _on_text (defined above).
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
                                                mcp, _on_tool, _on_text,
-                                               mode=mode, on_confirm=_confirm_action)
+                                               mode=mode, on_confirm=_confirm_action,
+                                               offer_hack=not hack_mode,
+                                               on_hack=_on_hack)
                 _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
@@ -3050,6 +3111,15 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             note = "[interrupted]" if interrupted else "[no response]"
             history.append({"role": "assistant",
                             "content": f"{partial}\n\n{note}" if partial else note})
+
+        # The model asked to enter hacking mode → run the exact same flow as /hack
+        # (confirm + announcement); on acceptance, light the toolbar and wait for
+        # the target at the next normal prompt.
+        if hack_signal["requested"] and not hack_mode:
+            if _run_hack(ctx, base_dir, history, mcp, debug):
+                hack_mode = True
+                awaiting_target = True
+                conversation_started = True
 
     mcp.close()   # shut down any MCP server subprocesses we spawned
     console.print("  [dim]bye[/dim]")
