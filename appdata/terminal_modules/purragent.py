@@ -797,6 +797,7 @@ def _banner_panel(profile: dict | None, logo: Text, greeting: str,
     right = Group(
         Text("Small cat, big claws", style=f"bold {VIOLET}"),
         Text("MCP-Zero hack agent", style="grey50"),
+        Text("built for small models", style="grey50"),
         Text("─" * 20, style=VIOLET),
         cmds,
     )
