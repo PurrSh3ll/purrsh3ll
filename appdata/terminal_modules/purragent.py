@@ -496,7 +496,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                 ("output reserve",  f"{OUTPUT_FLOOR:,}",     "user prompt + model output"),
                 ("budget",          f"{budget_tok:,}",       ""),
                 ("− header",        f"{fixed_chars//4:,}",   ""),
-                ("− memory reserve", f"{memory_chars//4:,}", ""),
+                ("− memory lookup", f"{memory_chars//4:,}",  ""),
                 ("= elastic pool",  f"{pool_tok:,}",         ""),
             ]
             lt = Table(box=None, show_header=False, pad_edge=False, expand=False)
@@ -536,8 +536,6 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                  f"−{borrowed//4:,}" if borrowed else "—")
             drow("findings", f"{FINDINGS_CAP_FRAC:.0%}",
                  f"{FINDINGS_FLOOR_TOKENS:,}", findings_chars, "—")
-            drow("memory lookup", "—", f"{MEMORY_LOOKUP_TOKENS:,}",
-                 memory_chars, "reserved")
             parts += [Text(""), dt,
                       Text("  cap/min = % of elastic pool · borrow = recent using "
                            "summary's idle space", style=ORANGE)]
