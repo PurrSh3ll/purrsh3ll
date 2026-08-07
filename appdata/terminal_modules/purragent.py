@@ -334,7 +334,7 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
 
 
 def _context_view(ctx: dict, base_dir: str, history: list, mcp,
-                  mode: str = "auto") -> None:
+                  mode: str = "auto", debug: bool = False) -> None:
     """Alt-screen view of context-window usage, split into two groups: the fixed
     overhead sent on every prompt (system prompt, catalog, custom instructions
     and the tools-field reservation) and the conversation that grows. Opened by
@@ -478,6 +478,67 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                 Text(f"~{findings_chars // 4:,}", style="bold"),
                 Text(share(findings_chars), style="bold"))
     parts.append(tbl)
+
+    # ── /debug: show how the budget is apportioned (caps, floors, borrowing) ───
+    if debug:
+        parts += [Text(""),
+                  Text("budget diagnostics", style=f"bold {VIOLET}"),
+                  Text("")]
+        if budget_tok is None:
+            parts.append(Text("  model window unknown — set it with /setcontext "
+                              "<n> to see the budget split", style="bright_black"))
+        else:
+            gov = ("fill fraction" if int(maxc * FILL_FRAC) <= maxc - OUTPUT_FLOOR
+                   else "output floor")
+            budget_pct = round(budget_tok * 100 / maxc)
+            pool_tok = pool // 4
+            lines = [
+                ("window",         f"{maxc:,} tok"),
+                ("fill fraction",  f"{FILL_FRAC:.0%}  →  {int(maxc*FILL_FRAC):,} tok"),
+                ("output reserve", f"{OUTPUT_FLOOR:,} tok  (kept free for the reply)"),
+                ("budget",         f"{budget_tok:,} tok  ({budget_pct}% of window · "
+                                   f"{gov} governs)"),
+                ("− header",       f"{fixed_chars//4:,} tok"),
+                ("− memory reserve", f"{memory_chars//4:,} tok"),
+                ("= elastic pool", f"{pool_tok:,} tok  (split below)"),
+            ]
+            lt = Table(box=None, show_header=False, pad_edge=False, expand=False)
+            lt.add_column(""); lt.add_column("")
+            for k, v in lines:
+                style = f"bold {VIOLET}" if k in ("budget", "= elastic pool") else "bright_black"
+                lt.add_row(Text(f"  {k}", style=style), Text(v, style=style))
+            parts.append(lt)
+
+            # per-section cap / floor / current use / borrowing against the pool
+            summ_reserve   = int(SUMMARIZED_CAP_FRAC * pool)
+            recent_base    = max(0, pool - summ_reserve - findings_floor_chars)
+            borrowed       = max(0, recent_chars - recent_base)
+            def pct_of_pool(chars: int) -> str:
+                return f"{chars*100/pool:.0f}%" if pool else "—"
+            dt = Table(box=box.HORIZONTALS, show_header=True,
+                       header_style="bright_black", pad_edge=False, expand=False)
+            dt.add_column("section")
+            dt.add_column("cap", justify="right")
+            dt.add_column("min", justify="right")
+            dt.add_column("now", justify="right")
+            dt.add_column("borrow", justify="right")
+            def drow(name, cap, mn, now_chars, borrow):
+                dt.add_row(Text(f"  {name}", style="bright_black"),
+                           Text(cap, style="bright_black"),
+                           Text(mn, style="bright_black"),
+                           Text(f"~{now_chars//4:,}", style="bright_black"),
+                           Text(borrow, style="bright_black"))
+            drow("recent conversation", "rest", "—", recent_chars,
+                 f"+{borrowed//4:,}" if borrowed else "—")
+            drow("summarized", f"{SUMMARIZED_CAP_FRAC:.0%}", "—", summarized_chars,
+                 f"−{borrowed//4:,}" if borrowed else "—")
+            drow("findings", f"{FINDINGS_CAP_FRAC:.0%}",
+                 f"{FINDINGS_FLOOR_TOKENS:,}", findings_chars, "—")
+            drow("memory lookup", "—", f"{MEMORY_LOOKUP_TOKENS:,}",
+                 memory_chars, "reserved")
+            parts += [Text(""), dt,
+                      Text("  cap/min = % of elastic pool · borrow = recent using "
+                           "summary's idle space", style="bright_black")]
 
     parts += [Text(""),
               Text("estimate (~4 chars/token) · q to return",
@@ -2654,7 +2715,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 else:
                     console.print("  [yellow]▸[/yellow] debug [bold]off[/bold]")
             elif cmd == "/context":
-                _context_view(ctx, base_dir, history, mcp, mode)
+                _context_view(ctx, base_dir, history, mcp, mode, debug=debug)
             elif cmd == "/setcontext":
                 arg = text[len("/setcontext"):].strip()
                 if not arg:
