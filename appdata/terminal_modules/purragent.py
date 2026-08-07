@@ -333,32 +333,23 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
     return total_chars // 4
 
 
-def _tools_reservation_chars(all_tools: list) -> int:
-    """Rough char reservation for the `tools` request field during discovery: the
-    request_tool meta-schema plus RETRIEVE_TOP_N average-sized tool schemas (we
-    can't know which get surfaced, so we budget the average). These JSON schemas
-    ride in `tools`, not in `messages`, but they still consume the context
-    window — so /context counts them as fixed per-prompt overhead."""
-    meta = len(json.dumps(_META_TOOL))
-    if not all_tools:
-        return meta
-    sizes = [len(json.dumps(t.get("schema", {}))) for t in all_tools]
-    avg = (sum(sizes) / len(sizes)) if sizes else 0
-    return meta + int(RETRIEVE_TOP_N * avg)
-
-
-def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
+def _context_view(ctx: dict, base_dir: str, history: list, mcp,
+                  mode: str = "auto") -> None:
     """Alt-screen view of context-window usage, split into two groups: the fixed
     overhead sent on every prompt (system prompt, catalog, custom instructions
     and the tools-field reservation) and the conversation that grows. Opened by
-    /context, dismissed with q/Esc (like the /mcp view)."""
+    /context, dismissed with q/Esc (like the /mcp view). In plan mode no tools or
+    catalog are sent, so those two rows show 0."""
     p = ctx.get("profile")
     if not p:
         console.print("  [yellow]No model attached.[/yellow] "
                       "[dim]/model to choose one[/dim]")
         return
-    use_tools = _supports_tool_loop(p) and _model_has_tools(p, base_dir)
+    planning = (mode == "plan")
+    use_tools = (not planning) and _supports_tool_loop(p) and _model_has_tools(p, base_dir)
     sys_chars = len(PURRAGENT_SYSTEM) + len(_env_block())
+    if planning:
+        sys_chars += len(PLAN_MODE_NOTE)     # plan mode swaps the catalog for this
     cat_chars = tools_chars = 0
     if use_tools and mcp is not None:
         try:
@@ -366,8 +357,10 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
         except Exception:
             all_tools = []
         if all_tools:
+            # Catalog is exactly known (sent every prompt); the tools field size
+            # varies with what gets surfaced, so budget a fixed reservation.
             cat_chars = len(_DISCOVERY_GUIDE) + len(_catalog_block(all_tools))
-            tools_chars = _tools_reservation_chars(all_tools)
+            tools_chars = TOOLS_RESERVATION_TOKENS * 4
     custom_chars = len((p.get("custom_system", "") or "").strip())
     hist_chars = sum(len(m.get("content")) for m in history
                      if isinstance(m.get("content"), str))
@@ -383,8 +376,12 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
     used = total_chars // 4
     maxc = _effective_max_context(ctx, base_dir)
 
+    # Share of the whole model context window (falls back to share of what's
+    # currently used when the model's max is unknown).
+    denom = maxc or used
+
     def share(chars: int) -> str:
-        return f"{round((chars // 4) * 100 / used)}%" if used else "0%"
+        return f"{(chars // 4) * 100 / denom:.1f}%" if denom else "0%"
 
     parts = [Text(f"Context — {_model_short(p)}", style=f"bold {VIOLET}"), Text("")]
     if maxc:
@@ -403,35 +400,31 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp) -> None:
                           "set it with /setcontext <n>)"))
     parts.append(Text(""))
 
-    tbl = Table(box=box.SIMPLE_HEAD, show_header=True,
+    tbl = Table(box=box.HORIZONTALS, show_header=True,
                 header_style="bright_black", pad_edge=False, expand=False)
     tbl.add_column("")
     tbl.add_column("tokens", justify="right")
     tbl.add_column("share", justify="right")
 
     def item(label: str, chars: int) -> None:
-        tbl.add_row(f"  {label}", f"~{chars // 4:,}", share(chars))
+        tbl.add_row(Text(f"  {label}", style="bright_black"),
+                    Text(f"~{chars // 4:,}", style="bright_black"),
+                    Text(share(chars), style="bright_black"))
 
-    tbl.add_row(Text("EVERY PROMPT · fixed overhead", style=f"bold {VIOLET}"),
-                "", "")
+    tbl.add_row(Text("HEADER", style=f"bold {VIOLET}"),
+                Text(f"~{fixed_chars // 4:,}", style="bold"),
+                Text(share(fixed_chars), style="bold"))
     for label, chars in fixed:
         item(label, chars)
-    tbl.add_row(Text("  subtotal", style="bright_black"),
-                Text(f"~{fixed_chars // 4:,}", style="bright_black"),
-                Text(share(fixed_chars), style="bright_black"))
-    tbl.add_row("", "", "")
-    tbl.add_row(Text("CONVERSATION · grows each turn", style=f"bold {VIOLET}"),
-                "", "")
-    item("messages so far", hist_chars)
-    tbl.add_row("", "", "")
-    tbl.add_row(Text("TOTAL", style="bold"),
-                Text(f"~{used:,}", style="bold"),
-                Text("100%" if used else "0%", style="bold"))
+    tbl.add_section()
+    tbl.add_row(Text("CONVERSATION", style=f"bold {VIOLET}"),
+                Text(f"~{hist_chars // 4:,}", style="bold"),
+                Text(share(hist_chars), style="bold"))
     parts.append(tbl)
 
     parts += [Text(""),
-              Text("estimate (~4 chars/token) · tools reservation is an average, "
-                   "actual varies · q to return", style="bright_black")]
+              Text("estimate (~4 chars/token) · share = % of model context "
+                   "window · q to return", style="bright_black")]
     show_view(_render_ansi(Group(*parts)), hint="context usage · q to return")
 
 
@@ -1853,6 +1846,10 @@ class _ToolSpinner:
 DISCOVERY_MAX_ROUNDS = 3     # how many times request_tool may be used per turn
 RETRIEVE_TOP_N       = 3     # tools surfaced per request_tool call
 MAX_ACTIVE_TOOLS     = 12    # cap on accumulated full schemas (context budget)
+# Fixed, roughly-constant estimate of the `tools` request field during discovery:
+# request_tool's schema (~240 tok) plus RETRIEVE_TOP_N surfaced tool schemas.
+# Used by /context; the real size varies with which tools get surfaced.
+TOOLS_RESERVATION_TOKENS = 900
 
 META_TOOL_NAME = "request_tool"
 _META_TOOL = {
@@ -2569,7 +2566,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 else:
                     console.print("  [yellow]▸[/yellow] debug [bold]off[/bold]")
             elif cmd == "/context":
-                _context_view(ctx, base_dir, history, mcp)
+                _context_view(ctx, base_dir, history, mcp, mode)
             elif cmd == "/setcontext":
                 arg = text[len("/setcontext"):].strip()
                 if not arg:
