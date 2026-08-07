@@ -313,9 +313,11 @@ def _parse_ctx_number(s: str):
 def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
                              mcp, use_tools: bool) -> int:
     """Rough token estimate (~4 chars/token) of what a prompt now sends: the
-    system prompt (+ <env>, + discovery guide & tool catalog when tools are on)
-    plus the whole conversation history. An estimate, not an exact tokenizer."""
+    system prompt (+ <env>, + discovery guide & tool catalog when tools are on),
+    the whole conversation history and the `tools` request field. An estimate, not
+    an exact tokenizer — used to block a request that would blow the window."""
     parts = [PURRAGENT_SYSTEM, _env_block()]
+    tools_tok = 0
     if use_tools and mcp is not None:
         try:
             all_tools = mcp.all_tools()
@@ -323,6 +325,7 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
             all_tools = []
         if all_tools:
             parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
+            tools_tok = TOOLS_RESERVATION_TOKENS   # the `tools` request field
     custom = (profile.get("custom_system", "") or "").strip() if profile else ""
     if custom:
         parts.append(custom)
@@ -331,7 +334,7 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
         if isinstance(c, str) and c:
             parts.append(c)
     total_chars = sum(len(p) for p in parts)
-    return total_chars // 4
+    return total_chars // 4 + tools_tok
 
 
 def _context_view(ctx: dict, base_dir: str, history: list, mcp,
@@ -2788,6 +2791,27 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                      and _model_has_tools(ctx["profile"], base_dir))
         if use_tools:
             ensure_mcp()
+
+        # Pre-flight guard: if the request would overflow the model's context window
+        # (a too-small /setcontext, or a genuinely large history/param), don't send
+        # it — a blown window truncates or errors mid-generation. Warn and point at
+        # /context and /setcontext. (No real summarisation yet, so the whole history
+        # is sent verbatim; this catches the overflow before it reaches the model.)
+        maxc = _effective_max_context(ctx, base_dir)
+        if maxc:
+            est = _estimate_context_tokens(ctx["profile"], base_dir, history,
+                                           mcp, use_tools)
+            if est > maxc:
+                history.pop()          # drop the blocked turn so history stays clean
+                over = est - maxc
+                console.print(
+                    f"  [red]▸ context exceeded[/red] — this prompt needs about "
+                    f"[bold]{est:,}[/bold] tokens but the window is "
+                    f"[bold]{maxc:,}[/bold] [dim](over by ~{over:,}).[/dim]\n"
+                    f"    [dim]Nothing was sent. Check [/dim][cyan]/context[/cyan]"
+                    f"[dim], raise it with [/dim][cyan]/setcontext <n>[/cyan]"
+                    f"[dim], or shorten the conversation.[/dim]")
+                continue
 
         # Accumulate streamed text (and an interrupted flag) at this scope so the
         # post-turn guard can close the turn coherently even on Ctrl-C.
