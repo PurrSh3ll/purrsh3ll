@@ -62,6 +62,7 @@ DEFAULT_GREETING = "Hacker"      # "Welcome back <greeting>!" — change with /g
 
 _NO_MODEL = object()             # picker sentinel: detach the model (debugging)
 VIOLET    = "#b46cff"     # single-colour fill for the paw logo + accents
+ORANGE    = "#d19a66"     # debug-only accents (e.g. /context budget diagnostics)
 
 # Brand mark: purragent's logo, pre-rendered to a small monochrome glyph
 # silhouette (regenerate with `scripts/render_purragent_logo.py`). purragent
@@ -482,11 +483,11 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
     # ── /debug: show how the budget is apportioned (caps, floors, borrowing) ───
     if debug:
         parts += [Text(""),
-                  Text("budget diagnostics", style=f"bold {VIOLET}"),
+                  Text("budget diagnostics", style=f"bold {ORANGE}"),
                   Text("")]
         if budget_tok is None:
             parts.append(Text("  model window unknown — set it with /setcontext "
-                              "<n> to see the budget split", style="bright_black"))
+                              "<n> to see the budget split", style=ORANGE))
         else:
             gov = ("fill fraction" if int(maxc * FILL_FRAC) <= maxc - OUTPUT_FLOOR
                    else "output floor")
@@ -505,7 +506,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
             lt = Table(box=None, show_header=False, pad_edge=False, expand=False)
             lt.add_column(""); lt.add_column("")
             for k, v in lines:
-                style = f"bold {VIOLET}" if k in ("budget", "= elastic pool") else "bright_black"
+                style = f"bold {ORANGE}" if k in ("budget", "= elastic pool") else ORANGE
                 lt.add_row(Text(f"  {k}", style=style), Text(v, style=style))
             parts.append(lt)
 
@@ -516,18 +517,18 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
             def pct_of_pool(chars: int) -> str:
                 return f"{chars*100/pool:.0f}%" if pool else "—"
             dt = Table(box=box.HORIZONTALS, show_header=True,
-                       header_style="bright_black", pad_edge=False, expand=False)
+                       header_style=ORANGE, pad_edge=False, expand=False)
             dt.add_column("section")
             dt.add_column("cap", justify="right")
             dt.add_column("min", justify="right")
             dt.add_column("now", justify="right")
             dt.add_column("borrow", justify="right")
             def drow(name, cap, mn, now_chars, borrow):
-                dt.add_row(Text(f"  {name}", style="bright_black"),
-                           Text(cap, style="bright_black"),
-                           Text(mn, style="bright_black"),
-                           Text(f"~{now_chars//4:,}", style="bright_black"),
-                           Text(borrow, style="bright_black"))
+                dt.add_row(Text(f"  {name}", style=ORANGE),
+                           Text(cap, style=ORANGE),
+                           Text(mn, style=ORANGE),
+                           Text(f"~{now_chars//4:,}", style=ORANGE),
+                           Text(borrow, style=ORANGE))
             drow("recent conversation", "rest", "—", recent_chars,
                  f"+{borrowed//4:,}" if borrowed else "—")
             drow("summarized", f"{SUMMARIZED_CAP_FRAC:.0%}", "—", summarized_chars,
@@ -538,7 +539,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                  memory_chars, "reserved")
             parts += [Text(""), dt,
                       Text("  cap/min = % of elastic pool · borrow = recent using "
-                           "summary's idle space", style="bright_black")]
+                           "summary's idle space", style=ORANGE)]
 
     parts += [Text(""),
               Text("estimate (~4 chars/token) · q to return",
