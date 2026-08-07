@@ -2252,11 +2252,11 @@ def _hack_intro_message(profile: dict, base_dir: str, history: list,
     return text
 
 
-def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool) -> bool:
+def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     """/hack — enable hacking mode. Confirm, then have the model greet the user in
     their language and ask for target info (IP, site, ports, creds, everything they
-    know). Returns True if the intro was shown and we should now wait for the user's
-    target details at the normal chat prompt; False if it was cancelled/failed."""
+    know). Returns the announcement text (truthy) if enabled — the caller waits for
+    the target at the next prompt; None if it was declined/cancelled/no model."""
     line = Text("  ⚠ enable hacking mode?", style="yellow")
     line.append("  authorised offensive engagement against a target you specify.",
                 style="bright_black")
@@ -2267,13 +2267,13 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool) -> bool
         ans = ""
     if ans not in ("y", "yes"):
         console.print(Text("      cancelled", style="bright_black"))
-        return False
+        return None
 
     profile = ctx.get("profile")
     if not profile:
         console.print("  [yellow]No model selected.[/yellow] Type "
                       "[cyan]/model[/cyan] to choose one first.")
-        return False
+        return None
 
     console.print(Text("  ⚙ enabling hacking mode…", style="bright_black"))
     # Fixed announcement, translated into the user's language (English fallback), so
@@ -2282,7 +2282,7 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool) -> bool
     console.print()
     console.print(Text(msg, style=VIOLET))
     console.print()
-    return True
+    return msg
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
@@ -3089,7 +3089,33 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 if streamed_text:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
-                if reply:
+                if hack_signal["requested"] and not hack_mode:
+                    # Model proposed hacking mode. Discard its detour reply and run
+                    # the exact same flow as /hack (confirm + announcement).
+                    msg = _run_hack(ctx, base_dir, history, mcp, debug)
+                    if msg:
+                        hack_mode = True
+                        awaiting_target = True
+                        conversation_started = True
+                        # Close the user's turn: the announcement is its answer.
+                        history.append({"role": "assistant", "content": msg})
+                    else:
+                        # Declined → the model may have misfired, abandoning the real
+                        # request. Re-answer the same query with the hack tool off so
+                        # it responds normally instead of leaving the task dangling.
+                        console.print(Text("  ↻ answering without hacking mode",
+                                           style="bright_black"))
+                        reply = query_model_with_tools(
+                            ctx["profile"], base_dir, history, mcp, _on_tool,
+                            _on_text, mode=mode, on_confirm=_confirm_action,
+                            offer_hack=False)
+                        _stop_tool_spin()
+                        if streamed_text:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                        if reply:
+                            history.append({"role": "assistant", "content": reply})
+                elif reply:
                     # Already streamed to screen — just keep it for context.
                     history.append({"role": "assistant", "content": reply})
             else:
@@ -3111,15 +3137,6 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             note = "[interrupted]" if interrupted else "[no response]"
             history.append({"role": "assistant",
                             "content": f"{partial}\n\n{note}" if partial else note})
-
-        # The model asked to enter hacking mode → run the exact same flow as /hack
-        # (confirm + announcement); on acceptance, light the toolbar and wait for
-        # the target at the next normal prompt.
-        if hack_signal["requested"] and not hack_mode:
-            if _run_hack(ctx, base_dir, history, mcp, debug):
-                hack_mode = True
-                awaiting_target = True
-                conversation_started = True
 
     mcp.close()   # shut down any MCP server subprocesses we spawned
     console.print("  [dim]bye[/dim]")
