@@ -489,25 +489,26 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
             parts.append(Text("  model window unknown — set it with /setcontext "
                               "<n> to see the budget split", style=ORANGE))
         else:
-            gov = ("fill fraction" if int(maxc * FILL_FRAC) <= maxc - OUTPUT_FLOOR
-                   else "output floor")
-            budget_pct = round(budget_tok * 100 / maxc)
             pool_tok = pool // 4
             lines = [
-                ("window",         f"{maxc:,} tok"),
-                ("fill fraction",  f"{FILL_FRAC:.0%}  →  {int(maxc*FILL_FRAC):,} tok"),
-                ("output reserve", f"{OUTPUT_FLOOR:,} tok  (kept free for the reply)"),
-                ("budget",         f"{budget_tok:,} tok  ({budget_pct}% of window · "
-                                   f"{gov} governs)"),
-                ("− header",       f"{fixed_chars//4:,} tok"),
-                ("− memory reserve", f"{memory_chars//4:,} tok"),
-                ("= elastic pool", f"{pool_tok:,} tok  (split below)"),
+                ("window",          f"{maxc:,}",             ""),
+                ("fill fraction",   f"{int(maxc*FILL_FRAC):,}", f"{FILL_FRAC:.0%} of window"),
+                ("output reserve",  f"{OUTPUT_FLOOR:,}",     "user prompt + model output"),
+                ("budget",          f"{budget_tok:,}",       ""),
+                ("− header",        f"{fixed_chars//4:,}",   ""),
+                ("− memory reserve", f"{memory_chars//4:,}", ""),
+                ("= elastic pool",  f"{pool_tok:,}",         ""),
             ]
             lt = Table(box=None, show_header=False, pad_edge=False, expand=False)
-            lt.add_column(""); lt.add_column("")
-            for k, v in lines:
+            lt.add_column("")                      # label
+            lt.add_column("", justify="right")     # tokens
+            lt.add_column("")                      # unit + note
+            for k, v, note in lines:
                 style = f"bold {ORANGE}" if k in ("budget", "= elastic pool") else ORANGE
-                lt.add_row(Text(f"  {k}", style=style), Text(v, style=style))
+                unit = "tok" + (f"   {note}" if note else "")
+                lt.add_row(Text(f"  {k}", style=style),
+                           Text(v, style=style),
+                           Text(f" {unit}", style=style))
             parts.append(lt)
 
             # per-section cap / floor / current use / borrowing against the pool
