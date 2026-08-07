@@ -372,13 +372,28 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
         ("tools reservation (request_tool + 3)",  tools_chars),
     ]
     fixed_chars = sum(c for _, c in fixed)
+    maxc = _effective_max_context(ctx, base_dir)
+
+    # CONVERSATION splits three ways: recent turns kept verbatim, older turns that
+    # overflow (destined to be summarised), and a fixed reservation for memory
+    # lookup (RAG recall of older/other-session conversation). Nothing is actually
+    # summarised or recalled yet — for now this only accounts the tokens. Recent is
+    # kept verbatim until it passes RECENT_CONV_WINDOW_FRAC of the window; beyond
+    # that the overflow is counted as summarized.
+    recent_cap = int(maxc * RECENT_CONV_WINDOW_FRAC) * 4 if maxc else None
+    if recent_cap is not None and hist_chars > recent_cap:
+        recent_chars, summarized_chars = recent_cap, hist_chars - recent_cap
+    else:
+        recent_chars, summarized_chars = hist_chars, 0
+    memory_chars = MEMORY_LOOKUP_TOKENS * 4
+    conversation_chars = recent_chars + summarized_chars + memory_chars
+
     # Engagement working data injected into context (findings DB, discovered
     # ports/services, recon summary of what's been found) — the same whether it's
     # a pentest, a CTF, Hack The Box or learning. Not wired yet — reserved at 0.
     findings_chars = 0
-    total_chars = fixed_chars + hist_chars + findings_chars
+    total_chars = fixed_chars + conversation_chars + findings_chars
     used = total_chars // 4
-    maxc = _effective_max_context(ctx, base_dir)
 
     # Share of the whole model context window (falls back to share of what's
     # currently used when the model's max is unknown).
@@ -422,8 +437,11 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
         item(label, chars)
     tbl.add_section()
     tbl.add_row(Text("CONVERSATION", style=f"bold {VIOLET}"),
-                Text(f"~{hist_chars // 4:,}", style="bold"),
-                Text(share(hist_chars), style="bold"))
+                Text(f"~{conversation_chars // 4:,}", style="bold"),
+                Text(share(conversation_chars), style="bold"))
+    item("recent conversation", recent_chars)
+    item("summarized conversation", summarized_chars)
+    item("memory lookup", memory_chars)
     tbl.add_section()
     tbl.add_row(Text("FINDINGS", style=f"bold {VIOLET}"),
                 Text(f"~{findings_chars // 4:,}", style="bold"),
@@ -1858,6 +1876,12 @@ MAX_ACTIVE_TOOLS     = 12    # cap on accumulated full schemas (context budget)
 # request_tool's schema (~240 tok) plus RETRIEVE_TOP_N surfaced tool schemas.
 # Used by /context; the real size varies with which tools get surfaced.
 TOOLS_RESERVATION_TOKENS = 900
+# Fixed reservation for memory lookup (RAG recall of older conversation, T4).
+MEMORY_LOOKUP_TOKENS = 2000
+# Recent verbatim conversation is kept until it passes this fraction of the model
+# context window; beyond that, the overflow is accounted as summarized (the actual
+# summarisation is not wired yet — /context only accounts the tokens for now).
+RECENT_CONV_WINDOW_FRAC = 0.5
 
 META_TOOL_NAME = "request_tool"
 _META_TOOL = {
