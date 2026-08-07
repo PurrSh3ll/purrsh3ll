@@ -2266,6 +2266,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if not mcp.connected:
             mcp.connect()
 
+    # Connect up front (cheap: stdio spawn + cached HTTP tools, no network) so
+    # /context, model capabilities and the tool loop all reflect the enabled MCP
+    # servers immediately — without needing a first prompt or opening /mcp.
+    ensure_mcp()
+
     def toolbar():
         p = ctx["profile"]
         mode_seg = f"<style fg='#b46cff'>mode: {mode}</style>"
