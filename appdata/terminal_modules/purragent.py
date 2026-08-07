@@ -2166,11 +2166,8 @@ _HACK_MESSAGE_RULES = (
     "(1) State that hacking mode is now enabled. (2) Write it in the SAME language "
     "the user has been using in the conversation; if there is no prior "
     "conversation, use English. (3) Ask the user to share everything they know "
-    "about the target — IP address, website/URL, open ports, credentials, scope, "
-    "rules of engagement, the goal. (4) If the conversation already mentions one "
-    "or more targets, name "
-    "them and ask whether this engagement concerns that target or a new one. Keep "
-    "it short and direct."
+    "about the target — IP address, website/URL, open ports, credentials, the "
+    "goal. Keep it short and direct."
 )
 
 _HACK_TOOL = {
@@ -2558,6 +2555,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     greeting = _state.get("greeting") or DEFAULT_GREETING
     mode = _state.get("mode") or DEFAULT_MODE   # skeleton: inert
     debug = False   # /debug: mirror pschat's --debug (dump the request to the model)
+    hack_mode = False   # /hack: hacking mode on → shows in the toolbar; /hack again disables
 
     # First-ever launch: greet without "back". Mark it so later launches say "back".
     first_launch = not _state.get("launched")
@@ -2585,10 +2583,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     else "<style fg='#7f7f7f'>user</style>")
         # Only shown while /debug is on, so you always know the request is dumped.
         dbg_seg = "   <style fg='#e5c07b'>debug</style>" if debug else ""
+        # Active offensive engagement — shown while hacking mode is on (/hack).
+        hack_seg = "   <style fg='#ff5f5f'>⚑ hacking</style>" if hack_mode else ""
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
-                        f"{mode_seg}   {priv_seg}{dbg_seg}   "
+                        f"{mode_seg}   {priv_seg}{dbg_seg}{hack_seg}   "
                         "<style fg='#7f7f7f'>/exit to quit</style>")
         # Capability badges — shown only when the attached model supports them.
         caps = [c for c in ("vision", "audio")
@@ -2605,7 +2605,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
             f"  ·  <i>{p.get('name', '?')}</i>{cap_seg}{ctx_seg}   {mode_seg}   "
-            f"{priv_seg}{dbg_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
+            f"{priv_seg}{dbg_seg}{hack_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
         "prompt":         "bold #d75fff",
@@ -2859,7 +2859,22 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         "add", "enable", "disable", "remove", "rm", "delete"):
                     _pause_after_command()
             elif cmd == "/hack":
-                awaiting_target = _run_hack(ctx, base_dir, history, mcp, debug)
+                if hack_mode:
+                    # Already on → /hack again offers to turn it off.
+                    console.print(Text("  ⚠ disable hacking mode?", style="yellow"))
+                    try:
+                        ans = input("      disable? [y/N] ").strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        ans = ""
+                    if ans in ("y", "yes"):
+                        hack_mode = False
+                        awaiting_target = False
+                        console.print("SKELETON OK")
+                    else:
+                        console.print(Text("      cancelled", style="bright_black"))
+                elif _run_hack(ctx, base_dir, history, mcp, debug):
+                    hack_mode = True          # lights up the toolbar
+                    awaiting_target = True     # next plain message is the target info
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
