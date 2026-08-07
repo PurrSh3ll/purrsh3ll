@@ -374,24 +374,55 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
     fixed_chars = sum(c for _, c in fixed)
     maxc = _effective_max_context(ctx, base_dir)
 
+    # ── Budget: never fill the whole window (quality + room to generate) ───────
+    # budget = min(FILL_FRAC·window, window − OUTPUT_FLOOR): FILL_FRAC governs big
+    # windows, the absolute output floor governs tiny ones. Everything below is
+    # apportioned inside this budget; HEADER is a fixed cost subtracted first.
+    if maxc:
+        budget_tok = max(0, min(int(maxc * FILL_FRAC), maxc - OUTPUT_FLOOR))
+    else:
+        budget_tok = None
+
     # CONVERSATION splits three ways: recent turns kept verbatim, older turns that
     # overflow (destined to be summarised), and a fixed reservation for memory
     # lookup (RAG recall of older/other-session conversation). Nothing is actually
-    # summarised or recalled yet — for now this only accounts the tokens. Recent is
-    # kept verbatim until it passes RECENT_CONV_WINDOW_FRAC of the window; beyond
-    # that the overflow is counted as summarized.
-    recent_cap = int(maxc * RECENT_CONV_WINDOW_FRAC) * 4 if maxc else None
-    if recent_cap is not None and hist_chars > recent_cap:
-        recent_chars, summarized_chars = recent_cap, hist_chars - recent_cap
+    # summarised or recalled yet — for now this only accounts the tokens.
+    memory_chars = MEMORY_LOOKUP_TOKENS * 4
+    findings_floor_chars = FINDINGS_FLOOR_TOKENS * 4
+
+    # Elastic pool = budget − HEADER − memory-lookup reservation. Findings and the
+    # live conversation share it via cap/floor/borrowing (see the constants block).
+    if budget_tok is not None:
+        pool = max(0, budget_tok * 4 - fixed_chars - memory_chars)
+    else:
+        pool = None
+
+    # FINDINGS: reservation (floor) held, capped once its DB is wired; 0 demand now.
+    findings_demand = 0
+    if pool is not None:
+        findings_cap = int(FINDINGS_CAP_FRAC * pool)
+        findings_chars = min(max(findings_demand, findings_floor_chars), findings_cap)
+    else:
+        findings_chars = findings_demand
+
+    # recent conversation vs summarized share the pool left after findings. While
+    # the conversation fits, recent stays fully verbatim and *borrows* summary's
+    # (and findings') unused space. Once it overflows, summary reclaims its reserved
+    # space (up to its cap) to hold the spilled older turns and recent keeps the
+    # rest — recent+summary == the available pool, so it never pushes total context
+    # past the budget. (Real summarisation isn't wired; this only accounts tokens.)
+    if pool is not None:
+        avail = max(0, pool - findings_chars)
+        summ_reserve = int(SUMMARIZED_CAP_FRAC * pool)
+        if hist_chars <= avail:
+            recent_chars, summarized_chars = hist_chars, 0
+        else:
+            recent_chars = max(0, avail - summ_reserve)
+            summarized_chars = min(hist_chars - recent_chars, summ_reserve)
     else:
         recent_chars, summarized_chars = hist_chars, 0
-    memory_chars = MEMORY_LOOKUP_TOKENS * 4
     conversation_chars = recent_chars + summarized_chars + memory_chars
 
-    # Engagement working data injected into context (findings DB, discovered
-    # ports/services, recon summary of what's been found) — the same whether it's
-    # a pentest, a CTF, Hack The Box or learning. Not wired yet — reserved at 0.
-    findings_chars = 0
     total_chars = fixed_chars + conversation_chars + findings_chars
     used = total_chars // 4
 
@@ -449,8 +480,8 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
     parts.append(tbl)
 
     parts += [Text(""),
-              Text("estimate (~4 chars/token) · share = % of model context "
-                   "window · q to return", style="bright_black")]
+              Text("estimate (~4 chars/token) · q to return",
+                   style="bright_black")]
     show_view(_render_ansi(Group(*parts)), hint="context usage · q to return")
 
 
@@ -1879,10 +1910,29 @@ MAX_ACTIVE_TOOLS     = 12    # cap on accumulated full schemas (context budget)
 TOOLS_RESERVATION_TOKENS = 900
 # Fixed reservation for memory lookup (RAG recall of older conversation, T4).
 MEMORY_LOOKUP_TOKENS = 2000
-# Recent verbatim conversation is kept until it passes this fraction of the model
-# context window; beyond that, the overflow is accounted as summarized (the actual
-# summarisation is not wired yet — /context only accounts the tokens for now).
-RECENT_CONV_WINDOW_FRAC = 0.5
+
+# ── Context budget: how the model window is apportioned ────────────────────────
+# We never fill the whole window. Two reasons: quality degrades as a model nears
+# its native limit ("lost in the middle" — worse the smaller the model), and the
+# model needs room to generate its reply. FILL_FRAC is the quality-safe input
+# ceiling; OUTPUT_FLOOR guarantees generation room in *absolute* tokens so a tiny
+# window doesn't starve the reply. The effective input budget is the smaller of the
+# two, so on big windows FILL_FRAC governs and on tiny ones OUTPUT_FLOOR does. The
+# quality margin and the output reserve both live inside the unused (1-FILL_FRAC).
+FILL_FRAC    = 0.80
+OUTPUT_FLOOR = 6000     # tokens always kept free for the model's reply
+
+# The elastic pool = budget − HEADER − memory-lookup reservation. It is apportioned
+# between the live conversation and findings. Two distinct mechanics:
+#   • cap (soft ceiling): the caps may sum to >100% of the pool on purpose — an
+#     empty/under-used section lends its space to a busier one (borrowing).
+#   • reservation (floor): space held even when the section is empty, because it
+#     gets filled on demand mid-turn (memory lookup; findings once its DB is wired).
+# recent conversation is highest priority: it borrows whatever the lower tiers are
+# not reserving, and only its overflow (beyond the pool it can reach) is summarised.
+SUMMARIZED_CAP_FRAC   = 0.30   # cap on kept summary; older summary is recompressed
+FINDINGS_CAP_FRAC     = 0.20   # cap on findings context once the DB is wired
+FINDINGS_FLOOR_TOKENS = 0      # reservation held for findings — 0 until DB attached
 
 META_TOOL_NAME = "request_tool"
 _META_TOOL = {
