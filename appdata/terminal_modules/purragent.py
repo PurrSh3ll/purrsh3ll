@@ -2519,13 +2519,26 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
     except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans in ("y", "yes"):
-        console.print("SKELETON OK")
+        _start_hacking(base_dir, goal)
     else:
         hint = Text("      not started — use ", style="bright_black")
         hint.append("/target", style="cyan")
-        hint.append(" to review", style="bright_black")
+        hint.append(" to review, ", style="bright_black")
+        hint.append("/start", style="cyan")
+        hint.append(" to begin", style="bright_black")
         console.print(hint)
     return True
+
+
+def _start_hacking(base_dir: str, goal) -> None:
+    """Begin the engagement on the recorded target. Skeleton: prints SKELETON OK
+    after naming the target and objective. Called from the intake confirm and from
+    the /start command (available only in hacking mode)."""
+    hosts = purragent_db.fetch_hosts(base_dir)
+    target = _host_label(hosts[0]) if hosts else "?"
+    console.print(Text(f"  ▸ starting engagement on {target}  ·  objective: {goal}",
+                       style=f"bold {VIOLET}"))
+    console.print("SKELETON OK")
 
 
 def _box_table_frags(headers: list, rows: list, aligns: list, sel: int,
@@ -2690,6 +2703,24 @@ def _del_service(base_dir: str, port: dict) -> None:
         purragent_db.remove_port(base_dir, port["id"])
 
 
+def _del_host(base_dir: str, host: dict) -> bool:
+    """[d] on a host — delete the whole target after a confirm. Returns True if it
+    was removed. On its own alternate screen so it stays inside /target."""
+    lbl = _host_label(host)
+    with _alt_screen():
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+        try:
+            ans = input(f"  delete target {lbl} and all its data? [y/N] "
+                        ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+    if ans in ("y", "yes"):
+        purragent_db.remove_engagement(base_dir, host.get("engagement_id"))
+        return True
+    return False
+
+
 def _port_view(base_dir: str, host: dict, port: dict) -> None:
     """Detail for one port/service + the target's findings (creds/endpoints/notes)."""
     f = purragent_db.fetch_findings(base_dir, host["id"], host.get("engagement_id"))
@@ -2743,32 +2774,36 @@ def _host_view(base_dir: str, host: dict) -> None:
             _del_service(base_dir, ports[i])
 
 
-def _db_view(base_dir: str) -> None:
+def _db_view(base_dir: str) -> bool:
     """/target — interactive browser of the hacking-mode DB (pshunter-style): a
     hosts table → a host's ports/services → a port's detail + findings, with manual
-    add/remove of services."""
+    add/remove of services and deletion of a whole target. Returns True if the last
+    target was deleted (the caller then re-asks for a target IP)."""
     while True:
         try:
             hosts = purragent_db.fetch_hosts(base_dir)
         except Exception as e:
             console.print(f"  [red]could not read the target database:[/red] "
                           f"[dim]{e}[/dim]")
-            return
+            return False
         if not hosts:
             console.print("  [dim]no targets recorded yet — enable hacking mode "
                           "with[/dim] [cyan]/hack[/cyan]")
-            return
+            return False
         headers = ["IP", "MAC", "VENDOR", "HOSTNAME", "OS", "PORTS"]
         aligns = ["l", "l", "l", "l", "l", "r"]
         rows = [[h.get("ip") or "-", h.get("mac") or "-", h.get("vendor") or "-",
                  h.get("hostname") or "-", h.get("os") or "-", str(h["n_ports"])]
                 for h in hosts]
         act, i = _browse("Target database — hosts", headers, rows, aligns=aligns,
-                         empty_hint="no hosts")
+                         can_delete=True, empty_hint="no hosts")
         if act == "back":
-            return
+            return False
         if act == "open":
             _host_view(base_dir, hosts[i])
+        elif act == "del":
+            if _del_host(base_dir, hosts[i]) and not purragent_db.fetch_hosts(base_dir):
+                return True          # deleted the last target → caller re-asks for IP
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
@@ -2984,10 +3019,13 @@ class PromptHistory(InMemoryHistory):
 # ── Slash completer (arrow-navigable dropdown) ─────────────────────────────────
 
 class SlashCompleter(Completer):
-    def __init__(self, servers_provider=None):
+    def __init__(self, servers_provider=None, extra_provider=None):
         # Callable returning [(name, enabled)] for non-built-in MCP servers, for
         # completing "/mcp <enable|disable|remove> <name>". Defaults to none.
         self._servers = servers_provider or (lambda: [])
+        # Callable returning extra [(cmd, hint)] shown only in some state (e.g.
+        # /start while hacking mode is on). Defaults to none.
+        self._extra = extra_provider or (lambda: [])
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -3021,7 +3059,7 @@ class SlashCompleter(Completer):
                         yield Completion(sub, start_position=-len(word),
                                          display=sub, display_meta=hint)
             return
-        for cmd, hint in SLASH:
+        for cmd, hint in list(SLASH) + list(self._extra()):
             if cmd.startswith(text):
                 yield Completion(cmd, start_position=-len(text),
                                  display=cmd, display_meta=hint)
@@ -3123,7 +3161,10 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             servers_provider=lambda: [
                 (n, bool(s.get("enabled", True)))
                 for n, s in mcp.load_config().get("servers", {}).items()
-                if not mcp_client.is_builtin_server(s)]),
+                if not mcp_client.is_builtin_server(s)],
+            # /start is offered only while hacking mode is on.
+            extra_provider=lambda: ([("/start", "start hacking the recorded target")]
+                                    if hack_mode else [])),
         # complete_while_typing=False so the menu's reserved rows are claimed only
         # while a completion is actually active — not permanently, which left a big
         # gap above the model toolbar. reserve_space_for_menu is the on-demand
@@ -3373,7 +3414,28 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # screen (\x1b[2J) and wipes the intro we just printed.
                         conversation_started = True
             elif cmd == "/target":
-                _db_view(base_dir)
+                # Deleting the last target in /target re-arms the target-IP prompt
+                # (only meaningful while hacking mode is on).
+                if _db_view(base_dir) and hack_mode:
+                    awaiting_target = True
+                    conversation_started = True
+                    console.print(Text("  step 1 — enter the target IP:",
+                                       style="bright_black"))
+            elif cmd == "/start":
+                # Only meaningful in hacking mode with a recorded target — this is
+                # how you begin after answering 'n' at the intake to fix data first.
+                if not hack_mode:
+                    console.print("  [yellow]/start[/yellow] is only available in "
+                                  "hacking mode [dim]— enable it with[/dim] "
+                                  "[cyan]/hack[/cyan]")
+                elif awaiting_target:
+                    console.print("  [yellow]enter the target IP first[/yellow] "
+                                  "[dim]before starting[/dim]")
+                elif not purragent_db.fetch_hosts(base_dir):
+                    console.print("  [yellow]no target recorded yet[/yellow] "
+                                  "[dim]— re-run[/dim] [cyan]/hack[/cyan]")
+                else:
+                    _start_hacking(base_dir, hack_goal)
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":

@@ -295,6 +295,25 @@ def remove_port(base_dir: str, port_id: int) -> None:
         conn.close()
 
 
+def remove_engagement(base_dir: str, engagement_id: int) -> None:
+    """Delete a target (engagement) and everything tied to it — its target row(s),
+    ports, credentials, endpoints and notes."""
+    conn = _connect(base_dir)
+    try:
+        tids = [r[0] for r in conn.execute(
+            "SELECT id FROM targets WHERE engagement_id = ?", (engagement_id,))]
+        for tid in tids:
+            conn.execute("DELETE FROM ports WHERE target_id = ?", (tid,))
+            conn.execute("DELETE FROM credentials WHERE target_id = ?", (tid,))
+            conn.execute("DELETE FROM endpoints WHERE target_id = ?", (tid,))
+        conn.execute("DELETE FROM targets WHERE engagement_id = ?", (engagement_id,))
+        conn.execute("DELETE FROM notes WHERE engagement_id = ?", (engagement_id,))
+        conn.execute("DELETE FROM engagements WHERE id = ?", (engagement_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def fetch_all(base_dir: str) -> list:
     """Every engagement (newest first) with its target, ports, credentials,
     endpoints and notes nested in — for the /target view. Returns [] if empty."""
