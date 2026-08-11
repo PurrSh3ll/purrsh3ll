@@ -19,6 +19,7 @@ import contextlib
 import functools
 import getpass
 import io
+import ipaddress
 import json
 import os
 import platform
@@ -2197,9 +2198,7 @@ class _StreamTrimmer:
 # fails we fall back to it too — so /hack always prints the announcement.
 
 _HACK_ANNOUNCEMENT = (
-    "Hacking mode enabled — it works on a single target at a time. Tell me "
-    "everything you know about the target — IP address, website/URL, open ports "
-    "and credentials."
+    "Hacking mode enabled — it works on a single target at a time."
 )
 
 _HACK_TRANSLATE_INSTRUCTIONS = (
@@ -2274,10 +2273,10 @@ def _hack_intro_message(profile: dict, base_dir: str, history: list,
 
 
 def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
-    """/hack — enable hacking mode. Confirm, pick the objective, then have the model
-    greet the user in their language and ask for target info (IP, site, ports, creds,
-    everything they know). Returns (announcement, goal_shortcode) if enabled — the
-    caller waits for the target next; (None, None) if declined/cancelled/no model."""
+    """/hack — enable hacking mode. Confirm, pick the objective, then print a static
+    English announcement (no LLM — small models are unreliable at this) and ask for
+    the target IP as step 1. Returns (announcement, goal_shortcode) if enabled — the
+    caller waits for the IP next; (None, None) if declined/cancelled/no model."""
     line = Text("  ⚠ enable hacking mode?", style="yellow")
     line.append("  authorised offensive engagement against a target you specify.",
                 style="bright_black")
@@ -2303,20 +2302,17 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
         return None, None
     label, _hint, code = goal
     console.print(Text(f"  🎯 objective: {label}", style=f"bold {VIOLET}"))
-
-    console.print(Text("  ⚙ enabling hacking mode…", style="bright_black"))
-    # Fixed announcement, translated into the user's language (English fallback), so
-    # this always prints something — shown in violet, like the model's other replies.
-    msg = _hack_intro_message(profile, base_dir, history, mcp, debug)
     console.print()
-    console.print(Text(msg, style=VIOLET))
-    # Fixed hint printed by code (not translated by the model) on its own line.
+    # Static English announcement — no LLM (small models are unreliable at this).
+    console.print(Text(_HACK_ANNOUNCEMENT, style=VIOLET))
     off = Text("  ", style="bright_black")
     off.append("/hack", style="cyan")
     off.append(" again to turn hacking mode off", style="bright_black")
     console.print(off)
     console.print()
-    return msg, code
+    console.print(Text("  step 1 — enter the target IP:", style="bright_black"))
+    console.print()
+    return _HACK_ANNOUNCEMENT, code
 
 
 # ── /hack — target intake (structured extraction into purragent.db) ────────────
@@ -2326,73 +2322,63 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
 # doesn't apply here — a plain forced tool call is reliable. Whatever the model
 # misses is still kept verbatim as a raw-intake note, so nothing is lost.
 
+# Schema is deliberately FLAT (top-level scalars, ports as a plain integer list,
+# shallow 2-field objects) — small models (qwen3-14b) reliably fill flat fields but
+# drop deeply-nested arrays-of-objects, extracting only the IP. A worked example in
+# _RECORD_SYS pins the mapping.
 _RECORD_TARGET_TOOL = {
     "type": "function",
     "function": {
         "name": "record_target",
         "description": (
             "Store what the user just told you about the single engagement target. "
-            "Extract ONLY facts the user actually stated — never invent or guess "
-            "values. Leave any field/array out if the user didn't mention it. Group "
-            "the free text into the fields below."),
+            "Fill EVERY field the user mentioned — the ports, the service on a port "
+            "and the credentials matter as much as the IP; do NOT stop after the IP. "
+            "Extract only facts the user actually stated; never invent or guess."),
         "parameters": {
             "type": "object",
             "properties": {
-                "target": {
-                    "type": "object",
-                    "description": "Identity of the target.",
-                    "properties": {
-                        "ip":       {"type": "string"},
-                        "hostname": {"type": "string"},
-                        "domain":   {"type": "string"},
-                        "url":      {"type": "string"},
-                        "os":       {"type": "string"},
-                        "platform": {"type": "string",
-                                     "description": "linux / windows / ad / web / other"},
-                    },
-                },
+                "ip":       {"type": "string", "description": "target IP address"},
+                "hostname": {"type": "string"},
+                "url":      {"type": "string"},
+                "os":       {"type": "string"},
+                "platform": {"type": "string",
+                             "description": "linux / windows / ad / web / other"},
                 "ports": {
                     "type": "array",
-                    "description": "Known open ports / services.",
+                    "description": "Every port NUMBER the user mentioned.",
+                    "items": {"type": "integer"},
+                },
+                "services": {
+                    "type": "array",
+                    "description": "Which service runs on which port.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "port":    {"type": "integer"},
-                            "proto":   {"type": "string", "description": "tcp / udp"},
-                            "service": {"type": "string"},
-                            "product": {"type": "string"},
-                            "version": {"type": "string"},
+                            "port": {"type": "integer"},
+                            "name": {"type": "string"},
                         },
-                        "required": ["port"],
+                        "required": ["port", "name"],
                     },
                 },
                 "credentials": {
                     "type": "array",
-                    "description": "Known credentials.",
+                    "description": "Username/password pairs the user has.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "username":    {"type": "string"},
-                            "secret":      {"type": "string"},
-                            "secret_type": {"type": "string",
-                                            "description": "password/hash/ssh_key/token/api_key"},
-                            "scope":       {"type": "string",
-                                            "description": "service/url/host it applies to"},
+                            "username": {"type": "string"},
+                            "secret":   {"type": "string"},
+                            "type":     {"type": "string",
+                                         "description": "password/hash/ssh_key/token"},
                         },
+                        "required": ["username"],
                     },
                 },
-                "endpoints": {
+                "paths": {
                     "type": "array",
-                    "description": "Known web paths / pages / API endpoints.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "url":    {"type": "string"},
-                            "method": {"type": "string"},
-                            "params": {"type": "string"},
-                        },
-                        "required": ["url"],
-                    },
+                    "description": "Known web paths / URLs / endpoints.",
+                    "items": {"type": "string"},
                 },
                 "notes": {
                     "type": "string",
@@ -2401,11 +2387,9 @@ _RECORD_TARGET_TOOL = {
                 "other_targets": {
                     "type": "array",
                     "description": (
-                        "If the user described MORE THAN ONE distinct host/target, "
-                        "list the EXTRA ones here (the first goes in `target`). "
-                        "Different identifiers for the SAME host (its IP + hostname "
-                        "+ URL) are ONE target — do not list those. Only genuinely "
-                        "separate machines."),
+                        "Extra DISTINCT hosts if the user described more than one "
+                        "(the first goes in `ip`). The SAME host's IP + hostname + "
+                        "URL are ONE target — do not list those."),
                     "items": {"type": "string"},
                 },
             },
@@ -2415,10 +2399,15 @@ _RECORD_TARGET_TOOL = {
 
 _RECORD_SYS = (
     "The user is describing the target for an authorised offensive engagement. "
-    "Hacking mode handles ONE target at a time. Call record_target with the details "
-    "they stated. Extract only what the user actually said; do not invent, complete "
-    "or guess anything. If they described several distinct hosts, put the first in "
-    "`target` and list the rest in `other_targets`."
+    "Hacking mode handles ONE target at a time. Call record_target and fill EVERY "
+    "detail the user gave — the ports, the service on a port and the credentials "
+    "matter as much as the IP; do NOT stop after the IP. Extract only what the user "
+    "actually said; never invent. If they gave several distinct hosts, put the "
+    "first in `ip` and the rest in `other_targets`.\n\n"
+    "Example — user says: 'ip 1.2.3.4 ports 22 80 445, http on 80, creds "
+    "bob:hunter2' → ip=\"1.2.3.4\", ports=[22,80,445], "
+    "services=[{\"port\":80,\"name\":\"http\"}], "
+    "credentials=[{\"username\":\"bob\",\"secret\":\"hunter2\"}]."
 )
 
 
@@ -2433,7 +2422,7 @@ def _extract_target(profile: dict, base_dir: str, target_text: str,
 
     messages = [{"role": "system", "content": PURRAGENT_SYSTEM + "\n\n"
                  + _env_block() + "\n\n" + _RECORD_SYS},
-                {"role": "user", "content": target_text}]
+                {"role": "user", "content": target_text + "\n\n/no_think"}]
     body = {"model": model, "messages": messages, "temperature": AGENT_TEMPERATURE,
             "tools": [_RECORD_TARGET_TOOL],
             "tool_choice": {"type": "function",
@@ -2458,114 +2447,252 @@ def _extract_target(profile: dict, base_dir: str, target_text: str,
 
 def _record_target(ctx: dict, base_dir: str, debug: bool,
                    target_text: str, goal) -> bool:
-    """Extract the user's target description into structured fields and store the
-    engagement in purragent.db. The raw text is always kept, so nothing is lost.
+    """Validate the target IP the user entered (step 1). Valid → print SKELETON OK
+    and return True (done); invalid → print an error and return False so the caller
+    re-asks. Returns True once a valid IP is accepted.
 
-    Hacking mode handles ONE target: if the model reports several distinct hosts,
-    nothing is saved — we warn and return False so the caller re-asks for a single
-    host. Returns True once a target is recorded."""
-    console.print(Text("  ⚙ recording target…", style="bright_black"))
-    profile = ctx.get("profile")
-    data = _extract_target(profile, base_dir, target_text, debug) if profile else None
-
-    # Multiple targets → don't save an ambiguous mix; ask for one host.
-    others = [str(o).strip() for o in ((data or {}).get("other_targets") or [])
-              if str(o).strip()]
-    if others:
-        console.print(Text("  ⚠ hacking mode works on a single target at a time.",
-                           style="yellow"))
-        console.print(Text("    you also listed: " + ", ".join(others),
-                           style="bright_black"))
-        console.print(Text("    nothing saved — please re-enter the details for "
-                           "just one host.", style="bright_black"))
-        return False
-
+    NOTE: the DB integration (LLM extraction + purragent.db) is disabled for now —
+    the small local model is unreliable at structured extraction. It is kept
+    commented out below to wire back in later."""
+    ip = target_text.strip()
     try:
-        s = purragent_db.save_engagement(base_dir, goal, data or {}, target_text)
-    except Exception as e:
-        console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
+        ipaddress.ip_address(ip)
+    except ValueError:
+        console.print(Text("  ⚠ not a valid IP address — enter a single target IP "
+                           "(e.g. 10.10.10.5)", style="yellow"))
         return False
-    head = Text("  ✓ target recorded", style="green")
-    head.append(f"  engagement #{s['engagement_id']} · objective: {goal}",
-                style="bright_black")
-    console.print(head)
-    bits = []
-    if s.get("label"):
-        bits.append(s["label"])
-    bits.append(f"{s['ports']} ports")
-    bits.append(f"{s['credentials']} creds")
-    bits.append(f"{s['endpoints']} endpoints")
-    console.print(Text("    " + "  ·  ".join(bits), style="bright_black"))
-    hint = Text("    use ", style="bright_black")
-    hint.append("/target", style="cyan")
-    hint.append(" to view the target database", style="bright_black")
-    console.print(hint)
+
+    console.print("SKELETON OK")
+
+    # --- DB integration (disabled; model unreliable at extraction) ------------
+    # profile = ctx.get("profile")
+    # data = _extract_target(profile, base_dir, target_text, debug) if profile else None
+    # others = [str(o).strip() for o in ((data or {}).get("other_targets") or [])
+    #           if str(o).strip()]
+    # if others:
+    #     console.print(Text("  ⚠ hacking mode works on a single target at a time.",
+    #                        style="yellow"))
+    #     console.print(Text("    you also listed: " + ", ".join(others),
+    #                        style="bright_black"))
+    #     console.print(Text("    nothing saved — please re-enter the details for "
+    #                        "just one host.", style="bright_black"))
+    #     return False
+    # try:
+    #     s = purragent_db.save_engagement(base_dir, goal, data or {}, target_text)
+    # except Exception as e:
+    #     console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
+    #     return False
+    # head = Text("  ✓ target recorded", style="green")
+    # head.append(f"  engagement #{s['engagement_id']} · objective: {goal}",
+    #             style="bright_black")
+    # console.print(head)
+    # bits = []
+    # if s.get("label"):
+    #     bits.append(s["label"])
+    # bits.append(f"{s['ports']} ports")
+    # bits.append(f"{s['credentials']} creds")
+    # bits.append(f"{s['endpoints']} endpoints")
+    # console.print(Text("    " + "  ·  ".join(bits), style="bright_black"))
+    # hint = Text("    use ", style="bright_black")
+    # hint.append("/target", style="cyan")
+    # hint.append(" to view the target database", style="bright_black")
+    # console.print(hint)
+    # -------------------------------------------------------------------------
     return True
 
 
-def _db_view(base_dir: str) -> None:
-    """/target — alt-screen view of the hacking-mode engagement database
-    (engagements with their target, ports, credentials, endpoints and notes)."""
+def _browse(title: str, rows: list, can_add: bool = False,
+            can_delete: bool = False, empty_hint: str = ""):
+    """Arrow-key list (pshunter-style) that also reports action keys. `rows` is a
+    list of (label, hint). Returns a tuple: ('open', i) on Enter/→, ('add', None)
+    on 'a' (if can_add), ('del', i) on 'd' (if can_delete), or ('back', None) on
+    Esc/q/←. Runs on the alternate screen so it leaves no clutter."""
+    n = len(rows)
+    idx = [0]
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("c-p")
+    def _(_e):
+        if n:
+            idx[0] = (idx[0] - 1) % n
+
+    @kb.add("down")
+    @kb.add("c-n")
+    def _(_e):
+        if n:
+            idx[0] = (idx[0] + 1) % n
+
+    @kb.add("enter")
+    @kb.add("right")
+    def _(e):
+        e.app.exit(result=(("open", idx[0]) if n else ("back", None)))
+
+    if can_add:
+        @kb.add("a")
+        def _(e):
+            e.app.exit(result=("add", None))
+
+    if can_delete:
+        @kb.add("d")
+        def _(e):
+            if n:
+                e.app.exit(result=("del", idx[0]))
+
+    @kb.add("escape")
+    @kb.add("q")
+    @kb.add("left")
+    @kb.add("c-c")
+    def _(e):
+        e.app.exit(result=("back", None))
+
+    def render():
+        frags = [("class:title", f"  {title}\n\n")]
+        if not rows:
+            frags.append(("class:hint", f"  {empty_hint or '(empty)'}\n"))
+        for i, (label, hint) in enumerate(rows):
+            sel = i == idx[0]
+            frags.append(("class:sel" if sel else "class:opt",
+                          f"  {'❯' if sel else ' '} {label}"))
+            if hint:
+                frags.append(("class:hint", f"   {hint}"))
+            frags.append(("", "\n"))
+        keys = ["↑/↓ move", "enter open"]
+        if can_add:
+            keys.append("a add")
+        if can_delete:
+            keys.append("d delete")
+        keys.append("esc back")
+        frags.append(("class:footer", "\n  " + " · ".join(keys)))
+        return frags
+
+    control = FormattedTextControl(render, show_cursor=False)
+    style = Style.from_dict({
+        "title": "bold", "sel": "bold #d75fff", "opt": "",
+        "hint": "#7f7f7f", "footer": "#7f7f7f italic",
+    })
+    app = Application(layout=Layout(Window(control, style="class:opt")),
+                      key_bindings=kb, style=style, full_screen=False,
+                      mouse_support=False)
+    with _alt_screen():
+        result = app.run()
+    _drain_stdin()
+    return result if result is not None else ("back", None)
+
+
+def _host_label(h: dict) -> str:
+    return (h.get("ip") or h.get("hostname") or h.get("url") or h.get("domain")
+            or h.get("label") or "(unknown host)")
+
+
+def _add_service(base_dir: str, target_id: int) -> None:
+    """[a] on a host — manually add a port/service (pshunter-style)."""
     try:
-        engagements = purragent_db.fetch_all(base_dir)
+        port = int(input("  port: ").strip())
+    except (EOFError, KeyboardInterrupt, ValueError):
+        console.print(Text("      cancelled", style="bright_black"))
+        return
+    proto = (input("  proto [tcp]: ").strip() or "tcp")
+    service = input("  service (e.g. http, ssh): ").strip()
+    product = input("  product [blank]: ").strip()
+    version = input("  version [blank]: ").strip()
+    try:
+        purragent_db.add_service(base_dir, target_id, port, proto,
+                                 service, product, version)
+        console.print(Text(f"  ✓ added {port}/{proto} {service}".rstrip(),
+                           style="green"))
     except Exception as e:
-        console.print(f"  [red]could not read the target database:[/red] "
-                      f"[dim]{e}[/dim]")
-        return
-    if not engagements:
-        console.print("  [dim]no targets recorded yet — enable hacking mode with"
-                      "[/dim] [cyan]/hack[/cyan]")
-        return
+        console.print(f"  [red]could not add:[/red] [dim]{e}[/dim]")
 
-    def _grp(parts, label, rows):
-        if rows:
-            parts.append(Text(f"    {label}", style="bright_black"))
-            parts += rows
 
-    parts = [Text("Target database", style=f"bold {VIOLET}"), Text("")]
-    for eng in engagements:
-        tgt = eng.get("target") or {}
-        head = Text()
-        head.append(f"#{eng['id']}", style=f"bold {VIOLET}")
-        head.append(f"  {eng.get('objective') or '?'}", style="bold")
-        if eng.get("label"):
-            head.append(f"  · {eng['label']}", style="bright_black")
-        if eng.get("created"):
-            head.append(f"   {eng['created']}", style="bright_black")
-        parts.append(head)
+def _del_service(base_dir: str, port: dict) -> None:
+    """[d] on a port — remove it after a confirm."""
+    lbl = f"{port['port']}/{port.get('proto') or 'tcp'}"
+    try:
+        ans = input(f"  delete {lbl}? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in ("y", "yes"):
+        purragent_db.remove_port(base_dir, port["id"])
+        console.print(Text(f"  ✓ removed {lbl}", style="green"))
+    else:
+        console.print(Text("      cancelled", style="bright_black"))
 
-        ident = [f"{k}={tgt[k]}" for k in
-                 ("ip", "hostname", "domain", "url", "os", "platform") if tgt.get(k)]
-        if ident:
-            parts.append(Text("    " + "  ".join(ident), style="bright_black"))
 
-        _grp(parts, "ports", [
-            Text("      " + f"{p['port']}/{p.get('proto') or 'tcp'}"
-                 + ("  " + " ".join(x for x in (p.get("service"), p.get("product"),
-                    p.get("version")) if x)).rstrip(), style="bright_black")
-            for p in eng["ports"]])
-        _grp(parts, "credentials", [
-            Text("      ! " + f"{c.get('username') or ''}:{c.get('secret') or ''}"
-                 + (f" ({c['secret_type']})" if c.get("secret_type") else "")
-                 + (f" @ {c['scope']}" if c.get("scope") else ""),
-                 style="bright_black")
-            for c in eng["credentials"]])
-        _grp(parts, "endpoints", [
-            Text("      " + f"{ep.get('method') or 'GET'} {ep.get('url')}"
-                 + (f"  {ep['params']}" if ep.get("params") else ""),
-                 style="bright_black")
-            for ep in eng["endpoints"]])
-        notes = []
-        for n in eng["notes"]:
-            txt = " ".join((n.get("text") or "").split())
-            if len(txt) > 100:
-                txt = txt[:100] + "…"
-            notes.append(Text(f"      · {n.get('kind')}: {txt}", style="bright_black"))
-        _grp(parts, "notes", notes)
-        parts.append(Text(""))
+def _port_view(base_dir: str, host: dict, port: dict) -> None:
+    """Detail for one port/service + the target's findings (creds/endpoints/notes)."""
+    f = purragent_db.fetch_findings(base_dir, host["id"], host.get("engagement_id"))
+    parts = [Text(f"{_host_label(host)}  ·  {port['port']}/{port.get('proto') or 'tcp'}",
+                  style=f"bold {VIOLET}"), Text("")]
+    svc = [f"{k}={port[k]}" for k in ("service", "product", "version") if port.get(k)]
+    parts.append(Text("  service: " + ("  ".join(svc) if svc else "(unknown)"),
+                      style="bright_black"))
+    parts += [Text(""), Text("  findings", style="bold")]
+    creds, eps, notes = f["credentials"], f["endpoints"], f["notes"]
+    for c in creds:
+        parts.append(Text(f"    ! {c.get('username') or ''}:{c.get('secret') or ''}"
+                          + (f" ({c['secret_type']})" if c.get("secret_type") else "")
+                          + (f" @ {c['scope']}" if c.get("scope") else ""),
+                          style="bright_black"))
+    for ep in eps:
+        parts.append(Text(f"    {ep.get('method') or 'GET'} {ep.get('url')}",
+                          style="bright_black"))
+    for nt in notes:
+        txt = " ".join((nt.get("text") or "").split())
+        if len(txt) > 100:
+            txt = txt[:100] + "…"
+        parts.append(Text(f"    · {nt.get('kind')}: {txt}", style="bright_black"))
+    if not (creds or eps or notes):
+        parts.append(Text("    (none yet)", style="bright_black"))
+    parts += [Text(""), Text("q to return", style="bright_black")]
+    show_view(_render_ansi(Group(*parts)), hint="port detail · q to return")
 
-    parts.append(Text("q to return", style="bright_black"))
-    show_view(_render_ansi(Group(*parts)), hint="target database · q to return")
+
+def _host_view(base_dir: str, host: dict) -> None:
+    """Ports/services for one host, with [a] add and [d] delete; Enter drills into
+    a port's detail + findings."""
+    tid, label = host["id"], _host_label(host)
+    while True:
+        ports = purragent_db.fetch_ports(base_dir, tid)
+        rows = [(f"{p['port']}/{p.get('proto') or 'tcp'}",
+                 " ".join(x for x in (p.get("service"), p.get("product"),
+                                      p.get("version")) if x))
+                for p in ports]
+        act, i = _browse(f"{label} — ports & services", rows,
+                         can_add=True, can_delete=True,
+                         empty_hint="no ports yet — press a to add one")
+        if act == "back":
+            return
+        if act == "open" and ports:
+            _port_view(base_dir, host, ports[i])
+        elif act == "add":
+            _add_service(base_dir, tid)
+        elif act == "del" and ports:
+            _del_service(base_dir, ports[i])
+
+
+def _db_view(base_dir: str) -> None:
+    """/target — interactive browser of the hacking-mode DB (pshunter-style): a
+    hosts table → a host's ports/services → a port's detail + findings, with manual
+    add/remove of services."""
+    while True:
+        try:
+            hosts = purragent_db.fetch_hosts(base_dir)
+        except Exception as e:
+            console.print(f"  [red]could not read the target database:[/red] "
+                          f"[dim]{e}[/dim]")
+            return
+        if not hosts:
+            console.print("  [dim]no targets recorded yet — enable hacking mode "
+                          "with[/dim] [cyan]/hack[/cyan]")
+            return
+        rows = [(_host_label(h), f"{h.get('objective') or '?'} · {h['n_ports']} ports")
+                for h in hosts]
+        act, i = _browse("Target database — hosts", rows, empty_hint="no hosts")
+        if act == "back":
+            return
+        if act == "open":
+            _host_view(base_dir, hosts[i])
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
@@ -3229,14 +3356,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                               "[dim](/help for the list)[/dim]")
             continue
 
-        # /hack: after the intro, the next normal chat message is the user's target
-        # info. One forced record_target call groups it into DB fields and the
-        # engagement is stored in purragent.db; then control returns to the normal
-        # prompt. The user's target message is not added to the chat history.
+        # /hack step 1: the next normal chat message is the target IP. Validate it —
+        # on success print SKELETON OK and stop awaiting; on an invalid IP keep
+        # awaiting so the user re-enters. Not added to the chat history.
         if awaiting_target:
             conversation_started = True
-            # Keep awaiting_target set if the user gave several hosts (re-ask for
-            # one); clear it only once a single target is actually recorded.
             if _record_target(ctx, base_dir, debug, text, hack_goal):
                 awaiting_target = False
             continue

@@ -119,6 +119,14 @@ def _clean(v):
     return s or None
 
 
+def _as_int(v):
+    """Coerce to int (models sometimes send '80' or 80.0), or None if not a port."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def save_engagement(base_dir: str, objective, data: dict, raw_text: str) -> dict:
     """Persist one engagement from the intake extraction.
 
@@ -129,16 +137,14 @@ def save_engagement(base_dir: str, objective, data: dict, raw_text: str) -> dict
     if the model under-extracted. Returns a summary dict of what was stored.
     """
     data = data or {}
-    tgt = data.get("target") or {}
-    ports = data.get("ports") or []
-    creds = data.get("credentials") or []
-    eps = data.get("endpoints") or []
 
     conn = _connect(base_dir)
     try:
         cur = conn.cursor()
-        label = (_clean(tgt.get("ip")) or _clean(tgt.get("hostname"))
-                 or _clean(tgt.get("url")) or _clean(tgt.get("domain")))
+        ip = _clean(data.get("ip"))
+        hostname = _clean(data.get("hostname"))
+        url = _clean(data.get("url"))
+        label = ip or hostname or url
         cur.execute(
             "INSERT INTO engagements (created, objective, label) VALUES (?, ?, ?)",
             (_now(), _clean(objective), label))
@@ -147,31 +153,32 @@ def save_engagement(base_dir: str, objective, data: dict, raw_text: str) -> dict
         cur.execute(
             "INSERT INTO targets (engagement_id, ip, hostname, domain, url, os, "
             "platform) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (eng_id, _clean(tgt.get("ip")), _clean(tgt.get("hostname")),
-             _clean(tgt.get("domain")), _clean(tgt.get("url")),
-             _clean(tgt.get("os")), _clean(tgt.get("platform"))))
+            (eng_id, ip, hostname, None, url,
+             _clean(data.get("os")), _clean(data.get("platform"))))
         target_id = cur.lastrowid
 
-        n_ports = 0
-        for p in ports:
-            if not isinstance(p, dict):
-                continue
-            port = p.get("port")
-            try:
-                port = int(port) if port is not None else None
-            except (TypeError, ValueError):
-                port = None
-            if port is None:
-                continue
+        # Ports come as a plain number list; services map a name onto a port. Merge
+        # them so a service-only port is still recorded.
+        svc_by_port = {}
+        for s in (data.get("services") or []):
+            if isinstance(s, dict):
+                pi = _as_int(s.get("port"))
+                if pi is not None and _clean(s.get("name")):
+                    svc_by_port[pi] = _clean(s.get("name"))
+        port_nums = set(svc_by_port)
+        for p in (data.get("ports") or []):
+            pi = _as_int(p)
+            if pi is not None:
+                port_nums.add(pi)
+        for pnum in sorted(port_nums):
             cur.execute(
-                "INSERT INTO ports (target_id, port, proto, service, product, "
-                "version) VALUES (?, ?, ?, ?, ?, ?)",
-                (target_id, port, _clean(p.get("proto")), _clean(p.get("service")),
-                 _clean(p.get("product")), _clean(p.get("version"))))
-            n_ports += 1
+                "INSERT INTO ports (target_id, port, proto, service) "
+                "VALUES (?, ?, 'tcp', ?)",
+                (target_id, pnum, svc_by_port.get(pnum)))
+        n_ports = len(port_nums)
 
         n_creds = 0
-        for c in creds:
+        for c in (data.get("credentials") or []):
             if not isinstance(c, dict):
                 continue
             user, secret = _clean(c.get("username")), _clean(c.get("secret"))
@@ -181,20 +188,16 @@ def save_engagement(base_dir: str, objective, data: dict, raw_text: str) -> dict
                 "INSERT INTO credentials (target_id, scope, username, secret, "
                 "secret_type, source) VALUES (?, ?, ?, ?, ?, 'user')",
                 (target_id, _clean(c.get("scope")), user, secret,
-                 _clean(c.get("secret_type"))))
+                 _clean(c.get("type") or c.get("secret_type"))))
             n_creds += 1
 
         n_eps = 0
-        for e in eps:
-            if not isinstance(e, dict):
+        for p in (data.get("paths") or []):
+            u = _clean(p)
+            if not u:
                 continue
-            url = _clean(e.get("url"))
-            if not url:
-                continue
-            cur.execute(
-                "INSERT INTO endpoints (target_id, url, method, params) "
-                "VALUES (?, ?, ?, ?)",
-                (target_id, url, _clean(e.get("method")), _clean(e.get("params"))))
+            cur.execute("INSERT INTO endpoints (target_id, url) VALUES (?, ?)",
+                        (target_id, u))
             n_eps += 1
 
         note = _clean(data.get("notes"))
@@ -210,6 +213,82 @@ def save_engagement(base_dir: str, objective, data: dict, raw_text: str) -> dict
         return {"engagement_id": eng_id, "objective": _clean(objective),
                 "label": label, "ports": n_ports, "credentials": n_creds,
                 "endpoints": n_eps}
+    finally:
+        conn.close()
+
+
+def fetch_hosts(base_dir: str) -> list:
+    """One row per target (the 'hosts' table), newest first, with its engagement
+    objective and open-port count — for the top level of the /target browser."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = []
+        for t in conn.execute(
+                "SELECT t.*, e.objective AS objective FROM targets t "
+                "LEFT JOIN engagements e ON e.id = t.engagement_id "
+                "ORDER BY t.id DESC"):
+            d = dict(t)
+            d["n_ports"] = conn.execute(
+                "SELECT count(*) FROM ports WHERE target_id = ?", (t["id"],)
+            ).fetchone()[0]
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def fetch_ports(base_dir: str, target_id: int) -> list:
+    """Ports/services for one host, ordered by port."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM ports WHERE target_id = ? ORDER BY port", (target_id,))]
+    finally:
+        conn.close()
+
+
+def fetch_findings(base_dir: str, target_id: int, engagement_id: int) -> dict:
+    """Credentials, endpoints and notes attached to a target/engagement — shown as
+    'findings' in the port detail view."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        return {
+            "credentials": [dict(r) for r in conn.execute(
+                "SELECT * FROM credentials WHERE target_id = ?", (target_id,))],
+            "endpoints": [dict(r) for r in conn.execute(
+                "SELECT * FROM endpoints WHERE target_id = ?", (target_id,))],
+            "notes": [dict(r) for r in conn.execute(
+                "SELECT * FROM notes WHERE engagement_id = ? ORDER BY id",
+                (engagement_id,))],
+        }
+    finally:
+        conn.close()
+
+
+def add_service(base_dir: str, target_id: int, port: int, proto: str = "tcp",
+                service=None, product=None, version=None) -> None:
+    """Manually add a port/service to a host (user-supplied, like pshunter's [a])."""
+    conn = _connect(base_dir)
+    try:
+        conn.execute(
+            "INSERT INTO ports (target_id, port, proto, service, product, version) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (target_id, int(port), _clean(proto) or "tcp", _clean(service),
+             _clean(product), _clean(version)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_port(base_dir: str, port_id: int) -> None:
+    """Delete one port/service row by id."""
+    conn = _connect(base_dir)
+    try:
+        conn.execute("DELETE FROM ports WHERE id = ?", (port_id,))
+        conn.commit()
     finally:
         conn.close()
 
