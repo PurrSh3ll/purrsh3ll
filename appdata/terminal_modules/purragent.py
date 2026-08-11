@@ -2622,6 +2622,7 @@ def _browse(title: str, headers: list, rows: list, aligns: list = None,
     app = Application(layout=Layout(Window(control, style="class:cell")),
                       key_bindings=kb, style=style, full_screen=False,
                       mouse_support=False)
+    _drain_stdin()   # discard stray input from a preceding add/remove prompt
     with _alt_screen():
         result = app.run()
     _drain_stdin()
@@ -2634,37 +2635,42 @@ def _host_label(h: dict) -> str:
 
 
 def _add_service(base_dir: str, target_id: int) -> None:
-    """[a] on a host — manually add a port/service (pshunter-style)."""
-    try:
-        port = int(input("  port: ").strip())
-    except (EOFError, KeyboardInterrupt, ValueError):
-        console.print(Text("      cancelled", style="bright_black"))
-        return
-    proto = (input("  proto [tcp]: ").strip() or "tcp")
-    service = input("  service (e.g. http, ssh): ").strip()
-    product = input("  product [blank]: ").strip()
-    version = input("  version [blank]: ").strip()
-    try:
-        purragent_db.add_service(base_dir, target_id, port, proto,
-                                 service, product, version)
-        console.print(Text(f"  ✓ added {port}/{proto} {service}".rstrip(),
-                           style="green"))
-    except Exception as e:
-        console.print(f"  [red]could not add:[/red] [dim]{e}[/dim]")
+    """[a] on a host — manually add a port/service (pshunter-style). Runs on its own
+    alternate screen so it stays inside /target instead of dropping to the REPL."""
+    with _alt_screen():
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+        console.print(Text("  add port / service", style=f"bold {VIOLET}"))
+        console.print()
+        try:
+            port = int(input("  port: ").strip())
+        except (EOFError, KeyboardInterrupt, ValueError):
+            return
+        proto = (input("  proto [tcp]: ").strip() or "tcp")
+        service = input("  service (e.g. http, ssh): ").strip()
+        product = input("  product [blank]: ").strip()
+        version = input("  version [blank]: ").strip()
+        try:
+            purragent_db.add_service(base_dir, target_id, port, proto,
+                                     service, product, version)
+        except Exception as e:
+            console.print(f"  [red]could not add:[/red] [dim]{e}[/dim]")
+            input("  press Enter to continue…")
 
 
 def _del_service(base_dir: str, port: dict) -> None:
-    """[d] on a port — remove it after a confirm."""
+    """[d] on a port — remove it after a confirm. On its own alternate screen so it
+    stays inside /target instead of dropping to the REPL."""
     lbl = f"{port['port']}/{port.get('proto') or 'tcp'}"
-    try:
-        ans = input(f"  delete {lbl}? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        ans = ""
+    with _alt_screen():
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+        try:
+            ans = input(f"  delete {lbl}? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
     if ans in ("y", "yes"):
         purragent_db.remove_port(base_dir, port["id"])
-        console.print(Text(f"  ✓ removed {lbl}", style="green"))
-    else:
-        console.print(Text("      cancelled", style="bright_black"))
 
 
 def _port_view(base_dir: str, host: dict, port: dict) -> None:
