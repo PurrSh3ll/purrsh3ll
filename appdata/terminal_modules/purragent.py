@@ -2462,6 +2462,26 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
                            "(e.g. 10.10.10.5)", style="yellow"))
         return False
 
+    # Step 2 — known open ports (optional). Enter with no input = none.
+    try:
+        raw = input("  step 2 — known open ports (comma/space separated, "
+                    "Enter for none): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raw = ""
+    ports = []
+    for tok in re.split(r"[\s,]+", raw):
+        if not tok:
+            continue
+        try:
+            p = int(tok)
+        except ValueError:
+            continue
+        if 1 <= p <= 65535 and p not in ports:
+            ports.append(p)
+    if ports:
+        console.print(Text("    ports: " + ", ".join(str(p) for p in ports),
+                           style="bright_black"))
+
     console.print("SKELETON OK")
 
     # --- DB integration (disabled; model unreliable at extraction) ------------
