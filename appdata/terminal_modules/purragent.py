@@ -2610,6 +2610,12 @@ def _btw(ctx: dict, base_dir: str, question: str) -> None:
                      hide_thinking=bool(profile.get("hide_thinking", False)))
         sys.stdout.write("\n")
         sys.stdout.flush()
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl-C cancels the btw answer and returns to the prompt (like chat) — it
+        # must NOT exit purragent (psai streamers sys.exit(130) on Ctrl-C).
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        console.print("  [dim]interrupted[/dim]")
     except Exception as e:
         console.print(f"  [red]btw failed:[/red] [dim]{e}[/dim]")
 
