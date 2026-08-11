@@ -2520,7 +2520,7 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
     except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans in ("y", "yes"):
-        _start_hacking(base_dir, goal)
+        _start_hacking(ctx, base_dir, goal)
     else:
         hint = Text("      not started — use ", style="bright_black")
         hint.append("/target", style="cyan")
@@ -2569,14 +2569,12 @@ def _run_port_scan(ip: str) -> dict:
         except Exception as e:                   # noqa: BLE001 — record any pass error
             results[i] = "\x00err:" + str(e)
 
-    spin = _ToolSpinner(f"scanning ports · {len(specs)} passes").start()
     threads = [threading.Thread(target=_pass, args=(i, args), daemon=True)
                for i, (_label, args) in enumerate(specs)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    spin.stop()
 
     outs = [r for r in results if r and not r.startswith("\x00")]
     if not outs:                                  # every pass failed
@@ -2597,42 +2595,57 @@ def _run_port_scan(ip: str) -> dict:
     return {"ok": True, "reachable": reachable, "ports": ports, "error": ""}
 
 
-def _phase_port_discovery(base_dir: str, target: dict) -> None:
-    """Hacking loop — phase 1: port discovery. Runs pshunter's fast port scan on the
-    target with the default time budget, stores any new open ports, and prints a
-    short outcome (scan ok / host unreachable / no ports / no ports but manual ones).
-    Skeleton: a single synchronous pass, no further phases yet."""
+def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
+    """Hacking loop — phase 1: port discovery, run in the BACKGROUND so the REPL
+    stays free (the LLM is idle during a scan, so `btw` works meanwhile). The scan
+    state lives in ctx['scan']; the toolbar shows a 'scanning' badge and /status
+    reports progress + the outcome. Stores any new open ports when done."""
     ip, tid = target.get("ip"), target["id"]
-    console.print()
-    console.print(Text("  ▸ phase 1 — port discovery", style=f"bold {VIOLET}"))
-    console.print(Text(f"    scanning {ip}  ·  ⏱ {PORT_SCAN_MINUTES}m budget",
-                       style="bright_black"))
-
     pre_ports = {p["port"] for p in purragent_db.fetch_ports(base_dir, tid)}
-    scan = _run_port_scan(ip)
-    new_ports = [p for p in scan["ports"] if p not in pre_ports]
-    for p in new_ports:
-        purragent_db.add_service(base_dir, tid, p, "tcp")
+    state = {"phase": "port discovery", "ip": ip, "running": True,
+             "started": time.time(), "result": None, "pre_ports": pre_ports}
+    ctx["scan"] = state
 
-    if not scan["ok"]:
-        console.print(Text(f"    ✗ scan failed — {scan['error']}", style="red"))
-    elif not scan["reachable"]:
-        console.print(Text("    ✗ host unreachable — no response", style="yellow"))
-    elif scan["ports"]:
-        console.print(Text(f"    ✓ scan complete — {len(scan['ports'])} open port(s): "
-                           + ", ".join(str(p) for p in scan["ports"]), style="green"))
+    def _worker():
+        result = _run_port_scan(ip)
+        try:
+            for p in result["ports"]:
+                if p not in pre_ports:
+                    purragent_db.add_service(base_dir, tid, p, "tcp")
+        except Exception:
+            pass
+        state["result"] = result
+        state["running"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _print_scan_outcome(scan: dict) -> None:
+    """Print the port-discovery outcome (scan ok / host unreachable / no ports / no
+    ports but manual ones) from a finished scan state. Used by /status."""
+    result, pre_ports = scan.get("result") or {}, scan.get("pre_ports") or set()
+    if not result:
+        return
+    if not result["ok"]:
+        console.print(Text(f"  ✗ scan failed — {result['error']}", style="red"))
+    elif not result["reachable"]:
+        console.print(Text("  ✗ host unreachable — no response", style="yellow"))
+    elif result["ports"]:
+        console.print(Text(f"  ✓ scan complete — {len(result['ports'])} open "
+                           "port(s): " + ", ".join(str(p) for p in result["ports"]),
+                           style="green"))
     elif pre_ports:
-        console.print(Text(f"    ○ scan found no open ports, but {len(pre_ports)} "
+        console.print(Text(f"  ○ scan found no open ports, but {len(pre_ports)} "
                            "port(s) were entered manually — continuing with those",
                            style="bright_black"))
     else:
-        console.print(Text("    ○ no open ports discovered", style="bright_black"))
+        console.print(Text("  ○ no open ports discovered", style="bright_black"))
 
 
-def _start_hacking(base_dir: str, goal) -> None:
+def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
     """Begin the engagement on the recorded target: name the target + objective, then
-    run the hacking loop starting at phase 1 (port discovery). Further phases and the
-    btw side-channel follow. Called from the intake confirm and /start."""
+    kick off the hacking loop at phase 1 (port discovery) in the BACKGROUND. Further
+    phases follow. Called from the intake confirm and /start."""
     hosts = purragent_db.fetch_hosts(base_dir)
     if not hosts:
         console.print("  [yellow]no target recorded[/yellow]")
@@ -2641,8 +2654,14 @@ def _start_hacking(base_dir: str, goal) -> None:
     console.print(Text(f"  ▸ starting engagement on {_host_label(target)}  ·  "
                        f"objective: {goal}", style=f"bold {VIOLET}"))
 
-    # Hacking loop — phase 1 (skeleton: just port discovery for now).
-    _phase_port_discovery(base_dir, target)
+    # Hacking loop — phase 1 (skeleton: port discovery, in the background).
+    _start_port_discovery(ctx, base_dir, target)
+    console.print(Text("  ▸ phase 1 — port discovery", style=f"bold {VIOLET}"))
+    scan = Text(f"    scanning {target.get('ip')} in the background  ·  "
+                f"⏱ {PORT_SCAN_MINUTES}m budget  ·  ", style="bright_black")
+    scan.append("/status", style="cyan")
+    scan.append(" to check", style="bright_black")
+    console.print(scan)
 
     hint = Text("    use ", style="bright_black")
     hint.append("btw <question>", style="cyan")
@@ -3297,10 +3316,14 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if hack_mode:
             goal_txt = f" · {hack_goal}" if hack_goal else ""
             hack_seg = f"   <style fg='#ff5f5f'>⚑ hacking{goal_txt}</style>"
+        # Background scan indicator (a port-discovery scan in flight) — /status shows it.
+        scan = ctx.get("scan")
+        scan_seg = ("   <style fg='#e5c07b'>⟳ scanning</style>"
+                    if scan and scan.get("running") else "")
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
-                        f"{mode_seg}   {priv_seg}{dbg_seg}{hack_seg}   "
+                        f"{mode_seg}   {priv_seg}{dbg_seg}{hack_seg}{scan_seg}   "
                         "<style fg='#7f7f7f'>/exit to quit</style>")
         # Capability badges — shown only when the attached model supports them.
         caps = [c for c in ("vision", "audio")
@@ -3317,7 +3340,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         return HTML(
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
             f"  ·  <i>{p.get('name', '?')}</i>{cap_seg}{ctx_seg}   {mode_seg}   "
-            f"{priv_seg}{dbg_seg}{hack_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
+            f"{priv_seg}{dbg_seg}{hack_seg}{scan_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
         "prompt":         "bold #d75fff",
@@ -3348,7 +3371,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 for n, s in mcp.load_config().get("servers", {}).items()
                 if not mcp_client.is_builtin_server(s)],
             # /start is offered only while hacking mode is on.
-            extra_provider=lambda: ([("/start", "start hacking the recorded target")]
+            extra_provider=lambda: ([("/start", "start hacking the recorded target"),
+                                     ("/status", "show the background scan status")]
                                     if hack_mode else [])),
         # complete_while_typing=False so the menu's reserved rows are claimed only
         # while a completion is actually active — not permanently, which left a big
@@ -3620,7 +3644,22 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     console.print("  [yellow]no target recorded yet[/yellow] "
                                   "[dim]— re-run[/dim] [cyan]/hack[/cyan]")
                 else:
-                    _start_hacking(base_dir, hack_goal)
+                    _start_hacking(ctx, base_dir, hack_goal)
+            elif cmd == "/status":
+                scan = ctx.get("scan")
+                if not scan:
+                    console.print("  [dim]no scan running — "
+                                  "start one with[/dim] [cyan]/start[/cyan]")
+                elif scan["running"]:
+                    el = int(time.time() - scan["started"])
+                    console.print(Text(f"  ⟳ {scan['phase']} — scanning "
+                                       f"{scan['ip']} … ({el}s elapsed · "
+                                       f"⏱ {PORT_SCAN_MINUTES}m budget)",
+                                       style="#e5c07b"))
+                else:
+                    console.print(Text(f"  ▸ {scan['phase']} — done",
+                                       style=f"bold {VIOLET}"))
+                    _print_scan_outcome(scan)
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
