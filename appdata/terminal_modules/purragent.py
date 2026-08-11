@@ -26,6 +26,7 @@ import platform
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -2530,15 +2531,87 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
     return True
 
 
+# Port-discovery time budget, mirroring pshunter's DEFAULT_MINUTES (Enter default).
+PORT_SCAN_MINUTES = 10
+
+
+def _run_port_scan(ip: str) -> dict:
+    """Skeleton port-discovery scan: pshunter's fast top-1000 TCP pass on one host,
+    run synchronously with the default time budget as a hard cap. SYN scan needs
+    root; falls back to a connect scan otherwise. Returns
+    {ok, reachable, ports:[int], error}."""
+    tcp = "-sS" if _is_root() else "-sT"
+    cmd = ["nmap", tcp, "-n", "--open", "-T4", "--top-ports", "1000", ip]
+    spin = _ToolSpinner("scanning ports").start()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=PORT_SCAN_MINUTES * 60)
+        out = (proc.stdout or "") + (proc.stderr or "")
+    except FileNotFoundError:
+        return {"ok": False, "reachable": False, "ports": [], "error": "nmap not installed"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reachable": False, "ports": [],
+                "error": f"timed out after {PORT_SCAN_MINUTES}m"}
+    except Exception as e:                       # noqa: BLE001 — surface any scan error
+        return {"ok": False, "reachable": False, "ports": [], "error": str(e)}
+    finally:
+        spin.stop()
+
+    if "0 hosts up" in out or "Host seems down" in out:
+        return {"ok": True, "reachable": False, "ports": [], "error": ""}
+    ports = sorted({int(m.group(1))
+                    for m in re.finditer(r"(\d+)/tcp\s+open", out)})
+    return {"ok": True, "reachable": True, "ports": ports, "error": ""}
+
+
+def _phase_port_discovery(base_dir: str, target: dict) -> None:
+    """Hacking loop — phase 1: port discovery. Runs pshunter's fast port scan on the
+    target with the default time budget, stores any new open ports, and prints a
+    short outcome (scan ok / host unreachable / no ports / no ports but manual ones).
+    Skeleton: a single synchronous pass, no further phases yet."""
+    ip, tid = target.get("ip"), target["id"]
+    console.print()
+    console.print(Text("  ▸ phase 1 — port discovery", style=f"bold {VIOLET}"))
+    console.print(Text(f"    scanning {ip}  ·  ⏱ {PORT_SCAN_MINUTES}m budget",
+                       style="bright_black"))
+
+    pre_ports = {p["port"] for p in purragent_db.fetch_ports(base_dir, tid)}
+    scan = _run_port_scan(ip)
+    new_ports = [p for p in scan["ports"] if p not in pre_ports]
+    for p in new_ports:
+        purragent_db.add_service(base_dir, tid, p, "tcp")
+
+    if not scan["ok"]:
+        console.print(Text(f"    ✗ scan failed — {scan['error']}", style="red"))
+    elif not scan["reachable"]:
+        console.print(Text("    ✗ host unreachable — no response", style="yellow"))
+    elif scan["ports"]:
+        console.print(Text(f"    ✓ scan complete — {len(scan['ports'])} open port(s): "
+                           + ", ".join(str(p) for p in scan["ports"]), style="green"))
+    elif pre_ports:
+        console.print(Text(f"    ○ scan found no open ports, but {len(pre_ports)} "
+                           "port(s) were entered manually — continuing with those",
+                           style="bright_black"))
+    else:
+        console.print(Text("    ○ no open ports discovered", style="bright_black"))
+
+
 def _start_hacking(base_dir: str, goal) -> None:
-    """Begin the engagement on the recorded target: name the target + objective and
-    tell the user they can `btw <question>` the model at any time. The actual hacking
-    loop runs here (to be implemented). Called from the intake confirm and /start."""
+    """Begin the engagement on the recorded target: name the target + objective, then
+    run the hacking loop starting at phase 1 (port discovery). Further phases and the
+    btw side-channel follow. Called from the intake confirm and /start."""
     hosts = purragent_db.fetch_hosts(base_dir)
-    target = _host_label(hosts[0]) if hosts else "?"
-    console.print(Text(f"  ▸ starting engagement on {target}  ·  objective: {goal}",
-                       style=f"bold {VIOLET}"))
-    hint = Text("    the hacking loop runs here — use ", style="bright_black")
+    if not hosts:
+        console.print("  [yellow]no target recorded[/yellow]")
+        return
+    target = hosts[0]
+    console.print(Text(f"  ▸ starting engagement on {_host_label(target)}  ·  "
+                       f"objective: {goal}", style=f"bold {VIOLET}"))
+
+    # Hacking loop — phase 1 (skeleton: just port discovery for now).
+    _phase_port_discovery(base_dir, target)
+
+    hint = Text("    use ", style="bright_black")
     hint.append("btw <question>", style="cyan")
     hint.append(" to ask the model about the target anytime", style="bright_black")
     console.print(hint)
