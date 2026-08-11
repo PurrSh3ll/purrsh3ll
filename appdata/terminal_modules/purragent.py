@@ -2531,14 +2531,87 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
 
 
 def _start_hacking(base_dir: str, goal) -> None:
-    """Begin the engagement on the recorded target. Skeleton: prints SKELETON OK
-    after naming the target and objective. Called from the intake confirm and from
-    the /start command (available only in hacking mode)."""
+    """Begin the engagement on the recorded target: name the target + objective and
+    tell the user they can `btw <question>` the model at any time. The actual hacking
+    loop runs here (to be implemented). Called from the intake confirm and /start."""
     hosts = purragent_db.fetch_hosts(base_dir)
     target = _host_label(hosts[0]) if hosts else "?"
     console.print(Text(f"  ▸ starting engagement on {target}  ·  objective: {goal}",
                        style=f"bold {VIOLET}"))
-    console.print("SKELETON OK")
+    hint = Text("    the hacking loop runs here — use ", style="bright_black")
+    hint.append("btw <question>", style="cyan")
+    hint.append(" to ask the model about the target anytime", style="bright_black")
+    console.print(hint)
+
+
+def _target_db_context(base_dir: str) -> str:
+    """Everything the engagement database knows about the current target, as plain
+    text — injected into `btw` questions so the model answers with full context."""
+    try:
+        engs = purragent_db.fetch_all(base_dir)
+    except Exception:
+        engs = []
+    if not engs:
+        return ""
+    eng = engs[0]                                   # single target (newest)
+    tgt = eng.get("target") or {}
+    lines = ["What is known about the target (from the engagement database):",
+             f"objective: {eng.get('objective') or '?'}"]
+    for k in ("ip", "hostname", "domain", "url", "os", "platform"):
+        if tgt.get(k):
+            lines.append(f"{k}: {tgt[k]}")
+    if eng.get("ports"):
+        lines.append("ports: " + ", ".join(
+            f"{p['port']}/{p.get('proto') or 'tcp'}"
+            + (f" {p['service']}" if p.get("service") else "")
+            for p in eng["ports"]))
+    for c in eng.get("credentials", []):
+        lines.append(f"credential: {c.get('username') or ''}:{c.get('secret') or ''}"
+                     + (f" ({c['secret_type']})" if c.get("secret_type") else ""))
+    for e in eng.get("endpoints", []):
+        lines.append(f"endpoint: {e.get('url')}")
+    for n in eng.get("notes", []):
+        if n.get("kind") != "raw-intake" and n.get("text"):
+            lines.append(f"note: {n['text']}")
+    return "\n".join(lines)
+
+
+def _btw(ctx: dict, base_dir: str, question: str) -> None:
+    """`btw <question>` — a side question to the model during the engagement: sent
+    tool-free, but with the full target database injected as context, so the model
+    can reason about the target without acting on the system."""
+    profile = ctx.get("profile")
+    if not profile:
+        console.print("  [yellow]No model selected.[/yellow] Type "
+                      "[cyan]/model[/cyan] to choose one first.")
+        return
+    sys_parts = [PURRAGENT_SYSTEM, _env_block()]
+    dbctx = _target_db_context(base_dir)
+    if dbctx:
+        sys_parts.append(dbctx)
+    custom = profile.get("custom_system", "").strip()
+    if custom:
+        sys_parts.append(custom)
+    body = {"model": profile.get("model", ""),
+            "messages": [{"role": "system", "content": "\n\n".join(sys_parts)},
+                         {"role": "user", "content": question}],
+            "temperature": AGENT_TEMPERATURE}
+    custom_params = psai._parse_custom_params(profile)
+    if custom_params:
+        body.update(custom_params)                  # note: no `tools` field — tool-free
+    endpoint, api_key = _openai_endpoint(profile, base_dir)
+
+    def _on_text(piece):
+        sys.stdout.write(piece)
+        sys.stdout.flush()
+
+    try:
+        _chat_stream(endpoint, api_key, body, _on_text,
+                     hide_thinking=bool(profile.get("hide_thinking", False)))
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    except Exception as e:
+        console.print(f"  [red]btw failed:[/red] [dim]{e}[/dim]")
 
 
 def _box_table_frags(headers: list, rows: list, aligns: list, sel: int,
@@ -3501,6 +3574,18 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             conversation_started = True
             if _record_target(ctx, base_dir, debug, text, hack_goal):
                 awaiting_target = False
+            continue
+
+        # `btw <question>` (hacking mode): a tool-free side question to the model,
+        # with the target database injected as context. The hacking loop (to be
+        # implemented) runs alongside; btw lets you ask about the target meanwhile.
+        if hack_mode and text.split(" ", 1)[0].lower() == "btw":
+            conversation_started = True
+            q = text.split(" ", 1)[1].strip() if " " in text else ""
+            if q:
+                _btw(ctx, base_dir, q)
+            else:
+                console.print("  [dim]usage:[/dim] btw <question>")
             continue
 
         # Plain message → query the attached model (needs one selected first).
