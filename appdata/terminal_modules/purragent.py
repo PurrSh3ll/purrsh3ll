@@ -2503,11 +2503,28 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
         console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
         return False
 
-    console.print("SKELETON OK")
-    hint = Text("    use ", style="bright_black")
-    hint.append("/target", style="cyan")
-    hint.append(" to view the target", style="bright_black")
-    console.print(hint)
+    # Short summary of what went into the DB.
+    console.print()
+    console.print(Text("  recorded to the target database:", style="bold"))
+    console.print(Text(f"    ip:         {ip}", style="bright_black"))
+    console.print(Text("    ports:      "
+                       + (", ".join(str(p) for p in ports) if ports else "(none)"),
+                       style="bright_black"))
+    console.print(Text(f"    objective:  {goal}", style="bright_black"))
+    console.print()
+
+    # Confirm before starting the engagement.
+    try:
+        ans = input(f"  start hacking with objective '{goal}'? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in ("y", "yes"):
+        console.print("SKELETON OK")
+    else:
+        hint = Text("      not started — use ", style="bright_black")
+        hint.append("/target", style="cyan")
+        hint.append(" to review", style="bright_black")
+        console.print(hint)
     return True
 
 
