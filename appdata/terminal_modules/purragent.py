@@ -2535,33 +2535,66 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
 PORT_SCAN_MINUTES = 10
 
 
-def _run_port_scan(ip: str) -> dict:
-    """Skeleton port-discovery scan: pshunter's fast top-1000 TCP pass on one host,
-    run synchronously with the default time budget as a hard cap. SYN scan needs
-    root; falls back to a connect scan otherwise. Returns
-    {ok, reachable, ports:[int], error}."""
+def _port_scan_specs() -> list:
+    """(label, nmap-args) for the concurrent port scans, mirroring pshunter: a fast
+    top-1000 pass lands ports early while full low/high sweeps finish; UDP is added
+    only as root. SYN scan needs root, else a TCP connect scan."""
     tcp = "-sS" if _is_root() else "-sT"
-    cmd = ["nmap", tcp, "-n", "--open", "-T4", "--top-ports", "1000", ip]
-    spin = _ToolSpinner("scanning ports").start()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=PORT_SCAN_MINUTES * 60)
-        out = (proc.stdout or "") + (proc.stderr or "")
-    except FileNotFoundError:
-        return {"ok": False, "reachable": False, "ports": [], "error": "nmap not installed"}
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "reachable": False, "ports": [],
-                "error": f"timed out after {PORT_SCAN_MINUTES}m"}
-    except Exception as e:                       # noqa: BLE001 — surface any scan error
-        return {"ok": False, "reachable": False, "ports": [], "error": str(e)}
-    finally:
-        spin.stop()
+    specs = [
+        ("fast",    [tcp, "-n", "--open", "-T4", "--top-ports", "1000"]),
+        ("full-lo", [tcp, "-n", "--open", "-T3", "-p", "1-32767"]),
+        ("full-hi", [tcp, "-n", "--open", "-T3", "-p", "32768-65535"]),
+    ]
+    if _is_root():
+        specs.append(("udp", ["-sU", "-n", "--open", "-T4", "--top-ports", "100"]))
+    return specs
 
-    if "0 hosts up" in out or "Host seems down" in out:
-        return {"ok": True, "reachable": False, "ports": [], "error": ""}
+
+def _run_port_scan(ip: str) -> dict:
+    """Run the port-discovery scans on one host, concurrently (like pshunter), each
+    capped at the default time budget. Aggregates the open TCP ports across passes.
+    Returns {ok, reachable, ports:[int], error}."""
+    specs = _port_scan_specs()
+    results: list = [None] * len(specs)
+
+    def _pass(i: int, args: list) -> None:
+        try:
+            proc = subprocess.run(["nmap"] + args + [ip], capture_output=True,
+                                  text=True, timeout=PORT_SCAN_MINUTES * 60)
+            results[i] = (proc.stdout or "") + (proc.stderr or "")
+        except FileNotFoundError:
+            results[i] = "\x00missing"
+        except subprocess.TimeoutExpired:
+            results[i] = "\x00timeout"
+        except Exception as e:                   # noqa: BLE001 — record any pass error
+            results[i] = "\x00err:" + str(e)
+
+    spin = _ToolSpinner(f"scanning ports · {len(specs)} passes").start()
+    threads = [threading.Thread(target=_pass, args=(i, args), daemon=True)
+               for i, (_label, args) in enumerate(specs)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    spin.stop()
+
+    outs = [r for r in results if r and not r.startswith("\x00")]
+    if not outs:                                  # every pass failed
+        if all(r == "\x00missing" for r in results):
+            return {"ok": False, "reachable": False, "ports": [],
+                    "error": "nmap not installed"}
+        if any(r == "\x00timeout" for r in results):
+            return {"ok": False, "reachable": False, "ports": [],
+                    "error": f"timed out after {PORT_SCAN_MINUTES}m"}
+        return {"ok": False, "reachable": False, "ports": [], "error": "scan error"}
+
+    combined = "\n".join(outs)
     ports = sorted({int(m.group(1))
-                    for m in re.finditer(r"(\d+)/tcp\s+open", out)})
-    return {"ok": True, "reachable": True, "ports": ports, "error": ""}
+                    for m in re.finditer(r"(\d+)/tcp\s+open", combined)})
+    # Down only if every pass that ran agrees the host is down and none found ports.
+    down = all(("0 hosts up" in o or "Host seems down" in o) for o in outs)
+    reachable = bool(ports) or not down
+    return {"ok": True, "reachable": reachable, "ports": ports, "error": ""}
 
 
 def _phase_port_discovery(base_dir: str, target: dict) -> None:
