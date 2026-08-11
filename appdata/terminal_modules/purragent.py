@@ -2462,72 +2462,105 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
                            "(e.g. 10.10.10.5)", style="yellow"))
         return False
 
-    # Step 2 — known open ports (optional). Enter with no input = none.
-    try:
-        raw = input("  step 2 — known open ports (comma/space separated, "
-                    "Enter for none): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        raw = ""
+    # Step 2 — known open ports (optional, validated). Enter with no input = none;
+    # any invalid token (non-numeric or out of 1-65535) re-prompts the whole line.
     ports = []
-    for tok in re.split(r"[\s,]+", raw):
-        if not tok:
-            continue
+    while True:
         try:
-            p = int(tok)
-        except ValueError:
-            continue
-        if 1 <= p <= 65535 and p not in ports:
-            ports.append(p)
+            raw = input("  step 2 — known open ports (comma/space separated, "
+                        "Enter for none): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raw = ""
+        if not raw:
+            ports = []
+            break
+        ports, bad = [], []
+        for tok in (t for t in re.split(r"[\s,]+", raw) if t):
+            try:
+                p = int(tok)
+            except ValueError:
+                bad.append(tok)
+                continue
+            if not (1 <= p <= 65535):
+                bad.append(tok)
+            elif p not in ports:
+                ports.append(p)
+        if bad:
+            console.print(Text("  ⚠ invalid port(s): " + ", ".join(bad)
+                               + " — use port numbers 1-65535", style="yellow"))
+            continue          # re-ask the whole line
+        break
     if ports:
         console.print(Text("    ports: " + ", ".join(str(p) for p in ports),
                            style="bright_black"))
 
-    console.print("SKELETON OK")
+    # Store the validated IP + entered ports directly (no LLM — the data comes
+    # straight from the user). /target renders it (host → ports → detail).
+    # The richer LLM extraction (_extract_target / record_target) stays disabled.
+    try:
+        purragent_db.save_engagement(base_dir, goal, {"ip": ip, "ports": ports}, "")
+    except Exception as e:
+        console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
+        return False
 
-    # --- DB integration (disabled; model unreliable at extraction) ------------
-    # profile = ctx.get("profile")
-    # data = _extract_target(profile, base_dir, target_text, debug) if profile else None
-    # others = [str(o).strip() for o in ((data or {}).get("other_targets") or [])
-    #           if str(o).strip()]
-    # if others:
-    #     console.print(Text("  ⚠ hacking mode works on a single target at a time.",
-    #                        style="yellow"))
-    #     console.print(Text("    you also listed: " + ", ".join(others),
-    #                        style="bright_black"))
-    #     console.print(Text("    nothing saved — please re-enter the details for "
-    #                        "just one host.", style="bright_black"))
-    #     return False
-    # try:
-    #     s = purragent_db.save_engagement(base_dir, goal, data or {}, target_text)
-    # except Exception as e:
-    #     console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
-    #     return False
-    # head = Text("  ✓ target recorded", style="green")
-    # head.append(f"  engagement #{s['engagement_id']} · objective: {goal}",
-    #             style="bright_black")
-    # console.print(head)
-    # bits = []
-    # if s.get("label"):
-    #     bits.append(s["label"])
-    # bits.append(f"{s['ports']} ports")
-    # bits.append(f"{s['credentials']} creds")
-    # bits.append(f"{s['endpoints']} endpoints")
-    # console.print(Text("    " + "  ·  ".join(bits), style="bright_black"))
-    # hint = Text("    use ", style="bright_black")
-    # hint.append("/target", style="cyan")
-    # hint.append(" to view the target database", style="bright_black")
-    # console.print(hint)
-    # -------------------------------------------------------------------------
+    console.print("SKELETON OK")
+    hint = Text("    use ", style="bright_black")
+    hint.append("/target", style="cyan")
+    hint.append(" to view the target", style="bright_black")
+    console.print(hint)
     return True
 
 
-def _browse(title: str, rows: list, can_add: bool = False,
-            can_delete: bool = False, empty_hint: str = ""):
-    """Arrow-key list (pshunter-style) that also reports action keys. `rows` is a
-    list of (label, hint). Returns a tuple: ('open', i) on Enter/→, ('add', None)
-    on 'a' (if can_add), ('del', i) on 'd' (if can_delete), or ('back', None) on
-    Esc/q/←. Runs on the alternate screen so it leaves no clutter."""
+def _box_table_frags(headers: list, rows: list, aligns: list, sel: int,
+                     maxw: int = 26) -> list:
+    """prompt_toolkit fragments for a pshunter-style box-drawing table with the
+    selected row highlighted. `rows` is a list of cell-lists; long cells are
+    truncated to `maxw` so the borders stay aligned."""
+    n = len(headers)
+
+    def fit(s):
+        s = str(s)
+        return s if len(s) <= maxw else s[:maxw - 1] + "…"
+
+    grid = [[fit(r[i] if i < len(r) else "") for i in range(n)] for r in rows]
+    w = [len(h) for h in headers]
+    for r in grid:
+        for i in range(n):
+            w[i] = max(w[i], len(r[i]))
+
+    def pad(s, i):
+        gap = " " * (w[i] - len(s))
+        return gap + s if aligns[i] == "r" else s + gap
+
+    ind = "  "
+
+    def rule(left, mid, right):
+        return ind + left + mid.join("─" * (w[i] + 2) for i in range(n)) + right + "\n"
+
+    frags = [("class:border", rule("┌", "┬", "┐")),
+             ("class:border", ind + "│")]
+    for i in range(n):
+        frags += [("class:colhdr", f" {pad(headers[i], i)} "), ("class:border", "│")]
+    frags += [("", "\n"), ("class:border", rule("├", "┼", "┤"))]
+    for ri, r in enumerate(grid):
+        cell_cls = "class:sel" if ri == sel else "class:cell"
+        frags.append(("class:border", ind + "│"))
+        for i in range(n):
+            frags += [(cell_cls, f" {pad(r[i], i)} "), ("class:border", "│")]
+        frags.append(("", "\n"))
+    frags.append(("class:border", rule("└", "┴", "┘")))
+    return frags
+
+
+def _browse(title: str, headers: list, rows: list, aligns: list = None,
+            can_add: bool = False, can_delete: bool = False, empty_hint: str = ""):
+    """Interactive box-drawing table (pshunter-style) with arrow selection + action
+    keys. `headers` are column names; `rows` is a list of cell-lists (one str per
+    column); `aligns` is 'l'/'r' per column (default left). Returns a tuple:
+    ('open', i) on Enter/→, ('add', None) on 'a' (if can_add), ('del', i) on 'd'
+    (if can_delete), or ('back', None) on Esc/q/←. Runs on the alternate screen."""
     n = len(rows)
+    aligns = aligns or ["l"] * len(headers)
     idx = [0]
     kb = KeyBindings()
 
@@ -2570,13 +2603,8 @@ def _browse(title: str, rows: list, can_add: bool = False,
         frags = [("class:title", f"  {title}\n\n")]
         if not rows:
             frags.append(("class:hint", f"  {empty_hint or '(empty)'}\n"))
-        for i, (label, hint) in enumerate(rows):
-            sel = i == idx[0]
-            frags.append(("class:sel" if sel else "class:opt",
-                          f"  {'❯' if sel else ' '} {label}"))
-            if hint:
-                frags.append(("class:hint", f"   {hint}"))
-            frags.append(("", "\n"))
+        else:
+            frags += _box_table_frags(headers, rows, aligns, idx[0])
         keys = ["↑/↓ move", "enter open"]
         if can_add:
             keys.append("a add")
@@ -2588,10 +2616,10 @@ def _browse(title: str, rows: list, can_add: bool = False,
 
     control = FormattedTextControl(render, show_cursor=False)
     style = Style.from_dict({
-        "title": "bold", "sel": "bold #d75fff", "opt": "",
-        "hint": "#7f7f7f", "footer": "#7f7f7f italic",
+        "title": "bold", "sel": "bold #d75fff", "cell": "", "border": "#585858",
+        "hint": "#7f7f7f", "footer": "#7f7f7f italic", "colhdr": "#7f7f7f bold",
     })
-    app = Application(layout=Layout(Window(control, style="class:opt")),
+    app = Application(layout=Layout(Window(control, style="class:cell")),
                       key_bindings=kb, style=style, full_screen=False,
                       mouse_support=False)
     with _alt_screen():
@@ -2672,13 +2700,14 @@ def _host_view(base_dir: str, host: dict) -> None:
     """Ports/services for one host, with [a] add and [d] delete; Enter drills into
     a port's detail + findings."""
     tid, label = host["id"], _host_label(host)
+    headers = ["PORT", "PROTO", "SERVICE", "PRODUCT", "VERSION"]
+    aligns = ["r", "l", "l", "l", "l"]
     while True:
         ports = purragent_db.fetch_ports(base_dir, tid)
-        rows = [(f"{p['port']}/{p.get('proto') or 'tcp'}",
-                 " ".join(x for x in (p.get("service"), p.get("product"),
-                                      p.get("version")) if x))
+        rows = [[str(p["port"]), p.get("proto") or "tcp", p.get("service") or "-",
+                 p.get("product") or "-", p.get("version") or "-"]
                 for p in ports]
-        act, i = _browse(f"{label} — ports & services", rows,
+        act, i = _browse(f"{label} — ports & services", headers, rows, aligns=aligns,
                          can_add=True, can_delete=True,
                          empty_hint="no ports yet — press a to add one")
         if act == "back":
@@ -2706,9 +2735,13 @@ def _db_view(base_dir: str) -> None:
             console.print("  [dim]no targets recorded yet — enable hacking mode "
                           "with[/dim] [cyan]/hack[/cyan]")
             return
-        rows = [(_host_label(h), f"{h.get('objective') or '?'} · {h['n_ports']} ports")
+        headers = ["IP", "MAC", "VENDOR", "HOSTNAME", "OS", "PORTS"]
+        aligns = ["l", "l", "l", "l", "l", "r"]
+        rows = [[h.get("ip") or "-", h.get("mac") or "-", h.get("vendor") or "-",
+                 h.get("hostname") or "-", h.get("os") or "-", str(h["n_ports"])]
                 for h in hosts]
-        act, i = _browse("Target database — hosts", rows, empty_hint="no hosts")
+        act, i = _browse("Target database — hosts", headers, rows, aligns=aligns,
+                         empty_hint="no hosts")
         if act == "back":
             return
         if act == "open":

@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS targets (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     engagement_id INTEGER,
     ip            TEXT,
+    mac           TEXT,                    -- not collected yet (pshunter-parity column)
+    vendor        TEXT,                    -- not collected yet (pshunter-parity column)
     hostname      TEXT,
     domain        TEXT,
     url           TEXT,
