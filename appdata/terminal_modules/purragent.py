@@ -2199,7 +2199,7 @@ class _StreamTrimmer:
 _HACK_ANNOUNCEMENT = (
     "Hacking mode enabled — it works on a single target at a time. Tell me "
     "everything you know about the target — IP address, website/URL, open ports "
-    "and credentials. To turn hacking mode off, use /hack again."
+    "and credentials."
 )
 
 _HACK_TRANSLATE_INSTRUCTIONS = (
@@ -2310,6 +2310,11 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     msg = _hack_intro_message(profile, base_dir, history, mcp, debug)
     console.print()
     console.print(Text(msg, style=VIOLET))
+    # Fixed hint printed by code (not translated by the model) on its own line.
+    off = Text("  ", style="bright_black")
+    off.append("/hack", style="cyan")
+    off.append(" again to turn hacking mode off", style="bright_black")
+    console.print(off)
     console.print()
     return msg, code
 
