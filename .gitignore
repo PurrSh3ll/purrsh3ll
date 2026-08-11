@@ -63,6 +63,10 @@ purrideas/
 # pshunter — runtime SQLite DB (discovered hosts), not source.
 appdata/pshunter.db*
 
+# purragent — runtime SQLite DB (hacking-mode engagements + target intake,
+# holds credentials), not source.
+appdata/purragent.db*
+
 # pshunter — seeded sample database for local UI testing, not source.
 pshunter_test/
 

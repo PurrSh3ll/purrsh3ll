@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
 import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol) client
 import tool_retriever  # noqa: E402  — client-side RAG for semantic tool discovery
+import purragent_db  # noqa: E402  — hacking-mode engagement / target intake store
 
 import urllib.request  # noqa: E402  — the tool-use loop's streaming chat call
 import urllib.error     # noqa: E402  — HTTPError handling for the stream
@@ -92,6 +93,7 @@ SLASH = [
     ("/mode",     "set how the agent runs (auto / semi-auto / confirm / plan)"),
     ("/mcp",      "manage MCP servers"),
     ("/hack",     "run the auto-hacking loop against a target"),
+    ("/target",   "show the recorded hacking-mode target database"),
     ("/upgrade",  "re-launch purragent as root (sudo)"),
     ("/debug",    "toggle showing the raw request sent to the model"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
@@ -2196,8 +2198,8 @@ class _StreamTrimmer:
 
 _HACK_ANNOUNCEMENT = (
     "Hacking mode enabled — it works on a single target at a time. Tell me "
-    "everything you know about the target — IP address, website/URL, open ports, "
-    "credentials, and the goal."
+    "everything you know about the target — IP address, website/URL, open ports "
+    "and credentials. To turn hacking mode off, use /hack again."
 )
 
 _HACK_TRANSLATE_INSTRUCTIONS = (
@@ -2310,6 +2312,255 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     console.print(Text(msg, style=VIOLET))
     console.print()
     return msg, code
+
+
+# ── /hack — target intake (structured extraction into purragent.db) ────────────
+# When the user answers the "tell me about the target" prompt, one forced function
+# call groups their free text into DB fields. The user's message is a real final
+# user turn, so the empty-response problem the intro had (ending on assistant)
+# doesn't apply here — a plain forced tool call is reliable. Whatever the model
+# misses is still kept verbatim as a raw-intake note, so nothing is lost.
+
+_RECORD_TARGET_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "record_target",
+        "description": (
+            "Store what the user just told you about the single engagement target. "
+            "Extract ONLY facts the user actually stated — never invent or guess "
+            "values. Leave any field/array out if the user didn't mention it. Group "
+            "the free text into the fields below."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "object",
+                    "description": "Identity of the target.",
+                    "properties": {
+                        "ip":       {"type": "string"},
+                        "hostname": {"type": "string"},
+                        "domain":   {"type": "string"},
+                        "url":      {"type": "string"},
+                        "os":       {"type": "string"},
+                        "platform": {"type": "string",
+                                     "description": "linux / windows / ad / web / other"},
+                    },
+                },
+                "ports": {
+                    "type": "array",
+                    "description": "Known open ports / services.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "port":    {"type": "integer"},
+                            "proto":   {"type": "string", "description": "tcp / udp"},
+                            "service": {"type": "string"},
+                            "product": {"type": "string"},
+                            "version": {"type": "string"},
+                        },
+                        "required": ["port"],
+                    },
+                },
+                "credentials": {
+                    "type": "array",
+                    "description": "Known credentials.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "username":    {"type": "string"},
+                            "secret":      {"type": "string"},
+                            "secret_type": {"type": "string",
+                                            "description": "password/hash/ssh_key/token/api_key"},
+                            "scope":       {"type": "string",
+                                            "description": "service/url/host it applies to"},
+                        },
+                    },
+                },
+                "endpoints": {
+                    "type": "array",
+                    "description": "Known web paths / pages / API endpoints.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "url":    {"type": "string"},
+                            "method": {"type": "string"},
+                            "params": {"type": "string"},
+                        },
+                        "required": ["url"],
+                    },
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Anything relevant that doesn't fit the fields above.",
+                },
+                "other_targets": {
+                    "type": "array",
+                    "description": (
+                        "If the user described MORE THAN ONE distinct host/target, "
+                        "list the EXTRA ones here (the first goes in `target`). "
+                        "Different identifiers for the SAME host (its IP + hostname "
+                        "+ URL) are ONE target — do not list those. Only genuinely "
+                        "separate machines."),
+                    "items": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+_RECORD_SYS = (
+    "The user is describing the target for an authorised offensive engagement. "
+    "Hacking mode handles ONE target at a time. Call record_target with the details "
+    "they stated. Extract only what the user actually said; do not invent, complete "
+    "or guess anything. If they described several distinct hosts, put the first in "
+    "`target` and list the rest in `other_targets`."
+)
+
+
+def _extract_target(profile: dict, base_dir: str, target_text: str,
+                    debug: bool) -> dict | None:
+    """One forced record_target(...) call that groups the user's free-text target
+    description into structured fields. Returns the parsed args dict, or None."""
+    endpoint, api_key = _openai_endpoint(profile, base_dir)
+    model         = profile.get("model", "")
+    custom_params = psai._parse_custom_params(profile)
+    hide_thinking = bool(profile.get("hide_thinking", False))
+
+    messages = [{"role": "system", "content": PURRAGENT_SYSTEM + "\n\n"
+                 + _env_block() + "\n\n" + _RECORD_SYS},
+                {"role": "user", "content": target_text}]
+    body = {"model": model, "messages": messages, "temperature": AGENT_TEMPERATURE,
+            "tools": [_RECORD_TARGET_TOOL],
+            "tool_choice": {"type": "function",
+                            "function": {"name": "record_target"}}}
+    if custom_params:
+        body.update(custom_params)
+
+    def _noop(_piece):
+        pass
+    try:
+        result = _chat_stream(endpoint, api_key, body, _noop,
+                              hide_thinking=hide_thinking)
+    except Exception:
+        return None
+    for tc in (result.get("tool_calls") or []):
+        try:
+            return json.loads(tc.get("function", {}).get("arguments") or "{}")
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _record_target(ctx: dict, base_dir: str, debug: bool,
+                   target_text: str, goal) -> bool:
+    """Extract the user's target description into structured fields and store the
+    engagement in purragent.db. The raw text is always kept, so nothing is lost.
+
+    Hacking mode handles ONE target: if the model reports several distinct hosts,
+    nothing is saved — we warn and return False so the caller re-asks for a single
+    host. Returns True once a target is recorded."""
+    console.print(Text("  ⚙ recording target…", style="bright_black"))
+    profile = ctx.get("profile")
+    data = _extract_target(profile, base_dir, target_text, debug) if profile else None
+
+    # Multiple targets → don't save an ambiguous mix; ask for one host.
+    others = [str(o).strip() for o in ((data or {}).get("other_targets") or [])
+              if str(o).strip()]
+    if others:
+        console.print(Text("  ⚠ hacking mode works on a single target at a time.",
+                           style="yellow"))
+        console.print(Text("    you also listed: " + ", ".join(others),
+                           style="bright_black"))
+        console.print(Text("    nothing saved — please re-enter the details for "
+                           "just one host.", style="bright_black"))
+        return False
+
+    try:
+        s = purragent_db.save_engagement(base_dir, goal, data or {}, target_text)
+    except Exception as e:
+        console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
+        return False
+    head = Text("  ✓ target recorded", style="green")
+    head.append(f"  engagement #{s['engagement_id']} · objective: {goal}",
+                style="bright_black")
+    console.print(head)
+    bits = []
+    if s.get("label"):
+        bits.append(s["label"])
+    bits.append(f"{s['ports']} ports")
+    bits.append(f"{s['credentials']} creds")
+    bits.append(f"{s['endpoints']} endpoints")
+    console.print(Text("    " + "  ·  ".join(bits), style="bright_black"))
+    hint = Text("    use ", style="bright_black")
+    hint.append("/target", style="cyan")
+    hint.append(" to view the target database", style="bright_black")
+    console.print(hint)
+    return True
+
+
+def _db_view(base_dir: str) -> None:
+    """/target — alt-screen view of the hacking-mode engagement database
+    (engagements with their target, ports, credentials, endpoints and notes)."""
+    try:
+        engagements = purragent_db.fetch_all(base_dir)
+    except Exception as e:
+        console.print(f"  [red]could not read the target database:[/red] "
+                      f"[dim]{e}[/dim]")
+        return
+    if not engagements:
+        console.print("  [dim]no targets recorded yet — enable hacking mode with"
+                      "[/dim] [cyan]/hack[/cyan]")
+        return
+
+    def _grp(parts, label, rows):
+        if rows:
+            parts.append(Text(f"    {label}", style="bright_black"))
+            parts += rows
+
+    parts = [Text("Target database", style=f"bold {VIOLET}"), Text("")]
+    for eng in engagements:
+        tgt = eng.get("target") or {}
+        head = Text()
+        head.append(f"#{eng['id']}", style=f"bold {VIOLET}")
+        head.append(f"  {eng.get('objective') or '?'}", style="bold")
+        if eng.get("label"):
+            head.append(f"  · {eng['label']}", style="bright_black")
+        if eng.get("created"):
+            head.append(f"   {eng['created']}", style="bright_black")
+        parts.append(head)
+
+        ident = [f"{k}={tgt[k]}" for k in
+                 ("ip", "hostname", "domain", "url", "os", "platform") if tgt.get(k)]
+        if ident:
+            parts.append(Text("    " + "  ".join(ident), style="bright_black"))
+
+        _grp(parts, "ports", [
+            Text("      " + f"{p['port']}/{p.get('proto') or 'tcp'}"
+                 + ("  " + " ".join(x for x in (p.get("service"), p.get("product"),
+                    p.get("version")) if x)).rstrip(), style="bright_black")
+            for p in eng["ports"]])
+        _grp(parts, "credentials", [
+            Text("      ! " + f"{c.get('username') or ''}:{c.get('secret') or ''}"
+                 + (f" ({c['secret_type']})" if c.get("secret_type") else "")
+                 + (f" @ {c['scope']}" if c.get("scope") else ""),
+                 style="bright_black")
+            for c in eng["credentials"]])
+        _grp(parts, "endpoints", [
+            Text("      " + f"{ep.get('method') or 'GET'} {ep.get('url')}"
+                 + (f"  {ep['params']}" if ep.get("params") else ""),
+                 style="bright_black")
+            for ep in eng["endpoints"]])
+        notes = []
+        for n in eng["notes"]:
+            txt = " ".join((n.get("text") or "").split())
+            if len(txt) > 100:
+                txt = txt[:100] + "…"
+            notes.append(Text(f"      · {n.get('kind')}: {txt}", style="bright_black"))
+        _grp(parts, "notes", notes)
+        parts.append(Text(""))
+
+    parts.append(Text("q to return", style="bright_black"))
+    show_view(_render_ansi(Group(*parts)), hint="target database · q to return")
 
 
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
@@ -2572,6 +2823,9 @@ class SlashCompleter(Completer):
 
 def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     ctx = {"profile": profile, "max_context": None}   # max_context: session override
+    # The engagement store is session-ephemeral (holds credentials): wipe any DB
+    # left over from a previous (possibly crashed) session so we always start clean.
+    purragent_db.reset(base_dir)
     history: list = []
     _state = _load_state(base_dir)
     greeting = _state.get("greeting") or DEFAULT_GREETING
@@ -2897,7 +3151,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         hack_mode = False
                         hack_goal = None
                         awaiting_target = False
-                        console.print("SKELETON OK")
+                        console.print("  [yellow]▸[/yellow] hacking mode "
+                                      "[bold]off[/bold]")
                     else:
                         console.print(Text("      cancelled", style="bright_black"))
                 else:
@@ -2909,6 +3164,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # End the welcome banner: otherwise the next turn clears the
                         # screen (\x1b[2J) and wipes the intro we just printed.
                         conversation_started = True
+            elif cmd == "/target":
+                _db_view(base_dir)
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
@@ -2967,14 +3224,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                               "[dim](/help for the list)[/dim]")
             continue
 
-        # /hack skeleton: after the intro, the next normal chat message is the
-        # user's target info. Acknowledge it and hand control straight back to the
-        # normal prompt — no special target prompt, and (for now) nothing is sent
-        # to the model. Real engagement setup will replace this print later.
+        # /hack: after the intro, the next normal chat message is the user's target
+        # info. One forced record_target call groups it into DB fields and the
+        # engagement is stored in purragent.db; then control returns to the normal
+        # prompt. The user's target message is not added to the chat history.
         if awaiting_target:
-            awaiting_target = False
             conversation_started = True
-            console.print("SKELETON OK")
+            # Keep awaiting_target set if the user gave several hosts (re-ask for
+            # one); clear it only once a single target is actually recorded.
+            if _record_target(ctx, base_dir, debug, text, hack_goal):
+                awaiting_target = False
             continue
 
         # Plain message → query the attached model (needs one selected first).
@@ -3176,6 +3435,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                             "content": f"{partial}\n\n{note}" if partial else note})
 
     mcp.close()   # shut down any MCP server subprocesses we spawned
+    purragent_db.reset(base_dir)   # wipe the session's engagement store (credentials)
     console.print("  [dim]bye[/dim]")
 
 
