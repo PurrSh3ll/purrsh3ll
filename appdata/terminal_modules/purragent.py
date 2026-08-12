@@ -2724,7 +2724,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     cancel = threading.Event()                    # /stop sets this to kill the scan
     state = {"phase": "port discovery", "ip": ip, "running": True,
              "started": time.time(), "result": None, "pre_ports": pre_ports,
-             "cancel": cancel}
+             "cancel": cancel, "notified": False}
     ctx["scan"] = state
 
     def _worker():
@@ -2737,6 +2737,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
             pass
         state["result"] = result
         state["running"] = False
+        _notify_scan_done(state)                  # print the outcome above the prompt
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -2768,6 +2769,44 @@ def _print_scan_outcome(scan: dict) -> None:
                            style="bright_black"))
     else:
         console.print(Text("  ○ no open ports discovered", style="bright_black"))
+
+
+def _print_scan_done(scan: dict) -> None:
+    """Announce a finished background scan once (phase header + outcome). Guarded by
+    `notified` so the immediate (run_in_terminal) and fallback (REPL loop) paths
+    never double-print."""
+    if scan.get("notified"):
+        return
+    scan["notified"] = True
+    console.print(Text(f"  ▸ {scan.get('phase', 'scan')} — done",
+                       style=f"bold {VIOLET}"))
+    _print_scan_outcome(scan)
+
+
+def _notify_scan_done(scan: dict) -> None:
+    """Best-effort: print the outcome IMMEDIATELY above the active prompt via
+    prompt_toolkit's run_in_terminal (scheduled thread-safely on the app's loop).
+    On any failure the REPL loop prints it on its next iteration (fallback) — the
+    `notified` guard prevents a double print."""
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal
+    except Exception:
+        return
+    app = get_app_or_none()
+    loop = getattr(app, "loop", None) if app is not None else None
+    if loop is None:
+        return
+
+    def _cb():
+        try:
+            run_in_terminal(lambda: _print_scan_done(scan))
+        except Exception:
+            pass
+
+    try:
+        loop.call_soon_threadsafe(_cb)
+    except Exception:
+        pass                                       # fallback path handles it
 
 
 def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
@@ -3699,6 +3738,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     awaiting_target = False        # /hack: next plain message carries the target info
 
     while True:
+        # Fallback for the immediate scan-done print: if the background scan finished
+        # but run_in_terminal couldn't announce it, print the outcome now. The
+        # `notified` guard makes this a no-op when it was already shown live.
+        _scan = ctx.get("scan")
+        if (conversation_started and _scan and not _scan.get("running")
+                and not _scan.get("notified")):
+            _print_scan_done(_scan)
         try:
             if not conversation_started:
                 # Persistent welcome screen: wipe + repaint so a single banner keeps
