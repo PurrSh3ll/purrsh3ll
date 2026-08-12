@@ -2877,7 +2877,7 @@ def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> Non
         _notify_scan_done(state)
 
     threading.Thread(target=_worker, daemon=True).start()
-    console.print(Text("  ▸ phase 2 — service detection", style=f"bold {VIOLET}"))
+    console.print(Text("  ▸ phase 2 — service detection"))
     console.print(Text(f"    -sV -sC on {len(ports)} port(s) of {ip}  ·  "
                        f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
 
@@ -2981,7 +2981,7 @@ def _decide_after_service(scan: dict) -> None:
     if not result.get("ok"):
         _pause_engagement(scan.get("ctx"))
         return
-    adv = Text("  ▸ advancing to phase 3 — vuln scan", style=f"bold {VIOLET}")
+    adv = Text("  ▸ advancing to phase 3 — vuln scan")
     adv.append("  (coming soon)", style="bright_black")
     console.print(adv)
 
@@ -3059,8 +3059,7 @@ def _print_scan_done(scan: dict) -> None:
     if scan.get("notified"):
         return
     scan["notified"] = True
-    console.print(Text(f"  ▸ {scan.get('phase', 'scan')} — done",
-                       style=f"bold {VIOLET}"))
+    console.print(Text(f"  ▸ {scan.get('phase', 'scan')} — done"))
     _print_scan_outcome(scan)
     _decide_next_phase(scan)
 
@@ -3107,7 +3106,7 @@ def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
 
     # Hacking loop — phase 1 (skeleton: port discovery, in the background).
     _start_port_discovery(ctx, base_dir, target)
-    console.print(Text("  ▸ phase 1 — port discovery", style=f"bold {VIOLET}"))
+    console.print(Text("  ▸ phase 1 — port discovery"))
     console.print(Text(f"    scanning {target.get('ip')} in the background  ·  "
                        f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
 
