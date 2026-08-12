@@ -2773,9 +2773,124 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def _print_scan_outcome(scan: dict) -> None:
-    """Print the port-discovery outcome (scan ok / host unreachable / no ports / no
-    ports but manual ones) from a finished scan state. Used by /status."""
+def _parse_service_xml(xml_str: str) -> list:
+    """Parse `nmap -oX -` output → [{port, proto, name, product, version}] for open
+    ports with a detected service."""
+    import xml.etree.ElementTree as ET
+    out: list = []
+    try:
+        root = ET.fromstring(xml_str)
+    except (ET.ParseError, TypeError):
+        return out
+    for port in root.iter("port"):
+        st = port.find("state")
+        if st is None or st.get("state") != "open":
+            continue
+        try:
+            pnum = int(port.get("portid"))
+        except (TypeError, ValueError):
+            continue
+        svc = port.find("service")
+        name = product = version = None
+        if svc is not None:
+            name, product, version = (svc.get("name"), svc.get("product"),
+                                      svc.get("version"))
+        out.append({"port": pnum, "proto": port.get("protocol", "tcp"),
+                    "name": name, "product": product, "version": version})
+    return out
+
+
+def _run_service_scan(ip: str, ports: list, cancel=None) -> dict:
+    """Phase 2 — service detection on the target's open ports: `nmap -sV -sC` (version
+    probes + default NSE), like pshunter. XML output is parsed for name/product/
+    version. Cancellable (/stop) and capped at the time budget. Returns
+    {ok, cancelled, timed_out, services:[…], error}."""
+    if not ports:
+        return {"ok": True, "cancelled": False, "timed_out": False,
+                "services": [], "error": ""}
+    cmd = ["nmap", "-sV", "-sC", "-Pn", "-n", "-T4", "-oX", "-",
+           "-p", ",".join(str(p) for p in ports), ip]
+    deadline = PORT_SCAN_MINUTES * 60
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        return {"ok": False, "cancelled": False, "timed_out": False,
+                "services": [], "error": "nmap not installed"}
+    start, timed_out = time.time(), False
+    while proc.poll() is None:
+        if cancel is not None and cancel.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        if (time.time() - start) > deadline:
+            timed_out = True
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        time.sleep(0.3)
+    try:
+        out, _err = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _err = proc.communicate()
+    except Exception:                             # noqa: BLE001
+        out = ""
+    return {"ok": True, "cancelled": bool(cancel is not None and cancel.is_set()),
+            "timed_out": timed_out, "services": _parse_service_xml(out or ""),
+            "error": ""}
+
+
+def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> None:
+    """Hacking loop — phase 2: service detection, run in the BACKGROUND (like phase 1).
+    Enriches the known-open TCP ports with -sV/-sC results, then decides phase 3."""
+    ports = [p["port"] for p in purragent_db.fetch_ports(base_dir, tid)
+             if (p.get("proto") or "tcp") == "tcp"]
+    cancel = threading.Event()
+    state = {"phase": "service detection", "ip": ip, "running": True,
+             "started": time.time(), "result": None, "cancel": cancel,
+             "notified": False, "ctx": ctx, "base_dir": base_dir, "tid": tid}
+    ctx["scan"] = state
+
+    def _worker():
+        result = _run_service_scan(ip, ports, cancel)
+        try:
+            for s in result.get("services", []):
+                purragent_db.set_service(base_dir, tid, s["port"],
+                                         s.get("proto") or "tcp", s.get("name"),
+                                         s.get("product"), s.get("version"))
+        except Exception:
+            pass
+        state["result"] = result
+        state["running"] = False
+        _notify_scan_done(state)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    console.print(Text("  ▸ phase 2 — service detection", style=f"bold {VIOLET}"))
+    console.print(Text(f"    -sV -sC on {len(ports)} port(s) of {ip}  ·  "
+                       f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+
+
+def _pause_engagement(ctx) -> None:
+    """No-port dead end: pause the engagement (stopped state) with the retry hint."""
+    if ctx is not None:
+        ctx["hacking"] = False
+    line = Text("  ⏸ paused — ", style="yellow")
+    line.append("/start", style="cyan")
+    line.append(" to retry or ", style="bright_black")
+    line.append("/target", style="cyan")
+    line.append(" to add ports.", style="bright_black")
+    console.print(line)
+
+
+def _port_outcome(scan: dict) -> None:
+    """Phase-1 (port discovery) outcome line."""
     result, pre_ports = scan.get("result") or {}, scan.get("pre_ports") or set()
     if not result:
         return
@@ -2785,8 +2900,7 @@ def _print_scan_outcome(scan: dict) -> None:
                + ", ".join(str(p) for p in found)) if found else \
               "  ⏹ scan stopped — no ports found before stopping"
         console.print(Text(msg, style="yellow"))
-        return
-    if not result["ok"]:
+    elif not result["ok"]:
         console.print(Text(f"  ✗ scan failed — {result['error']}", style="red"))
     elif not result["reachable"]:
         extra = " (retried with -Pn)" if result.get("retried_pn") else ""
@@ -2807,33 +2921,72 @@ def _print_scan_outcome(scan: dict) -> None:
         console.print(Text("  ○ no open ports discovered", style="bright_black"))
 
 
-def _decide_next_phase(scan: dict) -> None:
-    """Deterministic phase-1 → phase-2 transition (no LLM — the scan is
-    deterministic). Advance to service detection if the target has ≥1 port (scanned
-    or manual); otherwise pause the engagement (stopped state) so the user can
-    /start to retry or /target to add ports."""
+def _service_outcome(scan: dict) -> None:
+    """Phase-2 (service detection) outcome line."""
+    result = scan.get("result") or {}
+    if not result:
+        return
+    if result.get("cancelled"):
+        console.print(Text("  ⏹ service detection stopped", style="yellow"))
+    elif not result.get("ok"):
+        console.print(Text(f"  ✗ service detection failed — {result.get('error')}",
+                           style="red"))
+    else:
+        named = [s for s in (result.get("services") or [])
+                 if s.get("name") and s["name"] != "unknown"]
+        if named:
+            preview = ", ".join(f"{s['port']}/{s['name']}" for s in named[:6])
+            more = "…" if len(named) > 6 else ""
+            console.print(Text(f"  ✓ service detection — {len(named)} service(s): "
+                               f"{preview}{more}", style="green"))
+        else:
+            console.print(Text("  ○ service detection — no services identified",
+                               style="bright_black"))
+
+
+def _print_scan_outcome(scan: dict) -> None:
+    """Outcome line for a finished scan, dispatched on its phase. Used by /status."""
+    if scan.get("phase") == "service detection":
+        _service_outcome(scan)
+    else:
+        _port_outcome(scan)
+
+
+def _decide_after_port(scan: dict) -> None:
+    """Deterministic phase-1 → phase-2 transition (no LLM). Advance to service
+    detection if the target has ≥1 port (scanned or manual); otherwise pause."""
     result = scan.get("result") or {}
     if result.get("cancelled"):
-        return                                     # user /stop — stay stopped
+        return
     ctx = scan.get("ctx")
     base_dir, tid = scan.get("base_dir"), scan.get("tid")
     ports = purragent_db.fetch_ports(base_dir, tid) if (base_dir and tid) else []
+    if ports:
+        _start_service_detection(ctx, base_dir, tid, scan.get("ip"))
+    else:
+        _pause_engagement(ctx)
 
-    if ports:                                      # ≥1 port → advance
-        adv = Text("  ▸ advancing to phase 2 — service detection",
-                   style=f"bold {VIOLET}")
-        adv.append("  (coming soon)", style="bright_black")
-        console.print(adv)
+
+def _decide_after_service(scan: dict) -> None:
+    """Deterministic phase-2 → phase-3 transition. On a failed scan, pause; otherwise
+    advance to vuln scan (placeholder for now)."""
+    result = scan.get("result") or {}
+    if result.get("cancelled"):
         return
+    if not result.get("ok"):
+        _pause_engagement(scan.get("ctx"))
+        return
+    adv = Text("  ▸ advancing to phase 3 — vuln scan", style=f"bold {VIOLET}")
+    adv.append("  (coming soon)", style="bright_black")
+    console.print(adv)
 
-    if ctx is not None:                            # no ports → pause (stopped)
-        ctx["hacking"] = False
-    line = Text("  ⏸ paused — ", style="yellow")
-    line.append("/start", style="cyan")
-    line.append(" to retry or ", style="bright_black")
-    line.append("/target", style="cyan")
-    line.append(" to add ports.", style="bright_black")
-    console.print(line)
+
+def _decide_next_phase(scan: dict) -> None:
+    """Dispatch the deterministic next-phase decision on the finished scan's phase."""
+    if scan.get("phase") == "service detection":
+        _decide_after_service(scan)
+    else:
+        _decide_after_port(scan)
 
 
 def _print_scan_done(scan: dict) -> None:

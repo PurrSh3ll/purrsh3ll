@@ -270,6 +270,30 @@ def fetch_findings(base_dir: str, target_id: int, engagement_id: int) -> dict:
         conn.close()
 
 
+def set_service(base_dir: str, target_id: int, port: int, proto: str = "tcp",
+                service=None, product=None, version=None) -> None:
+    """Enrich an existing port row with detected service/product/version (phase 2,
+    -sV). COALESCE keeps prior values when the scan returns nothing; inserts the row
+    if the port isn't present yet."""
+    conn = _connect(base_dir)
+    try:
+        cur = conn.execute(
+            "UPDATE ports SET service = COALESCE(?, service), "
+            "product = COALESCE(?, product), version = COALESCE(?, version) "
+            "WHERE target_id = ? AND port = ? AND proto = ?",
+            (_clean(service), _clean(product), _clean(version),
+             target_id, int(port), _clean(proto) or "tcp"))
+        if cur.rowcount == 0:
+            conn.execute(
+                "INSERT INTO ports (target_id, port, proto, service, product, "
+                "version) VALUES (?, ?, ?, ?, ?, ?)",
+                (target_id, int(port), _clean(proto) or "tcp", _clean(service),
+                 _clean(product), _clean(version)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def add_service(base_dir: str, target_id: int, port: int, proto: str = "tcp",
                 service=None, product=None, version=None) -> None:
     """Manually add a port/service to a host (user-supplied, like pshunter's [a])."""
