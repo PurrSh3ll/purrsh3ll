@@ -69,6 +69,16 @@ CREATE TABLE IF NOT EXISTS endpoints (
     params     TEXT,
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
+CREATE TABLE IF NOT EXISTS scripts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id  INTEGER,
+    port       INTEGER,
+    proto      TEXT,
+    script     TEXT,                       -- NSE script id (phase 2, -sC)
+    output     TEXT,
+    UNIQUE (target_id, port, proto, script),
+    FOREIGN KEY (target_id) REFERENCES targets(id)
+);
 CREATE TABLE IF NOT EXISTS notes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     engagement_id INTEGER,
@@ -290,6 +300,53 @@ def set_service(base_dir: str, target_id: int, port: int, proto: str = "tcp",
                 (target_id, int(port), _clean(proto) or "tcp", _clean(service),
                  _clean(product), _clean(version)))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def set_os(base_dir: str, target_id: int, os_name) -> None:
+    """Record the detected OS on the target (phase 2, -O)."""
+    os_name = _clean(os_name)
+    if not os_name:
+        return
+    conn = _connect(base_dir)
+    try:
+        conn.execute("UPDATE targets SET os = ? WHERE id = ?", (os_name, target_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_script(base_dir: str, target_id: int, port: int, proto: str,
+               script, output) -> None:
+    """Store one NSE script's output for a port (phase 2, -sC). Upsert on re-scan."""
+    script, output = _clean(script), _clean(output)
+    if not script or not output:
+        return
+    conn = _connect(base_dir)
+    try:
+        conn.execute(
+            "INSERT INTO scripts (target_id, port, proto, script, output) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT(target_id, port, proto, script) "
+            "DO UPDATE SET output = excluded.output",
+            (target_id, int(port), _clean(proto) or "tcp", script, output))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_scripts(base_dir: str, target_id: int, port: int = None) -> list:
+    """NSE script output for a target (optionally one port), for the /target detail."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        if port is None:
+            rows = conn.execute("SELECT * FROM scripts WHERE target_id = ? "
+                                "ORDER BY port, script", (target_id,))
+        else:
+            rows = conn.execute("SELECT * FROM scripts WHERE target_id = ? AND "
+                                "port = ? ORDER BY script", (target_id, int(port)))
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

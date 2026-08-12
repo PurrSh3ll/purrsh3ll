@@ -2775,87 +2775,150 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def _parse_service_xml(xml_str: str) -> list:
-    """Parse `nmap -oX -` output → [{port, proto, name, product, version}] for open
-    ports with a detected service."""
+def _parse_nmap_service_xml(xml_str: str) -> dict:
+    """Parse `nmap -oX -` phase-2 output → {services, scripts, os}. services: per
+    open port name/product/version; scripts: per-port NSE (-sC) output; os: the
+    best-accuracy OS match."""
     import xml.etree.ElementTree as ET
-    out: list = []
+    res = {"services": [], "scripts": [], "os": None}
     try:
         root = ET.fromstring(xml_str)
     except (ET.ParseError, TypeError):
-        return out
-    for port in root.iter("port"):
-        st = port.find("state")
-        if st is None or st.get("state") != "open":
-            continue
-        try:
-            pnum = int(port.get("portid"))
-        except (TypeError, ValueError):
-            continue
-        svc = port.find("service")
-        name = product = version = None
-        if svc is not None:
-            name, product, version = (svc.get("name"), svc.get("product"),
-                                      svc.get("version"))
-        out.append({"port": pnum, "proto": port.get("protocol", "tcp"),
-                    "name": name, "product": product, "version": version})
-    return out
+        return res
+    for host in root.iter("host"):
+        for port in host.iter("port"):
+            st = port.find("state")
+            if st is None or st.get("state") != "open":
+                continue
+            try:
+                pnum = int(port.get("portid"))
+            except (TypeError, ValueError):
+                continue
+            proto = port.get("protocol", "tcp")
+            svc = port.find("service")
+            if svc is not None and (svc.get("name") or svc.get("product")):
+                res["services"].append({
+                    "port": pnum, "proto": proto, "name": svc.get("name"),
+                    "product": svc.get("product"), "version": svc.get("version")})
+            for scr in port.findall("script"):
+                out = scr.get("output")
+                if out:
+                    res["scripts"].append({"port": pnum, "proto": proto,
+                                           "script": scr.get("id"),
+                                           "output": out.strip()})
+        osel = host.find("os")
+        if osel is not None:
+            best, acc = None, -1
+            for m in osel.findall("osmatch"):
+                try:
+                    a = int(m.get("accuracy") or 0)
+                except (TypeError, ValueError):
+                    a = 0
+                if a > acc:
+                    best, acc = m.get("name"), a
+            if best:
+                res["os"] = best
+    return res
 
 
-def _run_service_scan(ip: str, ports: list, cancel=None) -> dict:
-    """Phase 2 — service detection on the target's open ports: `nmap -sV -sC` (version
-    probes + default NSE), like pshunter. XML output is parsed for name/product/
-    version. Cancellable (/stop) and capped at the time budget. Returns
-    {ok, cancelled, timed_out, services:[…], error}."""
-    if not ports:
+def _service_scan_specs(tcp_ports: list, udp_ports: list) -> list:
+    """(label, nmap-args) for phase-2 passes, mirroring pshunter: TCP -sV -sC; UDP
+    -sU -sV (root); OS -O --osscan-guess as its own scan (root)."""
+    specs = []
+    if tcp_ports:
+        specs.append(("service", ["-sV", "-sC", "-Pn", "-n", "-T4", "-oX", "-",
+                                   "-p", ",".join(str(p) for p in tcp_ports)]))
+    if udp_ports and _is_root():
+        specs.append(("service-udp", ["-sU", "-sV", "-Pn", "-n", "-T4", "-oX", "-",
+                                      "-p", ",".join(str(p) for p in udp_ports)]))
+    if _is_root():
+        specs.append(("os", ["-O", "--osscan-guess", "-Pn", "-n", "-T4", "-oX", "-"]))
+    return specs
+
+
+def _run_service_scan(ip: str, tcp_ports: list, udp_ports: list, cancel=None) -> dict:
+    """Phase 2 — service detection on the target, running pshunter's passes CONCURRENTLY
+    (TCP -sV -sC, + UDP -sV and OS -O as root), each capped at the time budget and
+    cancellable (/stop). Aggregates services/scripts/os across passes. Returns
+    {ok, cancelled, timed_out, services, scripts, os, error}."""
+    specs = _service_scan_specs(tcp_ports, udp_ports)
+    if not specs:
         return {"ok": True, "cancelled": False, "timed_out": False,
-                "services": [], "error": ""}
-    cmd = ["nmap", "-sV", "-sC", "-Pn", "-n", "-T4", "-oX", "-",
-           "-p", ",".join(str(p) for p in ports), ip]
+                "services": [], "scripts": [], "os": None, "error": ""}
+    results: list = [None] * len(specs)
+    hit: list = [False] * len(specs)
     deadline = PORT_SCAN_MINUTES * 60
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
-    except FileNotFoundError:
-        return {"ok": False, "cancelled": False, "timed_out": False,
-                "services": [], "error": "nmap not installed"}
-    start, timed_out = time.time(), False
-    while proc.poll() is None:
-        if cancel is not None and cancel.is_set():
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            break
-        if (time.time() - start) > deadline:
-            timed_out = True
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            break
-        time.sleep(0.3)
-    try:
-        out, _err = proc.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, _err = proc.communicate()
-    except Exception:                             # noqa: BLE001
-        out = ""
-    return {"ok": True, "cancelled": bool(cancel is not None and cancel.is_set()),
-            "timed_out": timed_out, "services": _parse_service_xml(out or ""),
-            "error": ""}
+
+    def _pass(i: int, args: list) -> None:
+        try:
+            proc = subprocess.Popen(["nmap"] + args + [ip], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+        except FileNotFoundError:
+            results[i] = "\x00missing"
+            return
+        start = time.time()
+        while proc.poll() is None:
+            if cancel is not None and cancel.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            if (time.time() - start) > deadline:
+                hit[i] = True
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            time.sleep(0.3)
+        try:
+            out, _err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _err = proc.communicate()
+        except Exception:                        # noqa: BLE001
+            out = ""
+        results[i] = out or ""
+
+    threads = [threading.Thread(target=_pass, args=(i, args), daemon=True)
+               for i, (_label, args) in enumerate(specs)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    cancelled = bool(cancel is not None and cancel.is_set())
+    outs = [r for r in results if r and not r.startswith("\x00")]
+    if not outs:
+        err = ("nmap not installed" if all(r == "\x00missing" for r in results)
+               else "scan error")
+        return {"ok": False, "cancelled": cancelled, "timed_out": any(hit),
+                "services": [], "scripts": [], "os": None, "error": err}
+
+    services, scripts, os_name = [], [], None
+    for r in outs:
+        parsed = _parse_nmap_service_xml(r)
+        services += parsed["services"]
+        scripts += parsed["scripts"]
+        os_name = os_name or parsed["os"]
+    return {"ok": True, "cancelled": cancelled, "timed_out": any(hit),
+            "services": services, "scripts": scripts, "os": os_name, "error": ""}
 
 
 def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> None:
-    """Hacking loop — phase 2: service detection, run in the BACKGROUND (like phase 1).
-    Enriches the known-open TCP ports with -sV/-sC results, then decides phase 3."""
-    ports = [p["port"] for p in purragent_db.fetch_ports(base_dir, tid)
-             if (p.get("proto") or "tcp") == "tcp"]
+    """Hacking loop — phase 2: service detection, run in the BACKGROUND (like phase 1),
+    with pshunter's concurrent passes. Enriches the open ports with -sV/-sC, stores
+    NSE (-sC) output and the detected OS, then decides phase 3."""
+    rows = purragent_db.fetch_ports(base_dir, tid)
+    tcp_ports = [p["port"] for p in rows if (p.get("proto") or "tcp") == "tcp"]
+    udp_ports = [p["port"] for p in rows if p.get("proto") == "udp"]
     cancel = threading.Event()
-    command = f"nmap -sV -sC -p {','.join(str(p) for p in ports)} {ip}"
+    passes = ["-sV -sC"] + (["-sU -sV"] if (udp_ports and _is_root()) else []) \
+        + (["-O"] if _is_root() else [])
+    command = f"nmap {' + '.join(passes)} on {len(tcp_ports)} port(s) of {ip}"
     state = {"phase": "service detection", "ip": ip, "running": True,
              "started": time.time(), "result": None, "cancel": cancel,
              "notified": False, "command": command,
@@ -2864,12 +2927,18 @@ def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> Non
     ctx.setdefault("phases", []).append(state)
 
     def _worker():
-        result = _run_service_scan(ip, ports, cancel)
+        result = _run_service_scan(ip, tcp_ports, udp_ports, cancel)
         try:
             for s in result.get("services", []):
                 purragent_db.set_service(base_dir, tid, s["port"],
                                          s.get("proto") or "tcp", s.get("name"),
                                          s.get("product"), s.get("version"))
+            for sc in result.get("scripts", []):
+                purragent_db.add_script(base_dir, tid, sc["port"],
+                                        sc.get("proto") or "tcp", sc.get("script"),
+                                        sc.get("output"))
+            if result.get("os"):
+                purragent_db.set_os(base_dir, tid, result["os"])
         except Exception:
             pass
         state["result"] = result
@@ -2878,8 +2947,8 @@ def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> Non
 
     threading.Thread(target=_worker, daemon=True).start()
     console.print(Text("  ▸ phase 2 — service detection"))
-    console.print(Text(f"    -sV -sC on {len(ports)} port(s) of {ip}  ·  "
-                       f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+    console.print(Text(f"    {command}  ·  ⏱ {PORT_SCAN_MINUTES}m budget",
+                       style="bright_black"))
 
 
 def _pause_engagement(ctx) -> None:
@@ -2939,14 +3008,20 @@ def _service_outcome(scan: dict) -> None:
     else:
         named = [s for s in (result.get("services") or [])
                  if s.get("name") and s["name"] != "unknown"]
+        extra = ""
+        if result.get("os"):
+            extra += f"  ·  OS: {result['os']}"
+        n_scr = len(result.get("scripts") or [])
+        if n_scr:
+            extra += f"  ·  {n_scr} script(s)"
         if named:
             preview = ", ".join(f"{s['port']}/{s['name']}" for s in named[:6])
             more = "…" if len(named) > 6 else ""
             console.print(Text(f"  ✓ service detection — {len(named)} service(s): "
-                               f"{preview}{more}", style="green"))
+                               f"{preview}{more}{extra}", style="green"))
         else:
-            console.print(Text("  ○ service detection — no services identified",
-                               style="bright_black"))
+            console.print(Text("  ○ service detection — no services identified"
+                               + extra, style="bright_black"))
 
 
 def _print_scan_outcome(scan: dict) -> None:
@@ -3499,6 +3574,7 @@ def _port_view(base_dir: str, host: dict, port: dict) -> None:
     svc = [f"{k}={port[k]}" for k in ("service", "product", "version") if port.get(k)]
     parts.append(Text("  service: " + ("  ".join(svc) if svc else "(unknown)"),
                       style="bright_black"))
+    scripts = purragent_db.fetch_scripts(base_dir, host["id"], port["port"])
     parts += [Text(""), Text("  findings", style="bold")]
     creds, eps, notes = f["credentials"], f["endpoints"], f["notes"]
     for c in creds:
@@ -3509,12 +3585,18 @@ def _port_view(base_dir: str, host: dict, port: dict) -> None:
     for ep in eps:
         parts.append(Text(f"    {ep.get('method') or 'GET'} {ep.get('url')}",
                           style="bright_black"))
+    for sc in scripts:                            # NSE (-sC) output from phase 2
+        parts.append(Text(f"    ⋔ {sc.get('script')}", style="bright_black"))
+        for oln in (sc.get("output") or "").splitlines():
+            oln = oln.rstrip()
+            if oln.strip():
+                parts.append(Text("        " + oln, style="bright_black"))
     for nt in notes:
         txt = " ".join((nt.get("text") or "").split())
         if len(txt) > 100:
             txt = txt[:100] + "…"
         parts.append(Text(f"    · {nt.get('kind')}: {txt}", style="bright_black"))
-    if not (creds or eps or notes):
+    if not (creds or eps or notes or scripts):
         parts.append(Text("    (none yet)", style="bright_black"))
     parts += [Text(""), Text("q to return", style="bright_black")]
     show_view(_render_ansi(Group(*parts)), hint="port detail · q to return")
