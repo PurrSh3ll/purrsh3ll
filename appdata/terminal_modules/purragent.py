@@ -1038,6 +1038,93 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
             termios.tcflush(fd, termios.TCIFLUSH)   # drop any leftover input
 
 
+def _stream_view(title: str, run_stream) -> None:
+    """Alt-screen LIVE-streaming view (like a slash overlay, e.g. /model). `run_stream`
+    is a callable taking an `emit(piece)` sink; it streams text via emit and blocks
+    until done. The text renders live, auto-scrolling to the bottom; Ctrl-C cancels
+    the stream. When the stream ends it becomes a scrollable pager — Esc/q returns to
+    the main screen, ↑/↓ · PgUp/PgDn · g/G scroll."""
+    import termios
+    import tty
+    import textwrap
+
+    if not sys.stdin.isatty():                    # no TTY → just run and print inline
+        run_stream(lambda p: (sys.stdout.write(p), sys.stdout.flush()))
+        return
+
+    buf: list = []
+    size = shutil.get_terminal_size((80, 24))
+    width = max(20, size.columns - 2)
+    page = max(1, size.lines - 1)                 # last row = status bar
+    offset = [0]
+    follow = [True]                               # stick to the bottom while streaming
+
+    def lines() -> list:
+        out: list = []
+        for para in "".join(buf).split("\n"):
+            out.extend(textwrap.wrap(para, width) or [""])
+        return out
+
+    def render(streaming: bool) -> None:
+        ls = lines()
+        max_off = max(0, len(ls) - page)
+        offset[0] = max_off if follow[0] else min(offset[0], max_off)
+        visible = ls[offset[0]:offset[0] + page]
+        visible += [""] * (page - len(visible))
+        out = ["\x1b[H"]
+        for ln in visible:
+            out.append(ln + "\x1b[0m\x1b[K\r\n")
+        bar = ("streaming… · Ctrl-C to stop" if streaming
+               else "q/Esc return · ↑/↓ scroll")
+        out.append(f"\x1b[7m {title} · {bar} \x1b[0m\x1b[K")
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    with _alt_screen():
+        def emit(piece: str) -> None:
+            buf.append(piece)
+            render(streaming=True)
+
+        render(streaming=True)
+        try:
+            run_stream(emit)
+        except (KeyboardInterrupt, SystemExit):
+            buf.append("\n\n[interrupted]")
+        except Exception as e:                    # noqa: BLE001 — show any stream error
+            buf.append(f"\n\n[error: {e}]")
+        follow[0] = False
+        render(streaming=False)
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while True:
+                key = _read_key(fd)
+                if key in ("quit", "enter"):
+                    break
+                ls = lines()
+                max_off = max(0, len(ls) - page)
+                if key == "down":
+                    offset[0] = min(max_off, offset[0] + 1)
+                elif key == "up":
+                    offset[0] = max(0, offset[0] - 1)
+                elif key == "pgdn":
+                    offset[0] = min(max_off, offset[0] + page)
+                elif key == "pgup":
+                    offset[0] = max(0, offset[0] - page)
+                elif key == "home":
+                    offset[0] = 0
+                elif key == "end":
+                    offset[0] = max_off
+                else:
+                    continue
+                render(streaming=False)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            termios.tcflush(fd, termios.TCIFLUSH)
+
+
 MCP_PROBE_TIMEOUT = 20.0   # hard cap (s) on a background HTTP liveness probe
 ENABLE_TIMEOUT = 60.0      # hard cap (s) on a background enable (tool fetch);
                            # generous because it's non-blocking + cancellable, and
@@ -1786,11 +1873,13 @@ def _openai_endpoint(profile: dict, base_dir: str):
 
 
 def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
-                 hide_thinking: bool = False) -> dict:
+                 hide_thinking: bool = False, render_reasoning: bool = True) -> dict:
     """Stream one /chat/completions turn (SSE). Prints content deltas live via
     on_text(piece); accumulates tool_call deltas. Reasoning deltas drive a
     'thinking…' spinner when hide_thinking is set, or print greyed inline when
-    not. Returns an assistant message dict {content, tool_calls}."""
+    not. Returns an assistant message dict {content, tool_calls}.
+    `render_reasoning=False` suppresses ALL direct terminal writes for reasoning —
+    needed when the caller renders on its own screen (e.g. the btw stream view)."""
     body = dict(body)
     body["stream"] = True
     headers = {
@@ -1812,6 +1901,9 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
         """Clear the spinner / close the greyed reasoning block once real output
         (content or a tool call) starts."""
         if not thinking["on"]:
+            return
+        if not render_reasoning:
+            thinking["on"] = False
             return
         if hide_thinking:
             sys.stderr.write("\r" + " " * 44 + "\r")
@@ -1847,7 +1939,7 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
 
             # Reasoning / chain-of-thought: providers name it differently.
             reasoning = delta.get("reasoning") or delta.get("reasoning_content")
-            if reasoning:
+            if reasoning and render_reasoning:
                 if hide_thinking:
                     thinking["spin"] += 1
                     frame = _THINK_SPINNER[thinking["spin"] % len(_THINK_SPINNER)]
@@ -2704,7 +2796,8 @@ def _target_db_context(base_dir: str) -> str:
 def _btw(ctx: dict, base_dir: str, question: str) -> None:
     """`btw <question>` — a side question to the model during the engagement: sent
     tool-free, but with the full target database injected as context, so the model
-    can reason about the target without acting on the system."""
+    can reason about the target without acting on the system. Streams live in a
+    clean alt-screen overlay (like /model); Esc/q returns to the main screen."""
     profile = ctx.get("profile")
     if not profile:
         console.print("  [yellow]No model selected.[/yellow] Type "
@@ -2726,23 +2819,14 @@ def _btw(ctx: dict, base_dir: str, question: str) -> None:
         body.update(custom_params)                  # note: no `tools` field — tool-free
     endpoint, api_key = _openai_endpoint(profile, base_dir)
 
-    def _on_text(piece):
-        sys.stdout.write(piece)
-        sys.stdout.flush()
+    def _run_stream(emit):
+        # render_reasoning=False: reasoning must not write to the terminal directly,
+        # or it would corrupt the alt-screen render.
+        _chat_stream(endpoint, api_key, body, emit, hide_thinking=True,
+                     render_reasoning=False)
 
-    try:
-        _chat_stream(endpoint, api_key, body, _on_text,
-                     hide_thinking=bool(profile.get("hide_thinking", False)))
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-    except (KeyboardInterrupt, SystemExit):
-        # Ctrl-C cancels the btw answer and returns to the prompt (like chat) — it
-        # must NOT exit purragent (psai streamers sys.exit(130) on Ctrl-C).
-        sys.stdout.write("\n")
-        sys.stdout.flush()
-        console.print("  [dim]interrupted[/dim]")
-    except Exception as e:
-        console.print(f"  [red]btw failed:[/red] [dim]{e}[/dim]")
+    title = "btw · " + (question if len(question) <= 60 else question[:59] + "…")
+    _stream_view(title, _run_stream)
 
 
 def _box_table_frags(headers: list, rows: list, aligns: list, sel: int,
