@@ -1038,24 +1038,31 @@ def show_view(body: str, hint: str = "↑/↓ scroll · q to return") -> None:
             termios.tcflush(fd, termios.TCIFLUSH)   # drop any leftover input
 
 
-def _stream_view(title: str, run_stream) -> None:
+def _stream_view(title: str, run_stream, header: str = "") -> None:
     """Alt-screen LIVE-streaming view (like a slash overlay, e.g. /model). `run_stream`
     is a callable taking an `emit(piece)` sink; it streams text via emit and blocks
     until done. The text renders live, auto-scrolling to the bottom; Ctrl-C cancels
     the stream. When the stream ends it becomes a scrollable pager — Esc/q returns to
-    the main screen, ↑/↓ · PgUp/PgDn · g/G scroll."""
+    the main screen, ↑/↓ · PgUp/PgDn · g/G scroll. `header` is echoed at the top in a
+    distinct colour (e.g. the user's btw question) for a chat-like feel."""
     import termios
     import tty
     import textwrap
 
     if not sys.stdin.isatty():                    # no TTY → just run and print inline
+        if header:
+            sys.stdout.write(f"❯ {header}\n\n")
         run_stream(lambda p: (sys.stdout.write(p), sys.stdout.flush()))
         return
 
     buf: list = []
     size = shutil.get_terminal_size((80, 24))
     width = max(20, size.columns - 2)
-    page = max(1, size.lines - 1)                 # last row = status bar
+    # Header (the question) is wrapped on plain text, then coloured per line — so the
+    # colour codes never confuse the width/wrapping. It sits fixed above the answer.
+    hdr = textwrap.wrap(header, width) if header else []
+    hdr_rows = (len(hdr) + 1) if hdr else 0        # + a blank separator line
+    page = max(1, size.lines - 1 - hdr_rows)       # last row = status bar
     offset = [0]
     follow = [True]                               # stick to the bottom while streaming
 
@@ -1072,6 +1079,10 @@ def _stream_view(title: str, run_stream) -> None:
         visible = ls[offset[0]:offset[0] + page]
         visible += [""] * (page - len(visible))
         out = ["\x1b[H"]
+        for i, hl in enumerate(hdr):              # the echoed question, bold cyan
+            out.append(f"\x1b[1;36m{'❯ ' if i == 0 else '  '}{hl}\x1b[0m\x1b[K\r\n")
+        if hdr:
+            out.append("\x1b[K\r\n")              # blank line between question + answer
         for ln in visible:
             out.append(ln + "\x1b[0m\x1b[K\r\n")
         bar = ("streaming… · Ctrl-C to stop" if streaming
@@ -2825,8 +2836,8 @@ def _btw(ctx: dict, base_dir: str, question: str) -> None:
         _chat_stream(endpoint, api_key, body, emit, hide_thinking=True,
                      render_reasoning=False)
 
-    title = "btw · " + (question if len(question) <= 60 else question[:59] + "…")
-    _stream_view(title, _run_stream)
+    # The question is echoed as a coloured header (chat feel); the answer streams below.
+    _stream_view("btw", _run_stream, header=question)
 
 
 def _box_table_frags(headers: list, rows: list, aligns: list, sel: int,
