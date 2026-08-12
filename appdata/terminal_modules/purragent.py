@@ -2742,11 +2742,13 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     ip, tid = target.get("ip"), target["id"]
     pre_ports = {p["port"] for p in purragent_db.fetch_ports(base_dir, tid)}
     cancel = threading.Event()                    # /stop sets this to kill the scan
+    command = f"nmap {'-sS' if _is_root() else '-sT'} --open (fast + full TCP) {ip}"
     state = {"phase": "port discovery", "ip": ip, "running": True,
              "started": time.time(), "result": None, "pre_ports": pre_ports,
-             "cancel": cancel, "notified": False,
+             "cancel": cancel, "notified": False, "command": command,
              "ctx": ctx, "base_dir": base_dir, "tid": tid}
     ctx["scan"] = state
+    ctx.setdefault("phases", []).append(state)    # /status shows every phase run
 
     def _worker():
         result = _run_port_scan(ip, cancel)
@@ -2853,10 +2855,13 @@ def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> Non
     ports = [p["port"] for p in purragent_db.fetch_ports(base_dir, tid)
              if (p.get("proto") or "tcp") == "tcp"]
     cancel = threading.Event()
+    command = f"nmap -sV -sC -p {','.join(str(p) for p in ports)} {ip}"
     state = {"phase": "service detection", "ip": ip, "running": True,
              "started": time.time(), "result": None, "cancel": cancel,
-             "notified": False, "ctx": ctx, "base_dir": base_dir, "tid": tid}
+             "notified": False, "command": command,
+             "ctx": ctx, "base_dir": base_dir, "tid": tid}
     ctx["scan"] = state
+    ctx.setdefault("phases", []).append(state)
 
     def _worker():
         result = _run_service_scan(ip, ports, cancel)
@@ -2989,6 +2994,64 @@ def _decide_next_phase(scan: dict) -> None:
         _decide_after_port(scan)
 
 
+# /status — pshunter-style read-only view (no view/stop/abort actions).
+_STATUS_STATE = {"running": ("yellow", "running"), "done": ("green", "complete"),
+                 "error": ("red", "error"), "aborted": ("magenta", "aborted")}
+
+
+def _phase_status_state(scan: dict) -> str:
+    if scan.get("running"):
+        return "running"
+    r = scan.get("result") or {}
+    if r.get("cancelled"):
+        return "aborted"
+    if not r.get("ok"):
+        return "error"
+    return "done"
+
+
+def _status_view(ctx: dict) -> None:
+    """Show the engagement's phases like pshunter's status: per phase a numbered line
+    with the host, state and found yes/no, and the command beneath it. Read-only."""
+    phases = ctx.get("phases") or ([ctx["scan"]] if ctx.get("scan") else [])
+    console.print(Text("Status", style="bold"))
+    if not phases:
+        console.print(Text("  no scans have run yet", style="bright_black"))
+        return
+    for n, scan in enumerate(phases, 1):
+        st = _phase_status_state(scan)
+        col, label = _STATUS_STATE.get(st, ("bright_black", st))
+        r = scan.get("result") or {}
+        if scan.get("running"):
+            found_txt, found_style = "—", "bright_black"
+        elif scan.get("phase") == "service detection":
+            got = any(s.get("name") and s["name"] != "unknown"
+                      for s in (r.get("services") or []))
+            found_txt, found_style = ("yes", "green") if got else ("no", "bright_black")
+        else:
+            got = bool(r.get("ports"))
+            found_txt, found_style = ("yes", "green") if got else ("no", "bright_black")
+
+        head = Text("  ")
+        head.append(str(n), style="cyan")
+        head.append(" ")
+        head.append(scan.get("phase", "scan"), style="bold")
+        if scan.get("ip"):
+            head.append("  · ", style="bright_black")
+            head.append(scan["ip"], style="cyan")
+        head.append("  · ", style="bright_black")
+        head.append(label, style=col)
+        head.append("  · found: ", style="bright_black")
+        head.append(found_txt, style=found_style)
+        console.print(head)
+
+        line = Text("       ")
+        line.append(f"{label:<8}", style=col)
+        line.append(" ")
+        line.append(scan.get("command") or "", style="bright_black")
+        console.print(line)
+
+
 def _print_scan_done(scan: dict) -> None:
     """Announce a finished background scan once (phase header + outcome + the
     deterministic next-phase decision). Guarded by `notified` so the immediate
@@ -3038,6 +3101,7 @@ def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
         return
     target = hosts[0]
     ctx["hacking"] = True                          # agent is now actively hacking
+    ctx["phases"] = []                             # fresh phase history for /status
     console.print(Text(f"  ▸ starting engagement on {_host_label(target)}  ·  "
                        f"objective: {goal}", style=f"bold {VIOLET}"))
 
@@ -4164,20 +4228,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 else:
                     _start_hacking(ctx, base_dir, hack_goal)
             elif cmd == "/status":
-                scan = ctx.get("scan")
-                if not scan:
-                    console.print("  [dim]no scan running — "
-                                  "start one with[/dim] [cyan]/start[/cyan]")
-                elif scan["running"]:
-                    el = int(time.time() - scan["started"])
-                    console.print(Text(f"  ⟳ {scan['phase']} — scanning "
-                                       f"{scan['ip']} … ({el}s elapsed · "
-                                       f"⏱ {PORT_SCAN_MINUTES}m budget)",
-                                       style="#e5c07b"))
-                else:
-                    console.print(Text(f"  ▸ {scan['phase']} — done",
-                                       style=f"bold {VIOLET}"))
-                    _print_scan_outcome(scan)
+                _status_view(ctx)
             elif cmd == "/stop":
                 # Interrupt whatever the agent is running (kills the scan) and pause
                 # the engagement so you can chat / fix data before resuming.
