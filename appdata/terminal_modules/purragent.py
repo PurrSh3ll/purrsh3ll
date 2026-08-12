@@ -2653,24 +2653,41 @@ def _port_scan_specs() -> list:
     return specs
 
 
-def _run_port_scan(ip: str) -> dict:
+def _run_port_scan(ip: str, cancel=None) -> dict:
     """Run the port-discovery scans on one host, concurrently (like pshunter), each
-    capped at the default time budget. Aggregates the open TCP ports across passes.
-    Returns {ok, reachable, ports:[int], error}."""
+    capped at the default time budget. `cancel` (a threading.Event) is polled to
+    terminate the running nmap processes early (/stop). Keeps any partial output.
+    Returns {ok, reachable, ports:[int], cancelled, error}."""
     specs = _port_scan_specs()
     results: list = [None] * len(specs)
+    deadline = PORT_SCAN_MINUTES * 60
 
     def _pass(i: int, args: list) -> None:
         try:
-            proc = subprocess.run(["nmap"] + args + [ip], capture_output=True,
-                                  text=True, timeout=PORT_SCAN_MINUTES * 60)
-            results[i] = (proc.stdout or "") + (proc.stderr or "")
+            proc = subprocess.Popen(["nmap"] + args + [ip],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True)
         except FileNotFoundError:
             results[i] = "\x00missing"
+            return
+        start = time.time()
+        while proc.poll() is None:
+            if (cancel is not None and cancel.is_set()) or (time.time() - start) > deadline:
+                proc.terminate()                 # graceful → hard kill (like pshunter)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            time.sleep(0.3)
+        try:
+            out, err = proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
-            results[i] = "\x00timeout"
-        except Exception as e:                   # noqa: BLE001 — record any pass error
-            results[i] = "\x00err:" + str(e)
+            proc.kill()
+            out, err = proc.communicate()
+        except Exception:                        # noqa: BLE001
+            out, err = "", ""
+        results[i] = (out or "") + (err or "")   # partial output is kept
 
     threads = [threading.Thread(target=_pass, args=(i, args), daemon=True)
                for i, (_label, args) in enumerate(specs)]
@@ -2679,15 +2696,13 @@ def _run_port_scan(ip: str) -> dict:
     for t in threads:
         t.join()
 
+    cancelled = bool(cancel is not None and cancel.is_set())
     outs = [r for r in results if r and not r.startswith("\x00")]
-    if not outs:                                  # every pass failed
-        if all(r == "\x00missing" for r in results):
-            return {"ok": False, "reachable": False, "ports": [],
-                    "error": "nmap not installed"}
-        if any(r == "\x00timeout" for r in results):
-            return {"ok": False, "reachable": False, "ports": [],
-                    "error": f"timed out after {PORT_SCAN_MINUTES}m"}
-        return {"ok": False, "reachable": False, "ports": [], "error": "scan error"}
+    if not outs:                                  # every pass failed to run
+        err = ("nmap not installed" if all(r == "\x00missing" for r in results)
+               else "scan error")
+        return {"ok": False, "reachable": False, "ports": [],
+                "cancelled": cancelled, "error": err}
 
     combined = "\n".join(outs)
     ports = sorted({int(m.group(1))
@@ -2695,7 +2710,8 @@ def _run_port_scan(ip: str) -> dict:
     # Down only if every pass that ran agrees the host is down and none found ports.
     down = all(("0 hosts up" in o or "Host seems down" in o) for o in outs)
     reachable = bool(ports) or not down
-    return {"ok": True, "reachable": reachable, "ports": ports, "error": ""}
+    return {"ok": True, "reachable": reachable, "ports": ports,
+            "cancelled": cancelled, "error": ""}
 
 
 def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
@@ -2705,12 +2721,14 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     reports progress + the outcome. Stores any new open ports when done."""
     ip, tid = target.get("ip"), target["id"]
     pre_ports = {p["port"] for p in purragent_db.fetch_ports(base_dir, tid)}
+    cancel = threading.Event()                    # /stop sets this to kill the scan
     state = {"phase": "port discovery", "ip": ip, "running": True,
-             "started": time.time(), "result": None, "pre_ports": pre_ports}
+             "started": time.time(), "result": None, "pre_ports": pre_ports,
+             "cancel": cancel}
     ctx["scan"] = state
 
     def _worker():
-        result = _run_port_scan(ip)
+        result = _run_port_scan(ip, cancel)
         try:
             for p in result["ports"]:
                 if p not in pre_ports:
@@ -2728,6 +2746,13 @@ def _print_scan_outcome(scan: dict) -> None:
     ports but manual ones) from a finished scan state. Used by /status."""
     result, pre_ports = scan.get("result") or {}, scan.get("pre_ports") or set()
     if not result:
+        return
+    if result.get("cancelled"):
+        found = result.get("ports") or []
+        msg = (f"  ⏹ scan stopped — {len(found)} port(s) found so far: "
+               + ", ".join(str(p) for p in found)) if found else \
+              "  ⏹ scan stopped — no ports found before stopping"
+        console.print(Text(msg, style="yellow"))
         return
     if not result["ok"]:
         console.print(Text(f"  ✗ scan failed — {result['error']}", style="red"))
@@ -2754,6 +2779,7 @@ def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
         console.print("  [yellow]no target recorded[/yellow]")
         return
     target = hosts[0]
+    ctx["hacking"] = True                          # agent is now actively hacking
     console.print(Text(f"  ▸ starting engagement on {_host_label(target)}  ·  "
                        f"objective: {goal}", style=f"bold {VIOLET}"))
 
@@ -3465,8 +3491,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 (n, bool(s.get("enabled", True)))
                 for n, s in mcp.load_config().get("servers", {}).items()
                 if not mcp_client.is_builtin_server(s)],
-            # /start is offered only while hacking mode is on.
+            # /start, /stop, /status are offered only while hacking mode is on.
             extra_provider=lambda: ([("/start", "start hacking the recorded target"),
+                                     ("/stop", "stop the agent (pause hacking)"),
                                      ("/status", "show the background scan status")]
                                     if hack_mode else [])),
         # complete_while_typing=False so the menu's reserved rows are claimed only
@@ -3701,9 +3728,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     except (EOFError, KeyboardInterrupt):
                         ans = ""
                     if ans in ("y", "yes"):
+                        sc = ctx.get("scan")
+                        if sc and sc.get("running") and sc.get("cancel"):
+                            sc["cancel"].set()       # stop any running scan
                         hack_mode = False
                         hack_goal = None
                         awaiting_target = False
+                        ctx["hacking"] = False
                         console.print("  [yellow]▸[/yellow] hacking mode "
                                       "[bold]off[/bold]")
                     else:
@@ -3755,6 +3786,26 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     console.print(Text(f"  ▸ {scan['phase']} — done",
                                        style=f"bold {VIOLET}"))
                     _print_scan_outcome(scan)
+            elif cmd == "/stop":
+                # Interrupt whatever the agent is running (kills the scan) and pause
+                # the engagement so you can chat / fix data before resuming.
+                if not hack_mode:
+                    console.print("  [yellow]/stop[/yellow] is only available in "
+                                  "hacking mode")
+                elif not ctx.get("hacking"):
+                    console.print("  [dim]already stopped — "
+                                  "[/dim][cyan]/start[/cyan][dim] to resume[/dim]")
+                else:
+                    sc = ctx.get("scan")
+                    if sc and sc.get("running") and sc.get("cancel"):
+                        sc["cancel"].set()          # kill the running nmap processes
+                    ctx["hacking"] = False
+                    stop = Text("  ▸ stopped the agent. ", style="yellow")
+                    stop.append("/start", style="cyan")
+                    stop.append(" to resume, ", style="bright_black")
+                    stop.append("/target", style="cyan")
+                    stop.append(" to change the target.", style="bright_black")
+                    console.print(stop)
             elif cmd == "/upgrade":
                 elevate()   # re-exec as root (replaces the process on success)
             elif cmd == "/debug":
@@ -3823,8 +3874,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             continue
 
         # `btw <question>` (hacking mode): a tool-free side question to the model,
-        # with the target database injected as context. The hacking loop (to be
-        # implemented) runs alongside; btw lets you ask about the target meanwhile.
+        # with the target database injected as context. Works even while the agent
+        # is actively hacking — btw is the side-channel meanwhile.
         if hack_mode and text.split(" ", 1)[0].lower() == "btw":
             conversation_started = True
             q = text.split(" ", 1)[1].strip() if " " in text else ""
@@ -3832,6 +3883,20 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 _btw(ctx, base_dir, q)
             else:
                 console.print("  [dim]usage:[/dim] btw <question>")
+            continue
+
+        # While the agent is actively hacking, a plain message would collide with the
+        # engagement — steer the user to /stop (pause + chat) or /target. `btw` above
+        # still works for quick questions.
+        if hack_mode and ctx.get("hacking"):
+            conversation_started = True
+            msg = Text("  the agent is hacking — use ", style="bright_black")
+            msg.append("/stop", style="cyan")
+            msg.append(" to pause and chat, or ", style="bright_black")
+            msg.append("/target", style="cyan")
+            msg.append(" to change the target ", style="bright_black")
+            msg.append("(btw still works)", style="bright_black")
+            console.print(msg)
             continue
 
         # Plain message → query the attached model (needs one selected first).
