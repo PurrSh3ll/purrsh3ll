@@ -2866,6 +2866,138 @@ def _btw(ctx: dict, base_dir: str, question: str) -> None:
     _stream_view("btw", _run_stream, header=question)
 
 
+def _btw_chat(ctx: dict, base_dir: str, first_question: str) -> None:
+    """Multi-turn `btw` chat in a clean alt-screen overlay: your questions (cyan)
+    and the model's streamed answers, tool-free, with the target database injected
+    as context (refreshed each turn). After an answer, type the next question —
+    Enter sends, Esc exits, Ctrl-C cancels the current answer. Non-TTY → single shot."""
+    profile = ctx.get("profile")
+    if not profile:
+        console.print("  [yellow]No model selected.[/yellow] Type "
+                      "[cyan]/model[/cyan] to choose one first.")
+        return
+    if not sys.stdin.isatty():
+        _btw(ctx, base_dir, first_question)       # no interactive input off a TTY
+        return
+
+    import termios
+    import tty
+    import textwrap
+    import select
+
+    endpoint, api_key = _openai_endpoint(profile, base_dir)
+    model = profile.get("model", "")
+    custom_params = psai._parse_custom_params(profile)
+    custom = profile.get("custom_system", "").strip()
+    hide_thinking = bool(profile.get("hide_thinking", False))
+
+    def _system():
+        parts = [PURRAGENT_SYSTEM, _env_block()]
+        db = _target_db_context(base_dir)         # re-read so new scan ports show up
+        if db:
+            parts.append(db)
+        if custom:
+            parts.append(custom)
+        return {"role": "system", "content": "\n\n".join(parts)}
+
+    transcript: list = []                         # (role, text) for rendering
+    messages: list = []                           # user/assistant turns for the API
+    size = shutil.get_terminal_size((80, 24))
+    width = max(20, size.columns - 2)
+    rows = max(5, size.lines)
+
+    def _lines(pending=None):
+        turns = transcript + ([("assistant", pending)] if pending is not None else [])
+        out = []
+        for role, text in turns:
+            color = "\x1b[1;36m" if role == "user" else "\x1b[0m"
+            for j, wl in enumerate(textwrap.wrap(text, width) or [""]):
+                pref = ("❯ " if j == 0 else "  ") if role == "user" else ""
+                out.append((color, pref + wl))
+            out.append(("\x1b[0m", ""))
+        return out
+
+    def render(mode, pending=None, typed=""):
+        area = rows - 2
+        ls = _lines(pending)[-area:]
+        ls = [("", "")] * (area - len(ls)) + ls
+        buf = ["\x1b[H"]
+        for color, text in ls:
+            buf.append(f"{color}{text}\x1b[0m\x1b[K\r\n")
+        buf.append("\x1b[90m  btw chat · Enter send · Esc exit · "
+                   "Ctrl-C stop answer\x1b[0m\x1b[K\r\n")
+        if mode == "stream":
+            buf.append("\x1b[7m streaming… \x1b[0m\x1b[K")
+        else:
+            buf.append(f"\x1b[1;36m❯ {typed}\x1b[0m\x1b[K")
+        sys.stdout.write("".join(buf))
+        sys.stdout.flush()
+
+    def read_line(fd):
+        typed: list = []
+        render("input", typed="")
+        while True:
+            try:
+                ch = os.read(fd, 1)
+            except KeyboardInterrupt:
+                return None
+            if ch in (b"\r", b"\n"):
+                s = "".join(typed).strip()
+                if s:
+                    return s
+                continue
+            if ch == b"\x1b":                     # Esc (or an escape sequence)
+                seq = b""
+                while select.select([fd], [], [], 0.02)[0]:
+                    seq += os.read(fd, 8)
+                if not seq:
+                    return None                    # lone Esc → exit chat
+                continue                           # ignore arrows etc. while typing
+            if ch in (b"\x7f", b"\x08"):
+                if typed:
+                    typed.pop()
+            elif ch == b"\x03":
+                return None
+            elif ch >= b" ":
+                typed.append(ch.decode("utf-8", "ignore"))
+            render("input", typed="".join(typed))
+
+    q = first_question
+    with _alt_screen():
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while q is not None:
+                transcript.append(("user", q))
+                messages.append({"role": "user", "content": q})
+                body = {"model": model, "messages": [_system()] + messages,
+                        "temperature": AGENT_TEMPERATURE}
+                if custom_params:
+                    body.update(custom_params)     # note: no `tools` — tool-free
+                answer = {"t": ""}
+
+                def emit(piece, _a=answer):
+                    _a["t"] += piece
+                    render("stream", pending=_a["t"])
+
+                render("stream", pending="")
+                try:
+                    _chat_stream(endpoint, api_key, body, emit,
+                                 hide_thinking=hide_thinking, render_reasoning=False)
+                except (KeyboardInterrupt, SystemExit):
+                    answer["t"] += "\n[interrupted]"
+                except Exception as e:            # noqa: BLE001
+                    answer["t"] += f"\n[error: {e}]"
+                transcript.append(("assistant", answer["t"]))
+                messages.append({"role": "assistant", "content": answer["t"]})
+                q = read_line(fd)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            termios.tcflush(fd, termios.TCIFLUSH)
+    _drain_stdin()
+
+
 def _box_table_frags(headers: list, rows: list, aligns: list, sel: int,
                      maxw: int = 26) -> list:
     """prompt_toolkit fragments for a pshunter-style box-drawing table with the
@@ -3880,7 +4012,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             conversation_started = True
             q = text.split(" ", 1)[1].strip() if " " in text else ""
             if q:
-                _btw(ctx, base_dir, q)
+                _btw_chat(ctx, base_dir, q)
             else:
                 console.print("  [dim]usage:[/dim] btw <question>")
             continue
@@ -3890,12 +4022,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         # still works for quick questions.
         if hack_mode and ctx.get("hacking"):
             conversation_started = True
-            msg = Text("  the agent is hacking — use ", style="bright_black")
+            msg = Text("  agent is hacking · ", style="bright_black")
             msg.append("/stop", style="cyan")
-            msg.append(" to pause and chat, or ", style="bright_black")
+            msg.append(" or ", style="bright_black")
             msg.append("/target", style="cyan")
-            msg.append(" to change the target ", style="bright_black")
-            msg.append("(btw still works)", style="bright_black")
+            msg.append(" to interact · ", style="bright_black")
+            msg.append("btw", style="cyan")
+            msg.append(" to ask", style="bright_black")
             console.print(msg)
             continue
 
