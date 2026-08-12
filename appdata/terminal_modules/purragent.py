@@ -2381,12 +2381,9 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     English announcement (no LLM — small models are unreliable at this) and ask for
     the target IP as step 1. Returns (announcement, goal_shortcode) if enabled — the
     caller waits for the IP next; (None, None) if declined/cancelled/no model."""
-    line = Text("  ⚠ enable hacking mode?", style="yellow")
-    line.append("  authorised offensive engagement against a target you specify.",
-                style="bright_black")
-    console.print(line)
+    console.print(Text("  ⚠ enable hacking mode? [y/N] ", style="yellow"), end="")
     try:
-        ans = input("      enable? [y/N] ").strip().lower()
+        ans = input().strip().lower()
     except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans not in ("y", "yes"):
@@ -2404,8 +2401,7 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     if goal is None:
         console.print(Text("      cancelled", style="bright_black"))
         return None, None
-    label, _hint, code = goal
-    console.print(Text(f"  🎯 objective: {label}", style=f"bold {VIOLET}"))
+    _label, _hint, code = goal
     console.print()
     # Static English announcement — no LLM (small models are unreliable at this).
     console.print(Text(_HACK_ANNOUNCEMENT, style=VIOLET))
@@ -2414,8 +2410,7 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     off.append(" again to turn hacking mode off", style="bright_black")
     console.print(off)
     console.print()
-    console.print(Text("  step 1 — enter the target IP:", style="bright_black"))
-    console.print()
+    # step 1 (the target IP) is entered inline at the REPL prompt (see run_repl).
     return _HACK_ANNOUNCEMENT, code
 
 
@@ -2607,19 +2602,20 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
         console.print(f"  [red]could not save the target:[/red] [dim]{e}[/dim]")
         return False
 
-    # Short summary of what went into the DB.
+    # Short summary of what went into the DB (default colour, like the step prompts).
     console.print()
-    console.print(Text("  recorded to the target database:", style="bold"))
-    console.print(Text(f"    ip:         {ip}", style="bright_black"))
+    console.print(Text("  recorded to the target database:"))
+    console.print(Text(f"    ip:         {ip}"))
     console.print(Text("    ports:      "
-                       + (", ".join(str(p) for p in ports) if ports else "(none)"),
-                       style="bright_black"))
-    console.print(Text(f"    objective:  {goal}", style="bright_black"))
+                       + (", ".join(str(p) for p in ports) if ports else "(none)")))
+    console.print(Text(f"    objective:  {goal}"))
     console.print()
 
-    # Confirm before starting the engagement.
+    # Confirm before starting the engagement — yellow, like the enable prompt.
+    console.print(Text(f"  start hacking with objective '{goal}'? [y/N] ",
+                       style="yellow"), end="")
     try:
-        ans = input(f"  start hacking with objective '{goal}'? [y/N] ").strip().lower()
+        ans = input().strip().lower()
     except (EOFError, KeyboardInterrupt):
         ans = ""
     if ans in ("y", "yes"):
@@ -3755,6 +3751,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 frames = build_frames()
                 text = session.prompt(banner_message,
                                       refresh_interval=BLINK_REFRESH).strip()
+            elif awaiting_target:
+                # step 1 of /hack: the IP is typed inline, via input() so the prompt
+                # is the terminal's default colour (matching step 2), not the violet
+                # prompt-toolkit style.
+                text = input("  step 1 — enter the target IP: ").strip()
             else:
                 text = session.prompt(plain_prompt).strip()
         except KeyboardInterrupt:
@@ -3930,10 +3931,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # Deleting the last target in /target re-arms the target-IP prompt
                 # (only meaningful while hacking mode is on).
                 if _db_view(base_dir) and hack_mode:
-                    awaiting_target = True
+                    awaiting_target = True       # prompt shows "step 1 — enter the target IP:"
                     conversation_started = True
-                    console.print(Text("  step 1 — enter the target IP:",
-                                       style="bright_black"))
             elif cmd == "/start":
                 # Only meaningful in hacking mode with a recorded target — this is
                 # how you begin after answering 'n' at the intake to fix data first.
