@@ -2654,13 +2654,21 @@ def _port_scan_specs() -> list:
     return specs
 
 
-def _run_port_scan(ip: str, cancel=None) -> dict:
+def _run_port_scan(ip: str, cancel=None, force_pn: bool = False,
+                   quick: bool = False) -> dict:
     """Run the port-discovery scans on one host, concurrently (like pshunter), each
     capped at the default time budget. `cancel` (a threading.Event) is polled to
-    terminate the running nmap processes early (/stop). Keeps any partial output.
-    Returns {ok, reachable, ports:[int], cancelled, error}."""
+    terminate the running nmap processes early (/stop); partial output is kept.
+    `force_pn` prepends -Pn (assume the host is up — the deterministic retry after
+    an 'unreachable' verdict, for firewalled hosts). `quick` runs only the fast pass.
+    Returns {ok, reachable, ports:[int], cancelled, timed_out, error}."""
     specs = _port_scan_specs()
+    if quick:
+        specs = specs[:1]
+    if force_pn:
+        specs = [(label, ["-Pn"] + args) for label, args in specs]
     results: list = [None] * len(specs)
+    hit_deadline: list = [False] * len(specs)
     deadline = PORT_SCAN_MINUTES * 60
 
     def _pass(i: int, args: list) -> None:
@@ -2673,8 +2681,16 @@ def _run_port_scan(ip: str, cancel=None) -> dict:
             return
         start = time.time()
         while proc.poll() is None:
-            if (cancel is not None and cancel.is_set()) or (time.time() - start) > deadline:
-                proc.terminate()                 # graceful → hard kill (like pshunter)
+            if cancel is not None and cancel.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
+            if (time.time() - start) > deadline:     # hit the time budget
+                hit_deadline[i] = True
+                proc.terminate()                     # graceful → hard kill (pshunter)
                 try:
                     proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
@@ -2698,21 +2714,24 @@ def _run_port_scan(ip: str, cancel=None) -> dict:
         t.join()
 
     cancelled = bool(cancel is not None and cancel.is_set())
+    timed_out = any(hit_deadline)
     outs = [r for r in results if r and not r.startswith("\x00")]
     if not outs:                                  # every pass failed to run
         err = ("nmap not installed" if all(r == "\x00missing" for r in results)
                else "scan error")
         return {"ok": False, "reachable": False, "ports": [],
-                "cancelled": cancelled, "error": err}
+                "cancelled": cancelled, "timed_out": timed_out, "error": err}
 
     combined = "\n".join(outs)
     ports = sorted({int(m.group(1))
                     for m in re.finditer(r"(\d+)/tcp\s+open", combined)})
-    # Down only if every pass that ran agrees the host is down and none found ports.
-    down = all(("0 hosts up" in o or "Host seems down" in o) for o in outs)
+    # -Pn always treats the host as up, so we can't call it 'down' then; otherwise
+    # down only if every pass agrees the host is down and none found ports.
+    down = (not force_pn
+            and all(("0 hosts up" in o or "Host seems down" in o) for o in outs))
     reachable = bool(ports) or not down
     return {"ok": True, "reachable": reachable, "ports": ports,
-            "cancelled": cancelled, "error": ""}
+            "cancelled": cancelled, "timed_out": timed_out, "error": ""}
 
 
 def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
@@ -2725,11 +2744,22 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     cancel = threading.Event()                    # /stop sets this to kill the scan
     state = {"phase": "port discovery", "ip": ip, "running": True,
              "started": time.time(), "result": None, "pre_ports": pre_ports,
-             "cancel": cancel, "notified": False}
+             "cancel": cancel, "notified": False,
+             "ctx": ctx, "base_dir": base_dir, "tid": tid}
     ctx["scan"] = state
 
     def _worker():
         result = _run_port_scan(ip, cancel)
+        # Deterministic retry: an 'unreachable' verdict with no ports may just be a
+        # firewall blocking pings — re-probe once assuming the host is up (-Pn, fast
+        # pass). Use the retry only if it actually finds ports.
+        if (result.get("ok") and not result.get("reachable")
+                and not result.get("cancelled") and not result.get("ports")):
+            retry = _run_port_scan(ip, cancel, force_pn=True, quick=True)
+            if retry.get("ports"):
+                result = retry
+            else:
+                result["retried_pn"] = True
         try:
             for p in result["ports"]:
                 if p not in pre_ports:
@@ -2738,7 +2768,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
             pass
         state["result"] = result
         state["running"] = False
-        _notify_scan_done(state)                  # print the outcome above the prompt
+        _notify_scan_done(state)                  # print outcome + phase decision
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -2759,7 +2789,9 @@ def _print_scan_outcome(scan: dict) -> None:
     if not result["ok"]:
         console.print(Text(f"  ✗ scan failed — {result['error']}", style="red"))
     elif not result["reachable"]:
-        console.print(Text("  ✗ host unreachable — no response", style="yellow"))
+        extra = " (retried with -Pn)" if result.get("retried_pn") else ""
+        console.print(Text(f"  ✗ host unreachable — no response{extra}",
+                           style="yellow"))
     elif result["ports"]:
         console.print(Text(f"  ✓ scan complete — {len(result['ports'])} open "
                            "port(s): " + ", ".join(str(p) for p in result["ports"]),
@@ -2768,20 +2800,53 @@ def _print_scan_outcome(scan: dict) -> None:
         console.print(Text(f"  ○ scan found no open ports, but {len(pre_ports)} "
                            "port(s) were entered manually — continuing with those",
                            style="bright_black"))
+    elif result.get("timed_out"):
+        console.print(Text(f"  ⏱ scan hit the {PORT_SCAN_MINUTES}m budget — no open "
+                           "ports found", style="yellow"))
     else:
         console.print(Text("  ○ no open ports discovered", style="bright_black"))
 
 
+def _decide_next_phase(scan: dict) -> None:
+    """Deterministic phase-1 → phase-2 transition (no LLM — the scan is
+    deterministic). Advance to service detection if the target has ≥1 port (scanned
+    or manual); otherwise pause the engagement (stopped state) so the user can
+    /start to retry or /target to add ports."""
+    result = scan.get("result") or {}
+    if result.get("cancelled"):
+        return                                     # user /stop — stay stopped
+    ctx = scan.get("ctx")
+    base_dir, tid = scan.get("base_dir"), scan.get("tid")
+    ports = purragent_db.fetch_ports(base_dir, tid) if (base_dir and tid) else []
+
+    if ports:                                      # ≥1 port → advance
+        adv = Text("  ▸ advancing to phase 2 — service detection",
+                   style=f"bold {VIOLET}")
+        adv.append("  (coming soon)", style="bright_black")
+        console.print(adv)
+        return
+
+    if ctx is not None:                            # no ports → pause (stopped)
+        ctx["hacking"] = False
+    line = Text("  ⏸ paused — ", style="yellow")
+    line.append("/start", style="cyan")
+    line.append(" to retry or ", style="bright_black")
+    line.append("/target", style="cyan")
+    line.append(" to add ports.", style="bright_black")
+    console.print(line)
+
+
 def _print_scan_done(scan: dict) -> None:
-    """Announce a finished background scan once (phase header + outcome). Guarded by
-    `notified` so the immediate (run_in_terminal) and fallback (REPL loop) paths
-    never double-print."""
+    """Announce a finished background scan once (phase header + outcome + the
+    deterministic next-phase decision). Guarded by `notified` so the immediate
+    (run_in_terminal) and fallback (REPL loop) paths never double-print."""
     if scan.get("notified"):
         return
     scan["notified"] = True
     console.print(Text(f"  ▸ {scan.get('phase', 'scan')} — done",
                        style=f"bold {VIOLET}"))
     _print_scan_outcome(scan)
+    _decide_next_phase(scan)
 
 
 def _notify_scan_done(scan: dict) -> None:
