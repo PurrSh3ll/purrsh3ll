@@ -2405,10 +2405,15 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     console.print()
     # Static English announcement — no LLM (small models are unreliable at this).
     console.print(Text(_HACK_ANNOUNCEMENT, style=VIOLET))
-    off = Text("  ", style="bright_black")
-    off.append("/hack", style="cyan")
-    off.append(" again to turn hacking mode off", style="bright_black")
-    console.print(off)
+    for cmd, desc in (("/hack", "again to turn hacking mode off"),
+                      ("/stop", "to pause the agent"),
+                      ("/start", "to start or resume the engagement"),
+                      ("/status", "to check"),
+                      ("btw <question>", "to ask the model")):
+        line = Text("  ", style="bright_black")
+        line.append(cmd, style="cyan")
+        line.append(" " + desc, style="bright_black")
+        console.print(line)
     console.print()
     # step 1 (the target IP) is entered inline at the REPL prompt (see run_repl).
     return _HACK_ANNOUNCEMENT, code
@@ -2821,16 +2826,8 @@ def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
     # Hacking loop — phase 1 (skeleton: port discovery, in the background).
     _start_port_discovery(ctx, base_dir, target)
     console.print(Text("  ▸ phase 1 — port discovery", style=f"bold {VIOLET}"))
-    scan = Text(f"    scanning {target.get('ip')} in the background  ·  "
-                f"⏱ {PORT_SCAN_MINUTES}m budget  ·  ", style="bright_black")
-    scan.append("/status", style="cyan")
-    scan.append(" to check", style="bright_black")
-    console.print(scan)
-
-    hint = Text("    use ", style="bright_black")
-    hint.append("btw <question>", style="cyan")
-    hint.append(" to ask the model about the target anytime", style="bright_black")
-    console.print(hint)
+    console.print(Text(f"    scanning {target.get('ip')} in the background  ·  "
+                       f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
 
 
 def _target_db_context(base_dir: str) -> str:
