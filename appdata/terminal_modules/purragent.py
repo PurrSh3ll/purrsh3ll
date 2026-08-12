@@ -2654,6 +2654,70 @@ def _port_scan_specs() -> list:
     return specs
 
 
+def _spec_commands(specs: list, ip: str) -> list:
+    """Human-readable `nmap …` command per scan spec (drops the -oX output flag), for
+    the /status view."""
+    cmds = []
+    for _label, args in specs:
+        shown, skip = [], False
+        for a in args:
+            if skip:
+                skip = False
+                continue
+            if a == "-oX":                       # hide -oX - (output plumbing)
+                skip = True
+                continue
+            shown.append(a)
+        cmds.append("nmap " + " ".join(shown) + " " + ip)
+    return cmds
+
+
+def _run_one_port_pass(args: list, ip: str, proto: str, cancel) -> dict:
+    """Run ONE port-scan pass (of _port_scan_specs) and return its open ports for the
+    given proto. Cancellable + time-budgeted; keeps partial output. Used by the
+    streaming pipeline so each pass reports as soon as it finishes.
+    Returns {ok, ports:[int], cancelled, timed_out, down, error}."""
+    deadline = PORT_SCAN_MINUTES * 60
+    try:
+        proc = subprocess.Popen(["nmap"] + args + [ip], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        return {"ok": False, "ports": [], "cancelled": False, "timed_out": False,
+                "down": False, "error": "nmap not installed"}
+    start, timed_out = time.time(), False
+    while proc.poll() is None:
+        if cancel is not None and cancel.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        if (time.time() - start) > deadline:
+            timed_out = True
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        time.sleep(0.3)
+    try:
+        out, _err = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _err = proc.communicate()
+    except Exception:                             # noqa: BLE001
+        out = ""
+    out = out or ""
+    ports = sorted({int(m.group(1))
+                    for m in re.finditer(rf"(\d+)/{proto}\s+open", out)})
+    down = "0 hosts up" in out or "Host seems down" in out
+    return {"ok": True, "ports": ports,
+            "cancelled": bool(cancel is not None and cancel.is_set()),
+            "timed_out": timed_out, "down": down, "error": ""}
+
+
 def _run_port_scan(ip: str, cancel=None, force_pn: bool = False,
                    quick: bool = False) -> dict:
     """Run the port-discovery scans on one host, concurrently (like pshunter), each
@@ -2734,45 +2798,255 @@ def _run_port_scan(ip: str, cancel=None, force_pn: bool = False,
             "cancelled": cancelled, "timed_out": timed_out, "error": ""}
 
 
-def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
-    """Hacking loop — phase 1: port discovery, run in the BACKGROUND so the REPL
-    stays free (the LLM is idle during a scan, so `btw` works meanwhile). The scan
-    state lives in ctx['scan']; the toolbar shows a 'scanning' badge and /status
-    reports progress + the outcome. Stores any new open ports when done."""
-    ip, tid = target.get("ip"), target["id"]
-    pre_ports = {p["port"] for p in purragent_db.fetch_ports(base_dir, tid)}
-    cancel = threading.Event()                    # /stop sets this to kill the scan
-    command = f"nmap {'-sS' if _is_root() else '-sT'} --open (fast + full TCP) {ip}"
-    state = {"phase": "port discovery", "ip": ip, "running": True,
-             "started": time.time(), "result": None, "pre_ports": pre_ports,
-             "cancel": cancel, "notified": False, "command": command,
-             "ctx": ctx, "base_dir": base_dir, "tid": tid}
-    ctx["scan"] = state
-    ctx.setdefault("phases", []).append(state)    # /status shows every phase run
+def _job(command: str) -> dict:
+    return {"command": command, "state": "running", "cancel": threading.Event()}
 
-    def _worker():
-        result = _run_port_scan(ip, cancel)
-        # Deterministic retry: an 'unreachable' verdict with no ports may just be a
-        # firewall blocking pings — re-probe once assuming the host is up (-Pn, fast
-        # pass). Use the retry only if it actually finds ports.
-        if (result.get("ok") and not result.get("reachable")
-                and not result.get("cancelled") and not result.get("ports")):
-            retry = _run_port_scan(ip, cancel, force_pn=True, quick=True)
-            if retry.get("ports"):
-                result = retry
-            else:
-                result["retried_pn"] = True
+
+def _post(ctx: dict, fn) -> None:
+    """Queue a print to appear above the active prompt (from a worker thread). Tries
+    run_in_terminal now; the REPL loop flushes any that don't make it in time."""
+    ctx.setdefault("pending", []).append(fn)
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal
+        app = get_app_or_none()
+        loop = getattr(app, "loop", None) if app is not None else None
+        if loop is not None:
+            loop.call_soon_threadsafe(
+                lambda: run_in_terminal(lambda: _flush_pending(ctx)))
+    except Exception:
+        pass
+
+
+def _flush_pending(ctx: dict) -> None:
+    pend, ctx["pending"] = ctx.get("pending") or [], []
+    for fn in pend:
         try:
-            for p in result["ports"]:
-                if p not in pre_ports:
-                    purragent_db.add_service(base_dir, tid, p, "tcp")
+            fn()
         except Exception:
             pass
-        state["result"] = result
-        state["running"] = False
-        _notify_scan_done(state)                  # print outcome + phase decision
 
-    threading.Thread(target=_worker, daemon=True).start()
+
+def _cancel_engagement(ctx: dict) -> None:
+    """Stop all in-flight pipeline scans (kills their nmap) and mark the engagement
+    cancelled so it won't advance."""
+    eng = ctx.get("engagement")
+    if eng:
+        eng["cancelled"] = True
+    for ph in ctx.get("phases", []):
+        for job in ph.get("jobs", []):
+            c = job.get("cancel")
+            if c is not None:
+                c.set()
+
+
+def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
+    """Hacking loop entry — a STREAMING pipeline (no LLM): the phase-1 port passes run
+    concurrently and, as soon as the fast pass lands (or after 15s), phase-2 service
+    detection starts on the ports found so far; each later pass that discovers NEW
+    ports triggers service detection for just those. Phase 3 is reached once every
+    pass has finished and every discovered port is service-detected. All background,
+    so btw / /status / /stop work meanwhile."""
+    ip, tid = target.get("ip"), target["id"]
+    pre = {p["port"] for p in purragent_db.fetch_ports(base_dir, tid)}
+    specs = _port_scan_specs()
+    port_phase = {"phase": "port discovery", "ip": ip,
+                  "jobs": [_job(c) for c in _spec_commands(specs, ip)]}
+    eng = {
+        "lock": threading.Lock(), "ctx": ctx, "base_dir": base_dir, "tid": tid,
+        "ip": ip, "started": time.time(), "pre_ports": pre,
+        "discovered_tcp": set(pre), "discovered_udp": set(),
+        "detected_tcp": set(), "detected_udp": set(),
+        "down_flags": [], "timed_out": False, "failed": False, "cancelled": False,
+        "retried_pn": False, "os_done": False, "fast_done": False,
+        "port_done": False, "port_finalised": False, "advanced": False,
+        "port_phase": port_phase, "svc_phase": None,
+        "svc_services": [], "svc_scripts": [], "os": None,
+    }
+    ctx["engagement"] = eng
+    ctx["phases"] = [port_phase]
+
+    for (label, args), job in zip(specs, port_phase["jobs"]):
+        proto = "udp" if label == "udp" else "tcp"
+        threading.Thread(target=_port_pass, args=(eng, label, args, proto, job),
+                         daemon=True).start()
+    threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
+
+    console.print(Text("  ▸ phase 1 — port discovery"))
+    console.print(Text(f"    scanning {ip} in the background  ·  "
+                       f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+
+
+def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None:
+    """One phase-1 port pass; on completion, stream its ports into the pipeline."""
+    result = _run_one_port_pass(args, eng["ip"], proto, job["cancel"])
+    fire, done = False, False
+    with eng["lock"]:
+        key = "discovered_" + proto
+        newp = set(result["ports"]) - eng[key]
+        try:
+            for p in newp:
+                purragent_db.add_service(eng["base_dir"], eng["tid"], p, proto)
+        except Exception:
+            pass
+        eng[key] |= set(result["ports"])
+        if result["cancelled"]:
+            job["state"], eng["cancelled"] = "aborted", True
+        elif not result["ok"]:
+            job["state"] = "error"
+            if result.get("error") == "nmap not installed":
+                eng["failed"] = True
+        else:
+            job["state"] = "complete"
+        if result.get("timed_out"):
+            eng["timed_out"] = True
+        eng["down_flags"].append(bool(result.get("down")) and not result["ports"])
+        if label == "fast":
+            eng["fast_done"] = True
+        eng["port_done"] = all(j["state"] != "running"
+                               for j in eng["port_phase"]["jobs"])
+        done = eng["port_done"] and not eng["port_finalised"]
+        if done:
+            eng["port_finalised"] = True
+        fire = (label == "fast" or bool(newp)) and not result["cancelled"]
+    if fire:
+        _svc_trigger(eng, "pass")
+    if done:
+        _finalise_port_discovery(eng)
+    _maybe_advance(eng)
+
+
+def _finalise_port_discovery(eng: dict) -> None:
+    """All port passes done: -Pn retry once if nothing found and the host looked
+    down, then print the phase-1 outcome."""
+    with eng["lock"]:
+        have = bool(eng["discovered_tcp"] - eng["pre_ports"]) or bool(eng["discovered_udp"])
+        all_down = all(eng["down_flags"]) if eng["down_flags"] else False
+        retry = (not have and all_down and not eng["retried_pn"]
+                 and not eng["cancelled"])
+        if retry:
+            eng["retried_pn"] = True
+    if retry:
+        tcp = "-sS" if _is_root() else "-sT"
+        r = _run_one_port_pass(["-Pn", tcp, "-n", "--open", "-T4", "--top-ports",
+                                "1000"], eng["ip"], "tcp", threading.Event())
+        with eng["lock"]:
+            newp = set(r["ports"]) - eng["discovered_tcp"]
+            try:
+                for p in newp:
+                    purragent_db.add_service(eng["base_dir"], eng["tid"], p, "tcp")
+            except Exception:
+                pass
+            eng["discovered_tcp"] |= set(r["ports"])
+        if r["ports"]:
+            _svc_trigger(eng, "retry")
+    _post(eng["ctx"], lambda: _print_port_outcome(eng))
+
+
+def _print_port_outcome(eng: dict) -> None:
+    with eng["lock"]:
+        ports = sorted(eng["discovered_tcp"] | eng["discovered_udp"])
+        all_down = all(eng["down_flags"]) if eng["down_flags"] else False
+        result = {"ok": not eng["failed"],
+                  "reachable": bool(ports) or not all_down, "ports": ports,
+                  "cancelled": eng["cancelled"], "timed_out": eng["timed_out"],
+                  "retried_pn": eng["retried_pn"],
+                  "error": "nmap not installed" if eng["failed"] else "scan error"}
+        pre = eng["pre_ports"]
+    console.print(Text("  ▸ port discovery — done"))
+    _port_outcome({"result": result, "pre_ports": pre})
+
+
+def _svc_trigger(eng: dict, reason: str) -> None:
+    """Start service detection on ports discovered but not yet detected, once the fast
+    pass has landed (or 15s passed). Each call handles a fresh batch of new ports."""
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        if not (eng["fast_done"] or (time.time() - eng["started"]) >= 15):
+            return
+        new_tcp = sorted(eng["discovered_tcp"] - eng["detected_tcp"])
+        new_udp = sorted(eng["discovered_udp"] - eng["detected_udp"])
+        if not new_tcp and not new_udp:
+            return
+        eng["detected_tcp"] |= set(new_tcp)
+        eng["detected_udp"] |= set(new_udp)
+        include_os = not eng["os_done"] and _is_root()
+        if include_os:
+            eng["os_done"] = True
+        if eng["svc_phase"] is None:
+            eng["svc_phase"] = {"phase": "service detection", "ip": eng["ip"],
+                                "jobs": []}
+            eng["ctx"].setdefault("phases", []).append(eng["svc_phase"])
+        cmd = ("nmap -sV -sC" + (" +OS" if include_os else "") + " -p "
+               + ",".join(str(p) for p in (new_tcp + new_udp)) + " " + eng["ip"])
+        job = _job(cmd)
+        eng["svc_phase"]["jobs"].append(job)
+    threading.Thread(target=_svc_batch,
+                     args=(eng, new_tcp, new_udp, include_os, job),
+                     daemon=True).start()
+
+
+def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict) -> None:
+    result = _run_service_scan(eng["ip"], tcp, udp, job["cancel"],
+                               include_os=include_os)
+    with eng["lock"]:
+        try:
+            for s in result.get("services", []):
+                purragent_db.set_service(eng["base_dir"], eng["tid"], s["port"],
+                                         s.get("proto") or "tcp", s.get("name"),
+                                         s.get("product"), s.get("version"))
+            for sc in result.get("scripts", []):
+                purragent_db.add_script(eng["base_dir"], eng["tid"], sc["port"],
+                                        sc.get("proto") or "tcp", sc.get("script"),
+                                        sc.get("output"))
+            if result.get("os"):
+                purragent_db.set_os(eng["base_dir"], eng["tid"], result["os"])
+        except Exception:
+            pass
+        eng["svc_services"] += result.get("services", [])
+        eng["svc_scripts"] += result.get("scripts", [])
+        eng["os"] = eng["os"] or result.get("os")
+        job["state"] = ("aborted" if result.get("cancelled")
+                        else "error" if not result.get("ok") else "complete")
+    _maybe_advance(eng)
+
+
+def _maybe_advance(eng: dict) -> None:
+    """Advance to phase 3 once every port pass is done and every discovered port has
+    been service-detected (nothing left in flight)."""
+    with eng["lock"]:
+        if eng["advanced"] or not eng["port_done"]:
+            return
+        port_running = any(j["state"] == "running"
+                           for j in eng["port_phase"]["jobs"])
+        svc_running = bool(eng["svc_phase"]) and any(
+            j["state"] == "running" for j in eng["svc_phase"]["jobs"])
+        pending = (eng["discovered_tcp"] - eng["detected_tcp"]) or \
+                  (eng["discovered_udp"] - eng["detected_udp"])
+        if port_running or svc_running or pending:
+            return
+        eng["advanced"] = True
+    _post(eng["ctx"], lambda: _finish_engagement(eng))
+
+
+def _finish_engagement(eng: dict) -> None:
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        ports = eng["discovered_tcp"] | eng["discovered_udp"]
+        services, scripts, os_name = eng["svc_services"], eng["svc_scripts"], eng["os"]
+        has_svc = eng["svc_phase"] is not None
+    if not ports:
+        _pause_engagement(eng["ctx"])
+        return
+    if has_svc:
+        console.print(Text("  ▸ service detection — done"))
+        _service_outcome({"result": {"ok": True, "cancelled": False,
+                                     "services": services, "scripts": scripts,
+                                     "os": os_name}})
+    adv = Text("  ▸ advancing to phase 3 — vuln scan")
+    adv.append("  (coming soon)", style="bright_black")
+    console.print(adv)
 
 
 def _parse_nmap_service_xml(xml_str: str) -> dict:
@@ -2821,9 +3095,11 @@ def _parse_nmap_service_xml(xml_str: str) -> dict:
     return res
 
 
-def _service_scan_specs(tcp_ports: list, udp_ports: list) -> list:
+def _service_scan_specs(tcp_ports: list, udp_ports: list,
+                        include_os: bool = True) -> list:
     """(label, nmap-args) for phase-2 passes, mirroring pshunter: TCP -sV -sC; UDP
-    -sU -sV (root); OS -O --osscan-guess as its own scan (root)."""
+    -sU -sV (root); OS -O --osscan-guess as its own scan (root). `include_os=False`
+    for follow-up batches so OS detection runs only once."""
     specs = []
     if tcp_ports:
         specs.append(("service", ["-sV", "-sC", "-Pn", "-n", "-T4", "-oX", "-",
@@ -2831,17 +3107,18 @@ def _service_scan_specs(tcp_ports: list, udp_ports: list) -> list:
     if udp_ports and _is_root():
         specs.append(("service-udp", ["-sU", "-sV", "-Pn", "-n", "-T4", "-oX", "-",
                                       "-p", ",".join(str(p) for p in udp_ports)]))
-    if _is_root():
+    if include_os and _is_root():
         specs.append(("os", ["-O", "--osscan-guess", "-Pn", "-n", "-T4", "-oX", "-"]))
     return specs
 
 
-def _run_service_scan(ip: str, tcp_ports: list, udp_ports: list, cancel=None) -> dict:
+def _run_service_scan(ip: str, tcp_ports: list, udp_ports: list, cancel=None,
+                      include_os: bool = True) -> dict:
     """Phase 2 — service detection on the target, running pshunter's passes CONCURRENTLY
     (TCP -sV -sC, + UDP -sV and OS -O as root), each capped at the time budget and
     cancellable (/stop). Aggregates services/scripts/os across passes. Returns
     {ok, cancelled, timed_out, services, scripts, os, error}."""
-    specs = _service_scan_specs(tcp_ports, udp_ports)
+    specs = _service_scan_specs(tcp_ports, udp_ports, include_os=include_os)
     if not specs:
         return {"ok": True, "cancelled": False, "timed_out": False,
                 "services": [], "scripts": [], "os": None, "error": ""}
@@ -2906,49 +3183,6 @@ def _run_service_scan(ip: str, tcp_ports: list, udp_ports: list, cancel=None) ->
         os_name = os_name or parsed["os"]
     return {"ok": True, "cancelled": cancelled, "timed_out": any(hit),
             "services": services, "scripts": scripts, "os": os_name, "error": ""}
-
-
-def _start_service_detection(ctx: dict, base_dir: str, tid: int, ip: str) -> None:
-    """Hacking loop — phase 2: service detection, run in the BACKGROUND (like phase 1),
-    with pshunter's concurrent passes. Enriches the open ports with -sV/-sC, stores
-    NSE (-sC) output and the detected OS, then decides phase 3."""
-    rows = purragent_db.fetch_ports(base_dir, tid)
-    tcp_ports = [p["port"] for p in rows if (p.get("proto") or "tcp") == "tcp"]
-    udp_ports = [p["port"] for p in rows if p.get("proto") == "udp"]
-    cancel = threading.Event()
-    passes = ["-sV -sC"] + (["-sU -sV"] if (udp_ports and _is_root()) else []) \
-        + (["-O"] if _is_root() else [])
-    command = f"nmap {' + '.join(passes)} on {len(tcp_ports)} port(s) of {ip}"
-    state = {"phase": "service detection", "ip": ip, "running": True,
-             "started": time.time(), "result": None, "cancel": cancel,
-             "notified": False, "command": command,
-             "ctx": ctx, "base_dir": base_dir, "tid": tid}
-    ctx["scan"] = state
-    ctx.setdefault("phases", []).append(state)
-
-    def _worker():
-        result = _run_service_scan(ip, tcp_ports, udp_ports, cancel)
-        try:
-            for s in result.get("services", []):
-                purragent_db.set_service(base_dir, tid, s["port"],
-                                         s.get("proto") or "tcp", s.get("name"),
-                                         s.get("product"), s.get("version"))
-            for sc in result.get("scripts", []):
-                purragent_db.add_script(base_dir, tid, sc["port"],
-                                        sc.get("proto") or "tcp", sc.get("script"),
-                                        sc.get("output"))
-            if result.get("os"):
-                purragent_db.set_os(base_dir, tid, result["os"])
-        except Exception:
-            pass
-        state["result"] = result
-        state["running"] = False
-        _notify_scan_done(state)
-
-    threading.Thread(target=_worker, daemon=True).start()
-    console.print(Text("  ▸ phase 2 — service detection"))
-    console.print(Text(f"    {command}  ·  ⏱ {PORT_SCAN_MINUTES}m budget",
-                       style="bright_black"))
 
 
 def _pause_engagement(ctx) -> None:
@@ -3024,145 +3258,74 @@ def _service_outcome(scan: dict) -> None:
                                + extra, style="bright_black"))
 
 
-def _print_scan_outcome(scan: dict) -> None:
-    """Outcome line for a finished scan, dispatched on its phase. Used by /status."""
-    if scan.get("phase") == "service detection":
-        _service_outcome(scan)
-    else:
-        _port_outcome(scan)
-
-
-def _decide_after_port(scan: dict) -> None:
-    """Deterministic phase-1 → phase-2 transition (no LLM). Advance to service
-    detection if the target has ≥1 port (scanned or manual); otherwise pause."""
-    result = scan.get("result") or {}
-    if result.get("cancelled"):
-        return
-    ctx = scan.get("ctx")
-    base_dir, tid = scan.get("base_dir"), scan.get("tid")
-    ports = purragent_db.fetch_ports(base_dir, tid) if (base_dir and tid) else []
-    if ports:
-        _start_service_detection(ctx, base_dir, tid, scan.get("ip"))
-    else:
-        _pause_engagement(ctx)
-
-
-def _decide_after_service(scan: dict) -> None:
-    """Deterministic phase-2 → phase-3 transition. On a failed scan, pause; otherwise
-    advance to vuln scan (placeholder for now)."""
-    result = scan.get("result") or {}
-    if result.get("cancelled"):
-        return
-    if not result.get("ok"):
-        _pause_engagement(scan.get("ctx"))
-        return
-    adv = Text("  ▸ advancing to phase 3 — vuln scan")
-    adv.append("  (coming soon)", style="bright_black")
-    console.print(adv)
-
-
-def _decide_next_phase(scan: dict) -> None:
-    """Dispatch the deterministic next-phase decision on the finished scan's phase."""
-    if scan.get("phase") == "service detection":
-        _decide_after_service(scan)
-    else:
-        _decide_after_port(scan)
-
-
 # /status — pshunter-style read-only view (no view/stop/abort actions).
-_STATUS_STATE = {"running": ("yellow", "running"), "done": ("green", "complete"),
+_STATUS_STATE = {"running": ("yellow", "running"), "complete": ("green", "complete"),
                  "error": ("red", "error"), "aborted": ("magenta", "aborted")}
 
 
-def _phase_status_state(scan: dict) -> str:
-    if scan.get("running"):
+def _phase_agg_state(phase: dict) -> str:
+    """Aggregate a phase's per-job states for its header line."""
+    states = [j.get("state") for j in phase.get("jobs", [])]
+    if not states or "running" in states:
         return "running"
-    r = scan.get("result") or {}
-    if r.get("cancelled"):
-        return "aborted"
-    if not r.get("ok"):
+    if "complete" in states:
+        return "complete"
+    if "error" in states:
         return "error"
-    return "done"
+    return "aborted"
 
 
 def _status_view(ctx: dict) -> None:
     """Show the engagement's phases like pshunter's status: per phase a numbered line
-    with the host, state and found yes/no, and the command beneath it. Read-only."""
-    phases = ctx.get("phases") or ([ctx["scan"]] if ctx.get("scan") else [])
+    with the host, aggregate state and found yes/no, and EVERY scan of that phase
+    beneath it with its own complete/running state (lettered a/b/c when several).
+    Read-only (no view/stop/abort)."""
+    phases = ctx.get("phases") or []
+    eng = ctx.get("engagement") or {}
     console.print(Text("Status", style="bold"))
     if not phases:
         console.print(Text("  no scans have run yet", style="bright_black"))
         return
-    for n, scan in enumerate(phases, 1):
-        st = _phase_status_state(scan)
-        col, label = _STATUS_STATE.get(st, ("bright_black", st))
-        r = scan.get("result") or {}
-        if scan.get("running"):
-            found_txt, found_style = "—", "bright_black"
-        elif scan.get("phase") == "service detection":
-            got = any(s.get("name") and s["name"] != "unknown"
-                      for s in (r.get("services") or []))
-            found_txt, found_style = ("yes", "green") if got else ("no", "bright_black")
+    for n, phase in enumerate(phases, 1):
+        jobs = phase.get("jobs") or []
+        agg = _phase_agg_state(phase)
+        acol, alabel = _STATUS_STATE.get(agg, ("bright_black", agg))
+        if phase.get("phase") == "service detection":
+            got = bool([s for s in (eng.get("svc_services") or [])
+                        if s.get("name") and s["name"] != "unknown"])
         else:
-            got = bool(r.get("ports"))
-            found_txt, found_style = ("yes", "green") if got else ("no", "bright_black")
+            got = bool((eng.get("discovered_tcp") or set())
+                       | (eng.get("discovered_udp") or set()))
+        found_txt, found_style = (("yes", "green") if got and agg != "running"
+                                  else ("—", "bright_black") if agg == "running"
+                                  else ("no", "bright_black"))
 
         head = Text("  ")
         head.append(str(n), style="cyan")
         head.append(" ")
-        head.append(scan.get("phase", "scan"), style="bold")
-        if scan.get("ip"):
+        head.append(phase.get("phase", "scan"), style="bold")
+        if phase.get("ip"):
             head.append("  · ", style="bright_black")
-            head.append(scan["ip"], style="cyan")
+            head.append(phase["ip"], style="cyan")
         head.append("  · ", style="bright_black")
-        head.append(label, style=col)
+        head.append(alabel, style=acol)
         head.append("  · found: ", style="bright_black")
         head.append(found_txt, style=found_style)
+        if len(jobs) > 1:
+            head.append(f"  · {len(jobs)} cmds", style="bright_black")
         console.print(head)
 
-        line = Text("       ")
-        line.append(f"{label:<8}", style=col)
-        line.append(" ")
-        line.append(scan.get("command") or "", style="bright_black")
-        console.print(line)
-
-
-def _print_scan_done(scan: dict) -> None:
-    """Announce a finished background scan once (phase header + outcome + the
-    deterministic next-phase decision). Guarded by `notified` so the immediate
-    (run_in_terminal) and fallback (REPL loop) paths never double-print."""
-    if scan.get("notified"):
-        return
-    scan["notified"] = True
-    console.print(Text(f"  ▸ {scan.get('phase', 'scan')} — done"))
-    _print_scan_outcome(scan)
-    _decide_next_phase(scan)
-
-
-def _notify_scan_done(scan: dict) -> None:
-    """Best-effort: print the outcome IMMEDIATELY above the active prompt via
-    prompt_toolkit's run_in_terminal (scheduled thread-safely on the app's loop).
-    On any failure the REPL loop prints it on its next iteration (fallback) — the
-    `notified` guard prevents a double print."""
-    try:
-        from prompt_toolkit.application import get_app_or_none, run_in_terminal
-    except Exception:
-        return
-    app = get_app_or_none()
-    loop = getattr(app, "loop", None) if app is not None else None
-    if loop is None:
-        return
-
-    def _cb():
-        try:
-            run_in_terminal(lambda: _print_scan_done(scan))
-        except Exception:
-            pass
-
-    try:
-        loop.call_soon_threadsafe(_cb)
-    except Exception:
-        pass                                       # fallback path handles it
+        multi = len(jobs) > 1
+        for k, job in enumerate(jobs):
+            jcol, jlabel = _STATUS_STATE.get(job.get("state"),
+                                             ("bright_black", job.get("state")))
+            line = Text("       ")
+            if multi:
+                line.append(chr(ord("a") + k) + " ", style="cyan")
+            line.append(f"{jlabel:<8}", style=jcol)
+            line.append(" ")
+            line.append(job.get("command") or "", style="bright_black")
+            console.print(line)
 
 
 def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
@@ -3175,15 +3338,11 @@ def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
         return
     target = hosts[0]
     ctx["hacking"] = True                          # agent is now actively hacking
-    ctx["phases"] = []                             # fresh phase history for /status
     console.print(Text(f"  ▸ starting engagement on {_host_label(target)}  ·  "
                        f"objective: {goal}", style=f"bold {VIOLET}"))
-
-    # Hacking loop — phase 1 (skeleton: port discovery, in the background).
+    # The streaming pipeline (phase 1 port discovery → incremental phase 2) starts
+    # here and prints its own banner.
     _start_port_discovery(ctx, base_dir, target)
-    console.print(Text("  ▸ phase 1 — port discovery"))
-    console.print(Text(f"    scanning {target.get('ip')} in the background  ·  "
-                       f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
 
 
 def _target_db_context(base_dir: str) -> str:
@@ -3964,10 +4123,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if hack_mode:
             goal_txt = f" · {hack_goal}" if hack_goal else ""
             hack_seg = f"   <style fg='#ff5f5f'>⚑ hacking{goal_txt}</style>"
-        # Background scan indicator (a port-discovery scan in flight) — /status shows it.
-        scan = ctx.get("scan")
+        # Background scan indicator (any pipeline scan in flight) — /status shows it.
+        scanning = any(j.get("state") == "running"
+                       for ph in ctx.get("phases", []) for j in ph.get("jobs", []))
         scan_seg = ("   <style fg='#e5c07b'>⟳ scanning</style>"
-                    if scan and scan.get("running") else "")
+                    if scanning else "")
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
@@ -4094,13 +4254,10 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     awaiting_target = False        # /hack: next plain message carries the target info
 
     while True:
-        # Fallback for the immediate scan-done print: if the background scan finished
-        # but run_in_terminal couldn't announce it, print the outcome now. The
-        # `notified` guard makes this a no-op when it was already shown live.
-        _scan = ctx.get("scan")
-        if (conversation_started and _scan and not _scan.get("running")
-                and not _scan.get("notified")):
-            _print_scan_done(_scan)
+        # Flush any pipeline prints queued by worker threads that run_in_terminal
+        # couldn't show live (fallback for the immediate-above-the-prompt output).
+        if conversation_started and ctx.get("pending"):
+            _flush_pending(ctx)
         try:
             if not conversation_started:
                 # Persistent welcome screen: wipe + repaint so a single banner keeps
@@ -4267,9 +4424,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     except (EOFError, KeyboardInterrupt):
                         ans = ""
                     if ans in ("y", "yes"):
-                        sc = ctx.get("scan")
-                        if sc and sc.get("running") and sc.get("cancel"):
-                            sc["cancel"].set()       # stop any running scan
+                        _cancel_engagement(ctx)      # stop any running scans
                         hack_mode = False
                         hack_goal = None
                         awaiting_target = False
@@ -4320,9 +4475,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     console.print("  [dim]already stopped — "
                                   "[/dim][cyan]/start[/cyan][dim] to resume[/dim]")
                 else:
-                    sc = ctx.get("scan")
-                    if sc and sc.get("running") and sc.get("cancel"):
-                        sc["cancel"].set()          # kill the running nmap processes
+                    _cancel_engagement(ctx)          # kill all running nmap processes
                     ctx["hacking"] = False
                     stop = Text("  ▸ stopped the agent. ", style="yellow")
                     stop.append("/start", style="cyan")
