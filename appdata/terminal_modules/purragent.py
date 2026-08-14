@@ -2873,9 +2873,11 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
                          daemon=True).start()
     threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
 
-    console.print(Text("  ▸ phase 1 — port discovery"))
-    console.print(Text(f"    scanning {ip} in the background  ·  "
-                       f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+    banner = Text("  ")
+    banner.append("[running]", style="yellow")
+    banner.append(" ▸ phase 1 — port discovery")
+    banner.append(f"  ·  ⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black")
+    console.print(banner)
 
 
 def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None:
@@ -2954,7 +2956,6 @@ def _print_port_outcome(eng: dict) -> None:
                   "retried_pn": eng["retried_pn"],
                   "error": "nmap not installed" if eng["failed"] else "scan error"}
         pre = eng["pre_ports"]
-    console.print(Text("  ▸ port discovery — done"))
     _port_outcome({"result": result, "pre_ports": pre})
 
 
