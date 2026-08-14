@@ -2861,6 +2861,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
         "port_done": False, "port_finalised": False, "advanced": False,
         "port_phase": port_phase, "svc_phase": None,
         "svc_services": [], "svc_scripts": [], "os": None,
+        "vuln_phase": None, "vuln_findings": [], "vuln_advanced": False,
     }
     ctx["engagement"] = eng
     ctx["phases"] = [port_phase]
@@ -3044,9 +3045,7 @@ def _finish_engagement(eng: dict) -> None:
         _service_outcome({"result": {"ok": True, "cancelled": False,
                                      "services": services, "scripts": scripts,
                                      "os": os_name}})
-    adv = Text("  ▸ advancing to phase 3 — vuln scan")
-    adv.append("  (coming soon)", style="bright_black")
-    console.print(adv)
+    _start_vuln_scan(eng)                          # phase 3 — vuln scan
 
 
 def _parse_nmap_service_xml(xml_str: str) -> dict:
@@ -3185,6 +3184,304 @@ def _run_service_scan(ip: str, tcp_ports: list, udp_ports: list, cancel=None,
             "services": services, "scripts": scripts, "os": os_name, "error": ""}
 
 
+# ── phase 3 — vuln scan ───────────────────────────────────────────────────────
+# Targeted NSE driven by the services already in the DB (not a blind --script vuln):
+# each open port maps to only the relevant active CVE checks (vuln category) plus
+# auth-weakness checks (anonymous / empty / default creds — never brute). SSL scripts
+# run on any TLS-wrapped port. brute / dos / exploit and host-crashers are excluded.
+# Mirrors pshunter's phase-3 script set. Findings in the NSE `vuln` format
+# (State: VULNERABLE) or an auth script's mere output become findings.
+_VULN_SSL = "ssl-heartbleed,ssl-poodle,ssl-ccs-injection,ssl-dh-params"
+_VULN_SCRIPTS = {
+    "microsoft-ds": "smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2017-7494,"
+                    "smb-vuln-ms10-061,smb-vuln-cve2009-3103,smb-double-pulsar-backdoor,"
+                    "smb-security-mode,smb2-security-mode,smb-enum-users",
+    "netbios-ssn":  "smb-vuln-ms17-010,smb-vuln-ms08-067,smb-vuln-cve-2017-7494,"
+                    "smb-security-mode,smb-enum-users",
+    "http":         "http-shellshock,http-vuln-cve2017-5638,http-vuln-cve2015-1635,"
+                    "http-vuln-cve2014-3704,http-vuln-cve2012-1823,http-vuln-cve2017-1001000,"
+                    "http-vuln-misfortune-cookie,http-default-accounts",
+    "ms-wbt-server": "rdp-ntlm-info",
+    "ftp":          "ftp-vsftpd-backdoor,ftp-vuln-cve2010-4221,ftp-anon",
+    "ssh":          "ssh-auth-methods,ssh-publickey-acceptance",
+    "telnet":       "telnet-encryption",
+    "smtp":         "smtp-vuln-cve2010-4344,smtp-vuln-cve2011-1720,smtp-vuln-cve2011-1764",
+    "mysql":        "mysql-vuln-cve2012-2122,mysql-empty-password",
+    "ms-sql":       "ms-sql-empty-password",
+    "oracle":       "oracle-enum-users",
+    "mongodb":      "mongodb-databases",
+    "redis":        "redis-info",
+    "vnc":          "realvnc-auth-bypass,vnc-info,vnc-title",
+    "snmp":         "snmp-info",
+    "x11":          "x11-access",
+    "rmi":          "rmi-vuln-classloader",
+    "rsync":        "rsync-list-modules",
+    "distcc":       "distcc-cve2004-2687",
+    "clamav":       "clamav-exec",
+    "irc":          "irc-unrealircd-backdoor",
+}
+_VULN_PORT_FALLBACK = {
+    445: "microsoft-ds", 139: "netbios-ssn", 80: "http", 443: "http", 8080: "http",
+    8443: "http", 3389: "ms-wbt-server", 21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp",
+    465: "smtp", 587: "smtp", 3306: "mysql", 1433: "ms-sql", 1521: "oracle",
+    27017: "mongodb", 6379: "redis", 5900: "vnc", 161: "snmp", 1099: "rmi", 873: "rsync",
+    3632: "distcc", 3310: "clamav", 6667: "irc", 6000: "x11", 6001: "x11",
+}
+_VULN_TLS_PORTS = {443, 465, 563, 636, 853, 990, 992, 993, 995, 8443}
+# Auth-category scripts whose mere output is a weakness → a one-line title each.
+_VULN_AUTH_TITLE = {
+    "ftp-anon": "anonymous FTP login allowed",
+    "mysql-empty-password": "MySQL account with empty password",
+    "ms-sql-empty-password": "MSSQL account with empty password",
+    "http-default-accounts": "default web credentials found",
+    "x11-access": "X11 server open (no auth)",
+    "redis-info": "Redis reachable without auth",
+    "mongodb-databases": "MongoDB reachable without auth",
+    "rsync-list-modules": "rsync modules listable",
+    "snmp-info": "SNMP readable (default community)",
+}
+# Risk severities, worst first, for ordering/outcome.
+_VULN_RISK_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+
+
+def _vuln_key(name, port: int):
+    """Map a service name / port to its vuln-script family key, or None."""
+    if name:
+        low = name.lower()
+        for key in _VULN_SCRIPTS:
+            if key in low:
+                return key
+    return _VULN_PORT_FALLBACK.get(port)
+
+
+def _vuln_families(base_dir: str, tid: int) -> list:
+    """Group the target's open TCP ports into (label, scripts, [ports]) families so
+    each family runs one targeted scan. SSL scripts are added for TLS-wrapped ports."""
+    groups: dict = {}
+    for row in purragent_db.fetch_ports(base_dir, tid):
+        if (row.get("proto") or "tcp") != "tcp":
+            continue                                  # vuln script set targets TCP
+        port, name = row["port"], row.get("service")
+        key = _vuln_key(name, port)
+        if key:
+            groups.setdefault(key, [_VULN_SCRIPTS[key], set()])[1].add(port)
+        low = (name or "").lower()
+        if port in _VULN_TLS_PORTS or "ssl" in low or "https" in low or "tls" in low:
+            groups.setdefault("ssl", [_VULN_SSL, set()])[1].add(port)
+    return [(k, sc, sorted(ps)) for k, (sc, ps) in groups.items() if ps]
+
+
+def _extract_vuln_finding(sid, output):
+    """One NSE script result → a finding dict {state, risk, cve, summary}, or None.
+    Covers the standard vuln library format (State: VULNERABLE / LIKELY) and auth
+    scripts whose mere output implies a weakness."""
+    if not output:
+        return None
+    cves = sorted(set(re.findall(r"CVE-\d{4}-\d{3,7}", output)))
+    cve = ",".join(cves) or None
+    if re.search(r"State:\s*VULNERABLE", output):
+        state = "VULNERABLE"
+    elif re.search(r"State:\s*LIKELY VULNERABLE", output):
+        state = "LIKELY"
+    else:
+        state = None
+    if state:
+        m = re.search(r"Risk factor:\s*([A-Za-z]+)", output)
+        risk = m.group(1).upper() if m else "HIGH"
+        lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+        summary = sid
+        for i, ln in enumerate(lines):
+            if re.match(r"(LIKELY )?VULNERABLE:?$", ln, re.I) and i + 1 < len(lines):
+                nxt = lines[i + 1]
+                if not re.match(r"(State|IDs|Risk|Disclosure|References|Description|"
+                                r"Extra)\b", nxt):
+                    summary = nxt
+                break
+        return {"state": state, "cve": cve, "risk": risk, "summary": summary[:140]}
+    if sid in _VULN_AUTH_TITLE:
+        return {"state": "EXPOSED", "cve": cve, "risk": "HIGH",
+                "summary": _VULN_AUTH_TITLE[sid]}
+    return None
+
+
+def _parse_nmap_vuln_xml(xml_str: str) -> list:
+    """Parse `nmap -oX -` phase-3 output → [{port, proto, script, state, risk, cve,
+    summary}]. Port scripts carry their port; host scripts get port 0."""
+    import xml.etree.ElementTree as ET
+    out = []
+    try:
+        root = ET.fromstring(xml_str)
+    except (ET.ParseError, TypeError):
+        return out
+    for host in root.iter("host"):
+        for port in host.iter("port"):
+            try:
+                pnum = int(port.get("portid"))
+            except (TypeError, ValueError):
+                continue
+            proto = port.get("protocol", "tcp")
+            for scr in port.findall("script"):
+                f = _extract_vuln_finding(scr.get("id"), scr.get("output") or "")
+                if f:
+                    f.update({"port": pnum, "proto": proto, "script": scr.get("id")})
+                    out.append(f)
+        hs = host.find("hostscript")
+        if hs is not None:
+            for scr in hs.findall("script"):
+                f = _extract_vuln_finding(scr.get("id"), scr.get("output") or "")
+                if f:
+                    f.update({"port": 0, "proto": "tcp", "script": scr.get("id")})
+                    out.append(f)
+    return out
+
+
+def _run_one_vuln_pass(scripts: str, ports: list, ip: str, cancel) -> dict:
+    """Run ONE family's targeted vuln/auth scan. Cancellable + time-budgeted; keeps
+    partial output. Returns {ok, findings, cancelled, timed_out, error}."""
+    args = ["-sV", "--script", scripts, "-Pn", "-n", "-T3", "--script-timeout",
+            "120s", "-oX", "-", "-p", ",".join(str(p) for p in ports)]
+    deadline = PORT_SCAN_MINUTES * 60
+    try:
+        proc = subprocess.Popen(["nmap"] + args + [ip], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+    except FileNotFoundError:
+        return {"ok": False, "findings": [], "cancelled": False, "timed_out": False,
+                "error": "nmap not installed"}
+    start, timed_out = time.time(), False
+    while proc.poll() is None:
+        if cancel is not None and cancel.is_set():
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        if (time.time() - start) > deadline:
+            timed_out = True
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        time.sleep(0.3)
+    try:
+        out, _err = proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _err = proc.communicate()
+    except Exception:                                 # noqa: BLE001
+        out = ""
+    return {"ok": True, "findings": _parse_nmap_vuln_xml(out or ""),
+            "cancelled": bool(cancel is not None and cancel.is_set()),
+            "timed_out": timed_out, "error": ""}
+
+
+def _start_vuln_scan(eng: dict) -> None:
+    """Phase 3 entry (runs on the print thread from _finish_engagement): one concurrent
+    targeted scan per service family. No families → skip straight to phase 4."""
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        families = _vuln_families(eng["base_dir"], eng["tid"])
+        console.print(Text("  ▸ phase 3 — vuln scan"))
+        if not families:
+            eng["vuln_advanced"] = True
+            console.print(Text("    no services with known vuln checks — skipping",
+                               style="bright_black"))
+            _advance_phase4()
+            return
+        vuln_phase = {"phase": "vuln scan", "ip": eng["ip"], "jobs": []}
+        jobs = []
+        for label, scripts, ports in families:
+            cmd = ("nmap -sV --script " + scripts + " -T3 -p "
+                   + ",".join(str(p) for p in ports) + " " + eng["ip"])
+            job = _job(cmd)
+            vuln_phase["jobs"].append(job)
+            jobs.append((label, scripts, ports, job))
+        eng["vuln_phase"] = vuln_phase
+        eng["ctx"].setdefault("phases", []).append(vuln_phase)
+        n = len(families)
+        console.print(Text(f"    {n} service famil{'y' if n == 1 else 'ies'}  ·  "
+                           f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+    for label, scripts, ports, job in jobs:
+        threading.Thread(target=_vuln_pass,
+                         args=(eng, label, scripts, ports, job), daemon=True).start()
+
+
+def _vuln_pass(eng: dict, label: str, scripts: str, ports: list, job: dict) -> None:
+    """One phase-3 family scan; stores its findings and advances when the phase is
+    fully done."""
+    result = _run_one_vuln_pass(scripts, ports, eng["ip"], job["cancel"])
+    with eng["lock"]:
+        try:
+            for f in result.get("findings", []):
+                purragent_db.add_vuln(eng["base_dir"], eng["tid"], f["port"],
+                                      f["proto"], f["script"], f["state"],
+                                      f["risk"], f["cve"], f["summary"])
+        except Exception:                             # noqa: BLE001
+            pass
+        eng["vuln_findings"] += result.get("findings", [])
+        job["state"] = ("aborted" if result.get("cancelled")
+                        else "error" if not result.get("ok") else "complete")
+    _maybe_finish_vuln(eng)
+
+
+def _maybe_finish_vuln(eng: dict) -> None:
+    """Advance to phase 4 once every vuln family scan has finished."""
+    with eng["lock"]:
+        if eng["vuln_advanced"] or eng["vuln_phase"] is None:
+            return
+        if any(j["state"] == "running" for j in eng["vuln_phase"]["jobs"]):
+            return
+        eng["vuln_advanced"] = True
+    _post(eng["ctx"], lambda: _finish_vuln_scan(eng))
+
+
+def _finish_vuln_scan(eng: dict) -> None:
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        findings = list(eng["vuln_findings"])
+    _vuln_outcome(findings)
+    _advance_phase4()
+
+
+def _advance_phase4() -> None:
+    adv = Text("  ▸ advancing to phase 4 — CVE lookup")
+    adv.append("  (coming soon)", style="bright_black")
+    console.print(adv)
+
+
+def _vuln_outcome(findings: list) -> None:
+    """Phase-3 outcome: a count line plus the worst findings, each with risk + CVEs."""
+    console.print(Text("  ▸ vuln scan — done"))
+    real = [f for f in findings
+            if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")]
+    if not real:
+        console.print(Text("  ○ vuln scan — no vulnerabilities found",
+                           style="bright_black"))
+        return
+    real.sort(key=lambda f: _VULN_RISK_ORDER.get((f.get("risk") or "").upper(), 5))
+    console.print(Text(f"  ✓ vuln scan — {len(real)} finding(s):", style="green"))
+    _risk_colour = {"CRITICAL": "bright_red", "HIGH": "red", "MEDIUM": "yellow",
+                    "LOW": "bright_black", "INFO": "bright_black"}
+    for f in real[:8]:
+        risk = (f.get("risk") or "").upper()
+        line = Text("      ")
+        where = str(f["port"]) if f.get("port") else "host"
+        line.append(f"{where:<5}", style="cyan")
+        line.append(" ")
+        line.append(f.get("summary") or f.get("script") or "", style="default")
+        if risk:
+            line.append(f"  [{risk}]", style=_risk_colour.get(risk, "bright_black"))
+        if f.get("cve"):
+            line.append("  " + f["cve"], style="bright_black")
+        console.print(line)
+    if len(real) > 8:
+        console.print(Text(f"      … and {len(real) - 8} more", style="bright_black"))
+
+
 def _pause_engagement(ctx) -> None:
     """No-port dead end: pause the engagement (stopped state) with the retry hint."""
     if ctx is not None:
@@ -3290,7 +3587,10 @@ def _status_view(ctx: dict) -> None:
         jobs = phase.get("jobs") or []
         agg = _phase_agg_state(phase)
         acol, alabel = _STATUS_STATE.get(agg, ("bright_black", agg))
-        if phase.get("phase") == "service detection":
+        if phase.get("phase") == "vuln scan":
+            got = bool([f for f in (eng.get("vuln_findings") or [])
+                        if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")])
+        elif phase.get("phase") == "service detection":
             got = bool([s for s in (eng.get("svc_services") or [])
                         if s.get("name") and s["name"] != "unknown"])
         else:

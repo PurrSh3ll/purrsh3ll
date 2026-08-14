@@ -79,6 +79,19 @@ CREATE TABLE IF NOT EXISTS scripts (
     UNIQUE (target_id, port, proto, script),
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
+CREATE TABLE IF NOT EXISTS vulns (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id  INTEGER,
+    port       INTEGER,                    -- 0 = host-level (hostscript) finding
+    proto      TEXT,
+    script     TEXT,                       -- NSE script id that produced it (phase 3)
+    state      TEXT,                       -- VULNERABLE / LIKELY / EXPOSED
+    risk       TEXT,                       -- CRITICAL/HIGH/MEDIUM/LOW/INFO
+    cve        TEXT,                       -- comma-joined CVE ids, or NULL
+    summary    TEXT,
+    UNIQUE (target_id, port, proto, script),
+    FOREIGN KEY (target_id) REFERENCES targets(id)
+);
 CREATE TABLE IF NOT EXISTS notes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     engagement_id INTEGER,
@@ -272,6 +285,8 @@ def fetch_findings(base_dir: str, target_id: int, engagement_id: int) -> dict:
                 "SELECT * FROM credentials WHERE target_id = ?", (target_id,))],
             "endpoints": [dict(r) for r in conn.execute(
                 "SELECT * FROM endpoints WHERE target_id = ?", (target_id,))],
+            "vulns": [dict(r) for r in conn.execute(
+                "SELECT * FROM vulns WHERE target_id = ? ORDER BY port", (target_id,))],
             "notes": [dict(r) for r in conn.execute(
                 "SELECT * FROM notes WHERE engagement_id = ? ORDER BY id",
                 (engagement_id,))],
@@ -351,6 +366,42 @@ def fetch_scripts(base_dir: str, target_id: int, port: int = None) -> list:
         conn.close()
 
 
+def add_vuln(base_dir: str, target_id: int, port: int, proto: str, script,
+             state, risk, cve, summary) -> None:
+    """Store one phase-3 vuln/auth finding for a port (0 = host-level). Upsert on the
+    (target, port, proto, script) key so re-running the scan refreshes it."""
+    script, summary = _clean(script), _clean(summary)
+    if not script or not summary:
+        return
+    conn = _connect(base_dir)
+    try:
+        conn.execute(
+            "INSERT INTO vulns (target_id, port, proto, script, state, risk, cve, "
+            "summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(target_id, port, proto, script) DO UPDATE SET "
+            "state = excluded.state, risk = excluded.risk, cve = excluded.cve, "
+            "summary = excluded.summary",
+            (target_id, int(port), _clean(proto) or "tcp", script, _clean(state),
+             _clean(risk), _clean(cve), summary))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_vulns(base_dir: str, target_id: int) -> list:
+    """Phase-3 findings for a target, worst risk first then by port."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    order = ("CASE risk WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 "
+             "WHEN 'MEDIUM' THEN 2 WHEN 'LOW' THEN 3 ELSE 4 END")
+    try:
+        return [dict(r) for r in conn.execute(
+            f"SELECT * FROM vulns WHERE target_id = ? ORDER BY {order}, port",
+            (target_id,))]
+    finally:
+        conn.close()
+
+
 def add_service(base_dir: str, target_id: int, port: int, proto: str = "tcp",
                 service=None, product=None, version=None) -> None:
     """Manually add a port/service to a host (user-supplied, like pshunter's [a])."""
@@ -387,6 +438,8 @@ def remove_engagement(base_dir: str, engagement_id: int) -> None:
             conn.execute("DELETE FROM ports WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM credentials WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM endpoints WHERE target_id = ?", (tid,))
+            conn.execute("DELETE FROM scripts WHERE target_id = ?", (tid,))
+            conn.execute("DELETE FROM vulns WHERE target_id = ?", (tid,))
         conn.execute("DELETE FROM targets WHERE engagement_id = ?", (engagement_id,))
         conn.execute("DELETE FROM notes WHERE engagement_id = ?", (engagement_id,))
         conn.execute("DELETE FROM engagements WHERE id = ?", (engagement_id,))
@@ -414,6 +467,8 @@ def fetch_all(base_dir: str) -> list:
                 "SELECT * FROM credentials WHERE target_id = ?", (tid,))]
             eng["endpoints"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM endpoints WHERE target_id = ?", (tid,))]
+            eng["vulns"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM vulns WHERE target_id = ? ORDER BY port", (tid,))]
             eng["notes"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM notes WHERE engagement_id = ? ORDER BY id", (e["id"],))]
             out.append(eng)
