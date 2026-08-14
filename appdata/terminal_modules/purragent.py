@@ -2802,6 +2802,17 @@ def _job(command: str) -> dict:
     return {"command": command, "state": "running", "cancel": threading.Event()}
 
 
+def _phase_banner(n: int, name: str, budget: bool = True) -> "Text":
+    """Uniform phase header: a [running] tag so the user sees what's happening now,
+    plus the shared time budget (skipped for the offline CVE lookup)."""
+    b = Text("  ")
+    b.append("[running]", style="yellow")
+    b.append(f" ▸ phase {n} — {name}")
+    if budget:
+        b.append(f"  ·  ⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black")
+    return b
+
+
 def _post(ctx: dict, fn) -> None:
     """Queue a print to appear above the active prompt (from a worker thread). Tries
     run_in_terminal now; the REPL loop flushes any that don't make it in time."""
@@ -2873,11 +2884,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
                          daemon=True).start()
     threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
 
-    banner = Text("  ")
-    banner.append("[running]", style="yellow")
-    banner.append(" ▸ phase 1 — port discovery")
-    banner.append(f"  ·  ⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black")
-    console.print(banner)
+    console.print(_phase_banner(1, "port discovery"))
 
 
 def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None:
@@ -2976,7 +2983,8 @@ def _svc_trigger(eng: dict, reason: str) -> None:
         include_os = not eng["os_done"] and _is_root()
         if include_os:
             eng["os_done"] = True
-        if eng["svc_phase"] is None:
+        first = eng["svc_phase"] is None
+        if first:
             eng["svc_phase"] = {"phase": "service detection", "ip": eng["ip"],
                                 "jobs": []}
             eng["ctx"].setdefault("phases", []).append(eng["svc_phase"])
@@ -2984,6 +2992,8 @@ def _svc_trigger(eng: dict, reason: str) -> None:
                + ",".join(str(p) for p in (new_tcp + new_udp)) + " " + eng["ip"])
         job = _job(cmd)
         eng["svc_phase"]["jobs"].append(job)
+    if first:                                          # announce phase 2 once, safely
+        _post(eng["ctx"], lambda: console.print(_phase_banner(2, "service detection")))
     threading.Thread(target=_svc_batch,
                      args=(eng, new_tcp, new_udp, include_os, job),
                      daemon=True).start()
@@ -3044,7 +3054,6 @@ def _finish_engagement(eng: dict) -> None:
         _pause_engagement(eng["ctx"])
         return
     if has_svc:
-        console.print(Text("  ▸ service detection — done"))
         _service_outcome({"result": {"ok": True, "cancelled": False,
                                      "services": services, "scripts": scripts,
                                      "os": os_name}})
@@ -3392,7 +3401,7 @@ def _start_vuln_scan(eng: dict) -> None:
         if eng["cancelled"]:
             return
         families = _vuln_families(eng["base_dir"], eng["tid"])
-        console.print(Text("  ▸ phase 3 — vuln scan"))
+        console.print(_phase_banner(3, "vuln scan"))
         jobs = []
         if families:
             vuln_phase = {"phase": "vuln scan", "ip": eng["ip"], "jobs": []}
@@ -3405,8 +3414,8 @@ def _start_vuln_scan(eng: dict) -> None:
             eng["vuln_phase"] = vuln_phase
             eng["ctx"].setdefault("phases", []).append(vuln_phase)
             n = len(families)
-            console.print(Text(f"    {n} service famil{'y' if n == 1 else 'ies'}  ·  "
-                               f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+            console.print(Text(f"    {n} service famil{'y' if n == 1 else 'ies'}",
+                               style="bright_black"))
         else:
             eng["vuln_advanced"] = True
             console.print(Text("    no services with known vuln checks — skipping",
@@ -3459,7 +3468,6 @@ def _finish_vuln_scan(eng: dict) -> None:
 
 def _vuln_outcome(findings: list) -> None:
     """Phase-3 outcome: a count line plus the worst findings, each with risk + CVEs."""
-    console.print(Text("  ▸ vuln scan — done"))
     real = [f for f in findings
             if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")]
     if not real:
@@ -3645,7 +3653,7 @@ def _start_cve_lookup(eng: dict) -> None:
         job = _job("cve-index lookup (offline NVD)  ·  " + eng["ip"])
         eng["cve_phase"] = {"phase": "cve lookup", "ip": eng["ip"], "jobs": [job]}
         eng["ctx"].setdefault("phases", []).append(eng["cve_phase"])
-    console.print(Text("  ▸ phase 4 — CVE lookup"))
+    console.print(_phase_banner(4, "CVE lookup", budget=False))
     console.print(Text("    matching service CPEs against the offline NVD index",
                        style="bright_black"))
     threading.Thread(target=_cve_pass, args=(eng, job), daemon=True).start()
@@ -3682,7 +3690,6 @@ def _finish_cve_lookup(eng: dict) -> None:
 
 def _cve_outcome(results: list, no_index: bool) -> None:
     """Phase-4 outcome: per service its product/version and the CVE count + preview."""
-    console.print(Text("  ▸ CVE lookup — done"))
     if no_index:
         console.print(Text("  ○ CVE lookup — offline NVD index not present "
                            "(appdata/cve_index.db)", style="bright_black"))
