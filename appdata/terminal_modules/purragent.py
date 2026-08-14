@@ -2862,6 +2862,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
         "port_phase": port_phase, "svc_phase": None,
         "svc_services": [], "svc_scripts": [], "os": None,
         "vuln_phase": None, "vuln_findings": [], "vuln_advanced": False,
+        "cve_phase": None, "cve_results": [], "cve_no_index": False,
     }
     ctx["engagement"] = eng
     ctx["phases"] = [port_phase]
@@ -2995,7 +2996,8 @@ def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict) -> 
             for s in result.get("services", []):
                 purragent_db.set_service(eng["base_dir"], eng["tid"], s["port"],
                                          s.get("proto") or "tcp", s.get("name"),
-                                         s.get("product"), s.get("version"))
+                                         s.get("product"), s.get("version"),
+                                         s.get("cpe"))
             for sc in result.get("scripts", []):
                 purragent_db.add_script(eng["base_dir"], eng["tid"], sc["port"],
                                         sc.get("proto") or "tcp", sc.get("script"),
@@ -3070,9 +3072,14 @@ def _parse_nmap_service_xml(xml_str: str) -> dict:
             proto = port.get("protocol", "tcp")
             svc = port.find("service")
             if svc is not None and (svc.get("name") or svc.get("product")):
+                cpes = [c.text for c in svc.findall("cpe") if c.text]
+                # prefer the application CPE (cpe:/a:) over an OS CPE for CVE lookup
+                cpe = next((c for c in cpes if c.startswith("cpe:/a:")),
+                           cpes[0] if cpes else None)
                 res["services"].append({
                     "port": pnum, "proto": proto, "name": svc.get("name"),
-                    "product": svc.get("product"), "version": svc.get("version")})
+                    "product": svc.get("product"), "version": svc.get("version"),
+                    "cpe": cpe})
             for scr in port.findall("script"):
                 out = scr.get("output")
                 if out:
@@ -3385,25 +3392,27 @@ def _start_vuln_scan(eng: dict) -> None:
             return
         families = _vuln_families(eng["base_dir"], eng["tid"])
         console.print(Text("  ▸ phase 3 — vuln scan"))
-        if not families:
+        jobs = []
+        if families:
+            vuln_phase = {"phase": "vuln scan", "ip": eng["ip"], "jobs": []}
+            for label, scripts, ports in families:
+                cmd = ("nmap -sV --script " + scripts + " -T3 -p "
+                       + ",".join(str(p) for p in ports) + " " + eng["ip"])
+                job = _job(cmd)
+                vuln_phase["jobs"].append(job)
+                jobs.append((label, scripts, ports, job))
+            eng["vuln_phase"] = vuln_phase
+            eng["ctx"].setdefault("phases", []).append(vuln_phase)
+            n = len(families)
+            console.print(Text(f"    {n} service famil{'y' if n == 1 else 'ies'}  ·  "
+                               f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+        else:
             eng["vuln_advanced"] = True
             console.print(Text("    no services with known vuln checks — skipping",
                                style="bright_black"))
-            _advance_phase4()
-            return
-        vuln_phase = {"phase": "vuln scan", "ip": eng["ip"], "jobs": []}
-        jobs = []
-        for label, scripts, ports in families:
-            cmd = ("nmap -sV --script " + scripts + " -T3 -p "
-                   + ",".join(str(p) for p in ports) + " " + eng["ip"])
-            job = _job(cmd)
-            vuln_phase["jobs"].append(job)
-            jobs.append((label, scripts, ports, job))
-        eng["vuln_phase"] = vuln_phase
-        eng["ctx"].setdefault("phases", []).append(vuln_phase)
-        n = len(families)
-        console.print(Text(f"    {n} service famil{'y' if n == 1 else 'ies'}  ·  "
-                           f"⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black"))
+    if not jobs:                                       # nothing to scan → phase 4
+        _start_cve_lookup(eng)
+        return
     for label, scripts, ports, job in jobs:
         threading.Thread(target=_vuln_pass,
                          args=(eng, label, scripts, ports, job), daemon=True).start()
@@ -3444,13 +3453,7 @@ def _finish_vuln_scan(eng: dict) -> None:
             return
         findings = list(eng["vuln_findings"])
     _vuln_outcome(findings)
-    _advance_phase4()
-
-
-def _advance_phase4() -> None:
-    adv = Text("  ▸ advancing to phase 4 — CVE lookup")
-    adv.append("  (coming soon)", style="bright_black")
-    console.print(adv)
+    _start_cve_lookup(eng)                             # phase 4 — CVE lookup
 
 
 def _vuln_outcome(findings: list) -> None:
@@ -3480,6 +3483,243 @@ def _vuln_outcome(findings: list) -> None:
         console.print(line)
     if len(real) > 8:
         console.print(Text(f"      … and {len(real) - 8} more", style="bright_black"))
+
+
+# ── phase 4 — CVE lookup ──────────────────────────────────────────────────────
+# Offline enrichment: phase 2 stored a CPE per service; here we match that CPE
+# (vendor/product + version) against the local NVD-derived index (appdata/
+# cve_index.db) and record the known CVE numbers as findings. No network, no
+# scanning — pure lookup. Only versioned CPEs are used (a general CPE without a
+# version can't be mapped precisely and would produce false positives). The matcher
+# is deliberately strict (exact-precision gate + closed ranges only) — fewer but
+# better-verified CVEs, less noise. Mirrors pshunter's phase-4 CVE lookup.
+_CVE_STORE_CAP = 20        # newest CVEs kept per service (keeps findings readable)
+
+# The same product often carries a different CPE vendor/product in nmap output than
+# the one(s) NVD files its CVEs under. Map the nmap pair to the canonical NVD pair(s)
+# that actually hold the CVEs; the lookup queries the original AND every alias and
+# unions the results, so nothing is silently missed.
+_CPE_ALIAS = {
+    ("mysql", "mysql"):                 [("oracle", "mysql")],
+    ("nginx", "nginx"):                 [("f5", "nginx")],
+    ("igor_sysoev", "nginx"):           [("f5", "nginx")],
+    ("elasticsearch", "elasticsearch"): [("elastic", "elasticsearch")],
+    ("squid", "squid"):                 [("squid-cache", "squid")],
+    ("isc", "bind9"):                   [("isc", "bind")],
+    ("vsftpd", "vsftpd"):               [("redhat", "vsftpd")],
+    ("proftpd", "proftpd"):             [("proftpd_project", "proftpd")],
+    ("rabbitmq", "rabbitmq"):           [("pivotal_software", "rabbitmq"),
+                                         ("broadcom", "rabbitmq_server")],
+    ("pureftpd", "pureftpd"):           [("pureftpd", "pure-ftpd")],
+}
+
+
+def _cve_index_path(base_dir: str) -> str:
+    return os.path.join(base_dir, "appdata", "cve_index.db")
+
+
+def _ver_key(v) -> tuple:
+    """Version as a tuple of its numeric components, e.g. '8.2p1' → (8, 2, 1)."""
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+def _ver_cmp(a, b) -> int:
+    """-1 / 0 / 1 comparing two version strings by their numeric components."""
+    ta, tb = _ver_key(a), _ver_key(b)
+    n = max(len(ta), len(tb))
+    ta += (0,) * (n - len(ta))
+    tb += (0,) * (n - len(tb))
+    return (ta > tb) - (ta < tb)
+
+
+def _cve_sort_key(cve: str) -> tuple:
+    """Sort CVE ids newest-first (by year, then sequence)."""
+    m = re.match(r"CVE-(\d+)-(\d+)", cve)
+    return (-int(m.group(1)), -int(m.group(2))) if m else (0, 0)
+
+
+def _cpe_parts(cpe):
+    """(vendor, product, version) from a CPE 2.2 (cpe:/a:v:p:ver) or 2.3
+    (cpe:2.3:a:v:p:ver:…) URI. version is None when absent/any ('*'/'-')."""
+    if not cpe or not cpe.startswith("cpe:"):
+        return None
+    body = cpe[4:]
+    if body.startswith("/"):                           # 2.2
+        f = body[1:].split(":")
+    elif body.startswith("2.3:"):                      # 2.3
+        f = body[4:].split(":")
+    else:
+        return None
+    if len(f) < 3:
+        return None
+    vendor, product = f[1], f[2]
+    version = f[3] if len(f) > 3 else None
+    version = None if version in ("", "*", "-") else version
+    if not vendor or not product:
+        return None
+    return vendor, product, version
+
+
+def _ver_in_match(version, exact, vsi, vse, vei, vee) -> bool:
+    """True when ``version`` satisfies one NVD cpeMatch row — deliberately strict:
+      • exact version: matched only when the fingerprint is at least as precise as
+        the exact value (a bare major like '4' is NOT taken as '4.0.0').
+      • ranges: only *closed* ranges (a start AND an end bound) count, and only for a
+        fingerprint with ≥2 numeric components. Open-ended rows are dropped."""
+    vk = _ver_key(version)
+    if exact:
+        ek = _ver_key(exact)
+        if len(vk) < len(ek):
+            return False                   # fingerprint too coarse to claim this
+        n = max(len(vk), len(ek))
+        return vk + (0,) * (n - len(vk)) == ek + (0,) * (n - len(ek))
+    if len(vk) < 2:
+        return False                       # bare major — too coarse for a range
+    if not ((vsi or vse) and (vei or vee)):
+        return False                       # open-ended / unbounded range — dropped
+    if vsi and _ver_cmp(version, vsi) < 0:
+        return False
+    if vse and _ver_cmp(version, vse) <= 0:
+        return False
+    if vei and _ver_cmp(version, vei) > 0:
+        return False
+    if vee and _ver_cmp(version, vee) >= 0:
+        return False
+    return True
+
+
+def _cve_lookup(base_dir: str, vendor: str, product: str, version: str):
+    """Matching CVE ids (newest first) for one vendor/product/version, or None when
+    the index is missing/unreadable. Queries the CPE pair plus any aliases."""
+    import sqlite3
+    path = _cve_index_path(base_dir)
+    if not os.path.exists(path):
+        return None
+    targets = [(vendor, product)] + _CPE_ALIAS.get((vendor, product), [])
+    try:
+        con = sqlite3.connect(path)
+        try:
+            rows = []
+            for av, ap in targets:
+                rows += con.execute(
+                    "SELECT m.exact_ver, m.vsi, m.vse, m.vei, m.vee, m.cve "
+                    "FROM cve_match m JOIN product p ON p.id = m.product_id "
+                    "WHERE p.vendor = ? AND p.product = ?", (av, ap)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    matched = {cve for exact, vsi, vse, vei, vee, cve in rows
+               if _ver_in_match(version, exact, vsi, vse, vei, vee)}
+    return sorted(matched, key=_cve_sort_key)
+
+
+def _run_cve_lookup(base_dir: str, tid: int, cancel=None) -> list:
+    """Per versioned service CPE on the target, the CVEs it maps to.
+    Returns [(port, proto, product, version, [cve, …]), …]."""
+    results = []
+    for row in purragent_db.fetch_ports(base_dir, tid):
+        if cancel is not None and cancel.is_set():
+            break
+        parts = _cpe_parts(row.get("cpe"))
+        if not parts:
+            continue
+        vendor, product, cpe_ver = parts
+        version = cpe_ver or row.get("version")
+        if not version or not re.search(r"\d", version):
+            continue                                   # need a concrete version
+        cves = _cve_lookup(base_dir, vendor, product, version)
+        if cves:
+            results.append((row["port"], row.get("proto") or "tcp", product,
+                            version, cves))
+    return results
+
+
+def _start_cve_lookup(eng: dict) -> None:
+    """Phase 4 entry: a single offline lookup job (no scanning). Runs in the
+    background so btw / /status stay responsive, then closes out the recon."""
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        job = _job("cve-index lookup (offline NVD)  ·  " + eng["ip"])
+        eng["cve_phase"] = {"phase": "cve lookup", "ip": eng["ip"], "jobs": [job]}
+        eng["ctx"].setdefault("phases", []).append(eng["cve_phase"])
+    console.print(Text("  ▸ phase 4 — CVE lookup"))
+    console.print(Text("    matching service CPEs against the offline NVD index",
+                       style="bright_black"))
+    threading.Thread(target=_cve_pass, args=(eng, job), daemon=True).start()
+
+
+def _cve_pass(eng: dict, job: dict) -> None:
+    """Run the offline lookup, store one 'cve-lookup' finding per service, close out."""
+    base, tid = eng["base_dir"], eng["tid"]
+    no_index = not os.path.exists(_cve_index_path(base))
+    results = [] if no_index else _run_cve_lookup(base, tid, job["cancel"])
+    with eng["lock"]:
+        try:
+            for port, proto, product, version, cves in results:
+                cve_str = ",".join(cves[:_CVE_STORE_CAP])
+                summary = f"{product} {version} — {len(cves)} known CVE(s)"
+                purragent_db.add_vuln(base, tid, port, proto, "cve-lookup",
+                                      "CVE", "INFO", cve_str, summary)
+        except Exception:                              # noqa: BLE001
+            pass
+        eng["cve_results"], eng["cve_no_index"] = results, no_index
+        job["state"] = ("aborted" if job["cancel"].is_set()
+                        else "error" if no_index else "complete")
+    _post(eng["ctx"], lambda: _finish_cve_lookup(eng))
+
+
+def _finish_cve_lookup(eng: dict) -> None:
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        results, no_index = list(eng.get("cve_results") or []), eng.get("cve_no_index")
+    _cve_outcome(results, no_index)
+    _finish_recon(eng)
+
+
+def _cve_outcome(results: list, no_index: bool) -> None:
+    """Phase-4 outcome: per service its product/version and the CVE count + preview."""
+    console.print(Text("  ▸ CVE lookup — done"))
+    if no_index:
+        console.print(Text("  ○ CVE lookup — offline NVD index not present "
+                           "(appdata/cve_index.db)", style="bright_black"))
+        return
+    if not results:
+        console.print(Text("  ○ CVE lookup — no versioned service CPE matched the "
+                           "index", style="bright_black"))
+        return
+    total = sum(len(cves) for *_r, cves in results)
+    console.print(Text(f"  ✓ CVE lookup — {len(results)} service(s), {total} CVE:",
+                       style="green"))
+    for port, proto, product, version, cves in results[:8]:
+        line = Text("      ")
+        line.append(f"{port:<5}", style="cyan")
+        line.append(f" {product} {version}".rstrip(), style="default")
+        line.append(f"  {len(cves)} CVE", style="bright_black")
+        console.print(line)
+        preview = ", ".join(cves[:4]) + (f"  (+{len(cves) - 4} more)"
+                                         if len(cves) > 4 else "")
+        console.print(Text("        " + preview, style="bright_black"))
+    if len(results) > 8:
+        console.print(Text(f"      … and {len(results) - 8} more service(s)",
+                           style="bright_black"))
+
+
+def _finish_recon(eng: dict) -> None:
+    """The automated kill-chain (phases 1–4) is done; phases 5+ (exploitation) are
+    interactive, so the loop hands back to the operator here."""
+    console.print(Text("  ▸ automated recon complete — phases 1–4 done",
+                       style=f"bold {VIOLET}"))
+    hint = Text("    review with ", style="bright_black")
+    hint.append("/status", style="cyan")
+    hint.append(" or ", style="bright_black")
+    hint.append("/target", style="cyan")
+    hint.append(", or ask about next steps with ", style="bright_black")
+    hint.append("btw", style="cyan")
+    hint.append("  ·  phases 5+ (exploitation) are manual.", style="bright_black")
+    console.print(hint)
 
 
 def _pause_engagement(ctx) -> None:
@@ -3587,7 +3827,9 @@ def _status_view(ctx: dict) -> None:
         jobs = phase.get("jobs") or []
         agg = _phase_agg_state(phase)
         acol, alabel = _STATUS_STATE.get(agg, ("bright_black", agg))
-        if phase.get("phase") == "vuln scan":
+        if phase.get("phase") == "cve lookup":
+            got = bool(eng.get("cve_results"))
+        elif phase.get("phase") == "vuln scan":
             got = bool([f for f in (eng.get("vuln_findings") or [])
                         if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")])
         elif phase.get("phase") == "service detection":
