@@ -4572,6 +4572,13 @@ def _port_view(base_dir: str, host: dict, port: dict) -> None:
     parts.append(Text("  service: " + ("  ".join(svc) if svc else "(unknown)"),
                       style="bright_black"))
     scripts = purragent_db.fetch_scripts(base_dir, host["id"], port["port"])
+    pnum = port["port"]
+    vulns_here = [v for v in f.get("vulns", []) if v.get("port") == pnum]
+    phase3 = [v for v in vulns_here if v.get("script") != "cve-lookup"]   # vuln scan
+    cvef = [v for v in vulns_here if v.get("script") == "cve-lookup"]     # CVE lookup
+    exploits = [e for e in f.get("exploit_findings", []) if e.get("port") == pnum]
+    _riskcol = {"CRITICAL": "bright_red", "HIGH": "red", "MEDIUM": "yellow",
+                "LOW": "bright_black", "INFO": "bright_black"}
     parts += [Text(""), Text("  findings", style="bold")]
     creds, eps, notes = f["credentials"], f["endpoints"], f["notes"]
     for c in creds:
@@ -4588,12 +4595,35 @@ def _port_view(base_dir: str, host: dict, port: dict) -> None:
             oln = oln.rstrip()
             if oln.strip():
                 parts.append(Text("        " + oln, style="bright_black"))
+    for v in phase3:                              # phase 3 — vuln scan findings
+        risk = (v.get("risk") or "").upper()
+        line = Text("    ⚠ ", style="red")
+        line.append(v.get("summary") or v.get("script") or "", style="default")
+        if risk:
+            line.append(f"  [{risk}]", style=_riskcol.get(risk, "bright_black"))
+        if v.get("cve"):
+            line.append("  " + v["cve"], style="bright_black")
+        parts.append(line)
+    for v in cvef:                                # phase 4 — CVE lookup
+        parts.append(Text(f"    ⌕ {v.get('summary') or 'CVE lookup'}",
+                          style="bright_black"))
+        ids = (v.get("cve") or "").split(",") if v.get("cve") else []
+        if ids:
+            shown = ", ".join(ids[:12]) + (f"  (+{len(ids) - 12} more)"
+                                           if len(ids) > 12 else "")
+            parts.append(Text("        " + shown, style="bright_black"))
+    for e in exploits:                            # phase 5 — service exploitation
+        parts.append(Text(f"    ⚑ {e.get('step') or e.get('service') or 'exploit'}",
+                          style="green"))
+        for ln in (e.get("finding") or "").splitlines():
+            if ln.strip():
+                parts.append(Text("        " + ln.rstrip(), style="green"))
     for nt in notes:
         txt = " ".join((nt.get("text") or "").split())
         if len(txt) > 100:
             txt = txt[:100] + "…"
         parts.append(Text(f"    · {nt.get('kind')}: {txt}", style="bright_black"))
-    if not (creds or eps or notes or scripts):
+    if not (creds or eps or notes or scripts or phase3 or cvef or exploits):
         parts.append(Text("    (none yet)", style="bright_black"))
     parts += [Text(""), Text("q to return", style="bright_black")]
     show_view(_render_ansi(Group(*parts)), hint="port detail · q to return")
