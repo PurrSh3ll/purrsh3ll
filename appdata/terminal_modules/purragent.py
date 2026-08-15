@@ -2813,6 +2813,37 @@ def _phase_banner(n: int, name: str, budget: bool = True) -> "Text":
     return b
 
 
+# Phases that fan out into several concurrent commands announce each one separately:
+# a [running] header when it starts, then a complete line + its own findings when it
+# finishes. Friendly per-command labels below.
+_PORT_PASS_LABEL = {
+    "fast": "fast port discovery",
+    "full-lo": "full low ports discovery",
+    "full-hi": "full high ports discovery",
+    "udp": "udp port discovery",
+}
+
+
+def _pass_label(label: str) -> str:
+    return _PORT_PASS_LABEL.get(label, f"{label} port discovery")
+
+
+def _print_cmd_outcome(n: int, label: str, state: str, findings: str) -> None:
+    """Per-command completion line + its own findings (one scan of a multi-command
+    phase). state is the job state: complete / error / aborted. Printed as a single
+    Text so the two lines can't interleave with another command finishing at once."""
+    if state == "error":
+        console.print(Text(f"  ✗ phase {n} — {label} failed", style="red"))
+        return
+    if state == "aborted":
+        console.print(Text(f"  ⏹ phase {n} — {label} aborted", style="yellow"))
+        return
+    out = Text(f"  ▸ phase {n} — {label} complete\n")
+    out.append(f"    {label} findings: {findings or 'none'}",
+               style="green" if findings else "bright_black")
+    console.print(out)
+
+
 def _post(ctx: dict, fn) -> None:
     """Queue a print to appear above the active prompt (from a worker thread). Tries
     run_in_terminal now; the REPL loop flushes any that don't make it in time."""
@@ -2869,7 +2900,8 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
         "detected_tcp": set(), "detected_udp": set(),
         "down_flags": [], "timed_out": False, "failed": False, "cancelled": False,
         "retried_pn": False, "os_done": False, "fast_done": False,
-        "port_done": False, "port_finalised": False, "advanced": False,
+        "port_done": False, "port_finalised": False, "port_settled": False,
+        "advanced": False,
         "port_phase": port_phase, "svc_phase": None,
         "svc_services": [], "svc_scripts": [], "os": None,
         "vuln_phase": None, "vuln_findings": [], "vuln_advanced": False,
@@ -2880,11 +2912,10 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
 
     for (label, args), job in zip(specs, port_phase["jobs"]):
         proto = "udp" if label == "udp" else "tcp"
+        console.print(_phase_banner(1, _pass_label(label)))    # announce each pass
         threading.Thread(target=_port_pass, args=(eng, label, args, proto, job),
                          daemon=True).start()
     threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
-
-    console.print(_phase_banner(1, "port discovery"))
 
 
 def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None:
@@ -2919,6 +2950,10 @@ def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None
         if done:
             eng["port_finalised"] = True
         fire = (label == "fast" or bool(newp)) and not result["cancelled"]
+        st = job["state"]
+    finds = ", ".join(str(p) for p in sorted(result["ports"]))
+    _post(eng["ctx"], lambda l=label, s=st, f=finds:
+          _print_cmd_outcome(1, _pass_label(l), s, f))
     if fire:
         _svc_trigger(eng, "pass")
     if done:
@@ -2927,43 +2962,41 @@ def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None
 
 
 def _finalise_port_discovery(eng: dict) -> None:
-    """All port passes done: -Pn retry once if nothing found and the host looked
-    down, then print the phase-1 outcome."""
+    """All port passes done: if nothing was found and the host looked down, run one
+    -Pn retry (firewalled hosts) as its own announced command."""
     with eng["lock"]:
         have = bool(eng["discovered_tcp"] - eng["pre_ports"]) or bool(eng["discovered_udp"])
         all_down = all(eng["down_flags"]) if eng["down_flags"] else False
         retry = (not have and all_down and not eng["retried_pn"]
                  and not eng["cancelled"])
-        if retry:
-            eng["retried_pn"] = True
-    if retry:
-        tcp = "-sS" if _is_root() else "-sT"
-        r = _run_one_port_pass(["-Pn", tcp, "-n", "--open", "-T4", "--top-ports",
-                                "1000"], eng["ip"], "tcp", threading.Event())
-        with eng["lock"]:
-            newp = set(r["ports"]) - eng["discovered_tcp"]
-            try:
-                for p in newp:
-                    purragent_db.add_service(eng["base_dir"], eng["tid"], p, "tcp")
-            except Exception:
-                pass
-            eng["discovered_tcp"] |= set(r["ports"])
-        if r["ports"]:
-            _svc_trigger(eng, "retry")
-    _post(eng["ctx"], lambda: _print_port_outcome(eng))
-
-
-def _print_port_outcome(eng: dict) -> None:
+        if not retry:
+            eng["port_settled"] = True     # nothing more to do → advance may proceed
+            return
+        eng["retried_pn"] = True
+        rjob = _job("nmap -Pn --top-ports 1000 " + eng["ip"] + "  (firewall retry)")
+        eng["port_phase"]["jobs"].append(rjob)
+    _post(eng["ctx"],
+          lambda: console.print(_phase_banner(1, "firewall-retry port discovery")))
+    tcp = "-sS" if _is_root() else "-sT"
+    r = _run_one_port_pass(["-Pn", tcp, "-n", "--open", "-T4", "--top-ports",
+                            "1000"], eng["ip"], "tcp", rjob["cancel"])
     with eng["lock"]:
-        ports = sorted(eng["discovered_tcp"] | eng["discovered_udp"])
-        all_down = all(eng["down_flags"]) if eng["down_flags"] else False
-        result = {"ok": not eng["failed"],
-                  "reachable": bool(ports) or not all_down, "ports": ports,
-                  "cancelled": eng["cancelled"], "timed_out": eng["timed_out"],
-                  "retried_pn": eng["retried_pn"],
-                  "error": "nmap not installed" if eng["failed"] else "scan error"}
-        pre = eng["pre_ports"]
-    _port_outcome({"result": result, "pre_ports": pre})
+        newp = set(r["ports"]) - eng["discovered_tcp"]
+        try:
+            for p in newp:
+                purragent_db.add_service(eng["base_dir"], eng["tid"], p, "tcp")
+        except Exception:
+            pass
+        eng["discovered_tcp"] |= set(r["ports"])
+        rjob["state"] = ("aborted" if r["cancelled"]
+                         else "error" if not r["ok"] else "complete")
+        eng["port_settled"] = True         # retry done → advance may proceed
+        st = rjob["state"]
+    finds = ", ".join(str(p) for p in sorted(r["ports"]))
+    _post(eng["ctx"], lambda s=st, f=finds:
+          _print_cmd_outcome(1, "firewall-retry port discovery", s, f))
+    if r["ports"]:
+        _svc_trigger(eng, "retry")
 
 
 def _svc_trigger(eng: dict, reason: str) -> None:
@@ -2983,23 +3016,25 @@ def _svc_trigger(eng: dict, reason: str) -> None:
         include_os = not eng["os_done"] and _is_root()
         if include_os:
             eng["os_done"] = True
-        first = eng["svc_phase"] is None
-        if first:
+        if eng["svc_phase"] is None:
             eng["svc_phase"] = {"phase": "service detection", "ip": eng["ip"],
                                 "jobs": []}
             eng["ctx"].setdefault("phases", []).append(eng["svc_phase"])
+        batch = new_tcp + new_udp
+        shown = ", ".join(str(p) for p in batch[:8]) + ("…" if len(batch) > 8 else "")
+        label = f"service detection ({shown})"
         cmd = ("nmap -sV -sC" + (" +OS" if include_os else "") + " -p "
-               + ",".join(str(p) for p in (new_tcp + new_udp)) + " " + eng["ip"])
+               + ",".join(str(p) for p in batch) + " " + eng["ip"])
         job = _job(cmd)
         eng["svc_phase"]["jobs"].append(job)
-    if first:                                          # announce phase 2 once, safely
-        _post(eng["ctx"], lambda: console.print(_phase_banner(2, "service detection")))
+    _post(eng["ctx"], lambda l=label: console.print(_phase_banner(2, l)))
     threading.Thread(target=_svc_batch,
-                     args=(eng, new_tcp, new_udp, include_os, job),
+                     args=(eng, new_tcp, new_udp, include_os, job, label),
                      daemon=True).start()
 
 
-def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict) -> None:
+def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict,
+               label: str) -> None:
     result = _run_service_scan(eng["ip"], tcp, udp, job["cancel"],
                                include_os=include_os)
     with eng["lock"]:
@@ -3022,6 +3057,13 @@ def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict) -> 
         eng["os"] = eng["os"] or result.get("os")
         job["state"] = ("aborted" if result.get("cancelled")
                         else "error" if not result.get("ok") else "complete")
+        st = job["state"]
+    named = [s for s in result.get("services", [])
+             if s.get("name") and s["name"] != "unknown"]
+    finds = ", ".join(f"{s['port']}/{s['name']}" for s in named)
+    if result.get("os"):
+        finds += (("  ·  " if finds else "") + f"OS: {result['os']}")
+    _post(eng["ctx"], lambda s=st, f=finds: _print_cmd_outcome(2, label, s, f))
     _maybe_advance(eng)
 
 
@@ -3029,7 +3071,7 @@ def _maybe_advance(eng: dict) -> None:
     """Advance to phase 3 once every port pass is done and every discovered port has
     been service-detected (nothing left in flight)."""
     with eng["lock"]:
-        if eng["advanced"] or not eng["port_done"]:
+        if eng["advanced"] or not eng["port_done"] or not eng["port_settled"]:
             return
         port_running = any(j["state"] == "running"
                            for j in eng["port_phase"]["jobs"])
@@ -3048,15 +3090,9 @@ def _finish_engagement(eng: dict) -> None:
         if eng["cancelled"]:
             return
         ports = eng["discovered_tcp"] | eng["discovered_udp"]
-        services, scripts, os_name = eng["svc_services"], eng["svc_scripts"], eng["os"]
-        has_svc = eng["svc_phase"] is not None
     if not ports:
         _pause_engagement(eng["ctx"])
         return
-    if has_svc:
-        _service_outcome({"result": {"ok": True, "cancelled": False,
-                                     "services": services, "scripts": scripts,
-                                     "os": os_name}})
     _start_vuln_scan(eng)                          # phase 3 — vuln scan
 
 
@@ -3257,8 +3293,6 @@ _VULN_AUTH_TITLE = {
     "rsync-list-modules": "rsync modules listable",
     "snmp-info": "SNMP readable (default community)",
 }
-# Risk severities, worst first, for ordering/outcome.
-_VULN_RISK_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
 
 def _vuln_key(name, port: int):
@@ -3401,11 +3435,11 @@ def _start_vuln_scan(eng: dict) -> None:
         if eng["cancelled"]:
             return
         families = _vuln_families(eng["base_dir"], eng["tid"])
-        console.print(_phase_banner(3, "vuln scan"))
         jobs = []
         if families:
             vuln_phase = {"phase": "vuln scan", "ip": eng["ip"], "jobs": []}
-            for label, scripts, ports in families:
+            for fam, scripts, ports in families:
+                label = f"{fam} vuln scan"
                 cmd = ("nmap -sV --script " + scripts + " -T3 -p "
                        + ",".join(str(p) for p in ports) + " " + eng["ip"])
                 job = _job(cmd)
@@ -3413,17 +3447,16 @@ def _start_vuln_scan(eng: dict) -> None:
                 jobs.append((label, scripts, ports, job))
             eng["vuln_phase"] = vuln_phase
             eng["ctx"].setdefault("phases", []).append(vuln_phase)
-            n = len(families)
-            console.print(Text(f"    {n} service famil{'y' if n == 1 else 'ies'}",
-                               style="bright_black"))
         else:
             eng["vuln_advanced"] = True
+            console.print(_phase_banner(3, "vuln scan"))
             console.print(Text("    no services with known vuln checks — skipping",
                                style="bright_black"))
     if not jobs:                                       # nothing to scan → phase 4
         _start_cve_lookup(eng)
         return
-    for label, scripts, ports, job in jobs:
+    for label, scripts, ports, job in jobs:            # announce each family
+        console.print(_phase_banner(3, label))
         threading.Thread(target=_vuln_pass,
                          args=(eng, label, scripts, ports, job), daemon=True).start()
 
@@ -3443,6 +3476,11 @@ def _vuln_pass(eng: dict, label: str, scripts: str, ports: list, job: dict) -> N
         eng["vuln_findings"] += result.get("findings", [])
         job["state"] = ("aborted" if result.get("cancelled")
                         else "error" if not result.get("ok") else "complete")
+        st = job["state"]
+    real = [f for f in result.get("findings", [])
+            if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")]
+    finds = "; ".join(f.get("summary") or f.get("script") or "" for f in real)
+    _post(eng["ctx"], lambda s=st, f=finds: _print_cmd_outcome(3, label, s, f))
     _maybe_finish_vuln(eng)
 
 
@@ -3461,37 +3499,7 @@ def _finish_vuln_scan(eng: dict) -> None:
     with eng["lock"]:
         if eng["cancelled"]:
             return
-        findings = list(eng["vuln_findings"])
-    _vuln_outcome(findings)
     _start_cve_lookup(eng)                             # phase 4 — CVE lookup
-
-
-def _vuln_outcome(findings: list) -> None:
-    """Phase-3 outcome: a count line plus the worst findings, each with risk + CVEs."""
-    real = [f for f in findings
-            if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")]
-    if not real:
-        console.print(Text("  ○ vuln scan — no vulnerabilities found",
-                           style="bright_black"))
-        return
-    real.sort(key=lambda f: _VULN_RISK_ORDER.get((f.get("risk") or "").upper(), 5))
-    console.print(Text(f"  ✓ vuln scan — {len(real)} finding(s):", style="green"))
-    _risk_colour = {"CRITICAL": "bright_red", "HIGH": "red", "MEDIUM": "yellow",
-                    "LOW": "bright_black", "INFO": "bright_black"}
-    for f in real[:8]:
-        risk = (f.get("risk") or "").upper()
-        line = Text("      ")
-        where = str(f["port"]) if f.get("port") else "host"
-        line.append(f"{where:<5}", style="cyan")
-        line.append(" ")
-        line.append(f.get("summary") or f.get("script") or "", style="default")
-        if risk:
-            line.append(f"  [{risk}]", style=_risk_colour.get(risk, "bright_black"))
-        if f.get("cve"):
-            line.append("  " + f["cve"], style="bright_black")
-        console.print(line)
-    if len(real) > 8:
-        console.print(Text(f"      … and {len(real) - 8} more", style="bright_black"))
 
 
 # ── phase 4 — CVE lookup ──────────────────────────────────────────────────────
@@ -3740,67 +3748,6 @@ def _pause_engagement(ctx) -> None:
     line.append("/target", style="cyan")
     line.append(" to add ports.", style="bright_black")
     console.print(line)
-
-
-def _port_outcome(scan: dict) -> None:
-    """Phase-1 (port discovery) outcome line."""
-    result, pre_ports = scan.get("result") or {}, scan.get("pre_ports") or set()
-    if not result:
-        return
-    if result.get("cancelled"):
-        found = result.get("ports") or []
-        msg = (f"  ⏹ scan stopped — {len(found)} port(s) found so far: "
-               + ", ".join(str(p) for p in found)) if found else \
-              "  ⏹ scan stopped — no ports found before stopping"
-        console.print(Text(msg, style="yellow"))
-    elif not result["ok"]:
-        console.print(Text(f"  ✗ scan failed — {result['error']}", style="red"))
-    elif not result["reachable"]:
-        extra = " (retried with -Pn)" if result.get("retried_pn") else ""
-        console.print(Text(f"  ✗ host unreachable — no response{extra}",
-                           style="yellow"))
-    elif result["ports"]:
-        console.print(Text(f"  ✓ scan complete — {len(result['ports'])} open "
-                           "port(s): " + ", ".join(str(p) for p in result["ports"]),
-                           style="green"))
-    elif pre_ports:
-        console.print(Text(f"  ○ scan found no open ports, but {len(pre_ports)} "
-                           "port(s) were entered manually — continuing with those",
-                           style="bright_black"))
-    elif result.get("timed_out"):
-        console.print(Text(f"  ⏱ scan hit the {PORT_SCAN_MINUTES}m budget — no open "
-                           "ports found", style="yellow"))
-    else:
-        console.print(Text("  ○ no open ports discovered", style="bright_black"))
-
-
-def _service_outcome(scan: dict) -> None:
-    """Phase-2 (service detection) outcome line."""
-    result = scan.get("result") or {}
-    if not result:
-        return
-    if result.get("cancelled"):
-        console.print(Text("  ⏹ service detection stopped", style="yellow"))
-    elif not result.get("ok"):
-        console.print(Text(f"  ✗ service detection failed — {result.get('error')}",
-                           style="red"))
-    else:
-        named = [s for s in (result.get("services") or [])
-                 if s.get("name") and s["name"] != "unknown"]
-        extra = ""
-        if result.get("os"):
-            extra += f"  ·  OS: {result['os']}"
-        n_scr = len(result.get("scripts") or [])
-        if n_scr:
-            extra += f"  ·  {n_scr} script(s)"
-        if named:
-            preview = ", ".join(f"{s['port']}/{s['name']}" for s in named[:6])
-            more = "…" if len(named) > 6 else ""
-            console.print(Text(f"  ✓ service detection — {len(named)} service(s): "
-                               f"{preview}{more}{extra}", style="green"))
-        else:
-            console.print(Text("  ○ service detection — no services identified"
-                               + extra, style="bright_black"))
 
 
 # /status — pshunter-style read-only view (no view/stop/abort actions).
