@@ -494,6 +494,119 @@ HACKTOOLS = {
 }
 
 
+# RAG metadata for purragent's client-side tool retriever: a one-line `short` for the
+# catalog, a keyword/scenario-heavy `long` used to build the embedding index, and
+# `examples` of user phrasings the tool answers (query-to-query matching). Emitted as
+# shortDescription / longDescription / exampleQueries; plain MCP clients ignore them.
+# name -> (short, long, [examples])
+_META = {
+    "port_discovery": (
+        "Discover open TCP/UDP ports on a host.",
+        "Port scanning and port discovery with nmap: find which ports are open on a "
+        "single host. Presets fast (top 1000), top100, low (1-32767), high, full "
+        "(1-65535); TCP SYN/connect or UDP; adjustable timing T0-T5 for filtered, "
+        "firewalled or slow hosts; -Pn host-discovery toggle. The first recon step "
+        "before service detection. Keywords: nmap, scan, open ports, port sweep, SYN "
+        "scan, connect scan, UDP scan, firewall, filtered.",
+        ["scan for open ports on 10.0.0.5", "what ports are open on the target",
+         "do a full port scan", "check for open UDP ports", "port discovery on this host"]),
+    "service_discovery": (
+        "Fingerprint the services and versions on a host's ports.",
+        "Service and version detection with nmap -sV plus default -sC NSE scripts: "
+        "identify the software and version behind each open port. Optional OS "
+        "detection (-O), UDP, version intensity, timing. Run after port_discovery on "
+        "the open ports. Keywords: nmap -sV -sC, banner, version detection, "
+        "fingerprint, service enumeration, OS detection, product version.",
+        ["what service is running on port 80", "detect versions on the open ports",
+         "fingerprint the services on 10.0.0.5", "run an nmap service/version scan",
+         "identify the software and versions"]),
+    "script_scan": (
+        "Run specific nmap NSE scripts against a host.",
+        "Targeted nmap NSE script scan: run named scripts such as http-title, "
+        "http-methods, smb-vuln-ms17-010, ssl-enum-ciphers, or a safe wildcard like "
+        "smb-vuln-*. For vulnerability detection and deeper protocol enumeration. "
+        "brute/dos/exploit categories rejected. Keywords: nmap --script, NSE, vuln "
+        "scan, smb-vuln, ms17-010, eternalblue detection, http-enum, ssl ciphers.",
+        ["run smb-vuln-ms17-010 on the host", "check for eternalblue",
+         "run nmap nse http scripts on port 80", "enumerate ssl ciphers",
+         "scan with a specific nmap script"]),
+    "http_headers": (
+        "Fetch a web server's HTTP response headers.",
+        "HTTP header grab with curl: reveal Server / X-Powered-By tech banners, "
+        "cookies, security headers and redirects. Target a path (/admin, /api), HEAD "
+        "or GET, follow redirects, set a custom User-Agent, http or https. Web recon. "
+        "Keywords: curl -I, http headers, server banner, web technology, X-Powered-By, "
+        "redirect, HSTS, set-cookie.",
+        ["get the http headers of the web server", "what web server runs on port 80",
+         "check headers at /admin", "follow redirects and show the headers",
+         "curl the target's website headers"]),
+    "ftp_anon": (
+        "Check anonymous FTP login and list the root.",
+        "Anonymous FTP check with nmap ftp-anon: test whether anonymous login works "
+        "and list the FTP root directory — a quick anonymous foothold. Keywords: ftp, "
+        "anonymous login, ftp-anon, port 21, anon ftp, directory listing.",
+        ["is anonymous ftp allowed on 10.0.0.5", "check ftp anonymous login",
+         "list the ftp root directory", "test anonymous ftp on port 21"]),
+    "smb_enum": (
+        "Enumerate SMB via null session: OS, shares, users.",
+        "SMB and Windows-shares enumeration with nmap smb-* scripts over a null "
+        "session: OS discovery, SMB signing / security mode, shares and users. "
+        "Windows/AD recon. Keywords: smb, cifs, netbios, port 445, port 139, null "
+        "session, shares, smb-enum-shares, smb-enum-users, smb-os-discovery, windows.",
+        ["enumerate smb shares on 10.0.0.5", "list smb users",
+         "what OS via smb", "smb null-session enumeration", "check windows shares on 445"]),
+    "snmp_walk": (
+        "Walk SNMP to dump a host's system info.",
+        "SNMP enumeration with snmpwalk: dump system info, interfaces, processes or "
+        "users depending on the OID subtree. Community string (default public), SNMP "
+        "v1/v2c, custom port, start OID. Keywords: snmp, snmpwalk, community string, "
+        "public, port 161, MIB, OID, udp enumeration, system description.",
+        ["walk snmp on 10.0.0.5", "snmp enumeration with community public",
+         "dump the snmp system info", "snmpwalk the target", "read snmp oid 1.3.6.1.2.1.1"]),
+    "dns_lookup": (
+        "Resolve a DNS record (A/MX/NS/TXT/PTR/…).",
+        "DNS resolution with dig: look up A/AAAA/MX/NS/TXT/CNAME/SOA/PTR records, "
+        "optionally against a specific resolver (@server) such as the target's own "
+        "DNS. DNS recon. Keywords: dns, dig, nslookup, resolve, mx record, name "
+        "server, txt record, reverse dns, ptr, resolver.",
+        ["resolve example.com", "what are the MX records for the domain",
+         "look up the NS records", "dig the A record via 8.8.8.8",
+         "reverse dns lookup for the ip"]),
+    "ssl_cert": (
+        "Read a TLS service's certificate (subject, SANs).",
+        "TLS/SSL certificate reader with nmap ssl-cert: show subject, SAN hostnames, "
+        "issuer and validity — good for discovering extra hostnames / vhosts and "
+        "self-signed or expired certs. Keywords: tls, ssl, certificate, x509, SAN, "
+        "subject alternative name, https, port 443, cert expiry, self-signed, issuer.",
+        ["read the ssl certificate on port 443", "what hostnames are in the tls cert",
+         "check the certificate subject and SANs", "get the https certificate details"]),
+    "banner_grab": (
+        "Grab the service banner on one port.",
+        "Single-port banner grab with nmap -sV plus the banner script: read the raw "
+        "service banner/version on a chosen port for quick identification. Keywords: "
+        "banner grab, service banner, version, nmap banner, netcat banner, port "
+        "fingerprint, greeting.",
+        ["grab the banner on port 22", "what banner does port 8080 show",
+         "identify the service on this port", "read the service banner"]),
+    "searchsploit": (
+        "Search Exploit-DB for a product/version or CVE.",
+        "Local Exploit-DB search with searchsploit: find known public exploits by "
+        "product/version (e.g. 'vsftpd 2.3.4'), by CVE (--cve), or title-only. Turns "
+        "a detected version into exploit leads. Offline; leads, not proof. Keywords: "
+        "searchsploit, exploit-db, public exploit, CVE, PoC, known exploit, edb-id.",
+        ["search exploits for vsftpd 2.3.4", "any public exploit for apache 2.4",
+         "searchsploit CVE-2021-3156", "find exploit-db entries for this version"]),
+    "whois": (
+        "WHOIS registration info for a domain or IP.",
+        "WHOIS lookup for a domain or IP, optionally against a specific WHOIS server "
+        "(-h): registrar, organisation, contacts, and netblock/ASN for IPs. OSINT / "
+        "recon. Keywords: whois, registration, registrar, domain owner, netblock, "
+        "ASN, ip whois, abuse contact.",
+        ["whois for example.com", "who owns this domain", "whois the ip address",
+         "registration info for the domain"]),
+}
+
+
 # --------------------------------------------------------------------------- #
 # JSON-RPC plumbing
 # --------------------------------------------------------------------------- #
@@ -507,10 +620,22 @@ def _error(req_id, code, message):
 
 
 def _tools_list():
-    return [
-        {"name": name, "description": desc, "inputSchema": schema}
-        for name, (_b, desc, schema, _t) in HACKTOOLS.items()
-    ]
+    # `description` is the standard model-facing text (any MCP client works).
+    # shortDescription / longDescription / exampleQueries are extra fields purragent's
+    # client reads for its catalog and RAG tool-retrieval index; other clients ignore
+    # them. Falls back to the normal description if a tool has no RAG metadata.
+    out = []
+    for name, (_b, normal, schema, _t) in HACKTOOLS.items():
+        short, long, examples = _META.get(name, (normal, normal, []))
+        out.append({
+            "name": name,
+            "description": normal,
+            "shortDescription": short,
+            "longDescription": long,
+            "exampleQueries": examples,
+            "inputSchema": schema,
+        })
+    return out
 
 
 def _call_tool(name, arguments):
@@ -584,6 +709,8 @@ def selftest():
     """Offline check (no MCP client): list tools + validation, without touching the
     network (uses a bogus host so nmap/etc. aren't actually run against anyone)."""
     print(f"tools: {', '.join(HACKTOOLS)}")
+    missing = [n for n in HACKTOOLS if n not in _META]
+    print(f"[rag metadata] {'ok — every tool has short/long/examples' if not missing else 'MISSING: ' + ', '.join(missing)}")
     for label, req in (
         ("initialize", {"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
         ("tools/list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
