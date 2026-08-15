@@ -3987,7 +3987,8 @@ def _exploit_worker(eng: dict) -> None:
                         or pshunter._STEP_COMMANDS["other"])
         _post(eng["ctx"], lambda p=port, k=key, lb=label:
               console.print(Text(f"    → {p}/{k}  ·  {lb}", style="bright_black")))
-        ran = skipped = 0
+        ran = skipped = missing_cmds = 0
+        missing_tools: set = set()
         for n, step in enumerate(steps, 1):
             if eng.get("cancelled"):
                 break
@@ -3997,9 +3998,12 @@ def _exploit_worker(eng: dict) -> None:
                     break
                 cmd = _fill_exploit_cmd(raw, ip, port)
                 binname = _cmd_binary(cmd) if cmd else None
-                if (not cmd or not binname or not shutil.which(binname)
-                        or not _exploit_cmd_safe(cmd)):
-                    skipped += 1
+                if not cmd or not binname or not _exploit_cmd_safe(cmd):
+                    skipped += 1                        # placeholder / creds / denied
+                    continue
+                if not shutil.which(binname):           # tool missing → flag in red
+                    missing_tools.add(binname)
+                    missing_cmds += 1
                     continue
                 ran += 1
                 label_cmd = f"{port}/{key}  ·  {cmd}"
@@ -4026,9 +4030,18 @@ def _exploit_worker(eng: dict) -> None:
                                 {"port": port, "finding": finding})
                 _post(eng["ctx"], lambda lc=label_cmd, st=job["state"], f=finding:
                       _print_exploit_outcome(lc, st, f))
+        if missing_tools:
+            def _miss(mc=missing_cmds, tools=sorted(missing_tools)):
+                line = Text("      ")
+                line.append("[skipped]", style="red")
+                line.append(f" {mc} command(s) — tool(s) not installed: ",
+                            style="red")
+                line.append(", ".join(tools), style="bold red")
+                console.print(line)
+            _post(eng["ctx"], _miss)
         if skipped:
-            _post(eng["ctx"], lambda s=skipped, p=port: console.print(Text(
-                f"      ({s} command(s) skipped — need creds/listener or missing tools)",
+            _post(eng["ctx"], lambda s=skipped: console.print(Text(
+                f"      ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
