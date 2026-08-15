@@ -2833,7 +2833,7 @@ def _pass_label(label: str) -> str:
     return _PORT_PASS_LABEL.get(label, f"{label} port discovery")
 
 
-_STATE_TAG = {"complete": ("complete", "yellow"),     # brown/amber, like [running]
+_STATE_TAG = {"complete": ("complete", "default"),    # normal, like the rest of the line
               "error": ("failed", "red"),
               "aborted": ("aborted", "magenta")}
 
