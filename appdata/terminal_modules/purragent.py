@@ -2921,6 +2921,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
         "vuln_phase": None, "vuln_findings": [], "vuln_advanced": False,
         "cve_phase": None, "cve_results": [], "cve_no_index": False,
         "exploit_phase": None, "exploit_findings": [],
+        "thinking": False, "recon_done": False,
     }
     ctx["engagement"] = eng
     ctx["phases"] = [port_phase]
@@ -4019,8 +4020,12 @@ def _exploit_worker(eng: dict) -> None:
                                 else "error" if not result["ok"] else "complete")
                 finding = None
                 if not result["cancelled"]:
-                    finding = _extract_exploit_finding(eng, port, key, step_desc,
-                                                       cmd, result["output"])
+                    eng["thinking"] = True             # model analysing the output
+                    try:
+                        finding = _extract_exploit_finding(eng, port, key, step_desc,
+                                                           cmd, result["output"])
+                    finally:
+                        eng["thinking"] = False
                     if finding:
                         try:
                             purragent_db.add_exploit_finding(
@@ -4064,6 +4069,7 @@ def _print_exploit_outcome(label: str, state: str, finding) -> None:
 def _finish_recon(eng: dict) -> None:
     """The automated kill-chain (phases 1–5) is done; deeper exploitation (creds,
     shells, privesc) stays interactive, so the loop hands back to the operator here."""
+    eng["recon_done"] = True                           # clears the toolbar progress tag
     console.print(Text("  ▸ automated recon complete — phases 1–5 done",
                        style=f"bold {VIOLET}"))
     hint = Text("    review with ", style="bright_black")
@@ -4991,12 +4997,23 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if hack_mode:
             goal_txt = f" · {hack_goal}" if hack_goal else ""
             hack_seg = f"   <style fg='#ff5f5f'>⚑ hacking{goal_txt}</style>"
-        # Background scan indicator — how many commands are running now (/status
-        # shows which). Concurrent in phases 1–3, one at a time in phase 5.
+        # Background progress indicator: how many commands are running now, or
+        # 'thinking' while the model analyses output, or 'working' in a brief gap —
+        # so the bar never looks idle before 'automated recon complete'. /status
+        # shows the detail. (concurrent in phases 1–3, one at a time in phase 5.)
         running = sum(1 for ph in ctx.get("phases", [])
                       for j in ph.get("jobs", []) if j.get("state") == "running")
-        scan_seg = (f"   <style fg='#e5c07b'>⟳ {running} running</style>"
-                    if running else "")
+        eng_ = ctx.get("engagement") or {}
+        active = (ctx.get("hacking") and not eng_.get("recon_done")
+                  and not eng_.get("cancelled"))
+        if running:
+            scan_seg = f"   <style fg='#e5c07b'>⟳ {running} running</style>"
+        elif active and eng_.get("thinking"):
+            scan_seg = "   <style fg='#e5c07b'>⟳ thinking…</style>"
+        elif active:
+            scan_seg = "   <style fg='#e5c07b'>⟳ working…</style>"
+        else:
+            scan_seg = ""
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
@@ -5143,7 +5160,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # prompt-toolkit style.
                 text = input("  step 1 — enter the target IP: ").strip()
             else:
-                text = session.prompt(plain_prompt).strip()
+                # refresh so the toolbar progress tag (running / thinking… / working…)
+                # ticks live even while a background phase works with no prints.
+                text = session.prompt(plain_prompt, refresh_interval=0.5).strip()
         except KeyboardInterrupt:
             continue          # Ctrl-C: clear the line, stay put
         except EOFError:
