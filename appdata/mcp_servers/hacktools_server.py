@@ -134,6 +134,22 @@ def _resolve_wordlist(name):
     return None
 
 
+# Subdomain/DNS wordlists for vhost fuzzing.
+_DNS_WORDLISTS = {
+    "small": ["/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"],
+    "large": ["/usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt"],
+    "common": ["/usr/share/seclists/Discovery/DNS/namelist.txt",
+               "/usr/share/wordlists/dnsmap.txt"],
+}
+
+
+def _resolve_dns_wordlist(name):
+    for p in _DNS_WORDLISTS.get(name, []):
+        if os.path.exists(p):
+            return p
+    return None
+
+
 # ── credentials (batch 2) ─────────────────────────────────────────────────────
 def _creds(a, require=False):
     """(username, password, nthash, domain) — validated so they can't break the
@@ -794,6 +810,64 @@ def _b_ftp_transfer(a):
     raise ValueError("`action` must be list or get")
 
 
+# ── recon batch ───────────────────────────────────────────────────────────────
+def _b_subdomain_enum(a):
+    domain = _word(a, "domain")
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    return ["subfinder", "-d", domain, "-silent"], "subfinder", 300
+
+
+def _b_dns_zone_transfer(a):
+    domain = _word(a, "domain")
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    ns = (a.get("nameserver") or "").strip()
+    if not ns or not _HOST_RE.match(ns):
+        raise ValueError("`nameserver` (an NS host/IP to try) is required")
+    return ["dig", "axfr", domain, "@" + ns], "dig", 60
+
+
+def _b_traceroute(a):
+    host = _req_host(a)
+    argv = ["traceroute", "-n"]
+    hops = a.get("max_hops")
+    if hops is not None:
+        try:
+            h = int(hops)
+        except (TypeError, ValueError):
+            raise ValueError("`max_hops` must be a number")
+        if not 1 <= h <= 64:
+            raise ValueError("`max_hops` must be 1-64")
+        argv += ["-m", str(h)]
+    proto = (a.get("protocol") or "udp").lower()
+    if proto in ("icmp", "tcp") and not _is_root():
+        raise ValueError(f"{proto} traceroute needs root — use protocol=udp or run "
+                         "as root")
+    if proto == "icmp":
+        argv.append("-I")
+    elif proto == "tcp":
+        argv.append("-T")
+    elif proto != "udp":
+        raise ValueError("`protocol` must be udp/icmp/tcp")
+    return argv + [host], "traceroute", 120
+
+
+def _b_vhost_fuzz(a):
+    url = _req_url(a)
+    domain = _word(a, "domain")
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    name = (a.get("wordlist") or "small").lower()
+    if name not in _DNS_WORDLISTS:
+        raise ValueError("`wordlist` must be small/large/common")
+    wl = _resolve_dns_wordlist(name)
+    if not wl:
+        raise ValueError(f"wordlist '{name}' not found — install seclists")
+    return (["ffuf", "-u", url, "-H", f"Host: FUZZ.{domain}", "-w", wl, "-ac", "-s"],
+            "ffuf", 600)
+
+
 # name -> (builder, description, inputSchema, timeout)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -1200,6 +1274,46 @@ HACKTOOLS = {
             "path": {"type": "string", "description": "Directory or file path "
                      "(default /)."}},
          "required": ["host"]}, 90),
+    "subdomain_enum": (
+        _b_subdomain_enum,
+        "Passively enumerate a domain's subdomains with subfinder (OSINT sources, no "
+        "traffic to the target).",
+        {"type": "object", "properties": {
+            "domain": {"type": "string", "description": "Root domain, e.g. "
+                       "example.com."}},
+         "required": ["domain"]}, 300),
+    "dns_zone_transfer": (
+        _b_dns_zone_transfer,
+        "Attempt a DNS zone transfer (AXFR) against a name server — dumps every record "
+        "if the NS allows it.",
+        {"type": "object", "properties": {
+            "domain": {"type": "string", "description": "Domain / zone, e.g. "
+                       "example.com."},
+            "nameserver": {"type": "string", "description": "Name server host/IP to "
+                           "try the AXFR against."}},
+         "required": ["domain", "nameserver"]}, 60),
+    "traceroute": (
+        _b_traceroute,
+        "Trace the network path to a host. UDP by default; ICMP/TCP need root.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "max_hops": {"type": "integer", "description": "Max hops 1-64 (default "
+                         "30)."},
+            "protocol": {"type": "string", "description": "udp (default) · icmp · tcp "
+                         "(icmp/tcp need root)."}},
+         "required": ["host"]}, 120),
+    "vhost_fuzz": (
+        _b_vhost_fuzz,
+        "Discover virtual hosts on a web server by fuzzing the Host header with ffuf "
+        "(auto-calibrated to drop the default response).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Web server URL, e.g. "
+                    "http://10.0.0.5."},
+            "domain": {"type": "string", "description": "Base domain for the Host "
+                       "header (FUZZ.<domain>), e.g. example.com."},
+            "wordlist": {"type": "string", "description": "small (default) · large · "
+                         "common."}},
+         "required": ["url", "domain"]}, 600),
 }
 
 
@@ -1496,6 +1610,41 @@ _META = {
         ["list the ftp directory", "download a file from ftp",
          "get the contents of a file over ftp", "loot the ftp server with these creds",
          "read passwords.txt from ftp"]),
+    "subdomain_enum": (
+        "Enumerate a domain's subdomains (subfinder).",
+        "Passive subdomain enumeration with subfinder: gather subdomains of a root "
+        "domain from OSINT sources without sending traffic to the target. Attack-"
+        "surface discovery. Keywords: subfinder, subdomain enumeration, passive recon, "
+        "OSINT, amass, dns, attack surface, subdomains, discover hosts.",
+        ["enumerate subdomains of example.com", "find subdomains for the domain",
+         "passive subdomain discovery", "what subdomains does this domain have",
+         "run subfinder on the target domain"]),
+    "dns_zone_transfer": (
+        "Attempt a DNS zone transfer / AXFR.",
+        "DNS zone transfer (AXFR) attempt with dig: if a name server allows it, dumps "
+        "the entire zone — every host and record. Quick high-value DNS misconfig check. "
+        "Keywords: zone transfer, axfr, dig axfr, dns, name server, misconfiguration, "
+        "dump zone, dns records.",
+        ["try a zone transfer on example.com", "attempt axfr against the name server",
+         "dns zone transfer test", "dump the dns zone from the nameserver"]),
+    "traceroute": (
+        "Trace the network path to a host.",
+        "Network path tracing with traceroute: show the hops between you and a host, "
+        "UDP by default or ICMP/TCP (root). Network mapping / firewall inference. "
+        "Keywords: traceroute, tracert, network path, hops, routing, latency, "
+        "firewall, path discovery.",
+        ["traceroute to 10.0.0.5", "trace the network path to the host",
+         "how many hops to the target", "tcp traceroute to the server"]),
+    "vhost_fuzz": (
+        "Discover virtual hosts via Host-header fuzzing (ffuf).",
+        "Virtual-host discovery by fuzzing the HTTP Host header with ffuf, auto-"
+        "calibrated to drop the default response — finds name-based vhosts served on "
+        "the same IP that DNS/subfinder miss. Keywords: vhost, virtual host, host "
+        "header fuzzing, ffuf, name-based virtual hosts, hidden sites, subdomains on "
+        "one IP, web enumeration.",
+        ["find virtual hosts on this web server", "fuzz the host header for vhosts",
+         "discover name-based virtual hosts", "vhost fuzzing on 10.0.0.5",
+         "hidden websites on the same ip"]),
 }
 
 
@@ -1650,6 +1799,12 @@ def selftest():
         ("ssh_exec", {"host": "10.0.0.5", "username": "root", "command": "id"}, True),  # no pass/key
         ("winrm_exec", {"host": "10.0.0.5", "command": "whoami"}, True),    # needs username
         ("ftp_transfer", {"host": "10.0.0.5", "action": "delete"}, True),   # bad action
+        ("subdomain_enum", {"domain": "example.com"}, False),   # ok
+        ("dns_zone_transfer", {"domain": "example.com"}, True),  # nameserver required
+        ("traceroute", {"host": "10.0.0.5", "protocol": "icmp"}, not _is_root()),  # root
+        ("traceroute", {"host": "10.0.0.5", "max_hops": 99}, True),   # 1-64
+        ("vhost_fuzz", {"url": "http://x", "domain": "example.com", "wordlist": "zzz"},
+         True),                                          # bad wordlist
     ):
         b = HACKTOOLS[name][0]
         try:
