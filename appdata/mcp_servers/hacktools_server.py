@@ -116,6 +116,18 @@ def _run(argv, binary, timeout=DEFAULT_TIMEOUT):
 _NSE_DENY = ("brute", "dos", "exploit")               # never run these NSE categories
 
 
+def _nmap_tuning(a):
+    """Shared nmap knobs for every scan tool: timing (T0-T5) and whether to ping
+    first (host_discovery=false → -Pn). Returns the flag list to splice into argv."""
+    timing = (a.get("timing") or "T4").upper()
+    if not re.match(r"^T[0-5]$", timing):
+        raise ValueError("`timing` must be T0-T5")
+    flags = ["-" + timing]
+    if not bool(a.get("host_discovery")):
+        flags.append("-Pn")                            # assume the host is up
+    return flags
+
+
 # --------------------------------------------------------------------------- #
 # Tool builders — each returns (argv, binary) or raises ValueError
 # --------------------------------------------------------------------------- #
@@ -195,13 +207,12 @@ def _b_service_discovery(a):
     return argv, "nmap", (900 if slow else 300)
 
 
-def _b_nse(a):
+def _b_script_scan(a):
     host, ports = _req_host(a), _ports(a)
     scripts = _word(a, "scripts")
-    low = scripts.lower()
-    if any(bad in low for bad in _NSE_DENY):
+    if any(bad in scripts.lower() for bad in _NSE_DENY):
         raise ValueError("brute / dos / exploit scripts are not allowed here")
-    argv = ["nmap", "-sV", "-Pn", "-n", "-T4", "--script", scripts]
+    argv = ["nmap", "-sV", "-n"] + _nmap_tuning(a) + ["--script", scripts]
     argv += (["-p", ports] if ports else [])
     return argv + [host], "nmap"
 
@@ -218,15 +229,16 @@ def _b_http_headers(a):
 def _b_ftp_anon(a):
     host = _req_host(a)
     port = _port(a, 21)
-    return (["nmap", "-Pn", "-n", "-p", str(port), "--script", "ftp-anon", host],
-            "nmap")
+    return (["nmap", "-n"] + _nmap_tuning(a)
+            + ["-p", str(port), "--script", "ftp-anon", host], "nmap")
 
 
 def _b_smb_enum(a):
     host = _req_host(a)
-    return (["nmap", "-Pn", "-n", "-p", "139,445", "--script",
-             "smb-os-discovery,smb-security-mode,smb2-security-mode,"
-             "smb-enum-shares,smb-enum-users", host], "nmap")
+    return (["nmap", "-n"] + _nmap_tuning(a)
+            + ["-p", "139,445", "--script",
+               "smb-os-discovery,smb-security-mode,smb2-security-mode,"
+               "smb-enum-shares,smb-enum-users", host], "nmap")
 
 
 def _b_snmp_walk(a):
@@ -250,16 +262,16 @@ def _b_dns(a):
 def _b_ssl_cert(a):
     host = _req_host(a)
     port = _port(a, 443)
-    return (["nmap", "-Pn", "-n", "-p", str(port), "--script", "ssl-cert", host],
-            "nmap")
+    return (["nmap", "-n"] + _nmap_tuning(a)
+            + ["-p", str(port), "--script", "ssl-cert", host], "nmap")
 
 
 def _b_banner(a):
     host, port = _req_host(a), _port(a)
     if port is None:
         raise ValueError("`port` is required")
-    return (["nmap", "-sV", "-Pn", "-n", "-p", str(port), "--script", "banner",
-             host], "nmap")
+    return (["nmap", "-sV", "-n"] + _nmap_tuning(a)
+            + ["-p", str(port), "--script", "banner", host], "nmap")
 
 
 def _b_searchsploit(a):
@@ -280,6 +292,11 @@ _H = {"type": "string", "description": "Target host — a single IP or hostname 
 _PORT = {"type": "integer", "description": "TCP port (1-65535)."}
 _PORTS = {"type": "string", "description": "Ports, e.g. 80 or 22,80,443 or 1-1024. "
           "Omit for the top 1000."}
+# shared tuning knobs, on every nmap-based scan tool:
+_TIMING = {"type": "string", "description": "nmap timing T0-T5 (default T4; lower is "
+           "slower/stealthier for filtered or laggy hosts)."}
+_HOSTDISC = {"type": "boolean", "description": "false (default) uses -Pn (assume up); "
+             "true lets nmap ping the host first."}
 
 HACKTOOLS = {
     "port_discovery": (
@@ -325,14 +342,15 @@ HACKTOOLS = {
             "host_discovery": {"type": "boolean", "description": "false (default) "
                                "uses -Pn (assume up); true lets nmap ping first."}},
          "required": ["host"]}, 300),
-    "nse_scan": (
-        _b_nse,
+    "script_scan": (
+        _b_script_scan,
         "Run specific nmap NSE scripts against a host (e.g. 'http-title,http-methods' "
         "or 'smb-vuln-ms17-010'). brute/dos/exploit scripts are rejected.",
         {"type": "object", "properties": {
             "host": _H, "ports": _PORTS,
             "scripts": {"type": "string", "description": "Comma-separated NSE script "
-                        "names or a safe wildcard like 'smb-vuln-*'."}},
+                        "names or a safe wildcard like 'smb-vuln-*'."},
+            "timing": _TIMING, "host_discovery": _HOSTDISC},
          "required": ["host", "scripts"]}, 300),
     "http_headers": (
         _b_http_headers,
@@ -347,13 +365,16 @@ HACKTOOLS = {
         _b_ftp_anon,
         "Check whether anonymous FTP login is allowed and list the root (nmap "
         "ftp-anon).",
-        {"type": "object", "properties": {"host": _H, "port": _PORT},
-         "required": ["host"]}, 60),
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT, "timing": _TIMING,
+            "host_discovery": _HOSTDISC}, "required": ["host"]}, 60),
     "smb_enum": (
         _b_smb_enum,
         "Enumerate SMB with a null session: OS, signing, shares and users (nmap smb-* "
         "scripts).",
-        {"type": "object", "properties": {"host": _H}, "required": ["host"]}, 120),
+        {"type": "object", "properties": {
+            "host": _H, "timing": _TIMING, "host_discovery": _HOSTDISC},
+         "required": ["host"]}, 120),
     "snmp_walk": (
         _b_snmp_walk,
         "Walk SNMP with a community string (default 'public') to dump system info.",
@@ -372,13 +393,15 @@ HACKTOOLS = {
     "ssl_cert": (
         _b_ssl_cert,
         "Read a TLS service's certificate — subject, SANs, validity (nmap ssl-cert).",
-        {"type": "object", "properties": {"host": _H, "port": _PORT},
-         "required": ["host"]}, 60),
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT, "timing": _TIMING,
+            "host_discovery": _HOSTDISC}, "required": ["host"]}, 60),
     "banner_grab": (
         _b_banner,
         "Grab the service banner on one port (nmap -sV + banner).",
-        {"type": "object", "properties": {"host": _H, "port": _PORT},
-         "required": ["host", "port"]}, 60),
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT, "timing": _TIMING,
+            "host_discovery": _HOSTDISC}, "required": ["host", "port"]}, 60),
     "searchsploit": (
         _b_searchsploit,
         "Search the local Exploit-DB copy for a product/version (searchsploit). "
@@ -506,7 +529,8 @@ def selftest():
         ("service_discovery", {"host": "10.0.0.5", "intensity": 15}, True),  # 0-9
         ("service_discovery", {"host": "10.0.0.5", "os": True},
          not _is_root()),                                # -O needs root
-        ("nse_scan", {"host": "10.0.0.5", "scripts": "smb-brute"}, True),  # brute
+        ("script_scan", {"host": "10.0.0.5", "scripts": "smb-brute"}, True),  # brute
+        ("smb_enum", {"host": "10.0.0.5", "timing": "T9"}, True),   # bad timing
         ("banner_grab", {"host": "10.0.0.5"}, True),      # missing port
         ("dns_lookup", {"name": "example.com", "type": "ZZZ"}, True),      # bad type
     ):
