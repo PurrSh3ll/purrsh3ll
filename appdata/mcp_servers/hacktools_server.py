@@ -94,6 +94,45 @@ def _is_root():
         return False
 
 
+_URL_RE = re.compile(r"^https?://[^\s]+$", re.I)
+
+
+def _req_url(a, key="url"):
+    """A validated http(s) URL (required)."""
+    url = (a.get(key) or "").strip()
+    if not url:
+        raise ValueError(f"`{key}` is required")
+    if not _URL_RE.match(url) or re.search(r"[\x00-\x1f]", url):
+        raise ValueError(f"`{key}` must be an http(s) URL")
+    return url
+
+
+def _no_ctrl(v, key):
+    if re.search(r"[\x00-\x1f]", v):
+        raise ValueError(f"`{key}` has control characters")
+    return v
+
+
+# Preset wordlists for content discovery → the first path that exists on the box.
+_WORDLISTS = {
+    "common": ["/usr/share/seclists/Discovery/Web-Content/common.txt",
+               "/usr/share/wordlists/dirb/common.txt"],
+    "medium": ["/usr/share/seclists/Discovery/Web-Content/"
+               "directory-list-2.3-medium.txt"],
+    "big": ["/usr/share/seclists/Discovery/Web-Content/big.txt",
+            "/usr/share/wordlists/dirb/big.txt"],
+    "raft": ["/usr/share/seclists/Discovery/Web-Content/"
+             "raft-medium-directories.txt"],
+}
+
+
+def _resolve_wordlist(name):
+    for p in _WORDLISTS.get(name, []):
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def _run(argv, binary, timeout=DEFAULT_TIMEOUT):
     """Run one argv (no shell), return (text, is_error). Reports a missing tool
     cleanly; keeps partial output on timeout."""
@@ -337,6 +376,101 @@ def _b_whois(a):
     return argv + [domain], "whois"
 
 
+# ── web batch ─────────────────────────────────────────────────────────────────
+def _b_http_request(a):
+    url = _req_url(a)
+    method = (a.get("method") or "GET").upper()
+    if method not in ("GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"):
+        raise ValueError("unsupported `method`")
+    argv = ["curl", "-sS", "-i", "-k", "--max-time", "30", "-X", method]
+    for h in (a.get("headers") or []):
+        argv += ["-H", _no_ctrl(str(h), "headers")]
+    cookie = (a.get("cookie") or "").strip()
+    if cookie:
+        argv += ["-b", _no_ctrl(cookie, "cookie")]
+    user = (a.get("username") or "").strip()
+    if user:                                          # HTTP basic auth
+        argv += ["-u", f"{user}:{a.get('password') or ''}"]
+    bearer = (a.get("bearer") or "").strip()
+    if bearer:
+        argv += ["-H", "Authorization: Bearer " + _no_ctrl(bearer, "bearer")]
+    data = a.get("data")
+    if data not in (None, ""):
+        argv += ["--data", str(data)]
+    if a.get("follow_redirects"):
+        argv.append("-L")
+    ua = (a.get("user_agent") or "").strip()
+    if ua:
+        argv += ["-A", _no_ctrl(ua, "user_agent")]
+    return argv + [url], "curl"
+
+
+def _b_web_content(a):
+    url = _req_url(a)
+    if "FUZZ" not in url:
+        url = url.rstrip("/") + "/FUZZ"
+    name = (a.get("wordlist") or "common").lower()
+    if name not in _WORDLISTS:
+        raise ValueError("`wordlist` must be common/medium/big/raft")
+    wl = _resolve_wordlist(name)
+    if not wl:
+        raise ValueError(f"wordlist '{name}' not found — install seclists or dirb")
+    try:
+        threads = int(a.get("threads", 40))
+    except (TypeError, ValueError):
+        raise ValueError("`threads` must be a number")
+    if not 1 <= threads <= 100:
+        raise ValueError("`threads` must be 1-100")
+    argv = ["ffuf", "-u", url, "-w", wl, "-t", str(threads), "-s",
+            "-mc", "200,204,301,302,307,401,403,405"]
+    exts = (a.get("extensions") or "").strip()
+    if exts:
+        if not re.match(r"^[A-Za-z0-9,.]+$", exts):
+            raise ValueError("`extensions` must be like php,txt,html")
+        argv += ["-e", exts]
+    return argv, "ffuf", 600
+
+
+def _b_whatweb(a):
+    url = _req_url(a)
+    argv = ["whatweb", "--color=never", "--no-errors"]
+    agg = a.get("aggression")
+    if agg is not None:
+        try:
+            av = int(agg)
+        except (TypeError, ValueError):
+            raise ValueError("`aggression` must be 1-4")
+        if not 1 <= av <= 4:
+            raise ValueError("`aggression` must be 1-4")
+        argv += ["-a", str(av)]
+    return argv + [url], "whatweb"
+
+
+def _b_nikto(a):
+    host = _req_host(a)
+    port = _port(a, 80)
+    argv = ["nikto", "-ask", "no", "-h", host, "-p", str(port)]
+    if a.get("tls") or port in (443, 8443):
+        argv.append("-ssl")
+    return argv, "nikto", 900
+
+
+def _b_nuclei(a):
+    url = _req_url(a)
+    argv = ["nuclei", "-u", url, "-silent", "-nc"]
+    sev = (a.get("severity") or "").strip().lower()
+    if sev:
+        if not re.match(r"^[a-z,]+$", sev):
+            raise ValueError("`severity` must be like low,medium,high,critical")
+        argv += ["-severity", sev]
+    tags = (a.get("tags") or "").strip().lower()
+    if tags:
+        if not re.match(r"^[a-z0-9,_-]+$", tags):
+            raise ValueError("`tags` has invalid characters")
+        argv += ["-tags", tags]
+    return argv, "nuclei", 900
+
+
 # name -> (builder, description, inputSchema, timeout)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -491,6 +625,72 @@ HACKTOOLS = {
             "server": {"type": "string", "description": "WHOIS server to query (-h). "
                        "Default: whois picks it."}},
          "required": ["domain"]}, 30),
+    "http_request": (
+        _b_http_request,
+        "Make an arbitrary HTTP request with curl and return the status, headers and "
+        "body. Set method, headers, body, cookie, basic-auth or a bearer token — good "
+        "for probing endpoints and testing APIs with credentials from the engagement. "
+        "(Credentials are passed on the command line.)",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Full http(s) URL, e.g. "
+                    "http://10.0.0.5:8080/api/users."},
+            "method": {"type": "string", "description": "GET (default), POST, PUT, "
+                       "DELETE, HEAD, OPTIONS, PATCH."},
+            "headers": {"type": "array", "items": {"type": "string"},
+                        "description": "Extra headers, each 'Name: value'."},
+            "data": {"type": "string", "description": "Request body (for POST/PUT)."},
+            "cookie": {"type": "string", "description": "Cookie header value."},
+            "username": {"type": "string", "description": "HTTP basic-auth username."},
+            "password": {"type": "string", "description": "HTTP basic-auth password."},
+            "bearer": {"type": "string", "description": "Bearer token (Authorization "
+                       "header)."},
+            "follow_redirects": {"type": "boolean", "description": "Follow 3xx (-L)."},
+            "user_agent": {"type": "string", "description": "Custom User-Agent."}},
+         "required": ["url"]}, 40),
+    "web_content_discovery": (
+        _b_web_content,
+        "Brute-force web directories and files with ffuf against a URL (put FUZZ where "
+        "the word goes, or just give the base URL). Picks a preset wordlist and "
+        "reports found paths with their status codes.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Base URL (FUZZ appended) or a "
+                    "URL containing FUZZ, e.g. http://host/FUZZ."},
+            "wordlist": {"type": "string", "description": "Preset: common (default), "
+                         "medium, big, raft."},
+            "extensions": {"type": "string", "description": "Extensions to append, "
+                           "e.g. php,txt,html."},
+            "threads": {"type": "integer", "description": "Concurrency 1-100 "
+                        "(default 40)."}},
+         "required": ["url"]}, 600),
+    "whatweb": (
+        _b_whatweb,
+        "Fingerprint a website's stack — server, CMS, frameworks, libraries and their "
+        "versions (whatweb).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Full http(s) URL."},
+            "aggression": {"type": "integer", "description": "Aggression 1 (passive) "
+                           "to 4 (heavy). Default whatweb's."}},
+         "required": ["url"]}, 120),
+    "nikto_scan": (
+        _b_nikto,
+        "Scan a web server for known issues, dangerous files and misconfigurations "
+        "(nikto). Noisy — an active vulnerability scan.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "tls": {"type": "boolean", "description": "Use https (auto on 443/8443)."}},
+         "required": ["host"]}, 900),
+    "nuclei_scan": (
+        _b_nuclei,
+        "Run nuclei's community templates against a URL to find CVEs, exposures and "
+        "misconfigurations. Filter by severity or tags to keep it focused.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Full http(s) URL, e.g. "
+                    "http://10.0.0.5."},
+            "severity": {"type": "string", "description": "Comma list: info,low,"
+                         "medium,high,critical."},
+            "tags": {"type": "string", "description": "Template tags, e.g. cve,"
+                     "exposure,wordpress."}},
+         "required": ["url"]}, 900),
 }
 
 
@@ -604,6 +804,53 @@ _META = {
         "ASN, ip whois, abuse contact.",
         ["whois for example.com", "who owns this domain", "whois the ip address",
          "registration info for the domain"]),
+    "http_request": (
+        "Make an arbitrary HTTP request (method, headers, body, auth).",
+        "Arbitrary HTTP request with curl: choose the method (GET/POST/PUT/DELETE/…), "
+        "add headers, a body, a cookie, HTTP basic-auth or a bearer token, follow "
+        "redirects. Probe endpoints, test REST/GraphQL APIs, replay a request with "
+        "credentials from the engagement, check an authenticated page. Keywords: curl, "
+        "http request, POST, api, rest, bearer token, basic auth, cookie, header, "
+        "authenticated request, endpoint.",
+        ["send a POST to the login endpoint", "make an authenticated GET with this cookie",
+         "call the api with a bearer token", "test the endpoint with basic auth",
+         "curl this url with a custom header"]),
+    "web_content_discovery": (
+        "Brute-force web directories and files (ffuf).",
+        "Web content discovery / directory and file brute-force with ffuf: find hidden "
+        "paths, admin panels, backups and endpoints on a web server using a preset "
+        "wordlist, optional extensions, reporting status codes. Keywords: ffuf, "
+        "gobuster, dirb, directory brute force, content discovery, fuzzing, hidden "
+        "files, admin panel, dirbuster, wordlist. Not an auth/password brute-force.",
+        ["find hidden directories on the website", "dir brute force the web server",
+         "discover admin panels and backups", "fuzz for hidden php files",
+         "run ffuf content discovery on the url"]),
+    "whatweb": (
+        "Fingerprint a website's stack (server, CMS, frameworks).",
+        "Website technology fingerprinting with whatweb: detect the web server, CMS "
+        "(WordPress/Joomla/Drupal), frameworks, languages, JS libraries and versions. "
+        "Web recon. Keywords: whatweb, web technology, fingerprint, cms detection, "
+        "wappalyzer, framework, server header, stack detection.",
+        ["what technologies does this website use", "fingerprint the web stack",
+         "detect the CMS on the site", "identify the web framework and versions"]),
+    "nikto_scan": (
+        "Scan a web server for known issues and misconfigs.",
+        "Web server vulnerability scan with nikto: check for dangerous files, outdated "
+        "software, default files, headers and common misconfigurations. Noisy active "
+        "scan. Keywords: nikto, web vulnerability scanner, misconfiguration, dangerous "
+        "files, outdated server, default files, web audit.",
+        ["run nikto against the web server", "scan the website for vulnerabilities",
+         "check the web server for misconfigurations", "nikto scan on port 8080"]),
+    "nuclei_scan": (
+        "Run nuclei templates for CVEs/exposures on a URL.",
+        "Template-based vulnerability scanning with nuclei: match a URL against the "
+        "community templates for CVEs, exposures, misconfigurations, default creds and "
+        "takeovers. Filter by severity or tags. Keywords: nuclei, templates, CVE scan, "
+        "exposure, misconfiguration, vulnerability scanner, takeover, default "
+        "credentials, web vuln.",
+        ["run nuclei against the target url", "scan for CVEs with nuclei",
+         "check for known web vulnerabilities", "nuclei high and critical only",
+         "find exposures on the website"]),
 }
 
 
@@ -739,6 +986,12 @@ def selftest():
         ("snmp_walk", {"host": "10.0.0.5", "version": "3"}, True),         # v3 n/a
         ("searchsploit", {}, True),                       # neither query nor cve
         ("searchsploit", {"cve": "not-a-cve"}, True),     # bad cve
+        ("http_request", {"url": "ftp://x"}, True),       # non-http URL
+        ("http_request", {"url": "http://x/", "method": "TRACE"}, True),   # bad method
+        ("http_request", {"url": "http://x/api", "method": "POST"}, False),  # ok
+        ("web_content_discovery", {"url": "http://x", "wordlist": "zzz"}, True),  # bad wl
+        ("whatweb", {"url": "http://x", "aggression": 9}, True),   # 1-4
+        ("nuclei_scan", {"url": "http://x", "severity": "HIGH!"}, True),   # bad sev
     ):
         b = HACKTOOLS[name][0]
         try:
