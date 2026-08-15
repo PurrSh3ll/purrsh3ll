@@ -4961,11 +4961,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if hack_mode:
             goal_txt = f" · {hack_goal}" if hack_goal else ""
             hack_seg = f"   <style fg='#ff5f5f'>⚑ hacking{goal_txt}</style>"
-        # Background scan indicator (any pipeline scan in flight) — /status shows it.
-        scanning = any(j.get("state") == "running"
-                       for ph in ctx.get("phases", []) for j in ph.get("jobs", []))
-        scan_seg = ("   <style fg='#e5c07b'>⟳ scanning</style>"
-                    if scanning else "")
+        # Background scan indicator — how many commands are running now (/status
+        # shows which). Concurrent in phases 1–3, one at a time in phase 5.
+        running = sum(1 for ph in ctx.get("phases", [])
+                      for j in ph.get("jobs", []) if j.get("state") == "running")
+        scan_seg = (f"   <style fg='#e5c07b'>⟳ {running} running</style>"
+                    if running else "")
         if not p:
             return HTML("  <style fg='#e5c07b'>no model</style> — type "
                         "<style fg='#61afef'>/model</style> to choose   "
