@@ -222,8 +222,24 @@ def _b_http_headers(a):
     port = _port(a)
     scheme = "https" if (a.get("tls") or port in (443, 8443)) else "http"
     netloc = f"{host}:{port}" if port else host
-    return (["curl", "-sSI", "-k", "--max-time", "20", f"{scheme}://{netloc}/"],
-            "curl")
+    path = (a.get("path") or "/").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    if re.search(r"[\s\x00-\x1f]", path):
+        raise ValueError("`path` has invalid characters")
+    method = (a.get("method") or "head").lower()
+    if method not in ("head", "get"):
+        raise ValueError("`method` must be head or get")
+    argv = ["curl", "-sS", "-k", "--max-time", "20"]
+    argv += ["-I"] if method == "head" else ["-D", "-", "-o", os.devnull]
+    if a.get("follow_redirects"):
+        argv.append("-L")
+    ua = (a.get("user_agent") or "").strip()
+    if ua:
+        if re.search(r"[\x00-\x1f]", ua):
+            raise ValueError("`user_agent` has control characters")
+        argv += ["-A", ua]
+    return argv + [f"{scheme}://{netloc}{path}"], "curl"
 
 
 def _b_ftp_anon(a):
@@ -246,7 +262,18 @@ def _b_snmp_walk(a):
     community = _word(a, "community", required=False) or "public"
     if not re.match(r"^[A-Za-z0-9._-]+$", community):
         raise ValueError("`community` has invalid characters")
-    return (["snmpwalk", "-v2c", "-c", community, "-t", "5", host], "snmpwalk")
+    version = str(a.get("version") or "2c").lower()
+    if version not in ("1", "2c"):
+        raise ValueError("`version` must be 1 or 2c")
+    port = _port(a, 161)
+    oid = (a.get("oid") or "").strip()
+    if oid and not re.match(r"^[A-Za-z0-9._:-]+$", oid):
+        raise ValueError("`oid` has invalid characters")
+    argv = ["snmpwalk", "-v1" if version == "1" else "-v2c", "-c", community,
+            "-t", "5", f"{host}:{port}"]
+    if oid:
+        argv.append(oid)                              # walk a specific subtree
+    return argv, "snmpwalk"
 
 
 def _b_dns(a):
@@ -256,7 +283,13 @@ def _b_dns(a):
     rtype = (a.get("type") or "A").upper()
     if rtype not in ("A", "AAAA", "MX", "NS", "TXT", "CNAME", "SOA", "PTR", "ANY"):
         raise ValueError("unsupported record `type`")
-    return (["dig", "+short", name, rtype], "dig")
+    argv = ["dig", "+short"]
+    server = (a.get("server") or "").strip()
+    if server:                                        # query a specific resolver
+        if not _HOST_RE.match(server):
+            raise ValueError("`server` has invalid characters")
+        argv.append("@" + server)
+    return argv + [name, rtype], "dig"
 
 
 def _b_ssl_cert(a):
@@ -275,15 +308,33 @@ def _b_banner(a):
 
 
 def _b_searchsploit(a):
-    query = _word(a, "query")            # colour auto-disables when output is piped
-    return (["searchsploit"] + query.split(), "searchsploit")
+    query = (a.get("query") or "").strip()
+    cve = (a.get("cve") or "").strip()
+    if not query and not cve:
+        raise ValueError("provide `query` or `cve`")
+    argv = ["searchsploit"]                # colour auto-disables when output is piped
+    if a.get("title"):
+        argv.append("-t")                             # match the title only
+    if cve:
+        if not re.match(r"^(CVE-)?\d{4}-\d{3,7}$", cve, re.I):
+            raise ValueError("`cve` must look like CVE-2017-0144 or 2017-0144")
+        argv += ["--cve", cve.upper().replace("CVE-", "")]
+    if query:
+        argv += query.split()
+    return argv, "searchsploit"
 
 
 def _b_whois(a):
     domain = _word(a, "domain")
     if not _HOST_RE.match(domain):
         raise ValueError("`domain` has invalid characters")
-    return (["whois", domain], "whois")
+    argv = ["whois"]
+    server = (a.get("server") or "").strip()
+    if server:                                        # query a specific whois server
+        if not _HOST_RE.match(server):
+            raise ValueError("`server` has invalid characters")
+        argv += ["-h", server]
+    return argv + [domain], "whois"
 
 
 # name -> (builder, description, inputSchema, timeout)
@@ -354,12 +405,20 @@ HACKTOOLS = {
          "required": ["host", "scripts"]}, 300),
     "http_headers": (
         _b_http_headers,
-        "Fetch a web server's HTTP response headers (curl -I). Reveals server/tech "
-        "banners and redirects.",
+        "Fetch a web server's HTTP response headers (curl). Reveals server/tech "
+        "banners, cookies and redirects; can target a path and follow redirects.",
         {"type": "object", "properties": {
             "host": _H, "port": _PORT,
             "tls": {"type": "boolean", "description": "Use https (default: http, or "
-                    "https on 443/8443)."}},
+                    "https on 443/8443)."},
+            "path": {"type": "string", "description": "Request path (default '/'), "
+                     "e.g. /admin or /api."},
+            "method": {"type": "string", "description": "head (default, -I) or get "
+                       "(headers of a GET)."},
+            "follow_redirects": {"type": "boolean", "description": "Follow 3xx "
+                                 "redirects (-L). Default false."},
+            "user_agent": {"type": "string", "description": "Custom User-Agent "
+                           "header."}},
          "required": ["host"]}, 30),
     "ftp_anon": (
         _b_ftp_anon,
@@ -377,18 +436,27 @@ HACKTOOLS = {
          "required": ["host"]}, 120),
     "snmp_walk": (
         _b_snmp_walk,
-        "Walk SNMP with a community string (default 'public') to dump system info.",
+        "Walk SNMP with a community string (default 'public') to dump system info. "
+        "Can target a starting OID subtree and pick the SNMP version/port.",
         {"type": "object", "properties": {
             "host": _H,
             "community": {"type": "string", "description": "SNMP community "
-                          "(default: public)."}},
+                          "(default: public)."},
+            "version": {"type": "string", "description": "SNMP version: 1 or 2c "
+                        "(default 2c)."},
+            "oid": {"type": "string", "description": "Start OID/subtree, e.g. "
+                    "1.3.6.1.2.1.1 (system). Omit to walk from the top."},
+            "port": {"type": "integer", "description": "SNMP UDP port (default 161)."}},
          "required": ["host"]}, 120),
     "dns_lookup": (
         _b_dns,
-        "Resolve a DNS record (dig +short). Supports A/AAAA/MX/NS/TXT/CNAME/SOA/PTR.",
+        "Resolve a DNS record (dig +short). Supports A/AAAA/MX/NS/TXT/CNAME/SOA/PTR "
+        "and can query a specific resolver.",
         {"type": "object", "properties": {
             "name": {"type": "string", "description": "Domain or host to resolve."},
-            "type": {"type": "string", "description": "Record type (default A)."}},
+            "type": {"type": "string", "description": "Record type (default A)."},
+            "server": {"type": "string", "description": "Resolver to query (@server), "
+                       "e.g. the target's own DNS. Default: system resolver."}},
          "required": ["name"]}, 30),
     "ssl_cert": (
         _b_ssl_cert,
@@ -404,17 +472,24 @@ HACKTOOLS = {
             "host_discovery": _HOSTDISC}, "required": ["host", "port"]}, 60),
     "searchsploit": (
         _b_searchsploit,
-        "Search the local Exploit-DB copy for a product/version (searchsploit). "
-        "Returns known public exploits — leads, not proof.",
+        "Search the local Exploit-DB copy (searchsploit) by product/version, by CVE, "
+        "or title-only. Returns known public exploits — leads, not proof.",
         {"type": "object", "properties": {
             "query": {"type": "string", "description": "e.g. 'vsftpd 2.3.4' or "
-                      "'apache 2.4'."}},
-         "required": ["query"]}, 60),
+                      "'apache 2.4'. Optional if `cve` is given."},
+            "cve": {"type": "string", "description": "Search by CVE, e.g. "
+                    "CVE-2021-3156 or 2021-3156."},
+            "title": {"type": "boolean", "description": "Match the exploit title only "
+                      "(-t) — fewer false matches. Default false."}},
+         "required": []}, 60),
     "whois": (
         _b_whois,
-        "WHOIS registration info for a domain.",
+        "WHOIS registration info for a domain or IP; can target a specific WHOIS "
+        "server.",
         {"type": "object", "properties": {
-            "domain": {"type": "string", "description": "Domain name."}},
+            "domain": {"type": "string", "description": "Domain name or IP."},
+            "server": {"type": "string", "description": "WHOIS server to query (-h). "
+                       "Default: whois picks it."}},
          "required": ["domain"]}, 30),
 }
 
@@ -533,6 +608,10 @@ def selftest():
         ("smb_enum", {"host": "10.0.0.5", "timing": "T9"}, True),   # bad timing
         ("banner_grab", {"host": "10.0.0.5"}, True),      # missing port
         ("dns_lookup", {"name": "example.com", "type": "ZZZ"}, True),      # bad type
+        ("http_headers", {"host": "10.0.0.5", "method": "put"}, True),     # bad method
+        ("snmp_walk", {"host": "10.0.0.5", "version": "3"}, True),         # v3 n/a
+        ("searchsploit", {}, True),                       # neither query nor cve
+        ("searchsploit", {"cve": "not-a-cve"}, True),     # bad cve
     ):
         b = HACKTOOLS[name][0]
         try:
