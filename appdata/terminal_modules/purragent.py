@@ -4115,7 +4115,7 @@ def _phase_agg_state(phase: dict) -> str:
 def _status_view(ctx: dict) -> None:
     """Show the engagement's phases like pshunter's status: per phase a numbered line
     with the host, aggregate state and found yes/no, and EVERY scan of that phase
-    beneath it with its own complete/running state (lettered a/b/c when several).
+    beneath it with its own complete/running state (numbered 1/2/3 when several).
     Read-only (no view/stop/abort)."""
     phases = ctx.get("phases") or []
     eng = ctx.get("engagement") or {}
@@ -4160,12 +4160,13 @@ def _status_view(ctx: dict) -> None:
         console.print(head)
 
         multi = len(jobs) > 1
+        width = len(str(len(jobs)))
         for k, job in enumerate(jobs):
             jcol, jlabel = _STATUS_STATE.get(job.get("state"),
                                              ("bright_black", job.get("state")))
             line = Text("       ")
             if multi:
-                line.append(chr(ord("a") + k) + " ", style="cyan")
+                line.append(f"{k + 1:>{width}} ", style="cyan")
             line.append(f"{jlabel:<8}", style=jcol)
             line.append(" ")
             line.append(job.get("command") or "", style="bright_black")
