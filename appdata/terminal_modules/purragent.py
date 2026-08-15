@@ -3765,6 +3765,10 @@ def _cve_outcome(results: list, no_index: bool) -> None:
         line.append(f"  —  {len(kev)} KEV", style="red" if kev else "bright_black")
         line.append(f", {len(other)} other", style="bright_black")
         console.print(line)
+        if kev:                                        # list the known-exploited ids
+            shown = ", ".join(kev[:10])
+            more = f"  (+{len(kev) - 10} more)" if len(kev) > 10 else ""
+            console.print(Text("        " + shown + more, style="green"))
     if len(results) > 8:
         console.print(Text(f"      … and {len(results) - 8} more service(s)",
                            style="bright_black"))
