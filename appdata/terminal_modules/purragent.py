@@ -2809,9 +2809,9 @@ def _phase_banner(n: int, name: str, budget: bool = True, minutes=None,
     """Uniform phase header: a [running] tag (with the command's number when a phase
     runs several, so you can pair it with its [complete N] line), plus the time
     budget (skipped for the offline CVE lookup)."""
-    b = Text("  ")
-    b.append("[running" + (f" {num}" if num else "") + "]", style="yellow")
-    b.append(f" ▸ phase {n} — {name}")
+    b = Text("  ", style="bright_black")               # whole line dimmed
+    b.append("[running" + (f" {num}" if num else "") + "]", style="bright_black")
+    b.append(f" ▸ phase {n} — {name}", style="bright_black")
     if budget:
         b.append(f"  ·  ⏱ {minutes or PORT_SCAN_MINUTES}m budget",
                  style="bright_black")
