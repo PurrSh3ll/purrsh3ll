@@ -2828,17 +2828,26 @@ def _pass_label(label: str) -> str:
     return _PORT_PASS_LABEL.get(label, f"{label} port discovery")
 
 
-def _print_cmd_outcome(n: int, label: str, state: str, findings: str) -> None:
-    """Per-command completion line + its own findings (one scan of a multi-command
-    phase). The state tag mirrors the [running] header convention ([complete] /
-    [failed] / [aborted]). Printed as a single Text so the two lines can't interleave
-    with another command finishing at once."""
-    tag, color = {"complete": ("[complete]", "yellow"),  # brown/amber, like [running]
-                  "error": ("[failed]", "red"),
-                  "aborted": ("[aborted]", "magenta")}.get(state, (f"[{state}]", "yellow"))
+_STATE_TAG = {"complete": ("[complete]", "yellow"),   # brown/amber, like [running]
+              "error": ("[failed]", "red"),
+              "aborted": ("[aborted]", "magenta")}
+
+
+def _phase_state_line(n: int, label: str, state: str) -> "Text":
+    """The finished-state header: a coloured [complete]/[failed]/[aborted] tag in the
+    same convention as the [running] banner."""
+    tag, color = _STATE_TAG.get(state, (f"[{state}]", "yellow"))
     out = Text("  ")
     out.append(tag, style=color)
     out.append(f" ▸ phase {n} — {label}")
+    return out
+
+
+def _print_cmd_outcome(n: int, label: str, state: str, findings: str) -> None:
+    """Per-command completion line + its own findings (one scan of a multi-command
+    phase). Printed as a single Text so the two lines can't interleave with another
+    command finishing at once."""
+    out = _phase_state_line(n, label, state)
     if state == "complete":
         out.append("\n    ")
         out.append(f"{label} findings: {findings or 'none'}",
@@ -3537,6 +3546,29 @@ def _cve_index_path(base_dir: str) -> str:
     return os.path.join(base_dir, "appdata", "cve_index.db")
 
 
+_KEV_CACHE = None
+
+
+def _load_kev(base_dir: str) -> set:
+    """The CISA KEV set — CVE ids actually exploited in the wild (bundled kev.txt,
+    one CVE per line). Cached; empty if the file is missing. A matched CVE that is in
+    this set is 'well-known' (known-exploited), the rest are 'other'."""
+    global _KEV_CACHE
+    if _KEV_CACHE is None:
+        kev = set()
+        try:
+            with open(os.path.join(base_dir, "appdata", "kev.txt"),
+                      encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith("CVE-"):
+                        kev.add(line)
+        except OSError:
+            pass
+        _KEV_CACHE = kev
+    return _KEV_CACHE
+
+
 def _ver_key(v) -> tuple:
     """Version as a tuple of its numeric components, e.g. '8.2p1' → (8, 2, 1)."""
     return tuple(int(x) for x in re.findall(r"\d+", v or ""))
@@ -3608,11 +3640,11 @@ def _ver_in_match(version, exact, vsi, vse, vei, vee) -> bool:
 
 
 def _cve_lookup(base_dir: str, vendor: str, product: str, version: str):
-    """Matching CVEs for one vendor/product/version, split by confidence, or None
+    """Matching CVEs for one vendor/product/version, split into KEV vs other, or None
     when the index is missing/unreadable. Queries the CPE pair plus any aliases.
-    Returns (well_known, other): well_known are matched on an EXACT version row (the
-    CVE explicitly lists this version — high confidence); other are matched only via
-    a version range (still valid, but broader — less likely to actually apply)."""
+    Returns (kev, other): kev are CVEs in the CISA Known-Exploited set (actually
+    exploited in the wild — the ones that matter most); other are the rest. Both go
+    through the strict version matcher first, so false positives are already cut."""
     import sqlite3
     path = _cve_index_path(base_dir)
     if not os.path.exists(path):
@@ -3631,19 +3663,17 @@ def _cve_lookup(base_dir: str, vendor: str, product: str, version: str):
             con.close()
     except sqlite3.Error:
         return None
-    exact_hits, range_hits = set(), set()
-    for exact, vsi, vse, vei, vee, cve in rows:
-        if not _ver_in_match(version, exact, vsi, vse, vei, vee):
-            continue
-        (exact_hits if exact else range_hits).add(cve)
-    well = sorted(exact_hits, key=_cve_sort_key)
-    other = sorted(range_hits - exact_hits, key=_cve_sort_key)   # exact wins
-    return well, other
+    matched = {cve for exact, vsi, vse, vei, vee, cve in rows
+               if _ver_in_match(version, exact, vsi, vse, vei, vee)}
+    kev_set = _load_kev(base_dir)
+    kev = sorted((c for c in matched if c in kev_set), key=_cve_sort_key)
+    other = sorted((c for c in matched if c not in kev_set), key=_cve_sort_key)
+    return kev, other
 
 
 def _run_cve_lookup(base_dir: str, tid: int, cancel=None) -> list:
-    """Per versioned service CPE on the target, the CVEs it maps to, split by
-    confidence. Returns [(port, proto, product, version, well_known, other), …]."""
+    """Per versioned service CPE on the target, the CVEs it maps to, split into KEV vs
+    other. Returns [(port, proto, product, version, kev, other), …]."""
     results = []
     for row in purragent_db.fetch_ports(base_dir, tid):
         if cancel is not None and cancel.is_set():
@@ -3658,10 +3688,10 @@ def _run_cve_lookup(base_dir: str, tid: int, cancel=None) -> list:
         found = _cve_lookup(base_dir, vendor, product, version)
         if not found:
             continue
-        well, other = found
-        if well or other:
+        kev, other = found
+        if kev or other:
             results.append((row["port"], row.get("proto") or "tcp", product,
-                            version, well, other))
+                            version, kev, other))
     return results
 
 
@@ -3687,9 +3717,9 @@ def _cve_pass(eng: dict, job: dict) -> None:
     results = [] if no_index else _run_cve_lookup(base, tid, job["cancel"])
     with eng["lock"]:
         try:
-            for port, proto, product, version, well, other in results:
-                cve_str = ",".join((well + other)[:_CVE_STORE_CAP])
-                summary = (f"{product} {version} — {len(well)} well-known + "
+            for port, proto, product, version, kev, other in results:
+                cve_str = ",".join((kev + other)[:_CVE_STORE_CAP])   # KEV first
+                summary = (f"{product} {version} — {len(kev)} KEV + "
                            f"{len(other)} other CVE")
                 purragent_db.add_vuln(base, tid, port, proto, "cve-lookup",
                                       "CVE", "INFO", cve_str, summary)
@@ -3711,27 +3741,28 @@ def _finish_cve_lookup(eng: dict) -> None:
 
 
 def _cve_outcome(results: list, no_index: bool) -> None:
-    """Phase-4 outcome: counts only — how many well-known (exact-version) vs other
-    (range-matched, less likely) CVEs per service. The CVE ids themselves are stored
-    as findings (see /target), not listed here."""
+    """Phase-4 outcome: counts only — how many KEV (CISA known-exploited) vs other
+    CVEs per service. The CVE ids themselves are stored as findings (see /target),
+    not listed here. A [complete]/[failed] state line leads, like the other phases."""
     if no_index:
+        console.print(_phase_state_line(4, "CVE lookup", "error"))
         console.print(Text("  ○ CVE lookup — offline NVD index not present "
                            "(appdata/cve_index.db)", style="bright_black"))
         return
+    console.print(_phase_state_line(4, "CVE lookup", "complete"))
     if not results:
         console.print(Text("  ○ CVE lookup — no versioned service CPE matched the "
                            "index", style="bright_black"))
         return
-    twell = sum(len(r[4]) for r in results)
+    tkev = sum(len(r[4]) for r in results)
     tother = sum(len(r[5]) for r in results)
-    console.print(Text(f"  ✓ CVE lookup — {len(results)} service(s): {twell} "
-                       f"well-known, {tother} other (less likely)", style="green"))
-    for port, proto, product, version, well, other in results[:8]:
+    console.print(Text(f"  ✓ CVE lookup — {len(results)} service(s): {tkev} "
+                       f"KEV (known-exploited), {tother} other", style="green"))
+    for port, proto, product, version, kev, other in results[:8]:
         line = Text("      ")
         line.append(f"{port:<5}", style="cyan")
         line.append(f" {product} {version}".rstrip(), style="default")
-        line.append(f"  —  {len(well)} well-known", style="green" if well
-                    else "bright_black")
+        line.append(f"  —  {len(kev)} KEV", style="red" if kev else "bright_black")
         line.append(f", {len(other)} other", style="bright_black")
         console.print(line)
     if len(results) > 8:
