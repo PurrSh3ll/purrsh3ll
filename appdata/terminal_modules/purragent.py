@@ -2804,11 +2804,13 @@ def _job(command: str) -> dict:
     return {"command": command, "state": "running", "cancel": threading.Event()}
 
 
-def _phase_banner(n: int, name: str, budget: bool = True, minutes=None) -> "Text":
-    """Uniform phase header: a [running] tag so the user sees what's happening now,
-    plus the time budget (skipped for the offline CVE lookup)."""
+def _phase_banner(n: int, name: str, budget: bool = True, minutes=None,
+                  num=None) -> "Text":
+    """Uniform phase header: a [running] tag (with the command's number when a phase
+    runs several, so you can pair it with its [complete N] line), plus the time
+    budget (skipped for the offline CVE lookup)."""
     b = Text("  ")
-    b.append("[running]", style="yellow")
+    b.append("[running" + (f" {num}" if num else "") + "]", style="yellow")
     b.append(f" ▸ phase {n} — {name}")
     if budget:
         b.append(f"  ·  ⏱ {minutes or PORT_SCAN_MINUTES}m budget",
@@ -2831,26 +2833,27 @@ def _pass_label(label: str) -> str:
     return _PORT_PASS_LABEL.get(label, f"{label} port discovery")
 
 
-_STATE_TAG = {"complete": ("[complete]", "yellow"),   # brown/amber, like [running]
-              "error": ("[failed]", "red"),
-              "aborted": ("[aborted]", "magenta")}
+_STATE_TAG = {"complete": ("complete", "yellow"),     # brown/amber, like [running]
+              "error": ("failed", "red"),
+              "aborted": ("aborted", "magenta")}
 
 
-def _phase_state_line(n: int, label: str, state: str) -> "Text":
-    """The finished-state header: a coloured [complete]/[failed]/[aborted] tag in the
-    same convention as the [running] banner."""
-    tag, color = _STATE_TAG.get(state, (f"[{state}]", "yellow"))
+def _phase_state_line(n: int, label: str, state: str, num=None) -> "Text":
+    """The finished-state header: a coloured [complete N]/[failed N]/[aborted N] tag
+    in the same convention as the [running N] banner (N pairs it with its start)."""
+    word, color = _STATE_TAG.get(state, (state, "yellow"))
     out = Text("  ")
-    out.append(tag, style=color)
+    out.append("[" + word + (f" {num}" if num else "") + "]", style=color)
     out.append(f" ▸ phase {n} — {label}")
     return out
 
 
-def _print_cmd_outcome(n: int, label: str, state: str, findings: str) -> None:
+def _print_cmd_outcome(n: int, label: str, state: str, findings: str,
+                       num=None) -> None:
     """Per-command completion line + its own findings (one scan of a multi-command
     phase). Printed as a single Text so the two lines can't interleave with another
     command finishing at once."""
-    out = _phase_state_line(n, label, state)
+    out = _phase_state_line(n, label, state, num=num)
     if state == "complete":
         out.append("\n    ")
         out.append(f"{label} findings: {findings or 'none'}",
@@ -2926,15 +2929,16 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
     ctx["engagement"] = eng
     ctx["phases"] = [port_phase]
 
-    for (label, args), job in zip(specs, port_phase["jobs"]):
+    for i, ((label, args), job) in enumerate(zip(specs, port_phase["jobs"]), 1):
         proto = "udp" if label == "udp" else "tcp"
-        console.print(_phase_banner(1, _pass_label(label)))    # announce each pass
-        threading.Thread(target=_port_pass, args=(eng, label, args, proto, job),
+        console.print(_phase_banner(1, _pass_label(label), num=i))  # announce each pass
+        threading.Thread(target=_port_pass, args=(eng, label, args, proto, job, i),
                          daemon=True).start()
     threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
 
 
-def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None:
+def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict,
+               num: int) -> None:
     """One phase-1 port pass; on completion, stream its ports into the pipeline."""
     result = _run_one_port_pass(args, eng["ip"], proto, job["cancel"])
     fire, done = False, False
@@ -2969,8 +2973,8 @@ def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None
         st = job["state"]
         new_ports = sorted(newp)                       # only ports not already in the DB
     finds = ", ".join(str(p) for p in new_ports)
-    _post(eng["ctx"], lambda l=label, s=st, f=finds:
-          _print_cmd_outcome(1, _pass_label(l), s, f))
+    _post(eng["ctx"], lambda l=label, s=st, f=finds, nm=num:
+          _print_cmd_outcome(1, _pass_label(l), s, f, num=nm))
     if fire:
         _svc_trigger(eng, "pass")
     if done:
@@ -2992,8 +2996,9 @@ def _finalise_port_discovery(eng: dict) -> None:
         eng["retried_pn"] = True
         rjob = _job("nmap -Pn --top-ports 1000 " + eng["ip"] + "  (firewall retry)")
         eng["port_phase"]["jobs"].append(rjob)
-    _post(eng["ctx"],
-          lambda: console.print(_phase_banner(1, "firewall-retry port discovery")))
+        rnum = len(eng["port_phase"]["jobs"])
+    _post(eng["ctx"], lambda: console.print(
+        _phase_banner(1, "firewall-retry port discovery", num=rnum)))
     tcp = "-sS" if _is_root() else "-sT"
     r = _run_one_port_pass(["-Pn", tcp, "-n", "--open", "-T4", "--top-ports",
                             "1000"], eng["ip"], "tcp", rjob["cancel"])
@@ -3011,8 +3016,8 @@ def _finalise_port_discovery(eng: dict) -> None:
         st = rjob["state"]
         new_ports = sorted(newp)                        # only ports new to the DB
     finds = ", ".join(str(p) for p in new_ports)
-    _post(eng["ctx"], lambda s=st, f=finds:
-          _print_cmd_outcome(1, "firewall-retry port discovery", s, f))
+    _post(eng["ctx"], lambda s=st, f=finds, nm=rnum:
+          _print_cmd_outcome(1, "firewall-retry port discovery", s, f, num=nm))
     if r["ports"]:
         _svc_trigger(eng, "retry")
 
@@ -3045,14 +3050,16 @@ def _svc_trigger(eng: dict, reason: str) -> None:
                + ",".join(str(p) for p in batch) + " " + eng["ip"])
         job = _job(cmd)
         eng["svc_phase"]["jobs"].append(job)
-    _post(eng["ctx"], lambda l=label: console.print(_phase_banner(2, l)))
+        num = len(eng["svc_phase"]["jobs"])
+    _post(eng["ctx"], lambda l=label, nm=num:
+          console.print(_phase_banner(2, l, num=nm)))
     threading.Thread(target=_svc_batch,
-                     args=(eng, new_tcp, new_udp, include_os, job, label),
+                     args=(eng, new_tcp, new_udp, include_os, job, label, num),
                      daemon=True).start()
 
 
 def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict,
-               label: str) -> None:
+               label: str, num: int) -> None:
     result = _run_service_scan(eng["ip"], tcp, udp, job["cancel"],
                                include_os=include_os)
     with eng["lock"]:
@@ -3081,7 +3088,8 @@ def _svc_batch(eng: dict, tcp: list, udp: list, include_os: bool, job: dict,
     finds = ", ".join(f"{s['port']}/{s['name']}" for s in named)
     if result.get("os"):
         finds += (("  ·  " if finds else "") + f"OS: {result['os']}")
-    _post(eng["ctx"], lambda s=st, f=finds: _print_cmd_outcome(2, label, s, f))
+    _post(eng["ctx"], lambda s=st, f=finds, nm=num:
+          _print_cmd_outcome(2, label, s, f, num=nm))
     _maybe_advance(eng)
 
 
@@ -3473,13 +3481,14 @@ def _start_vuln_scan(eng: dict) -> None:
     if not jobs:                                       # nothing to scan → phase 4
         _start_cve_lookup(eng)
         return
-    for label, scripts, ports, job in jobs:            # announce each family
-        console.print(_phase_banner(3, label))
+    for i, (label, scripts, ports, job) in enumerate(jobs, 1):   # announce each family
+        console.print(_phase_banner(3, label, num=i))
         threading.Thread(target=_vuln_pass,
-                         args=(eng, label, scripts, ports, job), daemon=True).start()
+                         args=(eng, label, scripts, ports, job, i), daemon=True).start()
 
 
-def _vuln_pass(eng: dict, label: str, scripts: str, ports: list, job: dict) -> None:
+def _vuln_pass(eng: dict, label: str, scripts: str, ports: list, job: dict,
+               num: int) -> None:
     """One phase-3 family scan; stores its findings and advances when the phase is
     fully done."""
     result = _run_one_vuln_pass(scripts, ports, eng["ip"], job["cancel"])
@@ -3498,7 +3507,8 @@ def _vuln_pass(eng: dict, label: str, scripts: str, ports: list, job: dict) -> N
     real = [f for f in result.get("findings", [])
             if f.get("state") in ("VULNERABLE", "LIKELY", "EXPOSED")]
     finds = "; ".join(f.get("summary") or f.get("script") or "" for f in real)
-    _post(eng["ctx"], lambda s=st, f=finds: _print_cmd_outcome(3, label, s, f))
+    _post(eng["ctx"], lambda s=st, f=finds, nm=num:
+          _print_cmd_outcome(3, label, s, f, num=nm))
     _maybe_finish_vuln(eng)
 
 
@@ -4013,8 +4023,9 @@ def _exploit_worker(eng: dict) -> None:
                 job = _job(cmd)
                 with eng["lock"]:
                     eng["exploit_phase"]["jobs"].append(job)
-                _post(eng["ctx"], lambda lc=label_cmd:
-                      console.print(_phase_banner(5, lc, minutes=EXPLOIT_CMD_MINUTES)))
+                    cnum = len(eng["exploit_phase"]["jobs"])
+                _post(eng["ctx"], lambda lc=label_cmd, nm=cnum: console.print(
+                    _phase_banner(5, lc, minutes=EXPLOIT_CMD_MINUTES, num=nm)))
                 result = _run_exploit_cmd(cmd, job["cancel"])
                 job["state"] = ("aborted" if result["cancelled"]
                                 else "error" if not result["ok"] else "complete")
@@ -4035,8 +4046,8 @@ def _exploit_worker(eng: dict) -> None:
                         with eng["lock"]:
                             eng["exploit_findings"].append(
                                 {"port": port, "finding": finding})
-                _post(eng["ctx"], lambda lc=label_cmd, st=job["state"], f=finding:
-                      _print_exploit_outcome(lc, st, f))
+                _post(eng["ctx"], lambda lc=label_cmd, st=job["state"], f=finding,
+                      nm=cnum: _print_exploit_outcome(lc, st, f, num=nm))
         if missing_tools:
             def _miss(mc=missing_cmds, tools=sorted(missing_tools)):
                 line = Text("      ")
@@ -4053,9 +4064,9 @@ def _exploit_worker(eng: dict) -> None:
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
 
-def _print_exploit_outcome(label: str, state: str, finding) -> None:
+def _print_exploit_outcome(label: str, state: str, finding, num=None) -> None:
     """Per-command completion line + the LLM-extracted finding (or none)."""
-    out = _phase_state_line(5, label, state)
+    out = _phase_state_line(5, label, state, num=num)
     if state == "complete":
         if finding:
             out.append("\n")
