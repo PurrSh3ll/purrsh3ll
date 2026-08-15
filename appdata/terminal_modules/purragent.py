@@ -2862,27 +2862,46 @@ def _print_cmd_outcome(n: int, label: str, state: str, findings: str,
 
 
 def _post(ctx: dict, fn) -> None:
-    """Queue a print to appear above the active prompt (from a worker thread). Tries
-    run_in_terminal now; the REPL loop flushes any that don't make it in time."""
+    """Queue a print to appear above the active prompt (from a worker thread). One
+    run_in_terminal render is scheduled per burst (deduped via _flush_scheduled) —
+    _flush_pending drains everything queued so far, so N rapid posts cause ONE
+    erase/redraw of the prompt, not N (which used to occasionally drop the toolbar).
+    The REPL loop flushes any that don't make it in time."""
     ctx.setdefault("pending", []).append(fn)
+    if ctx.get("_flush_scheduled"):
+        return
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
         app = get_app_or_none()
         loop = getattr(app, "loop", None) if app is not None else None
         if loop is not None:
+            ctx["_flush_scheduled"] = True
             loop.call_soon_threadsafe(
                 lambda: run_in_terminal(lambda: _flush_pending(ctx)))
     except Exception:
-        pass
+        ctx["_flush_scheduled"] = False
 
 
 def _flush_pending(ctx: dict) -> None:
+    ctx["_flush_scheduled"] = False
     pend, ctx["pending"] = ctx.get("pending") or [], []
     for fn in pend:
         try:
             fn()
         except Exception:
             pass
+
+
+def _invalidate_toolbar(ctx: dict) -> None:
+    """Ask the active prompt to redraw (updates the toolbar tag) without printing —
+    used when a background state like 'thinking' changes with no output to post."""
+    try:
+        from prompt_toolkit.application import get_app_or_none
+        app = get_app_or_none()
+        if app is not None:
+            app.loop.call_soon_threadsafe(app.invalidate)
+    except Exception:
+        pass
 
 
 def _cancel_engagement(ctx: dict) -> None:
@@ -4032,11 +4051,13 @@ def _exploit_worker(eng: dict) -> None:
                 finding = None
                 if not result["cancelled"]:
                     eng["thinking"] = True             # model analysing the output
+                    _invalidate_toolbar(eng["ctx"])    # redraw → show 'thinking…'
                     try:
                         finding = _extract_exploit_finding(eng, port, key, step_desc,
                                                            cmd, result["output"])
                     finally:
                         eng["thinking"] = False
+                        _invalidate_toolbar(eng["ctx"])
                     if finding:
                         try:
                             purragent_db.add_exploit_finding(
@@ -4999,7 +5020,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # servers immediately — without needing a first prompt or opening /mcp.
     ensure_mcp()
 
-    def toolbar():
+    def _toolbar_inner():
         p = ctx["profile"]
         mode_seg = f"<style fg='#b46cff'>mode: {mode}</style>"
         # Privilege indicator: red 'root' warns you're elevated, dim 'user' otherwise.
@@ -5051,6 +5072,14 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             f"  <b>{_model_short(p)}</b>  ·  {p.get('provider', '?')}"
             f"  ·  <i>{p.get('name', '?')}</i>{cap_seg}{ctx_seg}   {mode_seg}   "
             f"{priv_seg}{dbg_seg}{hack_seg}{scan_seg}   <style fg='#7f7f7f'>/exit to quit</style>")
+
+    def toolbar():
+        # Never let a transient error building the bar remove it — a raising
+        # bottom_toolbar callable makes prompt_toolkit drop the line entirely.
+        try:
+            return _toolbar_inner()
+        except Exception:                             # noqa: BLE001
+            return HTML("  <style fg='#7f7f7f'>/exit to quit</style>")
 
     style = Style.from_dict({
         "prompt":         "bold #d75fff",
@@ -5176,9 +5205,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # prompt-toolkit style.
                 text = input("  step 1 — enter the target IP: ").strip()
             else:
-                # refresh so the toolbar progress tag (running / thinking… / working…)
-                # ticks live even while a background phase works with no prints.
-                text = session.prompt(plain_prompt, refresh_interval=0.5).strip()
+                # No continuous refresh: the toolbar redraws on each background print
+                # (run_in_terminal) and on _invalidate_toolbar when 'thinking' toggles,
+                # so the progress tag stays current without a timer racing the prompt
+                # erase/redraw (which could drop the bottom bar).
+                text = session.prompt(plain_prompt).strip()
         except KeyboardInterrupt:
             continue          # Ctrl-C: clear the line, stay put
         except EOFError:
