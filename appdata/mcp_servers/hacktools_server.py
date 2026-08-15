@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+from urllib.parse import quote
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "purr-hacktools"
@@ -667,6 +668,132 @@ def _b_kerberos_roast(a):
     raise ValueError("`mode` must be kerberoast or asrep")
 
 
+# ── databases + remote exec batch ─────────────────────────────────────────────
+def _db_ident(v, key):
+    if v and not re.match(r"^[A-Za-z0-9._-]+$", v):
+        raise ValueError(f"`{key}` has invalid characters")
+    return v
+
+
+def _b_mysql_query(a):
+    host = _req_host(a)
+    port = _port(a, 3306)
+    user = _db_ident((a.get("username") or "root").strip(), "username")
+    password = str(a.get("password") or "")
+    db = _db_ident((a.get("database") or "").strip(), "database")
+    query = _no_ctrl(_word(a, "query"), "query")
+    argv = ["mysql", "-h", host, "-P", str(port), "-u", user]
+    if password:
+        argv.append("-p" + password)                  # note: visible in process list
+    if db:
+        argv += ["-D", db]
+    return argv + ["-e", query], "mysql", 120
+
+
+def _b_mssql_query(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    query = _no_ctrl(_word(a, "query"), "query")
+    argv = ["nxc", "mssql", host] + _nxc_auth(user, password, nthash, domain)
+    if a.get("local_auth"):
+        argv.append("--local-auth")                   # SQL login rather than Windows
+    if a.get("port") is not None:
+        argv += ["--port", str(_port(a))]
+    return argv + ["-q", query], "nxc", 120
+
+
+def _b_psql_query(a):
+    host = _req_host(a)
+    port = _port(a, 5432)
+    user = _db_ident((a.get("username") or "postgres").strip(), "username")
+    password = str(a.get("password") or "")
+    db = _db_ident((a.get("database") or "postgres").strip(), "database")
+    query = _no_ctrl(_word(a, "query"), "query")
+    uri = f"postgresql://{quote(user)}:{quote(password)}@{host}:{port}/{db}"
+    return ["psql", uri, "-A", "-c", query], "psql", 120
+
+
+_REDIS_DENY = {"SHUTDOWN", "FLUSHALL", "FLUSHDB"}
+
+
+def _b_redis_cli(a):
+    host = _req_host(a)
+    port = _port(a, 6379)
+    password = str(a.get("password") or "")
+    command = (a.get("command") or "INFO").strip()
+    if not re.match(r"^[A-Za-z0-9_.:*\- ]+$", command):
+        raise ValueError("`command` has invalid characters")
+    if command.split()[0].upper() in _REDIS_DENY:
+        raise ValueError("destructive redis command not allowed here")
+    argv = ["redis-cli", "-h", host, "-p", str(port), "--no-auth-warning"]
+    if password:
+        argv += ["-a", password]
+    return argv + command.split(), "redis-cli", 60
+
+
+def _b_mongo_query(a):
+    host = _req_host(a)
+    port = _port(a, 27017)
+    user = (a.get("username") or "").strip()
+    password = str(a.get("password") or "")
+    db = _db_ident((a.get("database") or "admin").strip(), "database")
+    ev = _no_ctrl((a.get("command") or "db.getMongo().getDBNames()").strip(),
+                  "command")
+    auth = f"{quote(user)}:{quote(password)}@" if user else ""
+    uri = f"mongodb://{auth}{host}:{port}/{db}"
+    return ["mongosh", uri, "--quiet", "--eval", ev], "mongosh", 60
+
+
+def _b_ssh_exec(a):
+    host = _req_host(a)
+    port = _port(a, 22)
+    user = _db_ident((a.get("username") or "").strip(), "username")
+    if not user:
+        raise ValueError("`username` is required")
+    command = _no_ctrl(_word(a, "command"), "command")
+    common = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+              "-p", str(port), f"{user}@{host}", command]
+    key = (a.get("key") or "").strip()
+    if key:
+        if re.search(r"[;\s\x00-\x1f]", key):
+            raise ValueError("`key` must be a path with no spaces")
+        return ["ssh", "-i", key] + common, "ssh", 120
+    password = str(a.get("password") or "")
+    if password:                                      # non-interactive password auth
+        return ["sshpass", "-p", password, "ssh"] + common, "sshpass", 120
+    raise ValueError("provide `password` or `key`")
+
+
+def _b_winrm_exec(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a, require=True)
+    command = _no_ctrl(_word(a, "command"), "command")
+    argv = ["nxc", "winrm", host] + _nxc_auth(user, password, nthash, domain)
+    return argv + ["-x", command], "nxc", 120
+
+
+def _b_ftp_transfer(a):
+    host = _req_host(a)
+    port = _port(a, 21)
+    user = (a.get("username") or "anonymous").strip()
+    password = str(a.get("password")
+                   or ("anonymous" if user == "anonymous" else ""))
+    action = (a.get("action") or "list").lower()
+    path = _no_ctrl((a.get("path") or "/").strip(), "path")
+    if not path.startswith("/"):
+        path = "/" + path
+    creds = f"{quote(user)}:{quote(password)}@"
+    if action == "list":
+        if not path.endswith("/"):
+            path += "/"
+        return (["curl", "-sS", "--max-time", "30",
+                 f"ftp://{creds}{host}:{port}{path}", "--list-only"], "curl", 60)
+    if action == "get":
+        return (["curl", "-sS", "--max-time", "60",
+                 f"ftp://{creds}{host}:{port}{path}"], "curl", 90)
+    raise ValueError("`action` must be list or get")
+
+
 # name -> (builder, description, inputSchema, timeout)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -981,6 +1108,98 @@ HACKTOOLS = {
                             "— a username to test."},
             "username": _USER, "password": _PASS, "hash": _HASH},
          "required": ["dc", "domain"]}, 300),
+    "mysql_query": (
+        _b_mysql_query,
+        "Run a SQL query against MySQL/MariaDB (mysql client). Credentials are passed "
+        "on the command line.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": {"type": "string", "description": "DB user (default root)."},
+            "password": _PASS,
+            "database": {"type": "string", "description": "Database to use (optional)."},
+            "query": {"type": "string", "description": "SQL to run, e.g. "
+                      "'show databases;'."}},
+         "required": ["host", "query"]}, 120),
+    "mssql_query": (
+        _b_mssql_query,
+        "Run a SQL query against MS SQL Server via netexec (nxc mssql). Windows auth by "
+        "default; set local_auth for a SQL login. Password or NT hash.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
+            "local_auth": {"type": "boolean", "description": "Use a SQL login instead "
+                           "of Windows auth."},
+            "query": {"type": "string", "description": "SQL to run."}},
+         "required": ["host", "query"]}, 120),
+    "psql_query": (
+        _b_psql_query,
+        "Run a SQL query against PostgreSQL (psql). Credentials are passed in the "
+        "connection URI.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": {"type": "string", "description": "DB user (default "
+                         "postgres)."},
+            "password": _PASS,
+            "database": {"type": "string", "description": "Database (default "
+                         "postgres)."},
+            "query": {"type": "string", "description": "SQL to run."}},
+         "required": ["host", "query"]}, 120),
+    "redis_cli": (
+        _b_redis_cli,
+        "Run a Redis command (redis-cli). No-auth or with a password. Destructive "
+        "flush/shutdown commands are blocked.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT, "password": _PASS,
+            "command": {"type": "string", "description": "Redis command (default "
+                        "INFO), e.g. 'KEYS *' or 'GET foo'."}},
+         "required": ["host"]}, 60),
+    "mongo_query": (
+        _b_mongo_query,
+        "Run a MongoDB command with mongosh --eval. Anonymous or with credentials.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": _USER, "password": _PASS,
+            "database": {"type": "string", "description": "Database (default admin)."},
+            "command": {"type": "string", "description": "JS to eval (default lists "
+                        "databases), e.g. 'db.users.find()'."}},
+         "required": ["host"]}, 60),
+    "ssh_exec": (
+        _b_ssh_exec,
+        "Run ONE command over SSH with a password (via sshpass) or a private key. Not "
+        "an interactive shell.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": {"type": "string", "description": "SSH username."},
+            "password": _PASS,
+            "key": {"type": "string", "description": "Path to a private key (instead "
+                    "of a password)."},
+            "command": {"type": "string", "description": "The command to run, e.g. "
+                        "'id; uname -a'."}},
+         "required": ["host", "username", "command"]}, 120),
+    "winrm_exec": (
+        _b_winrm_exec,
+        "Run ONE command on Windows over WinRM via netexec (nxc winrm). Password or NT "
+        "hash. Not an interactive shell.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
+            "command": {"type": "string", "description": "The command to run, e.g. "
+                        "'whoami /all'."}},
+         "required": ["host", "username", "command"]}, 120),
+    "ftp_transfer": (
+        _b_ftp_transfer,
+        "List an FTP directory or download a file to stdout (curl). Anonymous or with "
+        "credentials.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": {"type": "string", "description": "FTP user (default "
+                         "anonymous)."},
+            "password": _PASS,
+            "action": {"type": "string", "description": "list (a directory) or get "
+                       "(print a file)."},
+            "path": {"type": "string", "description": "Directory or file path "
+                     "(default /)."}},
+         "required": ["host"]}, 90),
 }
 
 
@@ -1208,6 +1427,75 @@ _META = {
         ["kerberoast the domain with these creds", "asrep roast the target user",
          "request SPN hashes for cracking", "GetNPUsers without a password",
          "kerberoasting with impacket"]),
+    "mysql_query": (
+        "Run a SQL query against MySQL/MariaDB.",
+        "MySQL / MariaDB SQL query with the mysql client: list databases, dump tables, "
+        "read data, check versions and users, with credentials. Keywords: mysql, "
+        "mariadb, sql query, database, show databases, select, port 3306, dump table, "
+        "db enumeration.",
+        ["run a query on the mysql database", "show databases on the mysql server",
+         "dump the users table from mysql", "select from the db with these creds",
+         "list mysql databases"]),
+    "mssql_query": (
+        "Run a SQL query against MS SQL Server.",
+        "Microsoft SQL Server query via netexec: run SQL with Windows or SQL-login "
+        "credentials (or NT hash), enumerate databases and data. Keywords: mssql, "
+        "microsoft sql server, sql query, port 1433, xp_cmdshell, sqlcmd, tsql, "
+        "database enumeration, windows auth, sql login.",
+        ["query the mssql server", "run sql on ms sql with these creds",
+         "list databases on mssql", "select from the sql server database",
+         "mssql query with windows auth"]),
+    "psql_query": (
+        "Run a SQL query against PostgreSQL.",
+        "PostgreSQL SQL query with psql: list databases and tables, read data, check "
+        "version and roles, with credentials in the connection URI. Keywords: "
+        "postgresql, postgres, psql, sql query, port 5432, \\l, select, database, "
+        "roles, db enumeration.",
+        ["run a query on postgres", "list postgresql databases",
+         "select from the postgres table", "query the postgres db with these creds"]),
+    "redis_cli": (
+        "Run a Redis command (redis-cli).",
+        "Redis command with redis-cli: INFO, KEYS, GET, CONFIG GET and more, no-auth or "
+        "with a password. Read/enumerate a Redis instance. Keywords: redis, redis-cli, "
+        "port 6379, keys, get, info, config, cache, nosql, unauthenticated redis. "
+        "Destructive flush/shutdown blocked.",
+        ["get redis server info", "list all redis keys", "read a redis key value",
+         "redis config get dir", "enumerate the redis instance"]),
+    "mongo_query": (
+        "Run a MongoDB command (mongosh --eval).",
+        "MongoDB command with mongosh: list databases and collections, query documents, "
+        "check for unauthenticated access, anonymous or with credentials. Keywords: "
+        "mongodb, mongo, mongosh, nosql, port 27017, collections, db.find, "
+        "unauthenticated mongo, document database.",
+        ["list mongodb databases", "query a mongo collection",
+         "check for unauthenticated mongodb", "run db.users.find() on mongo",
+         "show mongo collections"]),
+    "ssh_exec": (
+        "Run one command over SSH (password or key).",
+        "SSH remote command execution: run a single command on a host with a password "
+        "(via sshpass) or a private key. Not interactive. Post-exploitation / lateral "
+        "movement with recovered credentials. Keywords: ssh, sshpass, remote command, "
+        "port 22, run command over ssh, private key, id, uname, execute, foothold.",
+        ["run id over ssh with these creds", "execute a command on the linux host via ssh",
+         "ssh in and run uname -a", "use the private key to run a command over ssh",
+         "ssh command execution"]),
+    "winrm_exec": (
+        "Run one command on Windows over WinRM.",
+        "WinRM remote command execution via netexec: run a single command on a Windows "
+        "host with a password or NT hash. Not interactive. Keywords: winrm, evil-winrm, "
+        "nxc winrm, port 5985, 5986, remote command windows, pass the hash, powershell, "
+        "execute, lateral movement.",
+        ["run whoami over winrm", "execute a command on windows via winrm",
+         "winrm command with the NT hash", "run powershell remotely over winrm"]),
+    "ftp_transfer": (
+        "List an FTP directory or download a file.",
+        "FTP access with curl: list a directory or download a file to stdout, anonymous "
+        "or with credentials. Loot files from an FTP server. Keywords: ftp, curl ftp, "
+        "port 21, download, list directory, anonymous ftp, file transfer, loot, "
+        "retrieve file.",
+        ["list the ftp directory", "download a file from ftp",
+         "get the contents of a file over ftp", "loot the ftp server with these creds",
+         "read passwords.txt from ftp"]),
 }
 
 
@@ -1356,6 +1644,12 @@ def selftest():
         ("impacket_exec", {"host": "10.0.0.5", "username": "u", "hash": "xyz"}, True),  # bad hash
         ("kerberos_roast", {"dc": "10.0.0.5"}, True),     # needs domain
         ("kerberos_roast", {"dc": "10.0.0.5", "domain": "corp.local"}, True),  # kerb needs creds
+        ("mysql_query", {"host": "10.0.0.5", "query": "show databases;"}, False),  # ok
+        ("mysql_query", {"host": "10.0.0.5"}, True),      # query required
+        ("redis_cli", {"host": "10.0.0.5", "command": "FLUSHALL"}, True),   # destructive
+        ("ssh_exec", {"host": "10.0.0.5", "username": "root", "command": "id"}, True),  # no pass/key
+        ("winrm_exec", {"host": "10.0.0.5", "command": "whoami"}, True),    # needs username
+        ("ftp_transfer", {"host": "10.0.0.5", "action": "delete"}, True),   # bad action
     ):
         b = HACKTOOLS[name][0]
         try:
