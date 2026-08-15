@@ -3767,7 +3767,7 @@ def _cve_outcome(results: list, no_index: bool) -> None:
                        f"KEV (known-exploited), {tother} other", style="green"))
     for port, proto, product, version, kev, other in results[:8]:
         line = Text("      ")
-        line.append(f"{port:<5}", style="cyan")
+        line.append(f"{port:<5}", style="default")
         line.append(f" {product} {version}".rstrip(), style="default")
         line.append(f"  —  {len(kev)} KEV", style="red" if kev else "bright_black")
         line.append(f", {len(other)} other", style="bright_black")
