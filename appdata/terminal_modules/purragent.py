@@ -3773,7 +3773,7 @@ def _finish_cve_lookup(eng: dict) -> None:
             return
         results, no_index = list(eng.get("cve_results") or []), eng.get("cve_no_index")
     _cve_outcome(results, no_index)
-    _start_service_exploitation(eng)                   # phase 5 — service exploitation
+    _start_targeted_review(eng)                        # phase 4.5 → then phase 5
 
 
 def _cve_outcome(results: list, no_index: bool) -> None:
@@ -3990,6 +3990,172 @@ def _exploit_order(base_dir: str, tid: int) -> list:
         triaged.append((rank, port, proto, label, key, ver))
     triaged.sort(key=lambda t: (t[0], t[1]))
     return [(p, pr, lb, k, v) for _r, p, pr, lb, k, v in triaged]
+
+
+# ── phase 4.5 — targeted review (LLM, hacktools only) ─────────────────────────
+# After the deterministic recon (phases 1-4) the model gets the full findings and
+# may run a FEW precise extra checks from the hacktools MCP server (product-specific
+# NSE, nuclei by tag, a deeper probe of an unidentified service) — a bounded agentic
+# loop, not one call: it reacts to each tool's output, then summarises and stops.
+# Tightly capped (rounds / tool-calls / wall-clock) because each call is a real scan
+# and small models drift. Skipped cleanly with no model / MCP / hacktools; either way
+# the engagement then proceeds to phase 5 exactly as before.
+REVIEW_MAX_ROUNDS = 4
+REVIEW_MAX_TOOLCALLS = 6
+REVIEW_BUDGET_MINUTES = 8
+
+_REVIEW_SYSTEM = (
+    "You are a penetration-testing assistant doing a SHORT, targeted review after "
+    "automated recon (port scan, service/version detection, vuln scan, offline CVE "
+    "lookup). The target's findings are given below. Decide whether a FEW precise "
+    "extra scans would genuinely add value — e.g. a product/version-specific nmap NSE "
+    "script, a nuclei scan with matching tags, or a deeper probe of an unidentified "
+    "service. Only call a tool when it is clearly worthwhile; prefer narrow, targeted "
+    "checks over broad ones. Do NOT brute-force, exploit, or use credentials here. "
+    "When you have run the worthwhile checks (or if none are needed), reply with a "
+    "1-3 line summary of what you found or that nothing extra was needed, then stop.")
+
+_REVIEW_TASK = ("Review the recon findings above. Run at most a few targeted scans if "
+                "they add value, then summarise. Be conservative — quality over "
+                "quantity.")
+
+
+def _print_review_call(tool: str, args: dict) -> None:
+    line = Text("  ")
+    line.append("[running]", style="yellow")
+    line.append(f" ▸ review · {tool}")
+    prev = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3] if v not in (None, ""))
+    if prev:
+        line.append(f"  ({prev})", style="bright_black")
+    console.print(line)
+
+
+def _print_review_result(tool: str, result: dict) -> None:
+    out = (result.get("text") or "").strip()
+    snippet = "\n".join(out.splitlines()[:8])
+    line = Text("  ")
+    line.append("[complete]", style="default")
+    line.append(f" ▸ review · {tool}")
+    if snippet:
+        line.append("\n")
+        for ln in snippet.splitlines():
+            line.append("        " + ln + "\n", style="bright_black")
+    console.print(line)
+
+
+def _print_review_summary(summary: str) -> None:
+    console.print(Text("  ✓ targeted review — ", style="green").append(
+        summary.splitlines()[0] if summary else "done", style="green"))
+    for ln in summary.splitlines()[1:]:
+        console.print(Text("      " + ln, style="green"))
+
+
+def _start_targeted_review(eng: dict) -> None:
+    """Phase 4.5 entry: run the review in the background, then chain to phase 5."""
+    threading.Thread(target=_review_worker, args=(eng,), daemon=True).start()
+
+
+def _review_worker(eng: dict) -> None:
+    try:
+        _run_targeted_review(eng)
+    except Exception:                                  # noqa: BLE001
+        pass
+    finally:
+        eng["thinking"] = False
+        _invalidate_toolbar(eng["ctx"])
+        _post(eng["ctx"], lambda: _start_service_exploitation(eng))   # → phase 5
+
+
+def _run_targeted_review(eng: dict) -> None:
+    """Bounded agentic loop over the hacktools MCP tools, seeded with the target's
+    findings. Runs a few precise checks and stores a summary. No-ops (returns) when a
+    model, the MCP client, or the hacktools server isn't available."""
+    ctx, base_dir = eng["ctx"], eng["base_dir"]
+    profile, mcp = ctx.get("profile"), ctx.get("mcp")
+    if not profile or mcp is None or not _supports_tool_loop(profile):
+        return
+    if eng.get("cancelled"):
+        return
+    try:
+        tools = [t for t in mcp.all_tools()
+                 if mcp_client.split_namespaced(t["name"])[0] == "hacktools"]
+    except Exception:                                  # noqa: BLE001
+        return
+    if not tools:
+        return
+    schemas = [t["schema"] for t in tools]
+    dbctx = _target_db_context(base_dir) or ""
+    system = "\n\n".join(p for p in (_REVIEW_SYSTEM, _env_block(), dbctx) if p)
+    msgs = [{"role": "system", "content": system},
+            {"role": "user", "content": _REVIEW_TASK}]
+    endpoint, api_key = _openai_endpoint(profile, base_dir)
+    custom_params = psai._parse_custom_params(profile)
+    deadline = time.time() + REVIEW_BUDGET_MINUTES * 60
+    calls = 0
+    _post(ctx, lambda: console.print(Text(
+        "  ▸ targeted review — the model may run a few precise checks",
+        style="bright_black")))
+
+    for _round in range(REVIEW_MAX_ROUNDS):
+        if eng.get("cancelled") or time.time() > deadline:
+            break
+        body = {"model": profile.get("model", ""), "messages": msgs,
+                "tools": schemas, "tool_choice": "auto",
+                "temperature": AGENT_TEMPERATURE}
+        if custom_params:
+            body.update(custom_params)
+        eng["thinking"] = True
+        _invalidate_toolbar(ctx)
+        parts: list = []
+        try:
+            message = _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
+                                   hide_thinking=True, render_reasoning=False)
+        except Exception:                              # noqa: BLE001
+            break
+        finally:
+            eng["thinking"] = False
+            _invalidate_toolbar(ctx)
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:                             # model is done → summarise
+            summary = (message.get("content") or "".join(parts)).strip()
+            if summary:
+                _post(ctx, lambda s=summary: _print_review_summary(s))
+                try:
+                    purragent_db.add_exploit_finding(base_dir, eng["tid"], 0, "tcp",
+                        "review", "targeted review", "", summary)
+                    eng.setdefault("exploit_findings", []).append(
+                        {"port": 0, "finding": summary})
+                except Exception:                      # noqa: BLE001
+                    pass
+            return
+        msgs.append(message)
+        for tc in tool_calls:
+            call_id = tc.get("id")
+            if (calls >= REVIEW_MAX_TOOLCALLS or time.time() > deadline
+                    or eng.get("cancelled")):
+                msgs.append({"role": "tool", "tool_call_id": call_id,
+                             "content": "Review budget reached — summarise and stop."})
+                continue
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            if mcp_client.split_namespaced(name)[0] != "hacktools":
+                msgs.append({"role": "tool", "tool_call_id": call_id,
+                             "content": "Only hacktools scans are allowed here."})
+                continue
+            bare = mcp_client.split_namespaced(name)[1]
+            _post(ctx, lambda b=bare, ar=args: _print_review_call(b, ar))
+            calls += 1
+            try:
+                result = mcp.call(name, args)
+            except Exception as exc:                   # noqa: BLE001
+                result = {"text": f"error: {exc}", "isError": True}
+            _post(ctx, lambda b=bare, r=result: _print_review_result(b, r))
+            msgs.append({"role": "tool", "tool_call_id": call_id,
+                         "content": result.get("text") or "(no output)"})
 
 
 def _start_service_exploitation(eng: dict) -> None:
@@ -5010,6 +5176,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # MCP client. Servers are spawned lazily on first use (chat or /mcp) so
     # launching purragent stays fast and costs nothing when MCP is unused.
     mcp = mcp_client.MCPManager(base_dir)
+    ctx["mcp"] = mcp        # so the hacking pipeline's phase-4.5 review can call tools
 
     def ensure_mcp() -> None:
         if not mcp.connected:
