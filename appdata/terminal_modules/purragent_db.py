@@ -93,6 +93,18 @@ CREATE TABLE IF NOT EXISTS vulns (
     UNIQUE (target_id, port, proto, script),
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
+CREATE TABLE IF NOT EXISTS exploit_findings (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id  INTEGER,
+    port       INTEGER,
+    proto      TEXT,
+    service    TEXT,                       -- exploit service class key (smb/http/…)
+    step       TEXT,                       -- checklist sub-phase description
+    command    TEXT,                       -- the command that produced it
+    finding    TEXT,                       -- LLM-extracted, important bits only
+    created    TEXT,
+    FOREIGN KEY (target_id) REFERENCES targets(id)
+);
 CREATE TABLE IF NOT EXISTS notes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     engagement_id INTEGER,
@@ -288,6 +300,9 @@ def fetch_findings(base_dir: str, target_id: int, engagement_id: int) -> dict:
                 "SELECT * FROM endpoints WHERE target_id = ?", (target_id,))],
             "vulns": [dict(r) for r in conn.execute(
                 "SELECT * FROM vulns WHERE target_id = ? ORDER BY port", (target_id,))],
+            "exploit_findings": [dict(r) for r in conn.execute(
+                "SELECT * FROM exploit_findings WHERE target_id = ? ORDER BY port, id",
+                (target_id,))],
             "notes": [dict(r) for r in conn.execute(
                 "SELECT * FROM notes WHERE engagement_id = ? ORDER BY id",
                 (engagement_id,))],
@@ -390,6 +405,36 @@ def add_vuln(base_dir: str, target_id: int, port: int, proto: str, script,
         conn.close()
 
 
+def add_exploit_finding(base_dir: str, target_id: int, port: int, proto: str,
+                        service, step, command, finding) -> None:
+    """Store one phase-5 finding (LLM-extracted from a command's output) under a port."""
+    finding = _clean(finding)
+    if not finding:
+        return
+    conn = _connect(base_dir)
+    try:
+        conn.execute(
+            "INSERT INTO exploit_findings (target_id, port, proto, service, step, "
+            "command, finding, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (target_id, int(port), _clean(proto) or "tcp", _clean(service),
+             _clean(step), _clean(command), finding, _now()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_exploit_findings(base_dir: str, target_id: int) -> list:
+    """Phase-5 findings for a target, ordered by port then insertion."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM exploit_findings WHERE target_id = ? ORDER BY port, id",
+            (target_id,))]
+    finally:
+        conn.close()
+
+
 def fetch_vulns(base_dir: str, target_id: int) -> list:
     """Phase-3 findings for a target, worst risk first then by port."""
     conn = _connect(base_dir)
@@ -442,6 +487,7 @@ def remove_engagement(base_dir: str, engagement_id: int) -> None:
             conn.execute("DELETE FROM endpoints WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM scripts WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM vulns WHERE target_id = ?", (tid,))
+            conn.execute("DELETE FROM exploit_findings WHERE target_id = ?", (tid,))
         conn.execute("DELETE FROM targets WHERE engagement_id = ?", (engagement_id,))
         conn.execute("DELETE FROM notes WHERE engagement_id = ?", (engagement_id,))
         conn.execute("DELETE FROM engagements WHERE id = ?", (engagement_id,))
@@ -471,6 +517,9 @@ def fetch_all(base_dir: str) -> list:
                 "SELECT * FROM endpoints WHERE target_id = ?", (tid,))]
             eng["vulns"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM vulns WHERE target_id = ? ORDER BY port", (tid,))]
+            eng["exploit_findings"] = [dict(r) for r in conn.execute(
+                "SELECT * FROM exploit_findings WHERE target_id = ? ORDER BY port, id",
+                (tid,))]
             eng["notes"] = [dict(r) for r in conn.execute(
                 "SELECT * FROM notes WHERE engagement_id = ? ORDER BY id", (e["id"],))]
             out.append(eng)

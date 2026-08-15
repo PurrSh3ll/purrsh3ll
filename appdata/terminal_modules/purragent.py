@@ -26,6 +26,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -2637,6 +2638,7 @@ def _record_target(ctx: dict, base_dir: str, debug: bool,
 
 # Port-discovery time budget, mirroring pshunter's DEFAULT_MINUTES (Enter default).
 PORT_SCAN_MINUTES = 10
+EXPLOIT_CMD_MINUTES = 3        # per-command time budget in phase 5 (service exploitation)
 
 
 def _port_scan_specs() -> list:
@@ -2802,14 +2804,15 @@ def _job(command: str) -> dict:
     return {"command": command, "state": "running", "cancel": threading.Event()}
 
 
-def _phase_banner(n: int, name: str, budget: bool = True) -> "Text":
+def _phase_banner(n: int, name: str, budget: bool = True, minutes=None) -> "Text":
     """Uniform phase header: a [running] tag so the user sees what's happening now,
-    plus the shared time budget (skipped for the offline CVE lookup)."""
+    plus the time budget (skipped for the offline CVE lookup)."""
     b = Text("  ")
     b.append("[running]", style="yellow")
     b.append(f" ▸ phase {n} — {name}")
     if budget:
-        b.append(f"  ·  ⏱ {PORT_SCAN_MINUTES}m budget", style="bright_black")
+        b.append(f"  ·  ⏱ {minutes or PORT_SCAN_MINUTES}m budget",
+                 style="bright_black")
     return b
 
 
@@ -2917,6 +2920,7 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
         "svc_services": [], "svc_scripts": [], "os": None,
         "vuln_phase": None, "vuln_findings": [], "vuln_advanced": False,
         "cve_phase": None, "cve_results": [], "cve_no_index": False,
+        "exploit_phase": None, "exploit_findings": [],
     }
     ctx["engagement"] = eng
     ctx["phases"] = [port_phase]
@@ -3737,7 +3741,7 @@ def _finish_cve_lookup(eng: dict) -> None:
             return
         results, no_index = list(eng.get("cve_results") or []), eng.get("cve_no_index")
     _cve_outcome(results, no_index)
-    _finish_recon(eng)
+    _start_service_exploitation(eng)                   # phase 5 — service exploitation
 
 
 def _cve_outcome(results: list, no_index: bool) -> None:
@@ -3774,10 +3778,278 @@ def _cve_outcome(results: list, no_index: bool) -> None:
                            style="bright_black"))
 
 
+# ── phase 5 — service exploitation ────────────────────────────────────────────
+# Sequential, no LLM for control flow: walk the target's services in pshunter's
+# exploitation-priority order, and for each service walk its checklist sub-phases and
+# their commands in order (all reused from pshunter's catalog). SAFE-by-default: a
+# command runs only when every placeholder resolves to the target itself (<RHOST> /
+# <RPORT>) and its tool is installed — so creds / listener / destructive commands are
+# skipped for now. Each run gets a per-command time budget; its output is sent to the
+# LLM (tool-free) to extract the important bits, which are stored under the port.
+_EXPLOIT_FILL_OK = re.compile(r"<[A-Za-z]")        # any leftover <PLACEHOLDER> → unrunnable
+
+# Tools that are active attacks, listeners/relays, crackers or brute-forcers — never
+# auto-run in this simple pass even if their placeholders happen to resolve (some use
+# literal helper files). They poison, hang, crack or spray; they belong to manual work.
+_EXPLOIT_DENY_BINS = {
+    "responder", "ntlmrelayx", "impacket-ntlmrelayx", "mitm6", "coercer",
+    "petitpotam", "printerbug", "pre2k",
+    "hashcat", "john", "hydra", "medusa", "patator", "ncrack", "kerbrute",
+    "msfconsole", "msfvenom",
+}
+
+
+def _exploit_cmd_safe(cmd: str) -> bool:
+    """False for commands we must not auto-run: denylisted attack/crack/relay tools, a
+    custom .py script we don't ship, or anything pointed at a wordlist (brute-force /
+    password spray, not enumeration)."""
+    low = cmd.lower()
+    if any(w in low for w in ("rockyou", "/wordlists/", "seclists")):
+        return False                                   # brute-force / spray
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    i = 0
+    while i < len(toks) and toks[i] in ("sudo", "env"):
+        i += 1
+    if i >= len(toks):
+        return False
+    base = os.path.basename(toks[i]).lower()
+    if base in _EXPLOIT_DENY_BINS:
+        return False
+    if base in ("python", "python2", "python3") and i + 1 < len(toks) \
+            and toks[i + 1].endswith(".py"):
+        return False                                   # script we don't provide
+    return True
+
+
+def _fill_exploit_cmd(cmd: str, ip: str, port: int):
+    """Fill <RHOST>/<RPORT>/<IP> from the target, drop trailing comments, and return the
+    runnable command — or None if it's a comment, still has unresolved placeholders, or
+    would widen scope beyond the single host (a <RHOST>/24 sweep)."""
+    if "<RHOST>/" in cmd or "<RHOST> /" in cmd:        # subnet sweep → out of scope
+        return None
+    cmd = re.split(r"\s+#", cmd, maxsplit=1)[0].strip()   # strip trailing comment
+    if not cmd or cmd.startswith("#"):
+        return None
+    out = (cmd.replace("<RHOST>", ip).replace("<RPORT>", str(port))
+              .replace("<IP>", ip).replace("<PORT>", str(port)))
+    if _EXPLOIT_FILL_OK.search(out):                   # unresolved placeholder remains
+        return None
+    return out
+
+
+def _cmd_binary(cmd: str):
+    """The tool a command actually invokes (skipping a leading sudo/env), for a
+    which-check."""
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    if not toks:
+        return None
+    b = toks[0]
+    if b in ("sudo", "env") and len(toks) > 1:
+        b = toks[1]
+    return b
+
+
+def _kill_proc_group(proc) -> None:
+    """Terminate a shell command and its children (it may spawn a pipeline)."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+        except Exception:                              # noqa: BLE001
+            try:
+                proc.terminate() if sig == signal.SIGTERM else proc.kill()
+            except Exception:                          # noqa: BLE001
+                pass
+        try:
+            proc.wait(timeout=3)
+            return
+        except Exception:                              # noqa: BLE001
+            continue
+
+
+def _run_exploit_cmd(cmd: str, cancel) -> dict:
+    """Run one exploitation command (shell), cancellable + time-budgeted, stdin closed
+    so interactive tools exit on EOF. Returns {ok, output, cancelled, timed_out}."""
+    deadline = EXPLOIT_CMD_MINUTES * 60
+    try:
+        proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, start_new_session=True)
+    except Exception as exc:                           # noqa: BLE001
+        return {"ok": False, "output": str(exc), "cancelled": False,
+                "timed_out": False}
+    start, timed_out = time.time(), False
+    while proc.poll() is None:
+        if cancel is not None and cancel.is_set():
+            _kill_proc_group(proc)
+            break
+        if (time.time() - start) > deadline:
+            timed_out = True
+            _kill_proc_group(proc)
+            break
+        time.sleep(0.3)
+    try:
+        out, _e = proc.communicate(timeout=5)
+    except Exception:                                  # noqa: BLE001
+        _kill_proc_group(proc)
+        try:
+            out, _e = proc.communicate(timeout=5)
+        except Exception:                              # noqa: BLE001
+            out = ""
+    return {"ok": proc.returncode == 0, "output": out or "",
+            "cancelled": bool(cancel is not None and cancel.is_set()),
+            "timed_out": timed_out}
+
+
+_EXPLOIT_EXTRACT_SYSTEM = (
+    "You are a penetration-testing assistant. You are given the raw output of a single "
+    "enumeration command run against one service. Extract ONLY the security-relevant "
+    "facts: credentials, usernames, shares, versions, hostnames/domains, readable or "
+    "writable files/paths, misconfigurations, and anything directly actionable. Be "
+    "terse — a few short lines, no preamble, no advice. If there is nothing useful, "
+    "reply with exactly: NONE")
+
+
+def _extract_exploit_finding(eng: dict, port: int, service: str, step: str,
+                             cmd: str, output: str):
+    """Send one command's output to the LLM (tool-free) and return the extracted
+    finding text, or None (no model / nothing useful / error)."""
+    profile = eng["ctx"].get("profile")
+    if not profile or not output.strip():
+        return None
+    user = (f"Service {port}/{service} · step: {step}\n$ {cmd}\n\n"
+            f"Output:\n{output[:6000]}")
+    body = {"model": profile.get("model", ""),
+            "messages": [{"role": "system", "content": _EXPLOIT_EXTRACT_SYSTEM},
+                         {"role": "user", "content": user}],
+            "temperature": AGENT_TEMPERATURE}
+    custom_params = psai._parse_custom_params(profile)
+    if custom_params:
+        body.update(custom_params)
+    try:
+        endpoint, api_key = _openai_endpoint(profile, eng["base_dir"])
+        parts: list = []
+        _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
+                     hide_thinking=True, render_reasoning=False)
+    except Exception:                                  # noqa: BLE001
+        return None
+    text = "".join(parts).strip()
+    if not text or text.upper().startswith("NONE"):
+        return None
+    return text
+
+
+def _exploit_order(base_dir: str, tid: int) -> list:
+    """The target's open ports in pshunter's exploitation-priority order, each resolved
+    to a service class. Returns [(port, proto, label, key, ver), …]."""
+    import pshunter
+    triaged = []
+    for r in purragent_db.fetch_ports(base_dir, tid):
+        port, proto = r["port"], r.get("proto") or "tcp"
+        label, key, _sig = pshunter._classify_service(
+            port, r.get("service"), r.get("product"), r.get("version"), r.get("cpe"))
+        rank = pshunter._EXPLOIT_RANK.get(key, len(pshunter._EXPLOIT_SERVICES))
+        ver = " ".join(x for x in (r.get("product"), r.get("version")) if x)
+        triaged.append((rank, port, proto, label, key, ver))
+    triaged.sort(key=lambda t: (t[0], t[1]))
+    return [(p, pr, lb, k, v) for _r, p, pr, lb, k, v in triaged]
+
+
+def _start_service_exploitation(eng: dict) -> None:
+    """Phase 5 entry: kick off the sequential exploitation walk in the background."""
+    with eng["lock"]:
+        if eng["cancelled"]:
+            return
+        eng["exploit_phase"] = {"phase": "service exploitation", "ip": eng["ip"],
+                                "jobs": []}
+        eng["ctx"].setdefault("phases", []).append(eng["exploit_phase"])
+    console.print(_phase_banner(5, "service exploitation", budget=False))
+    console.print(Text("    running each service's target-only enumeration in order "
+                       "(creds/listener commands skipped)", style="bright_black"))
+    threading.Thread(target=_exploit_worker, args=(eng,), daemon=True).start()
+
+
+def _exploit_worker(eng: dict) -> None:
+    """Walk services (priority order) → steps → commands, running only the target-only
+    ones, extracting findings from each output, then close out the recon."""
+    import pshunter
+    base, tid, ip = eng["base_dir"], eng["tid"], eng["ip"]
+    for port, proto, label, key, _ver in _exploit_order(base, tid):
+        if eng.get("cancelled"):
+            break
+        steps = pshunter._EXPLOIT_STEPS.get(key) or pshunter._EXPLOIT_STEPS["other"]
+        cmds_by_step = (pshunter._STEP_COMMANDS.get(key)
+                        or pshunter._STEP_COMMANDS["other"])
+        _post(eng["ctx"], lambda p=port, k=key, lb=label:
+              console.print(Text(f"    → {p}/{k}  ·  {lb}", style="bright_black")))
+        ran = skipped = 0
+        for n, step in enumerate(steps, 1):
+            if eng.get("cancelled"):
+                break
+            step_desc = step[0] if isinstance(step, (tuple, list)) else step
+            for raw in (cmds_by_step.get(n) or []):
+                if eng.get("cancelled"):
+                    break
+                cmd = _fill_exploit_cmd(raw, ip, port)
+                binname = _cmd_binary(cmd) if cmd else None
+                if (not cmd or not binname or not shutil.which(binname)
+                        or not _exploit_cmd_safe(cmd)):
+                    skipped += 1
+                    continue
+                ran += 1
+                label_cmd = f"{port}/{key}  ·  {cmd}"
+                job = _job(cmd)
+                with eng["lock"]:
+                    eng["exploit_phase"]["jobs"].append(job)
+                _post(eng["ctx"], lambda lc=label_cmd:
+                      console.print(_phase_banner(5, lc, minutes=EXPLOIT_CMD_MINUTES)))
+                result = _run_exploit_cmd(cmd, job["cancel"])
+                job["state"] = ("aborted" if result["cancelled"]
+                                else "error" if not result["ok"] else "complete")
+                finding = None
+                if not result["cancelled"]:
+                    finding = _extract_exploit_finding(eng, port, key, step_desc,
+                                                       cmd, result["output"])
+                    if finding:
+                        try:
+                            purragent_db.add_exploit_finding(
+                                base, tid, port, proto, key, step_desc, cmd, finding)
+                        except Exception:              # noqa: BLE001
+                            pass
+                        with eng["lock"]:
+                            eng["exploit_findings"].append(
+                                {"port": port, "finding": finding})
+                _post(eng["ctx"], lambda lc=label_cmd, st=job["state"], f=finding:
+                      _print_exploit_outcome(lc, st, f))
+        if skipped:
+            _post(eng["ctx"], lambda s=skipped, p=port: console.print(Text(
+                f"      ({s} command(s) skipped — need creds/listener or missing tools)",
+                style="bright_black")))
+    _post(eng["ctx"], lambda: _finish_recon(eng))
+
+
+def _print_exploit_outcome(label: str, state: str, finding) -> None:
+    """Per-command completion line + the LLM-extracted finding (or none)."""
+    out = _phase_state_line(5, label, state)
+    if state == "complete":
+        if finding:
+            out.append("\n")
+            for ln in str(finding).splitlines():
+                out.append("        " + ln + "\n", style="green")
+        else:
+            out.append("\n        no findings", style="bright_black")
+    console.print(out)
+
+
 def _finish_recon(eng: dict) -> None:
-    """The automated kill-chain (phases 1–4) is done; phases 5+ (exploitation) are
-    interactive, so the loop hands back to the operator here."""
-    console.print(Text("  ▸ automated recon complete — phases 1–4 done",
+    """The automated kill-chain (phases 1–5) is done; deeper exploitation (creds,
+    shells, privesc) stays interactive, so the loop hands back to the operator here."""
+    console.print(Text("  ▸ automated recon complete — phases 1–5 done",
                        style=f"bold {VIOLET}"))
     hint = Text("    review with ", style="bright_black")
     hint.append("/status", style="cyan")
@@ -3785,7 +4057,8 @@ def _finish_recon(eng: dict) -> None:
     hint.append("/target", style="cyan")
     hint.append(", or ask about next steps with ", style="bright_black")
     hint.append("btw", style="cyan")
-    hint.append("  ·  phases 5+ (exploitation) are manual.", style="bright_black")
+    hint.append("  ·  deeper exploitation (creds/shells/privesc) is manual.",
+                style="bright_black")
     console.print(hint)
 
 
@@ -3833,7 +4106,9 @@ def _status_view(ctx: dict) -> None:
         jobs = phase.get("jobs") or []
         agg = _phase_agg_state(phase)
         acol, alabel = _STATUS_STATE.get(agg, ("bright_black", agg))
-        if phase.get("phase") == "cve lookup":
+        if phase.get("phase") == "service exploitation":
+            got = bool(eng.get("exploit_findings"))
+        elif phase.get("phase") == "cve lookup":
             got = bool(eng.get("cve_results"))
         elif phase.get("phase") == "vuln scan":
             got = bool([f for f in (eng.get("vuln_findings") or [])
