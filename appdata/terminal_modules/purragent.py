@@ -2966,7 +2966,8 @@ def _port_pass(eng: dict, label: str, args: list, proto: str, job: dict) -> None
             eng["port_finalised"] = True
         fire = (label == "fast" or bool(newp)) and not result["cancelled"]
         st = job["state"]
-    finds = ", ".join(str(p) for p in sorted(result["ports"]))
+        new_ports = sorted(newp)                       # only ports not already in the DB
+    finds = ", ".join(str(p) for p in new_ports)
     _post(eng["ctx"], lambda l=label, s=st, f=finds:
           _print_cmd_outcome(1, _pass_label(l), s, f))
     if fire:
@@ -3007,7 +3008,8 @@ def _finalise_port_discovery(eng: dict) -> None:
                          else "error" if not r["ok"] else "complete")
         eng["port_settled"] = True         # retry done → advance may proceed
         st = rjob["state"]
-    finds = ", ".join(str(p) for p in sorted(r["ports"]))
+        new_ports = sorted(newp)                        # only ports new to the DB
+    finds = ", ".join(str(p) for p in new_ports)
     _post(eng["ctx"], lambda s=st, f=finds:
           _print_cmd_outcome(1, "firewall-retry port discovery", s, f))
     if r["ports"]:
