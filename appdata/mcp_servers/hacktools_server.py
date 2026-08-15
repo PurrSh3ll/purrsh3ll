@@ -152,11 +152,47 @@ def _b_port_discovery(a):
     return argv, "nmap", (900 if slow else 300)
 
 
-def _b_service_scan(a):
-    host, ports = _req_host(a), _ports(a)
-    argv = ["nmap", "-sV", "-sC", "-Pn", "-n", "-T4"]
+def _b_service_discovery(a):
+    host = _req_host(a)
+    ports = _ports(a)
+    proto = (a.get("protocol") or "tcp").lower()
+    timing = (a.get("timing") or "T4").upper()
+    host_disc = bool(a.get("host_discovery"))
+    scripts = a.get("scripts", True)
+    os_det = bool(a.get("os"))
+    intensity = a.get("intensity")
+    if proto not in ("tcp", "udp", "both"):
+        raise ValueError("`protocol` must be tcp/udp/both")
+    if not re.match(r"^T[0-5]$", timing):
+        raise ValueError("`timing` must be T0-T5")
+    root = _is_root()
+    if proto in ("udp", "both") and not root:
+        raise ValueError("udp/both scans need root — run as root or use "
+                         "protocol=tcp")
+    if os_det and not root:
+        raise ValueError("os detection (-O) needs root — run as root or set os=false")
+    argv = ["nmap", "-sV"]
+    argv += {"tcp": ["-sS" if root else "-sT"], "udp": ["-sU"],
+             "both": ["-sS", "-sU"]}[proto]
+    if scripts:
+        argv.append("-sC")                            # default NSE scripts
+    if os_det:
+        argv.append("-O")
+    if intensity is not None:
+        try:
+            iv = int(intensity)
+        except (TypeError, ValueError):
+            raise ValueError("`intensity` must be 0-9")
+        if not 0 <= iv <= 9:
+            raise ValueError("`intensity` must be 0-9")
+        argv += ["--version-intensity", str(iv)]
+    argv += ["-n", "--open", "-" + timing]
+    if not host_disc:
+        argv.append("-Pn")
     argv += (["-p", ports] if ports else ["--top-ports", "1000"])
-    return argv + [host], "nmap"
+    argv.append(host)
+    slow = proto in ("udp", "both") or os_det
+    return argv, "nmap", (900 if slow else 300)
 
 
 def _b_nse(a):
@@ -265,11 +301,29 @@ HACKTOOLS = {
             "host_discovery": {"type": "boolean", "description": "false (default) "
                                "uses -Pn (assume up); true lets nmap ping first."}},
          "required": ["host"]}, 300),
-    "service_scan": (
-        _b_service_scan,
-        "Fingerprint services/versions and run default NSE scripts (nmap -sV -sC) on "
-        "a host's ports.",
-        {"type": "object", "properties": {"host": _H, "ports": _PORTS},
+    "service_discovery": (
+        _b_service_discovery,
+        "Fingerprint the services/versions behind a host's open ports (nmap -sV, plus "
+        "default -sC scripts). Give just `host`; options let you pick ports, scan "
+        "UDP, toggle scripts, tune version intensity, add OS detection, or slow the "
+        "timing. Usually run on the open ports from port_discovery.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "ports": {"type": "string", "description": "Ports to fingerprint (e.g. "
+                      "22,80,443). Omit for the top 1000 — usually the open ports "
+                      "from port_discovery."},
+            "protocol": {"type": "string", "description": "tcp (default) · udp · "
+                         "both. udp/both need root."},
+            "scripts": {"type": "boolean", "description": "Run default NSE scripts "
+                        "-sC (default true). false = -sV only (faster/quieter)."},
+            "intensity": {"type": "integer", "description": "Version-probe intensity "
+                          "0-9 (nmap default 7; lower is faster/lighter)."},
+            "os": {"type": "boolean", "description": "Also detect the OS (-O, needs "
+                   "root). Default false."},
+            "timing": {"type": "string", "description": "nmap timing T0-T5 (default "
+                       "T4; lower is slower/stealthier)."},
+            "host_discovery": {"type": "boolean", "description": "false (default) "
+                               "uses -Pn (assume up); true lets nmap ping first."}},
          "required": ["host"]}, 300),
     "nse_scan": (
         _b_nse,
@@ -448,6 +502,10 @@ def selftest():
         ("port_discovery", {"host": "10.0.0.5", "timing": "T9"}, True),   # bad timing
         ("port_discovery", {"host": "10.0.0.5", "protocol": "udp"},
          not _is_root()),                                # udp needs root
+        ("service_discovery", {"host": "10.0.0.5"}, False),   # default ok
+        ("service_discovery", {"host": "10.0.0.5", "intensity": 15}, True),  # 0-9
+        ("service_discovery", {"host": "10.0.0.5", "os": True},
+         not _is_root()),                                # -O needs root
         ("nse_scan", {"host": "10.0.0.5", "scripts": "smb-brute"}, True),  # brute
         ("banner_grab", {"host": "10.0.0.5"}, True),      # missing port
         ("dns_lookup", {"name": "example.com", "type": "ZZZ"}, True),      # bad type
