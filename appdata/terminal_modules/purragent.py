@@ -2830,17 +2830,19 @@ def _pass_label(label: str) -> str:
 
 def _print_cmd_outcome(n: int, label: str, state: str, findings: str) -> None:
     """Per-command completion line + its own findings (one scan of a multi-command
-    phase). state is the job state: complete / error / aborted. Printed as a single
-    Text so the two lines can't interleave with another command finishing at once."""
-    if state == "error":
-        console.print(Text(f"  ✗ phase {n} — {label} failed", style="red"))
-        return
-    if state == "aborted":
-        console.print(Text(f"  ⏹ phase {n} — {label} aborted", style="yellow"))
-        return
-    out = Text(f"  ▸ phase {n} — {label} complete\n")
-    out.append(f"    {label} findings: {findings or 'none'}",
-               style="green" if findings else "bright_black")
+    phase). The state tag mirrors the [running] header convention ([complete] /
+    [failed] / [aborted]). Printed as a single Text so the two lines can't interleave
+    with another command finishing at once."""
+    tag, color = {"complete": ("[complete]", "green"),
+                  "error": ("[failed]", "red"),
+                  "aborted": ("[aborted]", "magenta")}.get(state, (f"[{state}]", "yellow"))
+    out = Text("  ")
+    out.append(tag, style=color)
+    out.append(f" ▸ phase {n} — {label}")
+    if state == "complete":
+        out.append("\n    ")
+        out.append(f"{label} findings: {findings or 'none'}",
+                   style="green" if findings else "bright_black")
     console.print(out)
 
 
