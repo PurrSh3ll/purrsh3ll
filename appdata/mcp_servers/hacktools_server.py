@@ -24,6 +24,7 @@
 #     python3 hacktools_server.py --selftest
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -86,6 +87,13 @@ def _word(args, key, required=True):
     return v
 
 
+def _is_root():
+    try:
+        return os.geteuid() == 0
+    except AttributeError:                             # non-POSIX
+        return False
+
+
 def _run(argv, binary, timeout=DEFAULT_TIMEOUT):
     """Run one argv (no shell), return (text, is_error). Reports a missing tool
     cleanly; keeps partial output on timeout."""
@@ -111,11 +119,37 @@ _NSE_DENY = ("brute", "dos", "exploit")               # never run these NSE cate
 # --------------------------------------------------------------------------- #
 # Tool builders — each returns (argv, binary) or raises ValueError
 # --------------------------------------------------------------------------- #
-def _b_port_scan(a):
-    host, ports = _req_host(a), _ports(a)
-    argv = ["nmap", "-Pn", "-n", "--open", "-T4"]
-    argv += (["-p", ports] if ports else ["--top-ports", "1000"])
-    return argv + [host], "nmap"
+_RANGE_PORTS = {"fast": ["--top-ports", "1000"], "top100": ["--top-ports", "100"],
+                "low": ["-p", "1-32767"], "high": ["-p", "32768-65535"],
+                "full": ["-p-"]}
+
+
+def _b_port_discovery(a):
+    host = _req_host(a)
+    ports = _ports(a)
+    rng = (a.get("range") or "fast").lower()
+    proto = (a.get("protocol") or "tcp").lower()
+    timing = (a.get("timing") or "T4").upper()
+    host_disc = bool(a.get("host_discovery"))
+    if rng not in _RANGE_PORTS:
+        raise ValueError("`range` must be fast/top100/low/high/full")
+    if proto not in ("tcp", "udp", "both"):
+        raise ValueError("`protocol` must be tcp/udp/both")
+    if not re.match(r"^T[0-5]$", timing):
+        raise ValueError("`timing` must be T0-T5")
+    root = _is_root()
+    if proto in ("udp", "both") and not root:
+        raise ValueError("udp/both scans need root — run as root or use "
+                         "protocol=tcp")
+    scan_flags = {"tcp": ["-sS" if root else "-sT"], "udp": ["-sU"],
+                  "both": ["-sS", "-sU"]}[proto]
+    argv = ["nmap"] + scan_flags + ["-n", "--open", "-" + timing]
+    if not host_disc:
+        argv.append("-Pn")                            # assume the host is up
+    argv += (["-p", ports] if ports else _RANGE_PORTS[rng])   # explicit ports win
+    argv.append(host)
+    slow = rng == "full" or proto in ("udp", "both")
+    return argv, "nmap", (900 if slow else 300)
 
 
 def _b_service_scan(a):
@@ -212,11 +246,24 @@ _PORTS = {"type": "string", "description": "Ports, e.g. 80 or 22,80,443 or 1-102
           "Omit for the top 1000."}
 
 HACKTOOLS = {
-    "port_scan": (
-        _b_port_scan,
-        "Discover open TCP ports on a host (nmap, top 1000 or the ports you give). "
-        "Read-only enumeration.",
-        {"type": "object", "properties": {"host": _H, "ports": _PORTS},
+    "port_discovery": (
+        _b_port_discovery,
+        "Discover open ports on a host. Give just `host` for a fast top-1000 TCP scan; "
+        "the options let you widen the range (low/high/full), scan UDP, slow the "
+        "timing, or enable host discovery when -Pn is being dropped. Read-only.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "range": {"type": "string", "description": "Port set: fast (top 1000, "
+                      "default) · top100 · low (1-32767) · high (32768-65535) · "
+                      "full (1-65535)."},
+            "ports": {"type": "string", "description": "Explicit ports (e.g. "
+                      "22,80,443 or 1-1024) — overrides `range`."},
+            "protocol": {"type": "string", "description": "tcp (default) · udp · "
+                         "both. udp/both need root."},
+            "timing": {"type": "string", "description": "nmap timing T0-T5 (default "
+                       "T4; lower is slower/stealthier for filtered or laggy hosts)."},
+            "host_discovery": {"type": "boolean", "description": "false (default) "
+                               "uses -Pn (assume up); true lets nmap ping first."}},
          "required": ["host"]}, 300),
     "service_scan": (
         _b_service_scan,
@@ -321,13 +368,17 @@ def _call_tool(name, arguments):
                 "isError": True}
     builder, _desc, _schema, timeout = entry
     try:
-        argv, binary = builder(arguments or {})
+        built = builder(arguments or {})
     except ValueError as exc:                          # bad arguments
         return {"content": [{"type": "text", "text": f"invalid arguments: {exc}"}],
                 "isError": True}
     except Exception as exc:                            # noqa: BLE001
         return {"content": [{"type": "text", "text": f"error: {exc}"}],
                 "isError": True}
+    if len(built) == 3:                                # builder may override timeout
+        argv, binary, timeout = built
+    else:
+        argv, binary = built
     text, is_error = _run(argv, binary, timeout)
     shown = "$ " + " ".join(argv) + "\n\n" + text
     return {"content": [{"type": "text", "text": shown}], "isError": is_error}
@@ -390,8 +441,13 @@ def selftest():
         print(f"[{label}] ok  (tools: {n})")
     # argument validation (no command actually run for the reject cases)
     for name, args, expect_err in (
-        ("port_scan", {"host": "10.0.0.5/24"}, True),     # subnet rejected
-        ("port_scan", {"host": "bad host!"}, True),       # bad chars
+        ("port_discovery", {"host": "10.0.0.5/24"}, True),    # subnet rejected
+        ("port_discovery", {"host": "bad host!"}, True),      # bad chars
+        ("port_discovery", {"host": "10.0.0.5"}, False),      # default fast scan ok
+        ("port_discovery", {"host": "10.0.0.5", "range": "zzz"}, True),   # bad range
+        ("port_discovery", {"host": "10.0.0.5", "timing": "T9"}, True),   # bad timing
+        ("port_discovery", {"host": "10.0.0.5", "protocol": "udp"},
+         not _is_root()),                                # udp needs root
         ("nse_scan", {"host": "10.0.0.5", "scripts": "smb-brute"}, True),  # brute
         ("banner_grab", {"host": "10.0.0.5"}, True),      # missing port
         ("dns_lookup", {"name": "example.com", "type": "ZZZ"}, True),      # bad type
