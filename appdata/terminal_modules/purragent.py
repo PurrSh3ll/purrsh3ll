@@ -4081,6 +4081,10 @@ def _finish_recon(eng: dict) -> None:
     hint.append("  ·  deeper exploitation (creds/shells/privesc) is manual.",
                 style="bright_black")
     console.print(hint)
+    # Auto-/stop: the automated run is done, so leave the agent in the stopped state
+    # (as if the operator typed /stop) — /start re-runs, /target changes the target.
+    _cancel_engagement(eng["ctx"])
+    eng["ctx"]["hacking"] = False
 
 
 def _pause_engagement(ctx) -> None:
