@@ -3608,8 +3608,11 @@ def _ver_in_match(version, exact, vsi, vse, vei, vee) -> bool:
 
 
 def _cve_lookup(base_dir: str, vendor: str, product: str, version: str):
-    """Matching CVE ids (newest first) for one vendor/product/version, or None when
-    the index is missing/unreadable. Queries the CPE pair plus any aliases."""
+    """Matching CVEs for one vendor/product/version, split by confidence, or None
+    when the index is missing/unreadable. Queries the CPE pair plus any aliases.
+    Returns (well_known, other): well_known are matched on an EXACT version row (the
+    CVE explicitly lists this version — high confidence); other are matched only via
+    a version range (still valid, but broader — less likely to actually apply)."""
     import sqlite3
     path = _cve_index_path(base_dir)
     if not os.path.exists(path):
@@ -3628,14 +3631,19 @@ def _cve_lookup(base_dir: str, vendor: str, product: str, version: str):
             con.close()
     except sqlite3.Error:
         return None
-    matched = {cve for exact, vsi, vse, vei, vee, cve in rows
-               if _ver_in_match(version, exact, vsi, vse, vei, vee)}
-    return sorted(matched, key=_cve_sort_key)
+    exact_hits, range_hits = set(), set()
+    for exact, vsi, vse, vei, vee, cve in rows:
+        if not _ver_in_match(version, exact, vsi, vse, vei, vee):
+            continue
+        (exact_hits if exact else range_hits).add(cve)
+    well = sorted(exact_hits, key=_cve_sort_key)
+    other = sorted(range_hits - exact_hits, key=_cve_sort_key)   # exact wins
+    return well, other
 
 
 def _run_cve_lookup(base_dir: str, tid: int, cancel=None) -> list:
-    """Per versioned service CPE on the target, the CVEs it maps to.
-    Returns [(port, proto, product, version, [cve, …]), …]."""
+    """Per versioned service CPE on the target, the CVEs it maps to, split by
+    confidence. Returns [(port, proto, product, version, well_known, other), …]."""
     results = []
     for row in purragent_db.fetch_ports(base_dir, tid):
         if cancel is not None and cancel.is_set():
@@ -3647,10 +3655,13 @@ def _run_cve_lookup(base_dir: str, tid: int, cancel=None) -> list:
         version = cpe_ver or row.get("version")
         if not version or not re.search(r"\d", version):
             continue                                   # need a concrete version
-        cves = _cve_lookup(base_dir, vendor, product, version)
-        if cves:
+        found = _cve_lookup(base_dir, vendor, product, version)
+        if not found:
+            continue
+        well, other = found
+        if well or other:
             results.append((row["port"], row.get("proto") or "tcp", product,
-                            version, cves))
+                            version, well, other))
     return results
 
 
@@ -3676,9 +3687,10 @@ def _cve_pass(eng: dict, job: dict) -> None:
     results = [] if no_index else _run_cve_lookup(base, tid, job["cancel"])
     with eng["lock"]:
         try:
-            for port, proto, product, version, cves in results:
-                cve_str = ",".join(cves[:_CVE_STORE_CAP])
-                summary = f"{product} {version} — {len(cves)} known CVE(s)"
+            for port, proto, product, version, well, other in results:
+                cve_str = ",".join((well + other)[:_CVE_STORE_CAP])
+                summary = (f"{product} {version} — {len(well)} well-known + "
+                           f"{len(other)} other CVE")
                 purragent_db.add_vuln(base, tid, port, proto, "cve-lookup",
                                       "CVE", "INFO", cve_str, summary)
         except Exception:                              # noqa: BLE001
@@ -3699,7 +3711,9 @@ def _finish_cve_lookup(eng: dict) -> None:
 
 
 def _cve_outcome(results: list, no_index: bool) -> None:
-    """Phase-4 outcome: per service its product/version and the CVE count + preview."""
+    """Phase-4 outcome: counts only — how many well-known (exact-version) vs other
+    (range-matched, less likely) CVEs per service. The CVE ids themselves are stored
+    as findings (see /target), not listed here."""
     if no_index:
         console.print(Text("  ○ CVE lookup — offline NVD index not present "
                            "(appdata/cve_index.db)", style="bright_black"))
@@ -3708,18 +3722,18 @@ def _cve_outcome(results: list, no_index: bool) -> None:
         console.print(Text("  ○ CVE lookup — no versioned service CPE matched the "
                            "index", style="bright_black"))
         return
-    total = sum(len(cves) for *_r, cves in results)
-    console.print(Text(f"  ✓ CVE lookup — {len(results)} service(s), {total} CVE:",
-                       style="green"))
-    for port, proto, product, version, cves in results[:8]:
+    twell = sum(len(r[4]) for r in results)
+    tother = sum(len(r[5]) for r in results)
+    console.print(Text(f"  ✓ CVE lookup — {len(results)} service(s): {twell} "
+                       f"well-known, {tother} other (less likely)", style="green"))
+    for port, proto, product, version, well, other in results[:8]:
         line = Text("      ")
         line.append(f"{port:<5}", style="cyan")
         line.append(f" {product} {version}".rstrip(), style="default")
-        line.append(f"  {len(cves)} CVE", style="bright_black")
+        line.append(f"  —  {len(well)} well-known", style="green" if well
+                    else "bright_black")
+        line.append(f", {len(other)} other", style="bright_black")
         console.print(line)
-        preview = ", ".join(cves[:4]) + (f"  (+{len(cves) - 4} more)"
-                                         if len(cves) > 4 else "")
-        console.print(Text("        " + preview, style="bright_black"))
     if len(results) > 8:
         console.print(Text(f"      … and {len(results) - 8} more service(s)",
                            style="bright_black"))
