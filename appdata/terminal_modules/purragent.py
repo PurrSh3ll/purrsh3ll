@@ -2833,7 +2833,7 @@ def _print_cmd_outcome(n: int, label: str, state: str, findings: str) -> None:
     phase). The state tag mirrors the [running] header convention ([complete] /
     [failed] / [aborted]). Printed as a single Text so the two lines can't interleave
     with another command finishing at once."""
-    tag, color = {"complete": ("[complete]", "green"),
+    tag, color = {"complete": ("[complete]", "yellow"),  # brown/amber, like [running]
                   "error": ("[failed]", "red"),
                   "aborted": ("[aborted]", "magenta")}.get(state, (f"[{state}]", "yellow"))
     out = Text("  ")
