@@ -1505,6 +1505,136 @@ def _b_dns_bruteforce(a):
             + "\n".join(f"  {h} -> {ip}" for h, ip in found))
 
 
+# ── batch 7: more CLI tools ───────────────────────────────────────────────────
+def _b_bloodhound(a):
+    dc = (a.get("dc") or a.get("host") or "").strip()
+    if not dc or "/" in dc or not _HOST_RE.match(dc):
+        raise ValueError("`dc` (domain controller host/IP) is required")
+    domain = (a.get("domain") or "").strip()
+    if not domain or not re.match(r"^[A-Za-z0-9._-]+$", domain):
+        raise ValueError("`domain` is required (e.g. corp.local)")
+    user, password, nthash, _d = _creds(a, require=True)
+    coll = a.get("collection") or "DCOnly"
+    if coll not in ("Default", "DCOnly", "All", "Group", "Session", "LoggedOn",
+                    "Trusts", "ACL", "Container", "ObjectProps"):
+        raise ValueError("bad `collection`")
+    argv = ["bloodhound-python", "-d", domain, "-u", user, "-dc", dc, "-ns", dc,
+            "-c", coll, "--zip"]
+    if nthash:
+        argv += ["--hashes", _hashes_arg(nthash)]
+    else:
+        argv += ["-p", password]
+    return argv, "bloodhound-python"
+
+
+def _b_katana(a):
+    url = _req_url(a)
+    argv = ["katana", "-u", url, "-silent"]
+    if a.get("depth") is not None:
+        try:
+            d = int(a["depth"])
+        except (TypeError, ValueError):
+            raise ValueError("`depth` must be a number")
+        if not 1 <= d <= 5:
+            raise ValueError("`depth` must be 1-5")
+        argv += ["-d", str(d)]
+    if a.get("js_crawl"):
+        argv.append("-jc")
+    return argv, "katana"
+
+
+def _b_gau(a):
+    domain = _word(a, "domain").strip()
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    argv = ["gau", domain]
+    if a.get("subs"):
+        argv.append("--subs")
+    return argv, "gau"
+
+
+def _b_arjun(a):
+    url = _req_url(a)
+    method = (a.get("method") or "GET").upper()
+    if method not in ("GET", "POST", "JSON", "XML"):
+        raise ValueError("`method` must be GET/POST/JSON/XML")
+    return ["arjun", "-u", url, "-m", method, "--stable"], "arjun"
+
+
+def _b_dalfox(a):
+    url = _req_url(a)
+    argv = ["dalfox", "url", url, "--no-color"]
+    data = (a.get("data") or "").strip()
+    if data:
+        argv += ["--data", _no_ctrl(data, "data")]
+    cookie = (a.get("cookie") or "").strip()
+    if cookie:
+        argv += ["--cookie", _no_ctrl(cookie, "cookie")]
+    return argv, "dalfox"
+
+
+def _b_commix(a):
+    url = _req_url(a)
+    argv = ["commix", "-u", url, "--batch"]
+    data = (a.get("data") or "").strip()
+    if data:
+        argv += ["--data", _no_ctrl(data, "data")]
+    cookie = (a.get("cookie") or "").strip()
+    if cookie:
+        argv += ["--cookie", _no_ctrl(cookie, "cookie")]
+    return argv, "commix"
+
+
+def _b_dnsrecon(a):
+    domain = _word(a, "domain").strip()
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    typ = (a.get("type") or "std").lower()
+    if typ not in ("std", "axfr", "srv", "soa", "rvl", "zonewalk", "tld"):
+        raise ValueError("`type` must be std/axfr/srv/soa/rvl/zonewalk/tld")
+    return ["dnsrecon", "-d", domain, "-t", typ], "dnsrecon"
+
+
+def _b_nbtscan(a):
+    return ["nbtscan", "-v", _req_host(a)], "nbtscan"
+
+
+def _b_theharvester(a):
+    domain = _word(a, "domain").strip()
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    source = (a.get("source") or "duckduckgo").strip().lower()
+    if not re.match(r"^[a-z0-9,_-]+$", source):
+        raise ValueError("`source` has invalid characters")
+    return ["theHarvester", "-d", domain, "-b", source, "-l", "200"], "theHarvester"
+
+
+_MSF_FORMATS = {"hex", "base64", "python", "bash", "c", "csharp", "powershell",
+                "perl", "ruby", "vbscript", "vbapplication", "java", "js_le",
+                "js_be", "dw", "dword", "num"}
+
+
+def _b_msfvenom(a):
+    payload = _word(a, "payload").strip()
+    if not re.match(r"^[a-z0-9/_]+$", payload):
+        raise ValueError("`payload` has invalid characters")
+    lhost = (a.get("lhost") or "").strip()
+    if not _HOST_RE.match(lhost):
+        raise ValueError("`lhost` must be an IP/host")
+    try:
+        lport = int(a.get("lport"))
+    except (TypeError, ValueError):
+        raise ValueError("`lport` is required")
+    if not 1 <= lport <= 65535:
+        raise ValueError("`lport` must be 1-65535")
+    fmt = (a.get("format") or "python").lower()
+    if fmt not in _MSF_FORMATS:
+        raise ValueError("`format` must be a text format: "
+                         + ", ".join(sorted(_MSF_FORMATS)))
+    return (["msfvenom", "-p", payload, f"LHOST={lhost}", f"LPORT={lport}",
+             "-f", fmt], "msfvenom")
+
+
 # name -> (builder, description, inputSchema)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -2177,6 +2307,93 @@ HACKTOOLS = {
             "extra": {"type": "string", "description": "Optional extra subdomains "
                       "(comma/space separated) to also try."}},
          "required": ["domain"]}),
+    "bloodhound_python": (
+        _b_bloodhound,
+        "Collect Active Directory data for BloodHound with bloodhound-python — users, "
+        "groups, sessions, ACLs and attack paths. Needs domain credentials or NT hash.",
+        {"type": "object", "properties": {
+            "dc": {"type": "string", "description": "Domain controller host/IP."},
+            "domain": {"type": "string", "description": "AD domain, e.g. corp.local."},
+            "collection": {"type": "string", "description": "DCOnly (default) · "
+                           "Default · All · Group · Session · ACL · Trusts."},
+            "username": _USER, "password": _PASS, "hash": _HASH},
+         "required": ["dc", "domain", "username"]}),
+    "katana": (
+        _b_katana,
+        "Crawl a website with katana to map its URLs and endpoints, optionally parsing "
+        "JavaScript.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Start URL."},
+            "depth": {"type": "integer", "description": "Crawl depth 1-5."},
+            "js_crawl": {"type": "boolean", "description": "Also crawl endpoints found "
+                         "in JS (-jc)."}},
+         "required": ["url"]}),
+    "gau": (
+        _b_gau,
+        "Fetch known URLs for a domain from public sources (Wayback, Common Crawl, OTX) "
+        "with gau — passive URL discovery.",
+        {"type": "object", "properties": {
+            "domain": {"type": "string", "description": "Domain, e.g. example.com."},
+            "subs": {"type": "boolean", "description": "Include subdomains."}},
+         "required": ["domain"]}),
+    "arjun": (
+        _b_arjun,
+        "Discover hidden HTTP parameters on an endpoint with arjun.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL/endpoint."},
+            "method": {"type": "string", "description": "GET (default) · POST · JSON · "
+                       "XML."}},
+         "required": ["url"]}),
+    "dalfox": (
+        _b_dalfox,
+        "Scan a URL for XSS with dalfox (params in the URL, POST data or a cookie).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL (with params)."},
+            "data": {"type": "string", "description": "POST body to test."},
+            "cookie": {"type": "string", "description": "Cookie header."}},
+         "required": ["url"]}),
+    "commix": (
+        _b_commix,
+        "Test a URL/parameter for OS command injection with commix (non-interactive).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL (with params)."},
+            "data": {"type": "string", "description": "POST body to test."},
+            "cookie": {"type": "string", "description": "Cookie header."}},
+         "required": ["url"]}),
+    "dnsrecon": (
+        _b_dnsrecon,
+        "Enumerate a domain's DNS with dnsrecon — standard records, SRV, zone transfer "
+        "or reverse lookups.",
+        {"type": "object", "properties": {
+            "domain": {"type": "string", "description": "Domain, e.g. example.com."},
+            "type": {"type": "string", "description": "std (default) · axfr · srv · "
+                     "soa · rvl · zonewalk."}},
+         "required": ["domain"]}),
+    "nbtscan": (
+        _b_nbtscan,
+        "Scan a host for NetBIOS name information (names, workgroup, MAC) with nbtscan.",
+        {"type": "object", "properties": {"host": _H}, "required": ["host"]}),
+    "theharvester": (
+        _b_theharvester,
+        "Gather emails, subdomains and hosts for a domain from OSINT sources with "
+        "theHarvester.",
+        {"type": "object", "properties": {
+            "domain": {"type": "string", "description": "Domain, e.g. example.com."},
+            "source": {"type": "string", "description": "OSINT source (default "
+                       "duckduckgo), e.g. bing, crtsh, dnsdumpster."}},
+         "required": ["domain"]}),
+    "msfvenom": (
+        _b_msfvenom,
+        "Generate a payload with msfvenom for a listener (text formats only — python, "
+        "bash, c, powershell, hex, base64, …). Generated, not executed.",
+        {"type": "object", "properties": {
+            "payload": {"type": "string", "description": "msf payload, e.g. "
+                        "linux/x64/shell_reverse_tcp or cmd/unix/reverse_bash."},
+            "lhost": {"type": "string", "description": "Listener IP."},
+            "lport": {"type": "integer", "description": "Listener port."},
+            "format": {"type": "string", "description": "Output format (default "
+                       "python): bash, c, powershell, perl, ruby, hex, base64, …."}},
+         "required": ["payload", "lhost", "lport"]}),
 }
 
 
@@ -2728,6 +2945,84 @@ _META = {
         "subdomains, resolve, dnsrecon, gobuster dns, active enumeration, hostnames.",
         ["brute force subdomains of example.com", "find subdomains by resolving common names",
          "active subdomain discovery", "resolve common subdomains for the domain"]),
+    "bloodhound_python": (
+        "Collect AD data for BloodHound (attack paths).",
+        "Active Directory collection for BloodHound with bloodhound-python: gather "
+        "users, groups, sessions, ACLs and trusts to map privilege-escalation and "
+        "lateral-movement paths. Needs domain creds or NT hash. Keywords: bloodhound, "
+        "sharphound, AD, attack path, ACL, sessions, domain admin, lateral movement, "
+        "graph, collector, active directory.",
+        ["collect bloodhound data for the domain", "run sharphound/bloodhound-python",
+         "map AD attack paths", "gather active directory data with these creds"]),
+    "katana": (
+        "Crawl a website for URLs/endpoints (katana).",
+        "Web crawling with katana: map a site's URLs, forms and endpoints, optionally "
+        "following JavaScript, to build the attack surface. Keywords: katana, crawler, "
+        "spider, urls, endpoints, web crawling, js crawl, attack surface, links.",
+        ["crawl the website for urls", "map the site's endpoints",
+         "spider the web app", "katana crawl including javascript"]),
+    "gau": (
+        "Fetch known URLs from Wayback/OTX (gau).",
+        "Passive URL discovery with gau (getallurls): pull historically known URLs for "
+        "a domain from the Wayback Machine, Common Crawl and OTX — reveals old and "
+        "hidden endpoints without touching the target. Keywords: gau, getallurls, "
+        "wayback, common crawl, otx, urls, passive, historical endpoints, archive.",
+        ["get known urls for the domain", "fetch wayback urls",
+         "passive url discovery with gau", "find historical endpoints"]),
+    "arjun": (
+        "Discover hidden HTTP parameters (arjun).",
+        "HTTP parameter discovery with arjun: find hidden or undocumented GET/POST/JSON "
+        "parameters an endpoint accepts — widens the injection/testing surface. "
+        "Keywords: arjun, parameter discovery, hidden parameters, param mining, GET, "
+        "POST, fuzzing parameters, api params.",
+        ["find hidden parameters on this endpoint", "discover http params with arjun",
+         "mine parameters for the api", "what parameters does this url accept"]),
+    "dalfox": (
+        "Scan a URL for XSS (dalfox).",
+        "XSS scanning with dalfox: test URL parameters, POST data or a cookie for "
+        "reflected/stored cross-site scripting and report working payloads. Keywords: "
+        "dalfox, xss, cross-site scripting, reflected xss, dom xss, payload, injection, "
+        "web vulnerability.",
+        ["scan this url for xss", "test the parameter for cross-site scripting",
+         "run dalfox on the endpoint", "check for reflected xss"]),
+    "commix": (
+        "Test for OS command injection (commix).",
+        "Command-injection testing with commix: detect and exploit OS command injection "
+        "in a URL parameter, POST body or cookie (non-interactive). Keywords: commix, "
+        "command injection, os command, rce, shell injection, cmdi, exploitation.",
+        ["test this url for command injection", "check the param for os command injection",
+         "run commix on the endpoint", "is there command injection here"]),
+    "dnsrecon": (
+        "Enumerate DNS records / zone transfer (dnsrecon).",
+        "DNS enumeration with dnsrecon: standard records, SRV services, zone transfer "
+        "(AXFR), reverse lookups and zone walking for a domain. Keywords: dnsrecon, dns "
+        "enumeration, records, srv, axfr, zone transfer, reverse dns, zone walk, "
+        "nameserver.",
+        ["enumerate dns records for the domain", "run dnsrecon",
+         "try a dns zone transfer with dnsrecon", "list srv records"]),
+    "nbtscan": (
+        "Scan a host for NetBIOS names (nbtscan).",
+        "NetBIOS name scan with nbtscan: pull NetBIOS names, workgroup/domain and MAC "
+        "from a host over UDP/137. Keywords: nbtscan, netbios, nbt, workgroup, port 137, "
+        "windows name, mac address, smb host.",
+        ["nbtscan the host", "get the netbios name", "what workgroup is this host in",
+         "netbios enumeration"]),
+    "theharvester": (
+        "OSINT emails/subdomains/hosts (theHarvester).",
+        "OSINT gathering with theHarvester: collect emails, subdomains, hostnames and "
+        "IPs for a domain from public search engines and data sources — no traffic to "
+        "the target. Keywords: theharvester, osint, emails, subdomains, reconnaissance, "
+        "footprinting, employees, hosts, passive recon.",
+        ["harvest emails for the domain", "osint recon with theharvester",
+         "find subdomains and emails", "gather public info about the company"]),
+    "msfvenom": (
+        "Generate a Metasploit payload (msfvenom).",
+        "Payload generation with msfvenom: build a reverse/bind payload for a listener "
+        "in a text format (python, bash, c, powershell, hex, base64…). Generated only, "
+        "never executed. Keywords: msfvenom, metasploit, payload, shellcode, reverse "
+        "shell, staged, encoder, generate payload, LHOST, LPORT.",
+        ["generate a msfvenom reverse shell payload", "build a python payload with msfvenom",
+         "create shellcode for this listener", "msfvenom powershell payload"]),
 }
 
 
@@ -2772,6 +3067,9 @@ _TIMEOUTS = {
     # batch 6 python-native web/recon (network I/O)
     "git_dump": 30, "s3_check": 30, "security_headers": 20, "cookie_analyze": 20,
     "favicon_hash": 20, "js_endpoints": 30, "cors_check": 20, "dns_bruteforce": 90,
+    # batch 7 CLI
+    "bloodhound_python": 600, "katana": 300, "gau": 120, "arjun": 300, "dalfox": 600,
+    "commix": 600, "dnsrecon": 300, "nbtscan": 60, "theharvester": 300, "msfvenom": 60,
 }
 
 
@@ -2929,6 +3227,13 @@ def selftest():
         ("s3_check", {"bucket": "bad name!"}, True),        # bad bucket
         ("dns_bruteforce", {"domain": "bad host!"}, True),  # bad domain
         ("favicon_hash", {"url": "notaurl"}, True),        # bad url
+        ("bloodhound_python", {"dc": "10.0.0.5", "domain": "corp.local"}, True),  # needs user
+        ("arjun", {"url": "http://x", "method": "TRACE"}, True),   # bad method
+        ("dnsrecon", {"domain": "x", "type": "zzz"}, True),        # bad type
+        ("msfvenom", {"payload": "linux/x64/shell_reverse_tcp", "lhost": "10.0.0.1",
+                      "lport": 4444, "format": "exe"}, True),      # binary format rejected
+        ("msfvenom", {"payload": "cmd/unix/reverse_bash", "lhost": "10.0.0.1",
+                      "lport": 4444, "format": "bash"}, False),    # ok
         ("smb_client", {"host": "10.0.0.5"}, False),      # null-session list ok
         ("smb_client", {"host": "10.0.0.5", "username": "a b"}, True),   # bad user
         ("netexec_smb", {"host": "10.0.0.5", "action": "exec"}, True),   # exec needs cmd
