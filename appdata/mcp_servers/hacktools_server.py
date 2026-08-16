@@ -1145,6 +1145,137 @@ def _b_robots_sitemap(a):
     return "\n\n".join(out)
 
 
+# ── batch 5: more CLI tools ───────────────────────────────────────────────────
+def _b_sqlmap(a):
+    url = _req_url(a)
+    argv = ["sqlmap", "-u", url, "--batch", "--disable-coloring"]
+    data = (a.get("data") or "").strip()
+    if data:
+        argv += ["--data", _no_ctrl(data, "data")]
+    cookie = (a.get("cookie") or "").strip()
+    if cookie:
+        argv += ["--cookie", _no_ctrl(cookie, "cookie")]
+    param = (a.get("param") or "").strip()
+    if param:
+        if not re.match(r"^[A-Za-z0-9_\[\]]+$", param):
+            raise ValueError("`param` has invalid characters")
+        argv += ["-p", param]
+    for key, flag, lo, hi in (("level", "--level", 1, 5), ("risk", "--risk", 1, 3)):
+        if a.get(key) is not None:
+            try:
+                n = int(a[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"`{key}` must be a number")
+            if not lo <= n <= hi:
+                raise ValueError(f"`{key}` must be {lo}-{hi}")
+            argv += [flag, str(n)]
+    action = (a.get("action") or "test").lower()
+    if action == "dbs":
+        argv.append("--dbs")
+    elif action == "current":
+        argv += ["--current-db", "--current-user", "--hostname"]
+    elif action == "dump":
+        db = (a.get("database") or "").strip()
+        if not re.match(r"^[A-Za-z0-9_.$-]+$", db or ""):
+            raise ValueError("action=dump needs a valid `database`")
+        argv += ["-D", db, "--dump"]
+        tbl = (a.get("table") or "").strip()
+        if tbl:
+            if not re.match(r"^[A-Za-z0-9_.$-]+$", tbl):
+                raise ValueError("`table` has invalid characters")
+            argv += ["-T", tbl]
+    elif action != "test":
+        raise ValueError("`action` must be test/dbs/current/dump")
+    return argv, "sqlmap"
+
+
+def _b_wpscan(a):
+    url = _req_url(a)
+    argv = ["wpscan", "--url", url, "--no-banner", "--disable-tls-checks",
+            "--random-user-agent", "-f", "cli-no-color"]
+    enum = (a.get("enumerate") or "vp,vt,u").strip()
+    if enum:
+        if not re.match(r"^[a-z0-9,]+$", enum):
+            raise ValueError("`enumerate` has invalid characters")
+        argv += ["--enumerate", enum]
+    token = (a.get("api_token") or "").strip()
+    if token:
+        if not re.match(r"^[A-Za-z0-9]+$", token):
+            raise ValueError("`api_token` has invalid characters")
+        argv += ["--api-token", token]
+    return argv, "wpscan"
+
+
+def _b_enum4linux(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    argv = ["enum4linux-ng", "-A", host]
+    if user:
+        argv += ["-u", user, "-p", password]
+    if domain:
+        argv += ["-d", domain]
+    return argv, "enum4linux-ng"
+
+
+def _b_smbmap(a):
+    host = _req_host(a)
+    user, password, nthash, domain = _creds(a)
+    argv = ["smbmap", "-H", host, "-u", user, "-p", (nthash or password)]
+    if domain:
+        argv += ["-d", domain]
+    share = (a.get("share") or "").strip()
+    if share:
+        if not re.match(r"^[A-Za-z0-9._$ -]+$", share):
+            raise ValueError("`share` has invalid characters")
+        argv += ["-s", share]
+    if a.get("recurse"):
+        argv.append("-R")
+    return argv, "smbmap"
+
+
+def _b_certipy(a):
+    dc = (a.get("dc") or a.get("host") or "").strip()
+    if not dc or "/" in dc or not _HOST_RE.match(dc):
+        raise ValueError("`dc` (domain controller host/IP) is required")
+    domain = (a.get("domain") or "").strip()
+    if not domain or not re.match(r"^[A-Za-z0-9._-]+$", domain):
+        raise ValueError("`domain` is required (e.g. corp.local)")
+    user, password, nthash, _d = _creds(a, require=True)
+    argv = ["certipy", "find", "-u", f"{user}@{domain}", "-dc-ip", dc,
+            "-stdout", "-vulnerable"]
+    if nthash:
+        argv += ["-hashes", _hashes_arg(nthash)]
+    else:
+        argv += ["-p", password]
+    return argv, "certipy"
+
+
+def _b_testssl(a):
+    host, port = _req_host(a), _port(a, 443)
+    return ["testssl", "--color", "0", "--quiet", f"{host}:{port}"], "testssl"
+
+
+def _b_ssh_audit(a):
+    host, port = _req_host(a), _port(a, 22)
+    return ["ssh-audit", "-n", "-p", str(port), host], "ssh-audit"
+
+
+def _b_smtp_user_enum(a):
+    host, port = _req_host(a), _port(a, 25)
+    user = _word(a, "username").strip()
+    if not re.match(r"^[A-Za-z0-9._@-]+$", user):
+        raise ValueError("`username` has invalid characters")
+    method = (a.get("method") or "VRFY").upper()
+    if method not in ("VRFY", "EXPN", "RCPT"):
+        raise ValueError("`method` must be VRFY/EXPN/RCPT")
+    return (["smtp-user-enum", "-M", method, "-u", user, "-t", host, "-p", str(port)],
+            "smtp-user-enum")
+
+
+def _b_wafw00f(a):
+    return ["wafw00f", _req_url(a), "-a"], "wafw00f"
+
+
 # name -> (builder, description, inputSchema)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -1672,6 +1803,87 @@ HACKTOOLS = {
             "url": {"type": "string", "description": "Base site URL, e.g. "
                     "http://10.0.0.5."}},
          "required": ["url"]}),
+    "sqlmap": (
+        _b_sqlmap,
+        "Test a URL/parameter for SQL injection with sqlmap and, if found, enumerate or "
+        "dump data. Active and can be slow. (Credentials/cookies passed on the CLI.)",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL (with params for GET)."},
+            "data": {"type": "string", "description": "POST body to test."},
+            "cookie": {"type": "string", "description": "Cookie header."},
+            "param": {"type": "string", "description": "Focus on this parameter (-p)."},
+            "level": {"type": "integer", "description": "Test level 1-5."},
+            "risk": {"type": "integer", "description": "Risk 1-3."},
+            "action": {"type": "string", "description": "test (default, detect only) · "
+                       "dbs · current · dump."},
+            "database": {"type": "string", "description": "DB to dump (action=dump)."},
+            "table": {"type": "string", "description": "Table to dump (action=dump)."}},
+         "required": ["url"]}),
+    "wpscan": (
+        _b_wpscan,
+        "Scan a WordPress site with wpscan — versions, vulnerable plugins/themes and "
+        "users. An API token unlocks vulnerability data.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "WordPress site URL."},
+            "enumerate": {"type": "string", "description": "wpscan --enumerate value, "
+                          "e.g. vp,vt,u (default). vp=vuln plugins, u=users, etc."},
+            "api_token": {"type": "string", "description": "WPScan API token (optional, "
+                          "for CVE data)."}},
+         "required": ["url"]}),
+    "enum4linux": (
+        _b_enum4linux,
+        "Thorough SMB/Windows enumeration with enum4linux-ng: OS, users, groups, shares, "
+        "password policy — null session or credentials.",
+        {"type": "object", "properties": {
+            "host": _H, "username": _USER, "password": _PASS, "domain": _DOMAIN},
+         "required": ["host"]}),
+    "smbmap": (
+        _b_smbmap,
+        "Map SMB share access (read/write) with smbmap; optionally recurse the tree. "
+        "Null session or credentials (password or NT hash).",
+        {"type": "object", "properties": {
+            "host": _H, "username": _USER, "password": _PASS, "hash": _HASH,
+            "domain": _DOMAIN,
+            "share": {"type": "string", "description": "Limit to one share (optional)."},
+            "recurse": {"type": "boolean", "description": "Recurse the directory tree."}},
+         "required": ["host"]}),
+    "certipy": (
+        _b_certipy,
+        "Enumerate AD Certificate Services with certipy find (-vulnerable) — CA "
+        "templates and ESC misconfigurations. Requires domain credentials or NT hash.",
+        {"type": "object", "properties": {
+            "dc": {"type": "string", "description": "Domain controller host/IP."},
+            "domain": {"type": "string", "description": "AD domain, e.g. corp.local."},
+            "username": _USER, "password": _PASS, "hash": _HASH},
+         "required": ["dc", "domain", "username"]}),
+    "testssl": (
+        _b_testssl,
+        "Deep TLS/SSL audit of a service with testssl.sh — protocols, ciphers, and "
+        "known flaws (Heartbleed, POODLE, ROBOT, weak ciphers). Thorough and slow.",
+        {"type": "object", "properties": {"host": _H, "port": _PORT},
+         "required": ["host"]}),
+    "ssh_audit": (
+        _b_ssh_audit,
+        "Audit an SSH server's configuration with ssh-audit — key exchange, ciphers, "
+        "MACs and host-key algorithms, flagging weak/deprecated ones.",
+        {"type": "object", "properties": {"host": _H, "port": _PORT},
+         "required": ["host"]}),
+    "smtp_user_enum": (
+        _b_smtp_user_enum,
+        "Check whether a username exists on an SMTP server via VRFY/EXPN/RCPT "
+        "(smtp-user-enum). Tests one username at a time.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "username": {"type": "string", "description": "Username to test."},
+            "method": {"type": "string", "description": "VRFY (default) · EXPN · RCPT."}},
+         "required": ["host", "username"]}),
+    "wafw00f": (
+        _b_wafw00f,
+        "Detect and fingerprint a Web Application Firewall in front of a site "
+        "(wafw00f).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL."}},
+         "required": ["url"]}),
 }
 
 
@@ -2082,6 +2294,80 @@ _META = {
         "crawler directives.",
         ["get the robots.txt", "check robots and sitemap for hidden paths",
          "what does the sitemap reveal", "fetch robots.txt of the site"]),
+    "sqlmap": (
+        "Test for SQL injection and dump data (sqlmap).",
+        "SQL injection testing and exploitation with sqlmap: detect injectable "
+        "parameters in a URL or POST body, then enumerate databases or dump tables. "
+        "Supports cookies and auth. Active/noisy. Keywords: sqlmap, sql injection, "
+        "sqli, database dump, --dbs, --dump, union, blind sqli, parameter injection.",
+        ["test this url for sql injection", "run sqlmap on the login form",
+         "dump the users table via sqli", "enumerate databases with sqlmap",
+         "check the id parameter for sqli"]),
+    "wpscan": (
+        "Scan WordPress for vulns, plugins, users (wpscan).",
+        "WordPress security scan with wpscan: enumerate the core version, vulnerable "
+        "plugins and themes, and users; an API token adds CVE data. Keywords: wpscan, "
+        "wordpress, wp, plugins, themes, users enumeration, cms vulnerability, "
+        "wp-content, xmlrpc.",
+        ["scan the wordpress site", "enumerate wordpress plugins and users",
+         "wpscan for vulnerable plugins", "check this wp site for vulnerabilities"]),
+    "enum4linux": (
+        "Thorough SMB/Windows enumeration (enum4linux-ng).",
+        "Comprehensive SMB/Windows enumeration with enum4linux-ng: OS, domain, users, "
+        "groups, shares, password policy and RID cycling — null session or credentials. "
+        "Richer than the nmap smb scripts. Keywords: enum4linux, enum4linux-ng, smb, "
+        "windows enumeration, users, groups, shares, rid cycling, null session, "
+        "port 445, samba.",
+        ["run enum4linux on the host", "enumerate windows users and shares",
+         "thorough smb enumeration", "enum4linux-ng with these credentials"]),
+    "smbmap": (
+        "Map SMB share read/write access (smbmap).",
+        "SMB share access mapping with smbmap: list shares and show read/write "
+        "permissions, optionally recursing the directory tree — null session or "
+        "credentials (password or NT hash). Keywords: smbmap, smb shares, share "
+        "permissions, read write, recurse, loot, port 445, pass the hash.",
+        ["map smb share permissions", "which shares are writable",
+         "recurse the smb shares", "smbmap with these creds", "list share access"]),
+    "certipy": (
+        "Enumerate AD CS / ESC misconfigs (certipy).",
+        "Active Directory Certificate Services enumeration with certipy find "
+        "-vulnerable: list CAs and certificate templates and flag ESC1-ESC8 "
+        "misconfigurations that lead to domain privilege escalation. Needs domain "
+        "creds or NT hash. Keywords: certipy, AD CS, adcs, certificate services, ESC1, "
+        "ESC8, vulnerable template, domain escalation, pkinit, certificate abuse.",
+        ["enumerate AD CS with certipy", "check for vulnerable certificate templates",
+         "find ESC misconfigurations", "certipy find vulnerable"]),
+    "testssl": (
+        "Deep TLS/SSL vulnerability audit (testssl.sh).",
+        "Thorough TLS/SSL audit with testssl.sh: enumerate supported protocols and "
+        "ciphers and test for known flaws — Heartbleed, POODLE, ROBOT, BEAST, weak "
+        "ciphers, cert issues. Slow. Keywords: testssl, ssl audit, tls vulnerabilities, "
+        "heartbleed, poodle, robot, weak ciphers, sweet32, cipher suites, port 443.",
+        ["run a full ssl audit on 443", "test for heartbleed and poodle",
+         "check tls for weak ciphers", "deep testssl scan of the https service"]),
+    "ssh_audit": (
+        "Audit SSH ciphers/kex/MACs (ssh-audit).",
+        "SSH server configuration audit with ssh-audit: report the key-exchange, "
+        "cipher, MAC and host-key algorithms and flag weak or deprecated ones, with "
+        "CVE notes. Keywords: ssh-audit, ssh hardening, weak ciphers, key exchange, "
+        "kex, macs, host key, ssh algorithms, port 22.",
+        ["audit the ssh server config", "check ssh for weak ciphers",
+         "what ssh algorithms does this server allow", "ssh-audit on port 22"]),
+    "smtp_user_enum": (
+        "Check if an SMTP username exists (VRFY/EXPN/RCPT).",
+        "SMTP user enumeration with smtp-user-enum: check whether a username is valid "
+        "on a mail server using VRFY, EXPN or RCPT TO. Keywords: smtp-user-enum, smtp, "
+        "vrfy, expn, rcpt, user enumeration, mail server, port 25, valid users.",
+        ["check if this user exists over smtp", "smtp vrfy user enumeration",
+         "does the mail server accept this username", "enumerate smtp users"]),
+    "wafw00f": (
+        "Detect a Web Application Firewall (wafw00f).",
+        "Web Application Firewall detection with wafw00f: identify whether a WAF sits "
+        "in front of a site and fingerprint which one, so you can tune later attacks. "
+        "Keywords: wafw00f, waf, web application firewall, cloudflare, akamai, "
+        "modsecurity, firewall detection, bypass.",
+        ["is there a waf on this site", "detect the web application firewall",
+         "fingerprint the waf", "check for cloudflare or modsecurity"]),
 }
 
 
@@ -2235,6 +2521,11 @@ def selftest():
         ("payload_gen", {"lhost": "10.0.0.1"}, True),     # lport required
         ("cve_lookup", {"vendor": "a", "product": "b", "version": "none"}, True),  # no ver num
         ("ip_info", {"ip": "999.1.1.1"}, True),           # bad ip
+        ("sqlmap", {"url": "http://x", "action": "dump"}, True),   # dump needs database
+        ("sqlmap", {"url": "http://x", "level": 9}, True),         # 1-5
+        ("certipy", {"dc": "10.0.0.5", "domain": "corp.local"}, True),  # needs username
+        ("smtp_user_enum", {"host": "10.0.0.5", "username": "a b"}, True),  # bad user
+        ("wafw00f", {"url": "notaurl"}, True),             # bad url
         ("smb_client", {"host": "10.0.0.5"}, False),      # null-session list ok
         ("smb_client", {"host": "10.0.0.5", "username": "a b"}, True),   # bad user
         ("netexec_smb", {"host": "10.0.0.5", "action": "exec"}, True),   # exec needs cmd
