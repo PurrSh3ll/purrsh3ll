@@ -16,6 +16,7 @@
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -763,6 +764,7 @@ class MCPServer:
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, cwd=self.cwd, env=self.env,
                 text=True, bufsize=1,
+                start_new_session=True,        # own process group → clean kill on timeout
             )
         except Exception as e:
             self.error = f"spawn failed: {e}"
@@ -800,6 +802,14 @@ class MCPServer:
             result = self._request("tools/call", {"name": tool_name,
                                                   "arguments": arguments or {}},
                                    timeout=timeout)
+        except TimeoutError:
+            # The agent's wait elapsed. Kill the server (and the command it's still
+            # running) so the transport is clean for the next call; no auto-retry — a
+            # slow tool would just time out again.
+            self.close()
+            return {"text": f"tool call timed out after "
+                            f"{timeout if timeout is not None else self.timeout}s "
+                            "(the agent stopped waiting)", "is_error": True}
         except Exception as e:
             return {"text": f"tool call failed: {e}", "is_error": True,
                     "dead": not self.alive() or isinstance(e, (BrokenPipeError, OSError))}
@@ -818,14 +828,21 @@ class MCPServer:
             self.proc.stdin.close()
         except Exception:
             pass
-        try:
-            self.proc.terminate()
-            self.proc.wait(timeout=3)
-        except Exception:
+        # Kill the whole process group (own session) so a long child command a tool
+        # spawned — e.g. an nmap still scanning — dies too, not just the server.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                self.proc.kill()
+                os.killpg(os.getpgid(self.proc.pid), sig)
             except Exception:
-                pass
+                try:
+                    self.proc.terminate() if sig == signal.SIGTERM else self.proc.kill()
+                except Exception:
+                    pass
+            try:
+                self.proc.wait(timeout=3)
+                break
+            except Exception:
+                continue
         self.proc = None
 
 
@@ -1181,23 +1198,26 @@ class MCPManager:
             self._http_transports[name] = t
         return t
 
-    def call(self, namespaced_name: str, arguments: dict) -> dict:
+    def call(self, namespaced_name: str, arguments: dict, timeout: float = None) -> dict:
         """Route a namespaced tool call to its owning server. Self-healing: if the
         server has died (crash / broken pipe), respawn it and retry once so a dead
-        transport doesn't turn every later call into an error."""
+        transport doesn't turn every later call into an error. `timeout` (seconds)
+        lets the caller set how long to wait — the agent owns timeout policy; when it
+        elapses the running command is killed. None → the per-tool/default cap."""
         server_name, tool_name = split_namespaced(namespaced_name)
         spec = self.specs.get(server_name)
         if spec is None:
             return {"text": f"no such MCP server: {server_name}", "is_error": True}
 
         if "url" in spec:                               # attached HTTP server
-            timeout = TOOL_CALL_TIMEOUTS.get(tool_name, HTTP_CALL_TIMEOUT)
+            http_timeout = (timeout if timeout is not None
+                            else TOOL_CALL_TIMEOUTS.get(tool_name, HTTP_CALL_TIMEOUT))
             token = load_token(self.base_dir, server_name)
             if self._resolve_transport(server_name, spec, token) == "sse":
                 return call_sse_tool(spec["url"], token, tool_name, arguments,
-                                     timeout=timeout)
+                                     timeout=http_timeout)
             return call_http_tool(spec["url"], token, tool_name, arguments,
-                                  timeout=timeout)
+                                  timeout=http_timeout)
 
         srv = self.servers.get(server_name)
         if srv is None or not srv.alive():          # (re)connect a missing/dead server
@@ -1207,7 +1227,8 @@ class MCPManager:
                             f"{self.failures.get(server_name, 'failed to start')}",
                     "is_error": True}
 
-        call_timeout = TOOL_CALL_TIMEOUTS.get(tool_name)
+        call_timeout = (timeout if timeout is not None
+                        else TOOL_CALL_TIMEOUTS.get(tool_name))
         result = srv.call_tool(tool_name, arguments, timeout=call_timeout)
         if result.get("dead"):                      # transport died mid-call — retry once
             srv = self._spawn(server_name)

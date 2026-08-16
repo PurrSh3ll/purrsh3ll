@@ -35,7 +35,9 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "purr-hacktools"
 SERVER_VERSION = "0.1.0"
 
-DEFAULT_TIMEOUT = 120          # seconds per tool call
+# No per-tool timeout here on purpose: the server runs each command to completion and
+# the CALLING AGENT decides how long to wait (and kills the call if it takes too long).
+# Keeping timeout policy in one place — the agent — avoids two layers disagreeing.
 MAX_OUTPUT = 8000             # chars returned to the model (keeps replies readable)
 
 
@@ -190,18 +192,16 @@ def _nxc_auth(user, password, nthash, domain):
     return out + (["-H", nthash] if nthash else ["-p", password])
 
 
-def _run(argv, binary, timeout=DEFAULT_TIMEOUT):
-    """Run one argv (no shell), return (text, is_error). Reports a missing tool
-    cleanly; keeps partial output on timeout."""
+def _run(argv, binary):
+    """Run one argv (no shell) to completion and return (text, is_error). Reports a
+    missing tool cleanly. There is deliberately no timeout here — the calling agent
+    controls how long to wait and kills the call if it runs too long."""
     if not shutil.which(binary):
         return (f"[not installed] '{binary}' is not on PATH — install it to use "
                 "this tool.", True)
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
+        proc = subprocess.run(argv, capture_output=True, text=True,
                               stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired as exc:
-        partial = ((exc.stdout or "") + (exc.stderr or "")).strip()
-        return (f"[timeout after {timeout}s]\n{partial[-MAX_OUTPUT:]}", False)
     except Exception as exc:                          # noqa: BLE001
         return (f"error running {binary}: {exc}", True)
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -257,7 +257,7 @@ def _b_port_discovery(a):
     argv += (["-p", ports] if ports else _RANGE_PORTS[rng])   # explicit ports win
     argv.append(host)
     slow = rng == "full" or proto in ("udp", "both")
-    return argv, "nmap", (900 if slow else 300)
+    return argv, "nmap"
 
 
 def _b_service_discovery(a):
@@ -300,7 +300,7 @@ def _b_service_discovery(a):
     argv += (["-p", ports] if ports else ["--top-ports", "1000"])
     argv.append(host)
     slow = proto in ("udp", "both") or os_det
-    return argv, "nmap", (900 if slow else 300)
+    return argv, "nmap"
 
 
 def _b_script_scan(a):
@@ -485,7 +485,7 @@ def _b_web_content(a):
         if not re.match(r"^[A-Za-z0-9,.]+$", exts):
             raise ValueError("`extensions` must be like php,txt,html")
         argv += ["-e", exts]
-    return argv, "ffuf", 600
+    return argv, "ffuf"
 
 
 def _b_whatweb(a):
@@ -509,7 +509,7 @@ def _b_nikto(a):
     argv = ["nikto", "-ask", "no", "-h", host, "-p", str(port)]
     if a.get("tls") or port in (443, 8443):
         argv.append("-ssl")
-    return argv, "nikto", 900
+    return argv, "nikto"
 
 
 def _b_nuclei(a):
@@ -525,7 +525,7 @@ def _b_nuclei(a):
         if not re.match(r"^[a-z0-9,_-]+$", tags):
             raise ValueError("`tags` has invalid characters")
         argv += ["-tags", tags]
-    return argv, "nuclei", 900
+    return argv, "nuclei"
 
 
 # ── SMB / AD batch (credentialed) ─────────────────────────────────────────────
@@ -578,7 +578,7 @@ def _b_nxc_smb(a):
     else:
         raise ValueError("`action` must be one of shares/users/groups/rid/sessions/"
                          "disks/loggedon/passpol/exec")
-    return argv, "nxc", 300
+    return argv, "nxc"
 
 
 def _b_ldap_search(a):
@@ -602,7 +602,7 @@ def _b_ldap_search(a):
         if not re.match(r"^[A-Za-z0-9,]+$", attrs):
             raise ValueError("`attributes` must be comma-separated names")
         argv += attrs.split(",")
-    return argv, "ldapsearch", 120
+    return argv, "ldapsearch"
 
 
 def _b_rpc_enum(a):
@@ -616,7 +616,7 @@ def _b_rpc_enum(a):
         auth = ["-U", f"{userspec}%{password}"]
     else:
         auth = ["-N", "-U", ""]                       # null session
-    return ["rpcclient"] + auth + ["-c", cmds, host], "rpcclient", 120
+    return ["rpcclient"] + auth + ["-c", cmds, host], "rpcclient"
 
 
 def _b_secretsdump(a):
@@ -628,7 +628,7 @@ def _b_secretsdump(a):
         argv += ["-hashes", _hashes_arg(nthash)]
     if a.get("just_dc"):
         argv.append("-just-dc")                       # DCSync-only (fast, DC creds)
-    return argv, "impacket-secretsdump", 600
+    return argv, "impacket-secretsdump"
 
 
 _IMPACKET_EXEC = {"wmiexec": "impacket-wmiexec", "psexec": "impacket-psexec",
@@ -703,7 +703,7 @@ def _b_mysql_query(a):
         argv.append("-p" + password)                  # note: visible in process list
     if db:
         argv += ["-D", db]
-    return argv + ["-e", query], "mysql", 120
+    return argv + ["-e", query], "mysql"
 
 
 def _b_mssql_query(a):
@@ -715,7 +715,7 @@ def _b_mssql_query(a):
         argv.append("--local-auth")                   # SQL login rather than Windows
     if a.get("port") is not None:
         argv += ["--port", str(_port(a))]
-    return argv + ["-q", query], "nxc", 120
+    return argv + ["-q", query], "nxc"
 
 
 def _b_psql_query(a):
@@ -726,7 +726,7 @@ def _b_psql_query(a):
     db = _db_ident((a.get("database") or "postgres").strip(), "database")
     query = _no_ctrl(_word(a, "query"), "query")
     uri = f"postgresql://{quote(user)}:{quote(password)}@{host}:{port}/{db}"
-    return ["psql", uri, "-A", "-c", query], "psql", 120
+    return ["psql", uri, "-A", "-c", query], "psql"
 
 
 _REDIS_DENY = {"SHUTDOWN", "FLUSHALL", "FLUSHDB"}
@@ -744,7 +744,7 @@ def _b_redis_cli(a):
     argv = ["redis-cli", "-h", host, "-p", str(port), "--no-auth-warning"]
     if password:
         argv += ["-a", password]
-    return argv + command.split(), "redis-cli", 60
+    return argv + command.split(), "redis-cli"
 
 
 def _b_mongo_query(a):
@@ -757,7 +757,7 @@ def _b_mongo_query(a):
                   "command")
     auth = f"{quote(user)}:{quote(password)}@" if user else ""
     uri = f"mongodb://{auth}{host}:{port}/{db}"
-    return ["mongosh", uri, "--quiet", "--eval", ev], "mongosh", 60
+    return ["mongosh", uri, "--quiet", "--eval", ev], "mongosh"
 
 
 def _b_ssh_exec(a):
@@ -773,10 +773,10 @@ def _b_ssh_exec(a):
     if key:
         if re.search(r"[;\s\x00-\x1f]", key):
             raise ValueError("`key` must be a path with no spaces")
-        return ["ssh", "-i", key] + common, "ssh", 120
+        return ["ssh", "-i", key] + common, "ssh"
     password = str(a.get("password") or "")
     if password:                                      # non-interactive password auth
-        return ["sshpass", "-p", password, "ssh"] + common, "sshpass", 120
+        return ["sshpass", "-p", password, "ssh"] + common, "sshpass"
     raise ValueError("provide `password` or `key`")
 
 
@@ -785,7 +785,7 @@ def _b_winrm_exec(a):
     user, password, nthash, domain = _creds(a, require=True)
     command = _no_ctrl(_word(a, "command"), "command")
     argv = ["nxc", "winrm", host] + _nxc_auth(user, password, nthash, domain)
-    return argv + ["-x", command], "nxc", 120
+    return argv + ["-x", command], "nxc"
 
 
 def _b_ftp_transfer(a):
@@ -803,10 +803,10 @@ def _b_ftp_transfer(a):
         if not path.endswith("/"):
             path += "/"
         return (["curl", "-sS", "--max-time", "30",
-                 f"ftp://{creds}{host}:{port}{path}", "--list-only"], "curl", 60)
+                 f"ftp://{creds}{host}:{port}{path}", "--list-only"], "curl")
     if action == "get":
         return (["curl", "-sS", "--max-time", "60",
-                 f"ftp://{creds}{host}:{port}{path}"], "curl", 90)
+                 f"ftp://{creds}{host}:{port}{path}"], "curl")
     raise ValueError("`action` must be list or get")
 
 
@@ -815,7 +815,7 @@ def _b_subdomain_enum(a):
     domain = _word(a, "domain")
     if not _HOST_RE.match(domain):
         raise ValueError("`domain` has invalid characters")
-    return ["subfinder", "-d", domain, "-silent"], "subfinder", 300
+    return ["subfinder", "-d", domain, "-silent"], "subfinder"
 
 
 def _b_dns_zone_transfer(a):
@@ -825,7 +825,7 @@ def _b_dns_zone_transfer(a):
     ns = (a.get("nameserver") or "").strip()
     if not ns or not _HOST_RE.match(ns):
         raise ValueError("`nameserver` (an NS host/IP to try) is required")
-    return ["dig", "axfr", domain, "@" + ns], "dig", 60
+    return ["dig", "axfr", domain, "@" + ns], "dig"
 
 
 def _b_traceroute(a):
@@ -850,7 +850,7 @@ def _b_traceroute(a):
         argv.append("-T")
     elif proto != "udp":
         raise ValueError("`protocol` must be udp/icmp/tcp")
-    return argv + [host], "traceroute", 120
+    return argv + [host], "traceroute"
 
 
 def _b_vhost_fuzz(a):
@@ -868,7 +868,7 @@ def _b_vhost_fuzz(a):
             "ffuf", 600)
 
 
-# name -> (builder, description, inputSchema, timeout)
+# name -> (builder, description, inputSchema)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
 _PORT = {"type": "integer", "description": "TCP port (1-65535)."}
@@ -906,7 +906,7 @@ HACKTOOLS = {
                        "T4; lower is slower/stealthier for filtered or laggy hosts)."},
             "host_discovery": {"type": "boolean", "description": "false (default) "
                                "uses -Pn (assume up); true lets nmap ping first."}},
-         "required": ["host"]}, 300),
+         "required": ["host"]}),
     "service_discovery": (
         _b_service_discovery,
         "Fingerprint the services/versions behind a host's open ports (nmap -sV, plus "
@@ -930,7 +930,7 @@ HACKTOOLS = {
                        "T4; lower is slower/stealthier)."},
             "host_discovery": {"type": "boolean", "description": "false (default) "
                                "uses -Pn (assume up); true lets nmap ping first."}},
-         "required": ["host"]}, 300),
+         "required": ["host"]}),
     "script_scan": (
         _b_script_scan,
         "Run specific nmap NSE scripts against a host (e.g. 'http-title,http-methods' "
@@ -940,7 +940,7 @@ HACKTOOLS = {
             "scripts": {"type": "string", "description": "Comma-separated NSE script "
                         "names or a safe wildcard like 'smb-vuln-*'."},
             "timing": _TIMING, "host_discovery": _HOSTDISC},
-         "required": ["host", "scripts"]}, 300),
+         "required": ["host", "scripts"]}),
     "http_headers": (
         _b_http_headers,
         "Fetch a web server's HTTP response headers (curl). Reveals server/tech "
@@ -957,21 +957,21 @@ HACKTOOLS = {
                                  "redirects (-L). Default false."},
             "user_agent": {"type": "string", "description": "Custom User-Agent "
                            "header."}},
-         "required": ["host"]}, 30),
+         "required": ["host"]}),
     "ftp_anon": (
         _b_ftp_anon,
         "Check whether anonymous FTP login is allowed and list the root (nmap "
         "ftp-anon).",
         {"type": "object", "properties": {
             "host": _H, "port": _PORT, "timing": _TIMING,
-            "host_discovery": _HOSTDISC}, "required": ["host"]}, 60),
+            "host_discovery": _HOSTDISC}, "required": ["host"]}),
     "smb_enum": (
         _b_smb_enum,
         "Enumerate SMB with a null session: OS, signing, shares and users (nmap smb-* "
         "scripts).",
         {"type": "object", "properties": {
             "host": _H, "timing": _TIMING, "host_discovery": _HOSTDISC},
-         "required": ["host"]}, 120),
+         "required": ["host"]}),
     "snmp_walk": (
         _b_snmp_walk,
         "Walk SNMP with a community string (default 'public') to dump system info. "
@@ -985,7 +985,7 @@ HACKTOOLS = {
             "oid": {"type": "string", "description": "Start OID/subtree, e.g. "
                     "1.3.6.1.2.1.1 (system). Omit to walk from the top."},
             "port": {"type": "integer", "description": "SNMP UDP port (default 161)."}},
-         "required": ["host"]}, 120),
+         "required": ["host"]}),
     "dns_lookup": (
         _b_dns,
         "Resolve a DNS record (dig +short). Supports A/AAAA/MX/NS/TXT/CNAME/SOA/PTR "
@@ -995,19 +995,19 @@ HACKTOOLS = {
             "type": {"type": "string", "description": "Record type (default A)."},
             "server": {"type": "string", "description": "Resolver to query (@server), "
                        "e.g. the target's own DNS. Default: system resolver."}},
-         "required": ["name"]}, 30),
+         "required": ["name"]}),
     "ssl_cert": (
         _b_ssl_cert,
         "Read a TLS service's certificate — subject, SANs, validity (nmap ssl-cert).",
         {"type": "object", "properties": {
             "host": _H, "port": _PORT, "timing": _TIMING,
-            "host_discovery": _HOSTDISC}, "required": ["host"]}, 60),
+            "host_discovery": _HOSTDISC}, "required": ["host"]}),
     "banner_grab": (
         _b_banner,
         "Grab the service banner on one port (nmap -sV + banner).",
         {"type": "object", "properties": {
             "host": _H, "port": _PORT, "timing": _TIMING,
-            "host_discovery": _HOSTDISC}, "required": ["host", "port"]}, 60),
+            "host_discovery": _HOSTDISC}, "required": ["host", "port"]}),
     "searchsploit": (
         _b_searchsploit,
         "Search the local Exploit-DB copy (searchsploit) by product/version, by CVE, "
@@ -1019,7 +1019,7 @@ HACKTOOLS = {
                     "CVE-2021-3156 or 2021-3156."},
             "title": {"type": "boolean", "description": "Match the exploit title only "
                       "(-t) — fewer false matches. Default false."}},
-         "required": []}, 60),
+         "required": []}),
     "whois": (
         _b_whois,
         "WHOIS registration info for a domain or IP; can target a specific WHOIS "
@@ -1028,7 +1028,7 @@ HACKTOOLS = {
             "domain": {"type": "string", "description": "Domain name or IP."},
             "server": {"type": "string", "description": "WHOIS server to query (-h). "
                        "Default: whois picks it."}},
-         "required": ["domain"]}, 30),
+         "required": ["domain"]}),
     "http_request": (
         _b_http_request,
         "Make an arbitrary HTTP request with curl and return the status, headers and "
@@ -1050,7 +1050,7 @@ HACKTOOLS = {
                        "header)."},
             "follow_redirects": {"type": "boolean", "description": "Follow 3xx (-L)."},
             "user_agent": {"type": "string", "description": "Custom User-Agent."}},
-         "required": ["url"]}, 40),
+         "required": ["url"]}),
     "web_content_discovery": (
         _b_web_content,
         "Brute-force web directories and files with ffuf against a URL (put FUZZ where "
@@ -1065,7 +1065,7 @@ HACKTOOLS = {
                            "e.g. php,txt,html."},
             "threads": {"type": "integer", "description": "Concurrency 1-100 "
                         "(default 40)."}},
-         "required": ["url"]}, 600),
+         "required": ["url"]}),
     "whatweb": (
         _b_whatweb,
         "Fingerprint a website's stack — server, CMS, frameworks, libraries and their "
@@ -1074,7 +1074,7 @@ HACKTOOLS = {
             "url": {"type": "string", "description": "Full http(s) URL."},
             "aggression": {"type": "integer", "description": "Aggression 1 (passive) "
                            "to 4 (heavy). Default whatweb's."}},
-         "required": ["url"]}, 120),
+         "required": ["url"]}),
     "nikto_scan": (
         _b_nikto,
         "Scan a web server for known issues, dangerous files and misconfigurations "
@@ -1082,7 +1082,7 @@ HACKTOOLS = {
         {"type": "object", "properties": {
             "host": _H, "port": _PORT,
             "tls": {"type": "boolean", "description": "Use https (auto on 443/8443)."}},
-         "required": ["host"]}, 900),
+         "required": ["host"]}),
     "nuclei_scan": (
         _b_nuclei,
         "Run nuclei's community templates against a URL to find CVEs, exposures and "
@@ -1094,7 +1094,7 @@ HACKTOOLS = {
                          "medium,high,critical."},
             "tags": {"type": "string", "description": "Template tags, e.g. cve,"
                      "exposure,wordpress."}},
-         "required": ["url"]}, 900),
+         "required": ["url"]}),
     "smb_client": (
         _b_smb_client,
         "List SMB shares, or list a share's contents, with smbclient. Works with a "
@@ -1107,7 +1107,7 @@ HACKTOOLS = {
             "path": {"type": "string", "description": "Path inside the share for ls "
                      "(default root)."},
             "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
-         "required": ["host"]}, 120),
+         "required": ["host"]}),
     "netexec_smb": (
         _b_nxc_smb,
         "Enumerate or act on SMB with netexec (nxc): shares, users, groups, rid-brute, "
@@ -1120,7 +1120,7 @@ HACKTOOLS = {
             "command": {"type": "string", "description": "Command to run when "
                         "action=exec (single command via SMB)."},
             "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
-         "required": ["host"]}, 300),
+         "required": ["host"]}),
     "ldap_search": (
         _b_ldap_search,
         "Query LDAP / Active Directory with ldapsearch — users, groups, computers, any "
@@ -1134,7 +1134,7 @@ HACKTOOLS = {
             "attributes": {"type": "string", "description": "Comma-separated attrs to "
                            "return, e.g. sAMAccountName,description."},
             "username": _USER, "password": _PASS, "domain": _DOMAIN},
-         "required": ["host"]}, 120),
+         "required": ["host"]}),
     "rpc_enum": (
         _b_rpc_enum,
         "Enumerate a Windows host over MSRPC with rpcclient (users, groups, domain "
@@ -1144,7 +1144,7 @@ HACKTOOLS = {
             "commands": {"type": "string", "description": "Semicolon rpcclient "
                          "commands (default enumdomusers;enumdomgroups;querydominfo)."},
             "username": _USER, "password": _PASS, "domain": _DOMAIN},
-         "required": ["host"]}, 120),
+         "required": ["host"]}),
     "secretsdump": (
         _b_secretsdump,
         "Dump secrets from a host with impacket-secretsdump — SAM/LSA/cached creds, or "
@@ -1155,7 +1155,7 @@ HACKTOOLS = {
             "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
             "just_dc": {"type": "boolean", "description": "DCSync only (-just-dc) — "
                         "domain hashes via a DC, faster."}},
-         "required": ["host", "username"]}, 600),
+         "required": ["host", "username"]}),
     "impacket_exec": (
         _b_impacket_exec,
         "Run ONE command on a Windows host with valid credentials via impacket "
@@ -1168,7 +1168,7 @@ HACKTOOLS = {
             "command": {"type": "string", "description": "The single command to run, "
                         "e.g. 'whoami /all'."},
             "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
-         "required": ["host", "username", "command"]}, 300),
+         "required": ["host", "username", "command"]}),
     "kerberos_roast": (
         _b_kerberos_roast,
         "Request Kerberos hashes for offline cracking: kerberoast (SPN accounts, needs "
@@ -1181,7 +1181,7 @@ HACKTOOLS = {
             "target_user": {"type": "string", "description": "For asrep without creds "
                             "— a username to test."},
             "username": _USER, "password": _PASS, "hash": _HASH},
-         "required": ["dc", "domain"]}, 300),
+         "required": ["dc", "domain"]}),
     "mysql_query": (
         _b_mysql_query,
         "Run a SQL query against MySQL/MariaDB (mysql client). Credentials are passed "
@@ -1193,7 +1193,7 @@ HACKTOOLS = {
             "database": {"type": "string", "description": "Database to use (optional)."},
             "query": {"type": "string", "description": "SQL to run, e.g. "
                       "'show databases;'."}},
-         "required": ["host", "query"]}, 120),
+         "required": ["host", "query"]}),
     "mssql_query": (
         _b_mssql_query,
         "Run a SQL query against MS SQL Server via netexec (nxc mssql). Windows auth by "
@@ -1204,7 +1204,7 @@ HACKTOOLS = {
             "local_auth": {"type": "boolean", "description": "Use a SQL login instead "
                            "of Windows auth."},
             "query": {"type": "string", "description": "SQL to run."}},
-         "required": ["host", "query"]}, 120),
+         "required": ["host", "query"]}),
     "psql_query": (
         _b_psql_query,
         "Run a SQL query against PostgreSQL (psql). Credentials are passed in the "
@@ -1217,7 +1217,7 @@ HACKTOOLS = {
             "database": {"type": "string", "description": "Database (default "
                          "postgres)."},
             "query": {"type": "string", "description": "SQL to run."}},
-         "required": ["host", "query"]}, 120),
+         "required": ["host", "query"]}),
     "redis_cli": (
         _b_redis_cli,
         "Run a Redis command (redis-cli). No-auth or with a password. Destructive "
@@ -1226,7 +1226,7 @@ HACKTOOLS = {
             "host": _H, "port": _PORT, "password": _PASS,
             "command": {"type": "string", "description": "Redis command (default "
                         "INFO), e.g. 'KEYS *' or 'GET foo'."}},
-         "required": ["host"]}, 60),
+         "required": ["host"]}),
     "mongo_query": (
         _b_mongo_query,
         "Run a MongoDB command with mongosh --eval. Anonymous or with credentials.",
@@ -1236,7 +1236,7 @@ HACKTOOLS = {
             "database": {"type": "string", "description": "Database (default admin)."},
             "command": {"type": "string", "description": "JS to eval (default lists "
                         "databases), e.g. 'db.users.find()'."}},
-         "required": ["host"]}, 60),
+         "required": ["host"]}),
     "ssh_exec": (
         _b_ssh_exec,
         "Run ONE command over SSH with a password (via sshpass) or a private key. Not "
@@ -1249,7 +1249,7 @@ HACKTOOLS = {
                     "of a password)."},
             "command": {"type": "string", "description": "The command to run, e.g. "
                         "'id; uname -a'."}},
-         "required": ["host", "username", "command"]}, 120),
+         "required": ["host", "username", "command"]}),
     "winrm_exec": (
         _b_winrm_exec,
         "Run ONE command on Windows over WinRM via netexec (nxc winrm). Password or NT "
@@ -1259,7 +1259,7 @@ HACKTOOLS = {
             "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
             "command": {"type": "string", "description": "The command to run, e.g. "
                         "'whoami /all'."}},
-         "required": ["host", "username", "command"]}, 120),
+         "required": ["host", "username", "command"]}),
     "ftp_transfer": (
         _b_ftp_transfer,
         "List an FTP directory or download a file to stdout (curl). Anonymous or with "
@@ -1273,7 +1273,7 @@ HACKTOOLS = {
                        "(print a file)."},
             "path": {"type": "string", "description": "Directory or file path "
                      "(default /)."}},
-         "required": ["host"]}, 90),
+         "required": ["host"]}),
     "subdomain_enum": (
         _b_subdomain_enum,
         "Passively enumerate a domain's subdomains with subfinder (OSINT sources, no "
@@ -1281,7 +1281,7 @@ HACKTOOLS = {
         {"type": "object", "properties": {
             "domain": {"type": "string", "description": "Root domain, e.g. "
                        "example.com."}},
-         "required": ["domain"]}, 300),
+         "required": ["domain"]}),
     "dns_zone_transfer": (
         _b_dns_zone_transfer,
         "Attempt a DNS zone transfer (AXFR) against a name server — dumps every record "
@@ -1291,7 +1291,7 @@ HACKTOOLS = {
                        "example.com."},
             "nameserver": {"type": "string", "description": "Name server host/IP to "
                            "try the AXFR against."}},
-         "required": ["domain", "nameserver"]}, 60),
+         "required": ["domain", "nameserver"]}),
     "traceroute": (
         _b_traceroute,
         "Trace the network path to a host. UDP by default; ICMP/TCP need root.",
@@ -1301,7 +1301,7 @@ HACKTOOLS = {
                          "30)."},
             "protocol": {"type": "string", "description": "udp (default) · icmp · tcp "
                          "(icmp/tcp need root)."}},
-         "required": ["host"]}, 120),
+         "required": ["host"]}),
     "vhost_fuzz": (
         _b_vhost_fuzz,
         "Discover virtual hosts on a web server by fuzzing the Host header with ffuf "
@@ -1313,7 +1313,7 @@ HACKTOOLS = {
                        "header (FUZZ.<domain>), e.g. example.com."},
             "wordlist": {"type": "string", "description": "small (default) · large · "
                          "common."}},
-         "required": ["url", "domain"]}, 600),
+         "required": ["url", "domain"]}),
 }
 
 
@@ -1666,7 +1666,7 @@ def _tools_list():
     # client reads for its catalog and RAG tool-retrieval index; other clients ignore
     # them. Falls back to the normal description if a tool has no RAG metadata.
     out = []
-    for name, (_b, normal, schema, _t) in HACKTOOLS.items():
+    for name, (_b, normal, schema) in HACKTOOLS.items():
         short, long, examples = _META.get(name, (normal, normal, []))
         out.append({
             "name": name,
@@ -1684,20 +1684,16 @@ def _call_tool(name, arguments):
     if entry is None:
         return {"content": [{"type": "text", "text": f"unknown tool: {name}"}],
                 "isError": True}
-    builder, _desc, _schema, timeout = entry
+    builder, _desc, _schema = entry
     try:
-        built = builder(arguments or {})
+        argv, binary = builder(arguments or {})
     except ValueError as exc:                          # bad arguments
         return {"content": [{"type": "text", "text": f"invalid arguments: {exc}"}],
                 "isError": True}
     except Exception as exc:                            # noqa: BLE001
         return {"content": [{"type": "text", "text": f"error: {exc}"}],
                 "isError": True}
-    if len(built) == 3:                                # builder may override timeout
-        argv, binary, timeout = built
-    else:
-        argv, binary = built
-    text, is_error = _run(argv, binary, timeout)
+    text, is_error = _run(argv, binary)
     shown = "$ " + " ".join(argv) + "\n\n" + text
     return {"content": [{"type": "text", "text": shown}], "isError": is_error}
 
