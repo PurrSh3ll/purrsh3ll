@@ -2825,7 +2825,7 @@ def _phase_banner(n: int, name: str, budget: bool = True, minutes=None,
     budget (skipped for the offline CVE lookup)."""
     b = Text("  ", style="bright_black")               # whole line dimmed
     b.append("[running" + (f" {num}" if num else "") + "]", style="bright_black")
-    b.append(f" ▸ phase {n} — {name}", style="bright_black")
+    b.append(f" ▸ {name}", style="bright_black")
     if budget:
         b.append(f"  ·  ⏱ {minutes or PORT_SCAN_MINUTES}m budget",
                  style="bright_black")
@@ -2858,7 +2858,7 @@ def _phase_state_line(n: int, label: str, state: str, num=None) -> "Text":
     word, color = _STATE_TAG.get(state, (state, "yellow"))
     out = Text("  ")
     out.append("[" + word + (f" {num}" if num else "") + "]", style=color)
-    out.append(f" ▸ phase {n} — {label}")
+    out.append(f" ▸ {label}")
     return out
 
 
