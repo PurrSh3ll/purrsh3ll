@@ -3961,8 +3961,24 @@ def _run_exploit_cmd(cmd: str, cancel) -> dict:
         except Exception:                              # noqa: BLE001
             out = ""
     return {"ok": proc.returncode == 0, "output": out or "",
+            "returncode": proc.returncode,
             "cancelled": bool(cancel is not None and cancel.is_set()),
             "timed_out": timed_out}
+
+
+def _exploit_fail_reason(result: dict) -> str:
+    """A short, deterministic explanation for a failed phase-5 command — the exit code
+    plus the last non-empty line of its (stderr-merged) output. No LLM: the reason is
+    already in the exit status and stderr, so we just surface it."""
+    if result.get("timed_out"):
+        return f"timed out ({EXPLOIT_CMD_MINUTES}m budget)"
+    rc = result.get("returncode")
+    tail = next((ln.strip() for ln in reversed((result.get("output") or "").splitlines())
+                 if ln.strip()), "")
+    code = f"exit {rc}" if rc is not None else "failed"
+    if not tail:
+        return f"{code} · (no output — likely no match / closed port / missing file)"
+    return f"{code} · {tail[:200] + '…' if len(tail) > 200 else tail}"
 
 
 _EXPLOIT_EXTRACT_SYSTEM = (
@@ -4345,7 +4361,8 @@ def _exploit_worker(eng: dict) -> None:
                 job["state"] = ("aborted" if result["cancelled"]
                                 else "error" if not result["ok"] else "complete")
                 finding = None
-                if not result["cancelled"]:
+                reason = ""
+                if job["state"] == "complete":
                     eng["thinking"] = True             # model analysing the output
                     _invalidate_toolbar(eng["ctx"])    # redraw → show 'thinking…'
                     try:
@@ -4372,8 +4389,12 @@ def _exploit_worker(eng: dict) -> None:
                                     base, tid, port, proto, key, step_desc, cmd, finding)
                             except Exception:          # noqa: BLE001
                                 pass
+                elif job["state"] == "error":
+                    # No LLM on failures — the exit code + stderr already say why.
+                    reason = _exploit_fail_reason(result)
                 _post(eng["ctx"], lambda lc=label_cmd, st=job["state"], f=finding,
-                      nm=cnum: _print_exploit_outcome(lc, st, f, num=nm))
+                      nm=cnum, rs=reason:
+                      _print_exploit_outcome(lc, st, f, num=nm, reason=rs))
         if missing_tools:
             def _miss(mc=missing_cmds, tools=sorted(missing_tools)):
                 line = Text("      ")
@@ -4393,8 +4414,10 @@ def _exploit_worker(eng: dict) -> None:
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
 
-def _print_exploit_outcome(label: str, state: str, finding, num=None) -> None:
-    """Per-command completion line + the LLM-extracted finding (or none)."""
+def _print_exploit_outcome(label: str, state: str, finding, num=None,
+                           reason: str = "") -> None:
+    """Per-command completion line + either the LLM-extracted finding (complete) or a
+    short deterministic reason (failed)."""
     out = _phase_state_line(5, label, state, num=num)
     if state == "complete":
         if finding:
@@ -4403,6 +4426,8 @@ def _print_exploit_outcome(label: str, state: str, finding, num=None) -> None:
                 out.append("        " + ln + "\n", style="green")
         else:
             out.append("\n        no findings", style="bright_black")
+    elif reason:
+        out.append("\n        " + reason, style="bright_black")
     console.print(out)
 
 
