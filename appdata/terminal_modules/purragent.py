@@ -4604,19 +4604,20 @@ def _phase_agg_state(phase: dict) -> str:
     return "aborted"
 
 
-def _status_view(ctx: dict) -> None:
-    """Show the engagement's phases like pshunter's status: per phase a numbered line
-    with the host, aggregate state and found yes/no, and EVERY scan of that phase
-    beneath it with its own complete/running state (numbered 1/2/3 when several).
-    Read-only (no view/stop/abort)."""
-    phases = ctx.get("phases") or []
+def _status_render(ctx: dict, out: "Console") -> None:
+    """Render the engagement's phases like pshunter's status to `out`: per phase a
+    numbered line with the host, aggregate state and found yes/no, and EVERY scan of
+    that phase beneath it with its own complete/running state (numbered 1/2/3 when
+    several). Read-only. `out` is any rich Console — the live REPL console (inline) or
+    a capture console (the alt-screen window)."""
+    phases = list(ctx.get("phases") or [])             # snapshot: worker threads mutate
     eng = ctx.get("engagement") or {}
-    console.print(Text("Status", style="bold"))
+    out.print(Text("Status", style="bold"))
     if not phases:
-        console.print(Text("  no scans have run yet", style="bright_black"))
+        out.print(Text("  no scans have run yet", style="bright_black"))
         return
     for n, phase in enumerate(phases, 1):
-        jobs = phase.get("jobs") or []
+        jobs = list(phase.get("jobs") or [])
         agg = _phase_agg_state(phase)
         acol, alabel = _STATUS_STATE.get(agg, ("bright_black", agg))
         if phase.get("phase") == "service exploitation":
@@ -4649,7 +4650,7 @@ def _status_view(ctx: dict) -> None:
         head.append(found_txt, style=found_style)
         if len(jobs) > 1:
             head.append(f"  · {len(jobs)} cmds", style="bright_black")
-        console.print(head)
+        out.print(head)
 
         multi = len(jobs) > 1
         width = len(str(len(jobs)))
@@ -4662,7 +4663,80 @@ def _status_view(ctx: dict) -> None:
             line.append(f"{jlabel:<8}", style=jcol)
             line.append(" ")
             line.append(job.get("command") or "", style="bright_black")
-            console.print(line)
+            out.print(line)
+
+
+def _status_view(ctx: dict) -> None:
+    """/status — a live window on the alternate screen (like /target): re-renders the
+    phases every second so you watch running→complete in place. ↑/↓ · PgUp/PgDn · g/G
+    scroll, r refresh now, q/Esc return. Without a TTY it prints once inline."""
+    if not sys.stdin.isatty():
+        _status_render(ctx, console)
+        return
+
+    import termios
+    import tty
+    import select
+
+    def _frame_lines() -> list:
+        buf = io.StringIO()
+        cols = shutil.get_terminal_size((80, 24)).columns
+        cap = Console(file=buf, force_terminal=True, color_system="truecolor",
+                      width=cols, highlight=False)
+        _status_render(ctx, cap)
+        return buf.getvalue().rstrip("\n").split("\n")
+
+    offset = 0
+    refresh = 1.0                                      # seconds between auto-redraws
+    with _alt_screen():
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            while True:
+                lines = _frame_lines()
+                size = shutil.get_terminal_size((80, 24))
+                page = max(1, size.lines - 1)          # last row = status bar
+                max_off = max(0, len(lines) - page)
+                offset = max(0, min(offset, max_off))
+                visible = lines[offset:offset + page]
+                visible = visible + [""] * (page - len(visible))
+                buf = ["\x1b[H"]                        # home; per-line \x1b[K, no full clear
+                for ln in visible:
+                    buf.append(ln + "\x1b[0m\x1b[K\r\n")
+                if max_off > 0:
+                    last = min(offset + page, len(lines))
+                    bar = (f" {offset + 1}-{last}/{len(lines)}   "
+                           "↑/↓ scroll · r refresh · q return · live ")
+                else:
+                    bar = " r refresh · q return · live "
+                buf.append(f"\x1b[7m{bar}\x1b[0m\x1b[K")
+                sys.stdout.write("".join(buf))
+                sys.stdout.flush()
+
+                # Wait up to `refresh` for a key; on timeout the loop redraws (live).
+                if not select.select([fd], [], [], refresh)[0]:
+                    continue
+                key = _read_key(fd)
+                if key in ("quit", "enter"):
+                    break
+                if key == "down":
+                    offset += 1
+                elif key == "up":
+                    offset -= 1
+                elif key == "pgdn":
+                    offset += page
+                elif key == "pgup":
+                    offset -= page
+                elif key == "home":
+                    offset = 0
+                elif key == "end":
+                    offset = max_off
+                # 'refresh'/unknown → next iteration redraws anyway
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            termios.tcflush(fd, termios.TCIFLUSH)       # drop any leftover input
+    _drain_stdin()
 
 
 def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
