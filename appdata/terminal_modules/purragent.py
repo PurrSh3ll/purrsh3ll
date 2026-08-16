@@ -1827,6 +1827,11 @@ def _env_block() -> str:
 # single-right-answer tasks, so we favour consistency over variance — this cut the
 # stray, self-corrected tool calls we saw in testing.
 AGENT_TEMPERATURE = 0.2
+# Wall-clock caps for automated (non-interactive) LLM turns, so a model stuck
+# streaming reasoning forever can't hang the recon pipeline. Interactive chat stays
+# uncapped (long answers are legitimate there).
+EXTRACT_TURN_MAX_SECONDS = 90.0    # phase-5 per-command finding extraction
+AGENT_TURN_MAX_SECONDS = 180.0     # phase-4.5 review + phase-5 exploit agent turns
 
 
 def query_model(profile: dict, base_dir: str, history: list) -> str:
@@ -1885,13 +1890,17 @@ def _openai_endpoint(profile: dict, base_dir: str):
 
 
 def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
-                 hide_thinking: bool = False, render_reasoning: bool = True) -> dict:
+                 hide_thinking: bool = False, render_reasoning: bool = True,
+                 max_seconds: float | None = None) -> dict:
     """Stream one /chat/completions turn (SSE). Prints content deltas live via
     on_text(piece); accumulates tool_call deltas. Reasoning deltas drive a
     'thinking…' spinner when hide_thinking is set, or print greyed inline when
     not. Returns an assistant message dict {content, tool_calls}.
     `render_reasoning=False` suppresses ALL direct terminal writes for reasoning —
-    needed when the caller renders on its own screen (e.g. the btw stream view)."""
+    needed when the caller renders on its own screen (e.g. the btw stream view).
+    `max_seconds` caps the whole turn on the wall clock: the per-read socket timeout
+    can't stop a model stuck streaming reasoning forever (each token resets it), so
+    automated/background calls pass a cap to abort a runaway turn."""
     body = dict(body)
     body["stream"] = True
     headers = {
@@ -1932,8 +1941,13 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
         on_text(f"[tool loop] HTTP {e.code}: {detail[:400]}")
         return {"role": "assistant", "content": f"[tool loop] HTTP {e.code}"}
 
+    stream_start = time.time()
     with resp:
         for raw in resp:                       # SSE: one "data: {json}" per line
+            if max_seconds and (time.time() - stream_start) > max_seconds:
+                # Runaway turn (e.g. an endless reasoning loop) — abort and keep
+                # whatever was streamed so far; closing `resp` drops the connection.
+                break
             line = raw.decode("utf-8", errors="replace").strip()
             if not line or not line.startswith("data:"):
                 continue
@@ -3856,6 +3870,19 @@ def _exploit_cmd_safe(cmd: str) -> bool:
     return True
 
 
+CURL_MAX_TIME_SECONDS = 60         # cap each curl request so it can't stall the budget
+
+
+def _inject_curl_max_time(cmd: str) -> str:
+    """Add `--max-time N` to a curl invocation that lacks its own request cap, so a
+    silently-held connection exits on its own well before the phase-5 process budget."""
+    if not re.search(r"(?:^|[|;&]\s*|\s)curl\b", cmd):
+        return cmd
+    if re.search(r"(?:--max-time|--connect-timeout|\s-m\s)", cmd):
+        return cmd                                     # already time-bounded
+    return re.sub(r"\bcurl\b", f"curl --max-time {CURL_MAX_TIME_SECONDS}", cmd, count=1)
+
+
 def _fill_exploit_cmd(cmd: str, ip: str, port: int):
     """Fill <RHOST>/<RPORT>/<IP> from the target, drop trailing comments, and return the
     runnable command — or None if it's a comment, still has unresolved placeholders, or
@@ -3869,7 +3896,7 @@ def _fill_exploit_cmd(cmd: str, ip: str, port: int):
               .replace("<IP>", ip).replace("<PORT>", str(port)))
     if _EXPLOIT_FILL_OK.search(out):                   # unresolved placeholder remains
         return None
-    return out
+    return _inject_curl_max_time(out)
 
 
 def _cmd_binary(cmd: str):
@@ -3994,7 +4021,8 @@ def _extract_exploit_finding(eng: dict, port: int, service: str, step: str,
         endpoint, api_key = _openai_endpoint(profile, eng["base_dir"])
         parts: list = []
         _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
-                     hide_thinking=True, render_reasoning=False)
+                     hide_thinking=True, render_reasoning=False,
+                     max_seconds=EXTRACT_TURN_MAX_SECONDS)
     except Exception:                                  # noqa: BLE001
         return None
     text = "".join(parts).strip()
@@ -4153,7 +4181,8 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
         parts: list = []
         try:
             message = _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
-                                   hide_thinking=True, render_reasoning=False)
+                                   hide_thinking=True, render_reasoning=False,
+                                   max_seconds=AGENT_TURN_MAX_SECONDS)
         except Exception:                              # noqa: BLE001
             break
         finally:
