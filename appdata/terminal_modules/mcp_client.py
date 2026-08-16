@@ -678,6 +678,15 @@ TOOL_CALL_TIMEOUTS = {"http_request": 125.0}
 # like stdio does, so the urllib timeout is the bound). Matches the 30s default.
 HTTP_CALL_TIMEOUT = 30.0
 
+# How long to WAIT for a tool call. Priority: explicit caller override → the tool's
+# own advertised `timeout` (in tools/list) + a small buffer → the legacy per-name
+# table → a default for tools that declare nothing (e.g. user-added servers). Never
+# wait past the hard cap, whatever a server advertises, so a bad server can't hang the
+# agent. When the wait elapses the call is killed (see StdioServer.call_tool).
+DEFAULT_CALL_TIMEOUT = 120.0    # tools that advertise no timeout
+CALL_TIMEOUT_BUFFER = 10.0      # wait a touch longer than advertised for a clean reply
+CALL_TIMEOUT_CAP = 1200.0       # 20 min hard ceiling
+
 
 # --------------------------------------------------------------------------- #
 # One server subprocess
@@ -1198,26 +1207,49 @@ class MCPManager:
             self._http_transports[name] = t
         return t
 
+    def _advertised_timeout(self, server_name: str, tool_name: str):
+        """The `timeout` a tool advertised in tools/list (seconds), or None."""
+        srv = self.servers.get(server_name)
+        tools = srv.tools if srv is not None else get_server_tools(self.base_dir,
+                                                                   server_name)
+        for t in (tools or []):
+            if isinstance(t, dict) and t.get("name") == tool_name:
+                v = t.get("timeout")
+                return v if isinstance(v, (int, float)) and v > 0 else None
+        return None
+
+    def _call_timeout(self, server_name: str, tool_name: str, override):
+        """How long to wait for this call: explicit override → the tool's advertised
+        timeout (+buffer) → the legacy per-name table → the default; always capped."""
+        if override is not None:
+            return min(float(override), CALL_TIMEOUT_CAP)
+        adv = self._advertised_timeout(server_name, tool_name)
+        if adv is not None:
+            return min(adv + CALL_TIMEOUT_BUFFER, CALL_TIMEOUT_CAP)
+        legacy = TOOL_CALL_TIMEOUTS.get(tool_name)
+        if legacy is not None:
+            return min(legacy, CALL_TIMEOUT_CAP)
+        return DEFAULT_CALL_TIMEOUT
+
     def call(self, namespaced_name: str, arguments: dict, timeout: float = None) -> dict:
         """Route a namespaced tool call to its owning server. Self-healing: if the
         server has died (crash / broken pipe), respawn it and retry once so a dead
-        transport doesn't turn every later call into an error. `timeout` (seconds)
-        lets the caller set how long to wait — the agent owns timeout policy; when it
-        elapses the running command is killed. None → the per-tool/default cap."""
+        transport doesn't turn every later call into an error. How long to wait is
+        decided by _call_timeout (explicit override → the tool's advertised timeout →
+        default); when it elapses the running command is killed."""
         server_name, tool_name = split_namespaced(namespaced_name)
         spec = self.specs.get(server_name)
         if spec is None:
             return {"text": f"no such MCP server: {server_name}", "is_error": True}
+        call_timeout = self._call_timeout(server_name, tool_name, timeout)
 
         if "url" in spec:                               # attached HTTP server
-            http_timeout = (timeout if timeout is not None
-                            else TOOL_CALL_TIMEOUTS.get(tool_name, HTTP_CALL_TIMEOUT))
             token = load_token(self.base_dir, server_name)
             if self._resolve_transport(server_name, spec, token) == "sse":
                 return call_sse_tool(spec["url"], token, tool_name, arguments,
-                                     timeout=http_timeout)
+                                     timeout=call_timeout)
             return call_http_tool(spec["url"], token, tool_name, arguments,
-                                  timeout=http_timeout)
+                                  timeout=call_timeout)
 
         srv = self.servers.get(server_name)
         if srv is None or not srv.alive():          # (re)connect a missing/dead server
@@ -1227,8 +1259,6 @@ class MCPManager:
                             f"{self.failures.get(server_name, 'failed to start')}",
                     "is_error": True}
 
-        call_timeout = (timeout if timeout is not None
-                        else TOOL_CALL_TIMEOUTS.get(tool_name))
         result = srv.call_tool(tool_name, arguments, timeout=call_timeout)
         if result.get("dead"):                      # transport died mid-call — retry once
             srv = self._spawn(server_name)

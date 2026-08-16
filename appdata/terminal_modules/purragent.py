@@ -4188,9 +4188,9 @@ def _run_targeted_review(eng: dict) -> None:
             _post(ctx, lambda b=bare, ar=args: _print_review_call(b, ar))
             calls += 1
             try:
-                # Same wait budget the deterministic scans use (phases 1-4); the
-                # server no longer imposes its own timeout.
-                result = mcp.call(name, args, timeout=PORT_SCAN_MINUTES * 60)
+                # No explicit budget — the client waits per the tool's advertised
+                # timeout (nmap scans declare minutes), then kills it.
+                result = mcp.call(name, args)
             except Exception as exc:                   # noqa: BLE001
                 result = {"text": f"error: {exc}", "isError": True}
             _post(ctx, lambda b=bare, r=result: _print_review_result(b, r))

@@ -2383,11 +2383,40 @@ def _error(req_id, code, message):
             "error": {"code": code, "message": message}}
 
 
+# Suggested wait budget (seconds) per tool — advertised in tools/list so the agent
+# knows how long each may take (a fast scan finishes early; a full/vuln scan needs
+# minutes). The SERVER does not enforce it — the client uses it to decide how long to
+# wait and kills the call if exceeded. Tools not listed use _DEFAULT_TOOL_TIMEOUT.
+_DEFAULT_TOOL_TIMEOUT = 120
+_TIMEOUTS = {
+    # instant, in-process (python-native)
+    "hash_identify": 15, "jwt_decode": 15, "data_transform": 15, "cidr_expand": 15,
+    "ip_info": 15, "payload_gen": 15, "default_creds": 15, "cve_lookup": 30,
+    "tls_analyze": 30, "robots_sitemap": 60,
+    # fast network
+    "dns_lookup": 60, "whois": 60, "http_headers": 60, "http_request": 60,
+    "banner_grab": 90, "ftp_anon": 90, "ssl_cert": 90, "dns_zone_transfer": 60,
+    "redis_cli": 60, "mongo_query": 90, "searchsploit": 60,
+    # medium
+    "service_discovery": 300, "smb_enum": 180, "snmp_walk": 120, "ldap_search": 120,
+    "rpc_enum": 120, "smb_client": 120, "netexec_smb": 300, "mysql_query": 120,
+    "mssql_query": 120, "psql_query": 120, "ssh_exec": 120, "winrm_exec": 120,
+    "ftp_transfer": 120, "impacket_exec": 300, "kerberos_roast": 300,
+    "secretsdump": 600, "enum4linux": 300, "smbmap": 180, "certipy": 300,
+    "ssh_audit": 120, "smtp_user_enum": 120, "wafw00f": 120, "traceroute": 120,
+    "whatweb": 120,
+    # heavy scanners
+    "port_discovery": 900, "script_scan": 600, "nuclei_scan": 900, "nikto_scan": 900,
+    "sqlmap": 900, "testssl": 900, "wpscan": 600, "web_content_discovery": 600,
+    "vhost_fuzz": 600, "subdomain_enum": 300,
+}
+
+
 def _tools_list():
     # `description` is the standard model-facing text (any MCP client works).
-    # shortDescription / longDescription / exampleQueries are extra fields purragent's
-    # client reads for its catalog and RAG tool-retrieval index; other clients ignore
-    # them. Falls back to the normal description if a tool has no RAG metadata.
+    # shortDescription / longDescription / exampleQueries feed purragent's catalog and
+    # RAG index; `timeout` is the suggested wait budget. Non-purragent clients ignore
+    # the extra fields.
     out = []
     for name, (_b, normal, schema) in HACKTOOLS.items():
         short, long, examples = _META.get(name, (normal, normal, []))
@@ -2397,6 +2426,7 @@ def _tools_list():
             "shortDescription": short,
             "longDescription": long,
             "exampleQueries": examples,
+            "timeout": _TIMEOUTS.get(name, _DEFAULT_TOOL_TIMEOUT),
             "inputSchema": schema,
         })
     return out
@@ -2481,6 +2511,11 @@ def selftest():
     print(f"tools: {', '.join(HACKTOOLS)}")
     missing = [n for n in HACKTOOLS if n not in _META]
     print(f"[rag metadata] {'ok — every tool has short/long/examples' if not missing else 'MISSING: ' + ', '.join(missing)}")
+    orphan_to = [n for n in _TIMEOUTS if n not in HACKTOOLS]
+    dflt = [n for n in HACKTOOLS if n not in _TIMEOUTS]
+    print(f"[timeouts] {len(_TIMEOUTS)} tools set, {len(dflt)} use default "
+          f"{_DEFAULT_TOOL_TIMEOUT}s"
+          + (f"; ORPHAN keys: {orphan_to}" if orphan_to else ""))
     for label, req in (
         ("initialize", {"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
         ("tools/list", {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
