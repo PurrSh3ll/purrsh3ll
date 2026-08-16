@@ -4298,6 +4298,7 @@ def _exploit_worker(eng: dict) -> None:
                 f"      ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
     _run_final_report(eng)                             # LLM mini-report of the findings
+    _post(eng["ctx"], lambda: _print_commands_appendix(eng))   # deterministic: what ran
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
 
@@ -4369,6 +4370,27 @@ def _print_report(report: str) -> None:
     console.print(Text("  ▬ report", style=f"bold {VIOLET}"))
     for ln in report.splitlines():
         console.print(Text("    " + ln))
+
+
+def _print_commands_appendix(eng: dict) -> None:
+    """Deterministic 'what was run' appendix — every command of every phase with its
+    state, straight from the recorded jobs (no LLM)."""
+    phases = eng["ctx"].get("phases") or []
+    if not any(ph.get("jobs") for ph in phases):
+        return
+    console.print(Text("  ▬ commands run", style=f"bold {VIOLET}"))
+    for ph in phases:
+        jobs = ph.get("jobs") or []
+        if not jobs:
+            continue
+        console.print(Text(f"    {ph.get('phase', 'phase')}", style="bright_black"))
+        for j in jobs:
+            word, color = _STATE_TAG.get(j.get("state"),
+                                         (str(j.get("state")), "bright_black"))
+            line = Text("      ")
+            line.append(f"[{word}]", style=color)
+            line.append("  " + (j.get("command") or ""), style="bright_black")
+            console.print(line)
 
 
 def _run_final_report(eng: dict) -> None:
