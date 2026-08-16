@@ -1635,6 +1635,209 @@ def _b_msfvenom(a):
              "-f", fmt], "msfvenom")
 
 
+# ── batch 8: credential attacks + service gaps ────────────────────────────────
+# Small preset wordlists so a brute/spray stays bounded (won't hit the call cap or
+# lock out accounts). rockyou is opt-in only. Each maps to the first path present.
+_USER_WORDLISTS = {
+    "common": ["/usr/share/seclists/Usernames/top-usernames-shortlist.txt"],
+    "names":  ["/usr/share/seclists/Usernames/Names/names.txt"],
+}
+_PASS_WORDLISTS = {
+    "common": ["/usr/share/seclists/Passwords/Common-Credentials/"
+               "top-passwords-shortlist.txt",
+               "/usr/share/wordlists/fasttrack.txt"],
+    "worst":  ["/usr/share/seclists/Passwords/Common-Credentials/"
+               "500-worst-passwords.txt"],
+    "rockyou": ["/usr/share/wordlists/rockyou.txt"],   # large — explicit opt-in
+}
+
+
+def _resolve_preset(table, name, kind):
+    paths = table.get(name)
+    if paths is None:
+        raise ValueError(f"`{kind}` must be one of: " + ", ".join(sorted(table)))
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    raise ValueError(f"the '{name}' {kind} wordlist is not installed "
+                     f"(looked in {paths[0]}); install seclists/wordlists.")
+
+
+_HYDRA_SERVICES = {"ssh", "ftp", "smb", "rdp", "mysql", "postgres", "mssql", "vnc",
+                   "telnet", "http-get", "https-get", "http-post-form",
+                   "https-post-form"}
+
+
+def _b_login_bruteforce(a):
+    """hydra — a bounded online password attack against ONE service on ONE host.
+    Authorized testing only; keep lists small to avoid account lockout."""
+    host = _req_host(a)
+    port = _port(a)
+    service = (a.get("service") or "").strip().lower()
+    if service not in _HYDRA_SERVICES:
+        raise ValueError("`service` must be one of: " + ", ".join(sorted(_HYDRA_SERVICES)))
+    username = (a.get("username") or "").strip()
+    password = str(a.get("password") if a.get("password") is not None else "")
+    userlist = (a.get("userlist") or "").strip()
+    passlist = (a.get("passlist") or "").strip()
+    if username and not re.match(r"^[^\s:]+$", username):
+        raise ValueError("`username` has invalid characters")
+    _no_ctrl(password, "password")
+    if not (username or userlist):
+        raise ValueError("provide `username` or `userlist`")
+    if not (password or passlist):
+        raise ValueError("provide `password` or `passlist`")
+    try:
+        threads = int(a.get("threads", 4))
+    except (TypeError, ValueError):
+        raise ValueError("`threads` must be a number")
+    if not 1 <= threads <= 16:
+        raise ValueError("`threads` must be 1-16 (small = safer, avoids lockout)")
+
+    argv = ["hydra"]
+    argv += (["-l", username] if username
+             else ["-L", _resolve_preset(_USER_WORDLISTS, userlist, "userlist")])
+    argv += (["-p", password] if password
+             else ["-P", _resolve_preset(_PASS_WORDLISTS, passlist, "passlist")])
+    argv += ["-t", str(threads), "-f", "-I"]           # -f stop on first, -I no restore
+    if port:
+        argv += ["-s", str(port)]
+    argv += [host, service]
+    if service in ("http-post-form", "https-post-form"):
+        form = (a.get("form") or "").strip()
+        if not form:
+            raise ValueError("`form` is required for http-post-form, e.g. "
+                             "/login:user=^USER^&pass=^PASS^:F=incorrect")
+        _no_ctrl(form, "form")
+        argv.append(form)
+    elif service in ("http-get", "https-get"):
+        path = (a.get("path") or "/").strip()
+        _no_ctrl(path, "path")
+        argv.append(path)
+    return argv, "hydra"
+
+
+_KERBRUTE_MODES = {"userenum", "passwordspray", "bruteuser"}
+
+
+def _b_kerbrute(a):
+    """kerbrute — Kerberos pre-auth user enumeration / password spray against a DC."""
+    mode = (a.get("mode") or "userenum").strip().lower()
+    if mode not in _KERBRUTE_MODES:
+        raise ValueError("`mode` must be userenum/passwordspray/bruteuser")
+    domain = (a.get("domain") or "").strip()
+    if not re.match(r"^[A-Za-z0-9._-]+$", domain):
+        raise ValueError("`domain` is required (e.g. corp.local)")
+    dc = _req_host({"host": a.get("dc")})              # validate the DC like a host
+    argv = ["kerbrute", mode, "-d", domain, "--dc", dc]
+    if mode == "bruteuser":
+        username = (a.get("username") or "").strip()
+        if not re.match(r"^[^\s:]+$", username or ""):
+            raise ValueError("`username` is required for bruteuser")
+        passlist = _resolve_preset(_PASS_WORDLISTS, (a.get("passlist") or "").strip()
+                                   or "common", "passlist")
+        argv += [passlist, username]
+    else:
+        userlist = _resolve_preset(_USER_WORDLISTS, (a.get("userlist") or "").strip()
+                                   or "common", "userlist")
+        argv.append(userlist)
+        if mode == "passwordspray":
+            password = str(a.get("password") if a.get("password") is not None else "")
+            if not password:
+                raise ValueError("`password` is required for passwordspray")
+            _no_ctrl(password, "password")
+            argv.append(password)
+    return argv, "kerbrute"
+
+
+def _b_nfs_enum(a):
+    """showmount — list a host's NFS exports (who can mount what)."""
+    host = _req_host(a)
+    mode = (a.get("mode") or "exports").strip().lower()
+    flag = {"exports": "-e", "all": "-a", "dirs": "-d"}.get(mode)
+    if flag is None:
+        raise ValueError("`mode` must be exports/all/dirs")
+    return ["showmount", flag, host], "showmount"
+
+
+def _b_rsync_enum(a):
+    """rsync — list anonymous rsync modules, or the contents of one module."""
+    host = _req_host(a)
+    port = _port(a, 873)
+    module = (a.get("module") or "").strip()
+    if module and not re.match(r"^[A-Za-z0-9._-]+$", module):
+        raise ValueError("`module` has invalid characters")
+    target = f"rsync://{host}:{port}/{module}" + ("/" if module else "")
+    return ["rsync", "--list-only", "--contimeout=10", target], "rsync"
+
+
+def _b_memcached_stats(a):
+    """memcached — read version/stats/items/slabs over the text protocol (no auth)."""
+    import socket
+    host = _req_host(a)
+    port = _port(a, 11211)
+    out = []
+    try:
+        s = socket.create_connection((host, port), timeout=8)
+        s.settimeout(8)
+        for cmd in (b"version\r\n", b"stats\r\n", b"stats items\r\n", b"stats slabs\r\n"):
+            try:
+                s.sendall(cmd)
+                data = b""
+                while len(data) < 16000:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                    if data.endswith(b"END\r\n") or b"ERROR" in data \
+                            or (cmd == b"version\r\n" and b"\r\n" in data):
+                        break
+                out.append(f"== {cmd.decode().strip()} ==\n"
+                           + data.decode("utf-8", "replace").strip())
+            except Exception:                          # noqa: BLE001
+                break
+        s.close()
+    except Exception as exc:                            # noqa: BLE001
+        return (f"connection to {host}:{port} failed: {exc}", True)
+    return "\n\n".join(out) or "(no data)"
+
+
+# The AES-256 key Microsoft published for GPP cpassword — makes them reversible.
+_GPP_KEY = bytes.fromhex(
+    "4e9906e8fcb66cc9faf49310620ffee8f496e806cc057990209b09a433b66c1b")
+
+
+def _b_gpp_decrypt(a):
+    """Decrypt a Group Policy Preferences cpassword (SYSVOL Groups.xml etc.)."""
+    import base64
+    cpw = _word(a, "cpassword").strip().replace(" ", "")
+    pad = len(cpw) % 4
+    if pad:
+        cpw += "=" * (4 - pad)
+    try:
+        blob = base64.b64decode(cpw)
+    except Exception as exc:                            # noqa: BLE001
+        return (f"invalid base64 cpassword: {exc}", True)
+    try:
+        from Crypto.Cipher import AES                    # pycryptodome
+        dec = AES.new(_GPP_KEY, AES.MODE_CBC, b"\x00" * 16).decrypt(blob)
+    except Exception:                                   # noqa: BLE001
+        try:
+            from cryptography.hazmat.primitives.ciphers import (
+                Cipher, algorithms, modes)
+            d = Cipher(algorithms.AES(_GPP_KEY), modes.CBC(b"\x00" * 16)).decryptor()
+            dec = d.update(blob) + d.finalize()
+        except Exception:                              # noqa: BLE001
+            return ("no AES library — install pycryptodome or cryptography.", True)
+    if dec and dec[-1] <= 16:                            # strip PKCS7 padding
+        dec = dec[:-dec[-1]]
+    try:
+        pw = dec.decode("utf-16-le")
+    except Exception:                                   # noqa: BLE001
+        pw = dec.decode("utf-8", "replace")
+    return f"decrypted GPP password: {pw}"
+
+
 # name -> (builder, description, inputSchema)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -2394,6 +2597,87 @@ HACKTOOLS = {
             "format": {"type": "string", "description": "Output format (default "
                        "python): bash, c, powershell, perl, ruby, hex, base64, …."}},
          "required": ["payload", "lhost", "lport"]}),
+    "login_bruteforce": (
+        _b_login_bruteforce,
+        "Online password attack against ONE service on ONE host with hydra (authorized "
+        "testing only). Pick a `service` (ssh/ftp/smb/rdp/mysql/postgres/mssql/vnc/"
+        "telnet/http-get/http-post-form), then a single `username`+`password` or a "
+        "small preset `userlist`/`passlist`. Bounded and stops on the first hit; keep "
+        "lists small to avoid account lockout. Not for the auto enum — a deliberate step.",
+        {"type": "object", "properties": {
+            "host": _H, "port": _PORT,
+            "service": {"type": "string", "description": "Target service: ssh, ftp, "
+                        "smb, rdp, mysql, postgres, mssql, vnc, telnet, http-get, "
+                        "http-post-form."},
+            "username": {"type": "string", "description": "Single username to try."},
+            "password": {"type": "string", "description": "Single password to try."},
+            "userlist": {"type": "string", "description": "Preset user wordlist: "
+                         "common · names (instead of `username`)."},
+            "passlist": {"type": "string", "description": "Preset password wordlist: "
+                         "common · worst · rockyou (instead of `password`)."},
+            "path": {"type": "string", "description": "URL path for http-get (default /)."},
+            "form": {"type": "string", "description": "hydra form spec for "
+                     "http-post-form, e.g. /login:user=^USER^&pass=^PASS^:F=incorrect."},
+            "threads": {"type": "integer", "description": "Parallel tasks 1-16 "
+                        "(default 4; keep low to avoid lockout)."}},
+         "required": ["host", "service"]}),
+    "kerbrute": (
+        _b_kerbrute,
+        "Kerberos pre-auth abuse against a domain controller with kerbrute: enumerate "
+        "valid usernames (userenum), spray one password across users (passwordspray), "
+        "or brute one user (bruteuser). Fast and relatively quiet (no failed-logon "
+        "events on userenum). Needs a domain and the DC.",
+        {"type": "object", "properties": {
+            "mode": {"type": "string", "description": "userenum (default) · "
+                     "passwordspray · bruteuser."},
+            "domain": {"type": "string", "description": "AD domain, e.g. corp.local."},
+            "dc": {"type": "string", "description": "Domain controller IP/host."},
+            "userlist": {"type": "string", "description": "Preset user wordlist: "
+                         "common (default) · names. For userenum/passwordspray."},
+            "passlist": {"type": "string", "description": "Preset password wordlist "
+                         "for bruteuser: common (default) · worst · rockyou."},
+            "username": {"type": "string", "description": "Single user for bruteuser."},
+            "password": {"type": "string", "description": "Password to spray "
+                         "(passwordspray mode)."}},
+         "required": ["domain", "dc"]}),
+    "nfs_enum": (
+        _b_nfs_enum,
+        "List a host's NFS exports with showmount — which directories are shared and to "
+        "whom (a * export is world-mountable). Quick unauthenticated foothold check.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "mode": {"type": "string", "description": "exports (-e, default) · all "
+                     "(-a, clients+dirs) · dirs (-d, mounted dirs)."}},
+         "required": ["host"]}),
+    "rsync_enum": (
+        _b_rsync_enum,
+        "List anonymous rsync modules on a host, or the contents of one module "
+        "(rsync --list-only). Exposed modules often allow reading/writing files "
+        "without auth.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "port": {"type": "integer", "description": "rsync port (default 873)."},
+            "module": {"type": "string", "description": "Module to list (omit to list "
+                       "all modules first)."}},
+         "required": ["host"]}),
+    "memcached_stats": (
+        _b_memcached_stats,
+        "Query a memcached instance over its text protocol (no auth): version, stats, "
+        "item and slab metadata — reveals whether it's exposed and roughly what it "
+        "holds. Read-only.",
+        {"type": "object", "properties": {
+            "host": _H,
+            "port": {"type": "integer", "description": "memcached port (default 11211)."}},
+         "required": ["host"]}),
+    "gpp_decrypt": (
+        _b_gpp_decrypt,
+        "Decrypt a Group Policy Preferences cpassword (found in SYSVOL Groups.xml, "
+        "Services.xml, etc.) back to plaintext using Microsoft's published AES key — a "
+        "classic AD credential loot. In-process, no network.",
+        {"type": "object", "properties": {
+            "cpassword": {"type": "string", "description": "The base64 cpassword value "
+                          "from the GPP XML."}},
+         "required": ["cpassword"]}),
 }
 
 
@@ -3023,6 +3307,61 @@ _META = {
         "shell, staged, encoder, generate payload, LHOST, LPORT.",
         ["generate a msfvenom reverse shell payload", "build a python payload with msfvenom",
          "create shellcode for this listener", "msfvenom powershell payload"]),
+    "login_bruteforce": (
+        "Online password brute-force / spray against a service (hydra).",
+        "Online password guessing with hydra against one service on one host: ssh, ftp, "
+        "smb, rdp, mysql, postgres, mssql, vnc, telnet, http basic-auth or an http POST "
+        "login form. Try a single credential or small preset user/password wordlists; "
+        "bounded, stops on first success. Authorized testing only — keep lists small to "
+        "avoid account lockout. Keywords: hydra, brute force, password spray, credential "
+        "attack, dictionary attack, ssh brute, ftp brute, rdp, weak password, login form.",
+        ["brute force ssh on 10.0.0.5", "try common passwords against the ftp login",
+         "password spray the rdp service", "hydra attack the mysql login",
+         "guess the admin password on the web login form"]),
+    "kerbrute": (
+        "Kerberos username enumeration and password spray (kerbrute).",
+        "Kerberos pre-authentication abuse with kerbrute against a domain controller: "
+        "enumerate valid AD usernames without logging failures (userenum), spray one "
+        "password across many users (passwordspray), or brute a single user (bruteuser). "
+        "Fast Active Directory attack. Keywords: kerbrute, kerberos, AS-REP, user "
+        "enumeration, password spraying, active directory, domain controller, valid "
+        "usernames, pre-auth.",
+        ["enumerate valid AD usernames", "kerberos user enumeration on the domain",
+         "password spray active directory", "find valid users on the domain controller",
+         "spray Winter2024 across the users"]),
+    "nfs_enum": (
+        "List a host's NFS exports (showmount).",
+        "NFS share enumeration with showmount: list the exported directories and which "
+        "clients may mount them — a world-mountable (*) export is an unauthenticated "
+        "read/write foothold. Keywords: nfs, showmount, exports, port 2049, mountd, "
+        "network file system, no_root_squash, share.",
+        ["list nfs exports on 10.0.0.5", "showmount the target",
+         "what nfs shares are exported", "check for world-mountable nfs"]),
+    "rsync_enum": (
+        "List anonymous rsync modules or their contents.",
+        "rsync module enumeration with rsync --list-only: list the anonymous rsync "
+        "modules a host exposes, then read a module's file listing — exposed modules "
+        "often allow unauthenticated file read or write. Keywords: rsync, port 873, "
+        "rsync module, anonymous rsync, file sync, list-only, backup share.",
+        ["list rsync modules on 10.0.0.5", "enumerate rsync on port 873",
+         "what does the rsync share contain", "check anonymous rsync access"]),
+    "memcached_stats": (
+        "Read an exposed memcached's stats and metadata.",
+        "memcached enumeration over the text protocol (no auth): pull version, stats, "
+        "item and slab metadata to confirm exposure and gauge cached data. Keywords: "
+        "memcached, port 11211, stats items, cache, unauthenticated, key-value store, "
+        "data exposure.",
+        ["check memcached on 10.0.0.5", "dump memcached stats",
+         "is memcached exposed on 11211", "enumerate the memcached instance"]),
+    "gpp_decrypt": (
+        "Decrypt a GPP cpassword to plaintext.",
+        "Group Policy Preferences cpassword decryption: reverse a cpassword value from "
+        "SYSVOL Groups.xml / Services.xml / ScheduledTasks.xml using Microsoft's "
+        "published AES-256 key, recovering a stored domain credential. In-process, no "
+        "network. Keywords: GPP, cpassword, Groups.xml, SYSVOL, MS14-025, group policy "
+        "preferences, decrypt password, active directory credential loot.",
+        ["decrypt this gpp cpassword", "recover the password from Groups.xml",
+         "decode a SYSVOL cpassword", "crack the group policy preferences password"]),
 }
 
 
@@ -3070,6 +3409,9 @@ _TIMEOUTS = {
     # batch 7 CLI
     "bloodhound_python": 600, "katana": 300, "gau": 120, "arjun": 300, "dalfox": 600,
     "commix": 600, "dnsrecon": 300, "nbtscan": 60, "theharvester": 300, "msfvenom": 60,
+    # batch 8 credential attacks + service gaps
+    "login_bruteforce": 900, "kerbrute": 600, "nfs_enum": 90, "rsync_enum": 120,
+    "memcached_stats": 30, "gpp_decrypt": 15,
 }
 
 
