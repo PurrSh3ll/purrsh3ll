@@ -1276,6 +1276,235 @@ def _b_wafw00f(a):
     return ["wafw00f", _req_url(a), "-a"], "wafw00f"
 
 
+# ── batch 6: python-native web/recon utilities (no external binary) ───────────
+def _http_get(url, timeout=15, method="GET", headers=None):
+    import ssl
+    import urllib.request
+    h = {"User-Agent": "Mozilla/5.0"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, headers=h, method=method)
+    ctx = ssl._create_unverified_context()
+    return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+
+
+def _b_git_dump(a):
+    base = _req_url(a).rstrip("/")
+    out, exposed = [], False
+    for path in ("/.git/HEAD", "/.git/config", "/.git/description", "/.git/logs/HEAD"):
+        try:
+            body = _http_get(base + path).read(3000).decode("utf-8", "replace").strip()
+            if path.endswith("HEAD") and body.startswith("ref:"):
+                exposed = True
+            out.append(f"== {path} ==\n{body[:800]}")
+        except Exception:                              # noqa: BLE001
+            out.append(f"== {path} == (not available)")
+    head = ("⚠ .git is EXPOSED — source and secrets may be recoverable "
+            "(use git-dumper to reconstruct the repo).\n\n" if exposed else
+            "no exposed .git detected (HEAD is not a valid git ref).\n\n")
+    return head + "\n\n".join(out)
+
+
+def _b_s3_check(a):
+    import urllib.error
+    bucket = (a.get("bucket") or "").strip()
+    url = (a.get("url") or "").strip()
+    if url:
+        target = url if _URL_RE.match(url) else None
+        if not target:
+            raise ValueError("`url` must be an http(s) URL")
+    elif bucket:
+        if not re.match(r"^[A-Za-z0-9._-]+$", bucket):
+            raise ValueError("`bucket` has invalid characters")
+        target = f"https://{bucket}.s3.amazonaws.com/"
+    else:
+        raise ValueError("provide `bucket` or `url`")
+    try:
+        body = _http_get(target).read(3000).decode("utf-8", "replace")
+        code = 200
+    except urllib.error.HTTPError as exc:
+        code, body = exc.code, exc.read(1500).decode("utf-8", "replace")
+    except Exception as exc:                            # noqa: BLE001
+        return (f"request failed: {exc}", True)
+    if code == 200 and "ListBucketResult" in body:
+        keys = re.findall(r"<Key>([^<]+)</Key>", body)
+        return (f"{target}\nPUBLIC + LISTABLE ({len(keys)} objects). "
+                f"First: {', '.join(keys[:10])}")
+    if code == 403:
+        return f"{target}\nexists but access denied (403) — private."
+    if code == 404:
+        return f"{target}\nno such bucket (404)."
+    return f"{target}\nHTTP {code}\n{body[:400]}"
+
+
+_SEC_HEADERS = {"content-security-policy": "CSP",
+                "strict-transport-security": "HSTS",
+                "x-frame-options": "X-Frame-Options",
+                "x-content-type-options": "X-Content-Type-Options",
+                "referrer-policy": "Referrer-Policy",
+                "permissions-policy": "Permissions-Policy"}
+
+
+def _b_security_headers(a):
+    url = _req_url(a)
+    try:
+        hdrs = {k.lower(): v for k, v in _http_get(url).getheaders()}
+    except Exception as exc:                            # noqa: BLE001
+        return (f"request failed: {exc}", True)
+    present = [lab for h, lab in _SEC_HEADERS.items() if h in hdrs]
+    missing = [lab for h, lab in _SEC_HEADERS.items() if h not in hdrs]
+    out = [f"present: {', '.join(present) or 'none'}",
+           f"missing: {', '.join(missing) or 'none'}"]
+    leak = [f"{h}: {hdrs[h]}" for h in ("server", "x-powered-by") if h in hdrs]
+    if leak:
+        out.append("tech: " + "; ".join(leak))
+    return "\n".join(out)
+
+
+def _b_cookie_analyze(a):
+    url = _req_url(a)
+    try:
+        cookies = _http_get(url).headers.get_all("Set-Cookie") or []
+    except Exception as exc:                            # noqa: BLE001
+        return (f"request failed: {exc}", True)
+    if not cookies:
+        return "no cookies set."
+    out = []
+    for c in cookies:
+        name, low = c.split("=", 1)[0], c.lower()
+        flags = [f if f in low else f"NO-{f}" for f in ("secure", "httponly")]
+        flags.append("samesite" if "samesite" in low else "NO-samesite")
+        out.append(f"{name}: {', '.join(flags)}")
+    return "\n".join(out)
+
+
+def _mmh3_32(data, seed=0):
+    """MurmurHash3 x86 32-bit (signed), matching Python's mmh3.hash — for Shodan-style
+    http.favicon.hash pivots."""
+    c1, c2 = 0xcc9e2d51, 0x1b873593
+    length, h1 = len(data), seed & 0xffffffff
+    rounded = (length // 4) * 4
+    for i in range(0, rounded, 4):
+        k1 = data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24)
+        k1 = (k1 * c1) & 0xffffffff
+        k1 = ((k1 << 15) | (k1 >> 17)) & 0xffffffff
+        h1 ^= (k1 * c2) & 0xffffffff
+        h1 = ((h1 << 13) | (h1 >> 19)) & 0xffffffff
+        h1 = (h1 * 5 + 0xe6546b64) & 0xffffffff
+    k1, tail = 0, length & 3
+    if tail >= 3:
+        k1 ^= data[rounded + 2] << 16
+    if tail >= 2:
+        k1 ^= data[rounded + 1] << 8
+    if tail >= 1:
+        k1 ^= data[rounded]
+        k1 = (k1 * c1) & 0xffffffff
+        k1 = ((k1 << 15) | (k1 >> 17)) & 0xffffffff
+        h1 ^= (k1 * c2) & 0xffffffff
+    h1 ^= length
+    h1 ^= h1 >> 16
+    h1 = (h1 * 0x85ebca6b) & 0xffffffff
+    h1 ^= h1 >> 13
+    h1 = (h1 * 0xc2b2ae35) & 0xffffffff
+    h1 ^= h1 >> 16
+    return h1 - 0x100000000 if h1 & 0x80000000 else h1
+
+
+def _b_favicon_hash(a):
+    import base64
+    url = _req_url(a).rstrip("/")
+    fav = url if url.endswith(".ico") or "favicon" in url else url + "/favicon.ico"
+    try:
+        content = _http_get(fav).read(200000)
+    except Exception as exc:                            # noqa: BLE001
+        return (f"could not fetch favicon: {exc}", True)
+    h = _mmh3_32(base64.encodebytes(content))
+    return (f"favicon: {fav} ({len(content)} bytes)\nmmh3 hash: {h}\n"
+            f"pivot: shodan http.favicon.hash:{h}")
+
+
+def _b_js_endpoints(a):
+    url = _req_url(a)
+    try:
+        body = _http_get(url, timeout=20).read(600000).decode("utf-8", "replace")
+    except Exception as exc:                            # noqa: BLE001
+        return (f"request failed: {exc}", True)
+    pat = re.compile(
+        r'''["'`]((?:https?:)?/[A-Za-z0-9_\-./?=&%~]{2,}'''
+        r'''|[A-Za-z0-9_\-./]+?\.(?:php|asp|aspx|jsp|json|xml|do|action|api)'''
+        r'''[A-Za-z0-9_\-./?=&%~]*)["'`]''')
+    hits = sorted({m.group(1) for m in pat.finditer(body)})
+    if not hits:
+        return "no endpoints/paths found in the response."
+    return (f"{len(hits)} endpoints:\n" + "\n".join(hits[:100])
+            + (f"\n… (+{len(hits) - 100} more)" if len(hits) > 100 else ""))
+
+
+def _b_cors_check(a):
+    import urllib.error
+    url = _req_url(a)
+    evil = "https://evil.example.com"
+    try:
+        hdrs = {k.lower(): v for k, v in _http_get(url, headers={"Origin": evil})
+                .getheaders()}
+    except urllib.error.HTTPError as exc:
+        hdrs = {k.lower(): v for k, v in exc.headers.items()}
+    except Exception as exc:                            # noqa: BLE001
+        return (f"request failed: {exc}", True)
+    acao = hdrs.get("access-control-allow-origin", "")
+    acac = hdrs.get("access-control-allow-credentials", "").lower()
+    notes = []
+    if acao == evil:
+        notes.append("⚠ reflects arbitrary Origin (ACAO == our test origin)")
+    elif acao == "*":
+        notes.append("ACAO: * (wildcard — credentials not allowed)")
+    elif acao:
+        notes.append(f"ACAO: {acao}")
+    else:
+        notes.append("no Access-Control-Allow-Origin (no CORS)")
+    if acac == "true" and acao == evil:
+        notes.append("⚠⚠ Allow-Credentials:true WITH a reflected origin — "
+                     "exploitable CORS")
+    return f"{url} (Origin: {evil})\n" + "\n".join(notes)
+
+
+_SUBDOMAINS = ("www mail ftp smtp pop imap webmail ns1 ns2 dns dev test staging api "
+               "admin portal vpn remote git gitlab jenkins jira confluence intranet "
+               "extranet cloud cdn static assets img images shop store blog forum "
+               "support help docs wiki app apps mobile m beta demo secure login auth "
+               "sso ldap ad dc backup db mysql sql mssql redis mongo kibana grafana "
+               "prometheus monitor status metrics owa autodiscover exchange").split()
+
+
+def _b_dns_bruteforce(a):
+    import concurrent.futures
+    import socket
+    domain = _word(a, "domain").strip().lstrip(".")
+    if not _HOST_RE.match(domain):
+        raise ValueError("`domain` has invalid characters")
+    words = list(_SUBDOMAINS)
+    extra = (a.get("extra") or "").strip()
+    if extra:
+        words += [w for w in re.split(r"[,\s]+", extra)
+                  if re.match(r"^[A-Za-z0-9_-]+$", w)]
+    old = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(3)
+    found = []
+    try:
+        def _res(sub):
+            try:
+                return (f"{sub}.{domain}", socket.gethostbyname(f"{sub}.{domain}"))
+            except Exception:                          # noqa: BLE001
+                return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as ex:
+            found = [r for r in ex.map(_res, words) if r]
+    finally:
+        socket.setdefaulttimeout(old)
+    if not found:
+        return f"no subdomains from the built-in list resolved for {domain}."
+    return (f"{len(found)} subdomains resolved:\n"
+            + "\n".join(f"  {h} -> {ip}" for h, ip in found))
+
+
 # name -> (builder, description, inputSchema)
 _H = {"type": "string", "description": "Target host — a single IP or hostname "
       "(no CIDR/subnet)."}
@@ -1884,6 +2113,70 @@ HACKTOOLS = {
         {"type": "object", "properties": {
             "url": {"type": "string", "description": "Target URL."}},
          "required": ["url"]}),
+    "git_dump": (
+        _b_git_dump,
+        "Detect an exposed .git directory on a web server (HEAD/config/logs) — source "
+        "code and secrets may be recoverable.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Base site URL, e.g. "
+                    "http://10.0.0.5."}},
+         "required": ["url"]}),
+    "s3_check": (
+        _b_s3_check,
+        "Check whether an S3 bucket (or a bucket URL) is public and listable, private, "
+        "or non-existent.",
+        {"type": "object", "properties": {
+            "bucket": {"type": "string", "description": "S3 bucket name (tried at "
+                       "<name>.s3.amazonaws.com)."},
+            "url": {"type": "string", "description": "Or a full bucket URL (any "
+                    "provider)."}},
+         "required": []}),
+    "security_headers": (
+        _b_security_headers,
+        "Report which HTTP security headers a site sets and which are missing (CSP, "
+        "HSTS, X-Frame-Options, …), plus any tech banner.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL."}},
+         "required": ["url"]}),
+    "cookie_analyze": (
+        _b_cookie_analyze,
+        "Fetch a page and report each Set-Cookie's flags — Secure, HttpOnly, SameSite "
+        "(missing flags are security-relevant).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL."}},
+         "required": ["url"]}),
+    "favicon_hash": (
+        _b_favicon_hash,
+        "Fetch a site's favicon and compute its mmh3 hash (Shodan http.favicon.hash) "
+        "for fingerprinting/pivoting to other hosts.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Site URL (favicon.ico auto-"
+                    "appended) or a direct favicon URL."}},
+         "required": ["url"]}),
+    "js_endpoints": (
+        _b_js_endpoints,
+        "Fetch a URL (usually a JavaScript file) and extract the paths, endpoints and "
+        "API routes referenced in it.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "URL of the JS file or page."}},
+         "required": ["url"]}),
+    "cors_check": (
+        _b_cors_check,
+        "Test a URL's CORS policy by sending a rogue Origin — flags a reflected origin "
+        "and Allow-Credentials:true (exploitable CORS).",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Target URL/endpoint."}},
+         "required": ["url"]}),
+    "dns_bruteforce": (
+        _b_dns_bruteforce,
+        "Actively resolve a built-in list of common subdomains for a domain (plus any "
+        "extra you pass) — complements passive subdomain_enum.",
+        {"type": "object", "properties": {
+            "domain": {"type": "string", "description": "Root domain, e.g. "
+                       "example.com."},
+            "extra": {"type": "string", "description": "Optional extra subdomains "
+                      "(comma/space separated) to also try."}},
+         "required": ["domain"]}),
 }
 
 
@@ -2368,6 +2661,73 @@ _META = {
         "modsecurity, firewall detection, bypass.",
         ["is there a waf on this site", "detect the web application firewall",
          "fingerprint the waf", "check for cloudflare or modsecurity"]),
+    "git_dump": (
+        "Detect an exposed .git directory.",
+        "Exposed .git detection: fetch /.git/HEAD, config and logs to see whether a "
+        "web server leaks its git repository — a common finding that can leak source "
+        "code, credentials and history (reconstruct with git-dumper). Keywords: git, "
+        ".git exposed, source code leak, git-dumper, dotgit, repository disclosure, "
+        "web misconfiguration.",
+        ["check for an exposed .git", "is the git directory accessible",
+         "look for a .git leak", "detect exposed source repository"]),
+    "s3_check": (
+        "Check if an S3 bucket is public/listable.",
+        "S3 / cloud bucket exposure check: determine whether a bucket is public and "
+        "listable (lists objects), private (403) or missing (404). Keywords: s3, "
+        "bucket, aws, cloud storage, public bucket, listable, open bucket, object "
+        "storage, misconfiguration.",
+        ["is this s3 bucket public", "check the bucket for open access",
+         "can I list this s3 bucket", "test bucket exposure"]),
+    "security_headers": (
+        "Check a site's HTTP security headers.",
+        "HTTP security-header audit: report which of CSP, HSTS, X-Frame-Options, "
+        "X-Content-Type-Options, Referrer-Policy and Permissions-Policy are set or "
+        "missing, plus any Server/X-Powered-By tech leak. Keywords: security headers, "
+        "CSP, HSTS, x-frame-options, clickjacking, missing headers, hardening, "
+        "securityheaders.",
+        ["check the security headers", "which security headers are missing",
+         "is HSTS and CSP set", "audit the http response headers"]),
+    "cookie_analyze": (
+        "Check cookie flags (Secure/HttpOnly/SameSite).",
+        "Cookie security analysis: fetch a page and report each Set-Cookie's Secure, "
+        "HttpOnly and SameSite flags — missing flags enable theft or CSRF. Keywords: "
+        "cookies, set-cookie, httponly, secure flag, samesite, session cookie, cookie "
+        "security, csrf.",
+        ["check the cookie flags", "are the cookies httponly and secure",
+         "analyse the session cookie", "does the cookie set samesite"]),
+    "favicon_hash": (
+        "Compute a favicon's Shodan mmh3 hash.",
+        "Favicon hashing: fetch the site's favicon and compute the mmh3 hash Shodan "
+        "indexes (http.favicon.hash), to fingerprint the app and pivot to other hosts "
+        "running the same one. Keywords: favicon, favicon hash, mmh3, murmurhash, "
+        "shodan, fingerprint, pivot, asset discovery.",
+        ["get the favicon hash", "compute the shodan favicon hash",
+         "fingerprint the app by its favicon", "favicon mmh3 for pivoting"]),
+    "js_endpoints": (
+        "Extract endpoints/paths from a JS file.",
+        "JavaScript endpoint extraction: fetch a JS file (or page) and pull out the "
+        "paths, API routes and URLs referenced in it — surfaces hidden endpoints for "
+        "further testing. Keywords: js, javascript, endpoints, api routes, linkfinder, "
+        "hidden endpoints, url extraction, secrets in js, paths.",
+        ["extract endpoints from this js file", "find api routes in the javascript",
+         "pull paths out of the js", "what endpoints does this script reference"]),
+    "cors_check": (
+        "Test for a misconfigured CORS policy.",
+        "CORS misconfiguration test: send a rogue Origin and check whether the server "
+        "reflects it in Access-Control-Allow-Origin, especially with Allow-"
+        "Credentials:true (exploitable — cross-origin data theft). Keywords: cors, "
+        "access-control-allow-origin, allow-credentials, origin reflection, cross-"
+        "origin, misconfiguration.",
+        ["check for a cors misconfiguration", "does the api reflect the origin",
+         "test cors on this endpoint", "is cors exploitable here"]),
+    "dns_bruteforce": (
+        "Actively brute common subdomains (built-in list).",
+        "Active subdomain discovery: resolve a built-in list of common subdomains "
+        "(www, mail, dev, api, vpn, admin…) plus any extras against a domain — finds "
+        "hosts passive OSINT misses. Keywords: subdomain brute force, dns brute, "
+        "subdomains, resolve, dnsrecon, gobuster dns, active enumeration, hostnames.",
+        ["brute force subdomains of example.com", "find subdomains by resolving common names",
+         "active subdomain discovery", "resolve common subdomains for the domain"]),
 }
 
 
@@ -2409,6 +2769,9 @@ _TIMEOUTS = {
     "port_discovery": 900, "script_scan": 600, "nuclei_scan": 900, "nikto_scan": 900,
     "sqlmap": 900, "testssl": 900, "wpscan": 600, "web_content_discovery": 600,
     "vhost_fuzz": 600, "subdomain_enum": 300,
+    # batch 6 python-native web/recon (network I/O)
+    "git_dump": 30, "s3_check": 30, "security_headers": 20, "cookie_analyze": 20,
+    "favicon_hash": 20, "js_endpoints": 30, "cors_check": 20, "dns_bruteforce": 90,
 }
 
 
@@ -2561,6 +2924,11 @@ def selftest():
         ("certipy", {"dc": "10.0.0.5", "domain": "corp.local"}, True),  # needs username
         ("smtp_user_enum", {"host": "10.0.0.5", "username": "a b"}, True),  # bad user
         ("wafw00f", {"url": "notaurl"}, True),             # bad url
+        ("git_dump", {"url": "ftp://x"}, True),             # non-http url
+        ("s3_check", {}, True),                            # need bucket or url
+        ("s3_check", {"bucket": "bad name!"}, True),        # bad bucket
+        ("dns_bruteforce", {"domain": "bad host!"}, True),  # bad domain
+        ("favicon_hash", {"url": "notaurl"}, True),        # bad url
         ("smb_client", {"host": "10.0.0.5"}, False),      # null-session list ok
         ("smb_client", {"host": "10.0.0.5", "username": "a b"}, True),   # bad user
         ("netexec_smb", {"host": "10.0.0.5", "action": "exec"}, True),   # exec needs cmd
