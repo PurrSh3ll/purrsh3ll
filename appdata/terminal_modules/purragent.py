@@ -3947,17 +3947,44 @@ _EXPLOIT_EXTRACT_SYSTEM = (
     "reply with exactly: NONE")
 
 
+def _finding_tokens(text: str) -> set:
+    return set(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
+
+
+def _is_dup_finding(new: str, existing: list) -> bool:
+    """True when `new` adds essentially nothing over one of the existing findings —
+    ≥85% of its words already appear there (light, order-insensitive dedup)."""
+    nt = _finding_tokens(new)
+    if not nt:
+        return True
+    for e in existing:
+        et = _finding_tokens(e)
+        if et and len(nt & et) / len(nt) >= 0.85:
+            return True
+    return False
+
+
 def _extract_exploit_finding(eng: dict, port: int, service: str, step: str,
                              cmd: str, output: str):
     """Send one command's output to the LLM (tool-free) and return the extracted
-    finding text, or None (no model / nothing useful / error)."""
+    finding text, or None (no model / nothing useful / error). The findings already
+    recorded for this port are shown to the model so it only reports NEW facts (dedup
+    at the source — still just one call per command)."""
     profile = eng["ctx"].get("profile")
     if not profile or not output.strip():
         return None
+    with eng["lock"]:
+        prior = [f["finding"] for f in eng.get("exploit_findings", [])
+                 if f.get("port") == port and f.get("finding")]
+    system = _EXPLOIT_EXTRACT_SYSTEM
+    if prior:
+        system += ("\n\nAlready recorded for this port — do NOT repeat any of these; "
+                   "report only genuinely NEW facts, or NONE:\n"
+                   + "\n".join("- " + p for p in prior[-12:]))
     user = (f"Service {port}/{service} · step: {step}\n$ {cmd}\n\n"
             f"Output:\n{output[:6000]}")
     body = {"model": profile.get("model", ""),
-            "messages": [{"role": "system", "content": _EXPLOIT_EXTRACT_SYSTEM},
+            "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             "temperature": AGENT_TEMPERATURE}
     custom_params = psai._parse_custom_params(profile)
@@ -4238,14 +4265,23 @@ def _exploit_worker(eng: dict) -> None:
                         eng["thinking"] = False
                         _invalidate_toolbar(eng["ctx"])
                     if finding:
-                        try:
-                            purragent_db.add_exploit_finding(
-                                base, tid, port, proto, key, step_desc, cmd, finding)
-                        except Exception:              # noqa: BLE001
-                            pass
+                        # Safety net: skip a near-duplicate of what this port already
+                        # holds (the model is told not to repeat, but small ones slip).
                         with eng["lock"]:
-                            eng["exploit_findings"].append(
-                                {"port": port, "finding": finding})
+                            prior = [f["finding"] for f in eng["exploit_findings"]
+                                     if f.get("port") == port]
+                            dup = _is_dup_finding(finding, prior)
+                            if not dup:
+                                eng["exploit_findings"].append(
+                                    {"port": port, "finding": finding})
+                        if dup:
+                            finding = None             # nothing new → show 'no findings'
+                        else:
+                            try:
+                                purragent_db.add_exploit_finding(
+                                    base, tid, port, proto, key, step_desc, cmd, finding)
+                            except Exception:          # noqa: BLE001
+                                pass
                 _post(eng["ctx"], lambda lc=label_cmd, st=job["state"], f=finding,
                       nm=cnum: _print_exploit_outcome(lc, st, f, num=nm))
         if missing_tools:
