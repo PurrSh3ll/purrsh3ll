@@ -4004,6 +4004,16 @@ REVIEW_MAX_ROUNDS = 4
 REVIEW_MAX_TOOLCALLS = 6
 REVIEW_BUDGET_MINUTES = 8
 
+# Only the hacktools that fit this stage — deepening service discovery + basic NSE /
+# vuln detection, read-only and credential-free. Exploitation, credentialed, DB,
+# remote-exec and broad OSINT tools are deliberately NOT offered here (fewer, focused
+# options also keep small models on track).
+_REVIEW_TOOLS = {
+    "port_discovery", "service_discovery", "script_scan", "banner_grab",
+    "http_headers", "whatweb", "nikto_scan", "nuclei_scan", "ssl_cert",
+    "ftp_anon", "smb_enum", "snmp_walk", "searchsploit",
+}
+
 _REVIEW_SYSTEM = (
     "You are a penetration-testing assistant doing a SHORT, targeted review after "
     "automated recon (port scan, service/version detection, vuln scan, offline CVE "
@@ -4078,7 +4088,8 @@ def _run_targeted_review(eng: dict) -> None:
         return
     try:
         tools = [t for t in mcp.all_tools()
-                 if mcp_client.split_namespaced(t["name"])[0] == "hacktools"]
+                 if mcp_client.split_namespaced(t["name"])[0] == "hacktools"
+                 and mcp_client.split_namespaced(t["name"])[1] in _REVIEW_TOOLS]
     except Exception:                                  # noqa: BLE001
         return
     if not tools:
@@ -4142,11 +4153,12 @@ def _run_targeted_review(eng: dict) -> None:
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            if mcp_client.split_namespaced(name)[0] != "hacktools":
+            srv, bare = mcp_client.split_namespaced(name)
+            if srv != "hacktools" or bare not in _REVIEW_TOOLS:
                 msgs.append({"role": "tool", "tool_call_id": call_id,
-                             "content": "Only hacktools scans are allowed here."})
+                             "content": "Only the recon/NSE hacktools are allowed in "
+                                        "this review."})
                 continue
-            bare = mcp_client.split_namespaced(name)[1]
             _post(ctx, lambda b=bare, ar=args: _print_review_call(b, ar))
             calls += 1
             try:
