@@ -4297,6 +4297,7 @@ def _exploit_worker(eng: dict) -> None:
             _post(eng["ctx"], lambda s=skipped: console.print(Text(
                 f"      ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
+    _run_final_report(eng)                             # LLM mini-report of the findings
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
 
@@ -4311,6 +4312,105 @@ def _print_exploit_outcome(label: str, state: str, finding, num=None) -> None:
         else:
             out.append("\n        no findings", style="bright_black")
     console.print(out)
+
+
+# ── final report (one LLM call over the whole findings DB) ────────────────────
+# After phase 5 the model turns every finding into a short, plain-language report for
+# the operator — WHAT was found and why it matters, prioritised. Deliberately NO
+# commands/tools used (those are deterministic and can be attached from the DB by code
+# later, which is more reliable than asking the model to recount them). One call, no
+# tools; skipped cleanly with no model.
+_REPORT_SYSTEM = (
+    "You are a penetration tester writing a SHORT findings report for the operator, "
+    "from the recon and service-enumeration results below. Summarise WHAT was found "
+    "and why it matters: exposed services, vulnerabilities (known-exploited / high "
+    "first), credentials, exposed files or data, and misconfigurations — prioritised, "
+    "concise, factual, in plain language (a few short paragraphs or bullets). Do NOT "
+    "mention the specific commands or tools that were run. If there is little to "
+    "report, say so briefly.")
+
+
+def _report_context(base_dir: str, tid: int) -> str:
+    """A compact, deterministic dump of the findings (no commands) to summarise."""
+    lines = []
+    ports = purragent_db.fetch_ports(base_dir, tid)
+    if ports:
+        lines.append("Open services:")
+        for p in ports:
+            svc = " ".join(x for x in (p.get("service"), p.get("product"),
+                                       p.get("version")) if x) or "unknown"
+            lines.append(f"  {p['port']}/{p.get('proto') or 'tcp'}  {svc}")
+    vulns = purragent_db.fetch_vulns(base_dir, tid)
+    v3 = [v for v in vulns if v.get("script") != "cve-lookup"]
+    cve = [v for v in vulns if v.get("script") == "cve-lookup"]
+    if v3:
+        lines.append("Confirmed vulnerabilities / weaknesses:")
+        for v in v3:
+            lines.append(f"  {v.get('port')}: {v.get('summary')} "
+                         f"[{v.get('risk')}]"
+                         + (f" {v['cve']}" if v.get("cve") else ""))
+    if cve:
+        lines.append("Version-based CVEs:")
+        for v in cve:
+            lines.append(f"  {v.get('port')}: {v.get('summary')}")
+    ef = [e for e in purragent_db.fetch_exploit_findings(base_dir, tid)
+          if e.get("service") not in ("review", "report")]
+    if ef:
+        lines.append("Service enumeration findings:")
+        for e in ef:
+            where = e["port"] if e.get("port") else "host"
+            for ln in (e.get("finding") or "").splitlines():
+                if ln.strip():
+                    lines.append(f"  [{where}] {ln.strip()}")
+    return "\n".join(lines)
+
+
+def _print_report(report: str) -> None:
+    console.print(Text("  ▬ report", style=f"bold {VIOLET}"))
+    for ln in report.splitlines():
+        console.print(Text("    " + ln))
+
+
+def _run_final_report(eng: dict) -> None:
+    """One tool-free LLM call turning the findings DB into a user-facing mini report;
+    stored and printed. No-op when there's no model or nothing to report."""
+    ctx, base = eng["ctx"], eng["base_dir"]
+    profile = ctx.get("profile")
+    if not profile or eng.get("cancelled"):
+        return
+    context = _report_context(base, eng["tid"])
+    if not context.strip():
+        return
+    body = {"model": profile.get("model", ""),
+            "messages": [{"role": "system", "content": _REPORT_SYSTEM},
+                         {"role": "user", "content": f"Target {eng['ip']} — "
+                          f"results:\n\n{context}"}],
+            "temperature": AGENT_TEMPERATURE}
+    custom = psai._parse_custom_params(profile)
+    if custom:
+        body.update(custom)
+    _post(ctx, lambda: console.print(Text("  ▸ writing report…", style="bright_black")))
+    eng["thinking"] = True
+    _invalidate_toolbar(ctx)
+    parts: list = []
+    try:
+        endpoint, api_key = _openai_endpoint(profile, base)
+        _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
+                     hide_thinking=True, render_reasoning=False)
+    except Exception:                                  # noqa: BLE001
+        return
+    finally:
+        eng["thinking"] = False
+        _invalidate_toolbar(ctx)
+    report = "".join(parts).strip()
+    if not report:
+        return
+    try:
+        purragent_db.add_exploit_finding(base, eng["tid"], 0, "tcp", "report",
+                                         "final report", "", report)
+    except Exception:                                  # noqa: BLE001
+        pass
+    _post(ctx, lambda r=report: _print_report(r))
 
 
 def _finish_recon(eng: dict) -> None:
