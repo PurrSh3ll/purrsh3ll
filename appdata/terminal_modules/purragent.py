@@ -4409,7 +4409,6 @@ def _exploit_worker(eng: dict) -> None:
                 f"      ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
     _run_exploit_agent(eng)                            # LLM credentialed follow-up
-    _post(eng["ctx"], lambda: _print_commands_appendix(eng))   # deterministic: what ran
     _run_final_report(eng)                             # pentest summary — printed last
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
@@ -4483,9 +4482,9 @@ def _report_context(base_dir: str, tid: int) -> str:
 
 
 def _print_report(report: str) -> None:
-    console.print(Text("  ▬ report", style=f"bold {VIOLET}"))
+    console.print(Text("  ▬ summary", style="bold green"))
     for ln in report.splitlines():
-        console.print(Text("    " + ln))
+        console.print(Text("    " + ln, style="green"))
 
 
 def _print_commands_appendix(eng: dict) -> None:
