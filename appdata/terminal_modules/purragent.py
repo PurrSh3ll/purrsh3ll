@@ -4056,22 +4056,27 @@ _REVIEW_TASK = ("Review the nmap recon above. If it looks complete and reliable,
                 "UDP/version-intensity/OS/NSE) where it clearly helps, then summarise.")
 
 
-def _print_review_call(tool: str, args: dict) -> None:
+_AGENT_SECRET_ARGS = {"password", "hash", "bearer", "api_token"}
+
+
+def _print_agent_call(label: str, tool: str, args: dict) -> None:
     line = Text("  ")
     line.append("[running]", style="yellow")
-    line.append(f" ▸ review · {tool}")
-    prev = ", ".join(f"{k}={v}" for k, v in list(args.items())[:3] if v not in (None, ""))
+    line.append(f" ▸ {label} · {tool}")
+    prev = ", ".join(f"{k}={v}" for k, v in list(args.items())[:4]
+                     if v not in (None, "") and k not in _AGENT_SECRET_ARGS)
+    if any(k in args and args[k] for k in _AGENT_SECRET_ARGS):
+        prev += (", " if prev else "") + "creds=***"
     if prev:
         line.append(f"  ({prev})", style="bright_black")
     console.print(line)
 
 
-def _print_review_result(tool: str, result: dict) -> None:
-    out = (result.get("text") or "").strip()
-    snippet = "\n".join(out.splitlines()[:8])
+def _print_agent_result(label: str, tool: str, result: dict) -> None:
+    snippet = "\n".join((result.get("text") or "").strip().splitlines()[:8])
     line = Text("  ")
     line.append("[complete]", style="default")
-    line.append(f" ▸ review · {tool}")
+    line.append(f" ▸ {label} · {tool}")
     if snippet:
         line.append("\n")
         for ln in snippet.splitlines():
@@ -4079,8 +4084,8 @@ def _print_review_result(tool: str, result: dict) -> None:
     console.print(line)
 
 
-def _print_review_summary(summary: str) -> None:
-    console.print(Text("  ✓ targeted review — ", style="green").append(
+def _print_agent_summary(label_text: str, summary: str) -> None:
+    console.print(Text(f"  ✓ {label_text} — ", style="green").append(
         summary.splitlines()[0] if summary else "done", style="green"))
     for ln in summary.splitlines()[1:]:
         console.print(Text("      " + ln, style="green"))
@@ -4102,38 +4107,40 @@ def _review_worker(eng: dict) -> None:
         _post(eng["ctx"], lambda: _start_service_exploitation(eng))   # → phase 5
 
 
-def _run_targeted_review(eng: dict) -> None:
-    """Bounded agentic loop over the hacktools MCP tools, seeded with the target's
-    findings. Runs a few precise checks and stores a summary. No-ops (returns) when a
-    model, the MCP client, or the hacktools server isn't available."""
+def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
+                         summary_label, store_service, store_step,
+                         max_rounds, max_calls, budget_min) -> None:
+    """Bounded agentic loop over a chosen subset of the hacktools MCP tools, seeded
+    with the target's findings. The model calls tools, reacts to their output, and
+    finally summarises; the summary is stored. Shared by the phase-4.5 nmap review and
+    the phase-5 credentialed exploitation layer. No-ops when a model, the MCP client,
+    or the hacktools server isn't available."""
     ctx, base_dir = eng["ctx"], eng["base_dir"]
     profile, mcp = ctx.get("profile"), ctx.get("mcp")
-    if not profile or mcp is None or not _supports_tool_loop(profile):
-        return
-    if eng.get("cancelled"):
+    if not profile or mcp is None or not _supports_tool_loop(profile) \
+            or eng.get("cancelled"):
         return
     try:
         tools = [t for t in mcp.all_tools()
                  if mcp_client.split_namespaced(t["name"])[0] == "hacktools"
-                 and mcp_client.split_namespaced(t["name"])[1] in _REVIEW_TOOLS]
+                 and mcp_client.split_namespaced(t["name"])[1] in allowed]
     except Exception:                                  # noqa: BLE001
         return
     if not tools:
         return
     schemas = [t["schema"] for t in tools]
     dbctx = _target_db_context(base_dir) or ""
-    system = "\n\n".join(p for p in (_REVIEW_SYSTEM, _env_block(), dbctx) if p)
+    system = "\n\n".join(p for p in (system_prompt, _env_block(), dbctx) if p)
     msgs = [{"role": "system", "content": system},
-            {"role": "user", "content": _REVIEW_TASK}]
+            {"role": "user", "content": task}]
     endpoint, api_key = _openai_endpoint(profile, base_dir)
     custom_params = psai._parse_custom_params(profile)
-    deadline = time.time() + REVIEW_BUDGET_MINUTES * 60
+    deadline = time.time() + budget_min * 60
     calls = 0
-    _post(ctx, lambda: console.print(Text(
-        "  ▸ targeted review — the model may run a few precise checks",
-        style="bright_black")))
+    if intro:
+        _post(ctx, lambda: console.print(Text("  ▸ " + intro, style="bright_black")))
 
-    for _round in range(REVIEW_MAX_ROUNDS):
+    for _round in range(max_rounds):
         if eng.get("cancelled") or time.time() > deadline:
             break
         body = {"model": profile.get("model", ""), "messages": msgs,
@@ -4156,10 +4163,10 @@ def _run_targeted_review(eng: dict) -> None:
         if not tool_calls:                             # model is done → summarise
             summary = (message.get("content") or "".join(parts)).strip()
             if summary:
-                _post(ctx, lambda s=summary: _print_review_summary(s))
+                _post(ctx, lambda s=summary: _print_agent_summary(summary_label, s))
                 try:
                     purragent_db.add_exploit_finding(base_dir, eng["tid"], 0, "tcp",
-                        "review", "targeted review", "", summary)
+                        store_service, store_step, "", summary)
                     eng.setdefault("exploit_findings", []).append(
                         {"port": 0, "finding": summary})
                 except Exception:                      # noqa: BLE001
@@ -4168,10 +4175,10 @@ def _run_targeted_review(eng: dict) -> None:
         msgs.append(message)
         for tc in tool_calls:
             call_id = tc.get("id")
-            if (calls >= REVIEW_MAX_TOOLCALLS or time.time() > deadline
+            if (calls >= max_calls or time.time() > deadline
                     or eng.get("cancelled")):
                 msgs.append({"role": "tool", "tool_call_id": call_id,
-                             "content": "Review budget reached — summarise and stop."})
+                             "content": "Budget reached — summarise and stop."})
                 continue
             fn = tc.get("function", {})
             name = fn.get("name", "")
@@ -4180,22 +4187,76 @@ def _run_targeted_review(eng: dict) -> None:
             except json.JSONDecodeError:
                 args = {}
             srv, bare = mcp_client.split_namespaced(name)
-            if srv != "hacktools" or bare not in _REVIEW_TOOLS:
+            if srv != "hacktools" or bare not in allowed:
                 msgs.append({"role": "tool", "tool_call_id": call_id,
-                             "content": "Only the recon/NSE hacktools are allowed in "
-                                        "this review."})
+                             "content": "That tool is not available in this step."})
                 continue
-            _post(ctx, lambda b=bare, ar=args: _print_review_call(b, ar))
+            _post(ctx, lambda lb=label, b=bare, ar=args: _print_agent_call(lb, b, ar))
             calls += 1
             try:
                 # No explicit budget — the client waits per the tool's advertised
-                # timeout (nmap scans declare minutes), then kills it.
+                # timeout, then kills it.
                 result = mcp.call(name, args)
             except Exception as exc:                   # noqa: BLE001
                 result = {"text": f"error: {exc}", "isError": True}
-            _post(ctx, lambda b=bare, r=result: _print_review_result(b, r))
+            _post(ctx, lambda lb=label, b=bare, r=result:
+                  _print_agent_result(lb, b, r))
             msgs.append({"role": "tool", "tool_call_id": call_id,
                          "content": result.get("text") or "(no output)"})
+
+
+def _run_targeted_review(eng: dict) -> None:
+    """Phase 4.5: nmap-only review — re-run scans with better parameters if needed."""
+    _run_hacktools_agent(
+        eng, allowed=_REVIEW_TOOLS, system_prompt=_REVIEW_SYSTEM, task=_REVIEW_TASK,
+        intro="targeted review — the model may run a few precise checks",
+        label="review", summary_label="targeted review", store_service="review",
+        store_step="targeted review", max_rounds=REVIEW_MAX_ROUNDS,
+        max_calls=REVIEW_MAX_TOOLCALLS, budget_min=REVIEW_BUDGET_MINUTES)
+
+
+# ── phase 5 credentialed exploitation layer (LLM over hacktools) ──────────────
+# After the deterministic no-credential enum, the model uses the findings (incl. any
+# discovered credentials) to run TARGETED credentialed follow-up via the hacktools MCP
+# — reuse creds across services, loot shares, dump hashes, run one command, query DBs,
+# confirm a web vuln. Bounded (rounds / tool-calls / time); no brute-force, no broad
+# scanning, single host. Skipped cleanly with no model / MCP / hacktools.
+EXPLOIT_AGENT_MAX_ROUNDS = 6
+EXPLOIT_AGENT_MAX_TOOLCALLS = 10
+EXPLOIT_AGENT_BUDGET_MINUTES = 15
+_EXPLOIT_AGENT_TOOLS = {
+    "smb_client", "netexec_smb", "ldap_search", "rpc_enum", "secretsdump",
+    "impacket_exec", "kerberos_roast", "enum4linux", "smbmap", "certipy",
+    "bloodhound_python", "mysql_query", "mssql_query", "psql_query", "redis_cli",
+    "mongo_query", "ssh_exec", "winrm_exec", "ftp_transfer", "sqlmap", "nuclei_scan",
+    "wpscan", "http_request", "git_dump", "hash_identify", "default_creds",
+    "cve_lookup", "payload_gen",
+}
+_EXPLOIT_AGENT_SYSTEM = (
+    "You are a penetration tester in the EXPLOITATION phase. No-credential enumeration "
+    "has already run against this host; its findings — including any credentials "
+    "discovered — are below. Using the tools, do TARGETED credentialed follow-up on "
+    "THIS host only: try discovered credentials against its services, list and loot "
+    "readable shares, dump hashes, run a single command, query databases, or confirm a "
+    "web vulnerability. REUSE credentials across services (e.g. FTP creds on SMB). Pass "
+    "credentials as the tools' typed parameters. Do NOT brute-force, do NOT scan the "
+    "network broadly, and stay on this host. When you have exhausted the useful "
+    "follow-ups, reply with a short summary of what you achieved and stop.")
+_EXPLOIT_AGENT_TASK = (
+    "Exploit this host using the findings above. Run targeted credentialed follow-up "
+    "with the tools where it clearly helps, then summarise. If there are no usable "
+    "credentials or leads, say so briefly and stop.")
+
+
+def _run_exploit_agent(eng: dict) -> None:
+    """Phase 5 credentialed layer: LLM-driven follow-up over the exploitation hacktools."""
+    _run_hacktools_agent(
+        eng, allowed=_EXPLOIT_AGENT_TOOLS, system_prompt=_EXPLOIT_AGENT_SYSTEM,
+        task=_EXPLOIT_AGENT_TASK,
+        intro="exploitation — the model may run credentialed follow-up",
+        label="exploit", summary_label="exploitation", store_service="exploit-agent",
+        store_step="credentialed follow-up", max_rounds=EXPLOIT_AGENT_MAX_ROUNDS,
+        max_calls=EXPLOIT_AGENT_MAX_TOOLCALLS, budget_min=EXPLOIT_AGENT_BUDGET_MINUTES)
 
 
 def _start_service_exploitation(eng: dict) -> None:
@@ -4297,6 +4358,7 @@ def _exploit_worker(eng: dict) -> None:
             _post(eng["ctx"], lambda s=skipped: console.print(Text(
                 f"      ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
+    _run_exploit_agent(eng)                            # LLM credentialed follow-up
     _run_final_report(eng)                             # LLM mini-report of the findings
     _post(eng["ctx"], lambda: _print_commands_appendix(eng))   # deterministic: what ran
     _post(eng["ctx"], lambda: _finish_recon(eng))
