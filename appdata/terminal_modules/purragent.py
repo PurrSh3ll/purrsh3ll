@@ -4388,8 +4388,8 @@ def _exploit_worker(eng: dict) -> None:
                 f"      ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
     _run_exploit_agent(eng)                            # LLM credentialed follow-up
-    _run_final_report(eng)                             # LLM mini-report of the findings
     _post(eng["ctx"], lambda: _print_commands_appendix(eng))   # deterministic: what ran
+    _run_final_report(eng)                             # pentest summary — printed last
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
 
@@ -4509,21 +4509,25 @@ def _run_final_report(eng: dict) -> None:
     try:
         endpoint, api_key = _openai_endpoint(profile, base)
         _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
-                     hide_thinking=True, render_reasoning=False)
+                     hide_thinking=True, render_reasoning=False,
+                     max_seconds=AGENT_TURN_MAX_SECONDS)
     except Exception:                                  # noqa: BLE001
-        return
+        pass
     finally:
         eng["thinking"] = False
         _invalidate_toolbar(ctx)
     report = "".join(parts).strip()
-    if not report:
-        return
-    try:
-        purragent_db.add_exploit_finding(base, eng["tid"], 0, "tcp", "report",
-                                         "final report", "", report)
-    except Exception:                                  # noqa: BLE001
-        pass
-    _post(ctx, lambda r=report: _print_report(r))
+    if report:
+        try:
+            purragent_db.add_exploit_finding(base, eng["tid"], 0, "tcp", "report",
+                                             "final report", "", report)
+        except Exception:                              # noqa: BLE001
+            pass
+        _post(ctx, lambda r=report: _print_report(r))
+    else:
+        # The model returned nothing usable (error / only reasoning / capped) — still
+        # close with the deterministic findings so the run always ends on a summary.
+        _post(ctx, lambda c=context: _print_report(c))
 
 
 def _finish_recon(eng: dict) -> None:
