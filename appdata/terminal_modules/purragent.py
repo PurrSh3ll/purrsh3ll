@@ -4004,30 +4004,29 @@ REVIEW_MAX_ROUNDS = 4
 REVIEW_MAX_TOOLCALLS = 6
 REVIEW_BUDGET_MINUTES = 8
 
-# Only the hacktools that fit this stage — deepening service discovery + basic NSE /
-# vuln detection, read-only and credential-free. Exploitation, credentialed, DB,
-# remote-exec and broad OSINT tools are deliberately NOT offered here (fewer, focused
-# options also keep small models on track).
-_REVIEW_TOOLS = {
-    "port_discovery", "service_discovery", "script_scan", "banner_grab",
-    "http_headers", "whatweb", "nikto_scan", "nuclei_scan", "ssl_cert",
-    "ftp_anon", "smb_enum", "snmp_walk", "searchsploit",
-}
+# Phase 4.5 is a review of the NMAP recon only: the model gets just the nmap-based
+# tools so it can re-run a scan with different parameters when the defaults fell short
+# (wider port range, slower timing, UDP, higher version intensity, OS detection, a
+# specific NSE script). Service-specific tools (web/ftp/smb/… enum) belong to phase 5.
+_REVIEW_TOOLS = {"port_discovery", "service_discovery", "script_scan"}
 
 _REVIEW_SYSTEM = (
-    "You are a penetration-testing assistant doing a SHORT, targeted review after "
-    "automated recon (port scan, service/version detection, vuln scan, offline CVE "
-    "lookup). The target's findings are given below. Decide whether a FEW precise "
-    "extra scans would genuinely add value — e.g. a product/version-specific nmap NSE "
-    "script, a nuclei scan with matching tags, or a deeper probe of an unidentified "
-    "service. Only call a tool when it is clearly worthwhile; prefer narrow, targeted "
-    "checks over broad ones. Do NOT brute-force, exploit, or use credentials here. "
-    "When you have run the worthwhile checks (or if none are needed), reply with a "
-    "1-3 line summary of what you found or that nothing extra was needed, then stop.")
+    "You are a penetration-testing assistant reviewing the automated NMAP recon "
+    "(port scan, service/version detection, NSE) already run against the target — its "
+    "findings are given below. Your only job here is to judge whether that nmap recon "
+    "was SUFFICIENT, and if not, re-run nmap with BETTER PARAMETERS via the tools "
+    "provided. Examples: a firewalled/laggy host that may have dropped ports → slower "
+    "timing or a wider/full port range; ports that looked filtered → different host "
+    "discovery; a service that came back unknown/tcpwrapped → higher version intensity "
+    "or OS detection; a specific product/version → a targeted NSE script. Only re-scan "
+    "when the current results look incomplete or unreliable — otherwise do nothing. Do "
+    "NOT do service-specific exploitation, brute-force or credentialed actions (that is "
+    "the next phase). When done, reply with a 1-3 line summary of what (if anything) "
+    "the extra nmap runs changed, then stop.")
 
-_REVIEW_TASK = ("Review the recon findings above. Run at most a few targeted scans if "
-                "they add value, then summarise. Be conservative — quality over "
-                "quantity.")
+_REVIEW_TASK = ("Review the nmap recon above. If it looks complete and reliable, say so "
+                "and stop. Otherwise re-run nmap with better parameters (range/timing/"
+                "UDP/version-intensity/OS/NSE) where it clearly helps, then summarise.")
 
 
 def _print_review_call(tool: str, args: dict) -> None:
