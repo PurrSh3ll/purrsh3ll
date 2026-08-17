@@ -232,6 +232,26 @@ def _add_memory(base_dir: str, text: str, kind: str) -> bool:
     return True
 
 
+def _delete_memory(base_dir: str, text: str) -> list:
+    """Remove stored memories matching `text` (case-insensitive, either direction, so the
+    model can pass the exact text it sees or a distinctive part). Returns removed texts.
+    Since the stored memories are injected into context, the model quotes them accurately."""
+    q = (text or "").strip().lower()
+    if not q:
+        return []
+    kept, removed = [], []
+    for m in _load_memories(base_dir):
+        t = (m.get("text") or "").strip()
+        tl = t.lower()
+        if tl and (tl == q or q in tl or tl in q):
+            removed.append(t)
+        else:
+            kept.append(m)
+    if removed:
+        _save_state(base_dir, memories=kept)
+    return removed
+
+
 def _memory_block(base_dir: str) -> str:
     """Remembered instructions + facts as a system-prompt block; empty when none."""
     mems = _load_memories(base_dir)
@@ -2350,23 +2370,30 @@ _SAVE_MEMORY_TOOL = {
     "function": {
         "name": SAVE_MEMORY_TOOL_NAME,
         "description": (
-            "Persist something the USER explicitly asked you to remember, across this "
-            "conversation and future sessions: a standing INSTRUCTION (how to behave, "
-            "something to always do/add) or a FACT to keep. Only call this when the "
-            "user clearly asks to remember/save/note something or to always do "
-            "something — never for a normal answer. Store the distilled point, not the "
-            "whole message."),
+            "Manage what you remember across this conversation and future sessions, when "
+            "the USER explicitly asks. action='save' persists a standing INSTRUCTION (how "
+            "to behave, something to always do/add) or a FACT to keep; action='delete' "
+            "forgets a previously stored memory (match it by the text shown in the "
+            "REMEMBERED / USER INSTRUCTIONS block). Only call this when the user clearly "
+            "asks to remember/save/note something, to always do something, or to forget/"
+            "stop remembering something — never for a normal answer. Store the distilled "
+            "point, not the whole message."),
         "parameters": {
             "type": "object",
             "properties": {
+                "action": {"type": "string", "enum": ["save", "delete"],
+                           "description": "'save' (default) to remember, 'delete' to "
+                                          "forget a stored memory."},
                 "text": {"type": "string",
-                         "description": "The distilled thing to remember, one line."},
+                         "description": "For save: the distilled thing to remember, one "
+                                        "line. For delete: the stored memory to forget "
+                                        "(its exact text or a distinctive part of it)."},
                 "kind": {"type": "string", "enum": ["instruction", "fact"],
-                         "description": ("'instruction' = a standing rule to always "
-                                         "follow (e.g. always add X to answers); "
+                         "description": ("(save only) 'instruction' = a standing rule to "
+                                         "always follow (e.g. always add X to answers); "
                                          "'fact' = a piece of information to keep.")},
             },
-            "required": ["text", "kind"],
+            "required": ["text"],
         },
     },
 }
@@ -2377,9 +2404,12 @@ _SAVE_MEMORY_TOOL = {
 # schema on every ordinary turn (≈0 baseline tool cost).
 _MEMORY_INTENT = re.compile(
     r"\b(remember|memoriz|don'?t forget|keep in mind|make a note|note that|"
-    r"from now on|take note|save this|bear in mind|"
+    r"from now on|take note|save this|bear in mind|forget|stop remembering|"
+    r"no longer|remove from memory|delete .*memory|"
     r"zapami[eę]taj|pami[eę]taj|nie zapomnij|od teraz|zawsze|notuj|"
-    r"zapisz sobie|na przysz[lł]o[sś][cć]|miej na uwadze)\b", re.IGNORECASE)
+    r"zapisz sobie|na przysz[lł]o[sś][cć]|miej na uwadze|"
+    r"zapomnij|usu[nń] z pami[eę]ci|przesta[nń] pami[eę]ta[cć]|skasuj z pami[eę]ci)\b",
+    re.IGNORECASE)
 
 
 def _wants_memory(history: list) -> bool:
@@ -6468,11 +6498,17 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
 
             if name == SAVE_MEMORY_TOOL_NAME:
                 text = str(args.get("text") or "").strip()
-                kind = str(args.get("kind") or "fact").strip().lower()
-                on_event("call", name, {"kind": kind, "text": text})
-                saved = _add_memory(base_dir, text, kind) if text else False
-                ack = ("Saved to memory." if saved else
-                       "Nothing saved (empty or already remembered).")
+                action = str(args.get("action") or "save").strip().lower()
+                on_event("call", name, {"action": action, "text": text})
+                if action == "delete":
+                    removed = _delete_memory(base_dir, text) if text else []
+                    ack = (f"Forgot {len(removed)} memory item(s)." if removed
+                           else "Nothing matched to forget.")
+                else:
+                    kind = str(args.get("kind") or "fact").strip().lower()
+                    saved = _add_memory(base_dir, text, kind) if text else False
+                    ack = ("Saved to memory." if saved else
+                           "Nothing saved (empty or already remembered).")
                 on_event("result", name, {"text": ack})
                 msgs.append({"role": "tool", "tool_call_id": call_id, "content": ack})
                 continue
