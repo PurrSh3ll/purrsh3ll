@@ -49,6 +49,33 @@ import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol
 import tool_retriever  # noqa: E402  — client-side RAG for semantic tool discovery
 import conv_memory  # noqa: E402  — semantic recall of older / cross-session conversation
 import purragent_db  # noqa: E402  — hacking-mode engagement / target intake store
+import agent_context  # noqa: E402  — context-window budgeting + transcript trimming (pure)
+import wire_format  # noqa: E402  — OpenAI ↔ Anthropic wire conversion (pure)
+import run_mode  # noqa: E402  — run-mode gate: which tool calls need confirmation (pure)
+
+# The context/wire/run-mode logic lives in small, unit-testable leaf modules; re-bind
+# it here under purragent's historical private names so the rest of this module and
+# its many call sites keep working unchanged (single source of truth in the leaves).
+FILL_FRAC = agent_context.FILL_FRAC
+OUTPUT_FLOOR = agent_context.OUTPUT_FLOOR
+AGENT_KEEP_LAST_GROUPS = agent_context.AGENT_KEEP_LAST_GROUPS
+AGENT_OUTPUT_RESERVE_TOK = agent_context.AGENT_OUTPUT_RESERVE_TOK
+AGENT_DBCTX_FRAC = agent_context.AGENT_DBCTX_FRAC
+AGENT_TRIM_PLACEHOLDER = agent_context.AGENT_TRIM_PLACEHOLDER
+_split_msg_groups = agent_context.split_msg_groups
+_msgs_chars = agent_context.msgs_chars
+_msgs_budget_chars = agent_context.msgs_budget_chars
+_trim_agent_msgs = agent_context.trim_agent_msgs
+_oai_tools_to_anthropic = wire_format.oai_tools_to_anthropic
+_oai_msgs_to_anthropic = wire_format.oai_msgs_to_anthropic
+_BUILTIN_TOOLS_SERVER = run_mode.BUILTIN_TOOLS_SERVER
+_READONLY_TOOLS = run_mode.READONLY_TOOLS
+_READONLY_BINS = run_mode.READONLY_BINS
+_DANGER_PATTERNS = run_mode.DANGER_PATTERNS
+_has_write_redirect = run_mode.has_write_redirect
+_classify_command = run_mode.classify_command
+_needs_confirm = run_mode.needs_confirm
+_approval_key = run_mode.approval_key
 
 import urllib.request  # noqa: E402  — the tool-use loop's streaming chat call
 import urllib.error     # noqa: E402  — HTTPError handling for the stream
@@ -856,134 +883,9 @@ PLAN_MODE_NOTE = (
     "actually execute."
 )
 
-# The built-in tools server (appdata/mcp_servers/hacktools_server.py). Its tools
-# are the only ones whose behaviour we know, so the semi-auto read-only allowlist
-# applies ONLY to them — a third-party MCP server's tool that happens to share a
-# name (e.g. its own "read_file") must not inherit the "safe" verdict.
-_BUILTIN_TOOLS_SERVER = "hacktools"
-
-# Tools that only read/inspect — safe to run unattended in semi-auto.
-_READONLY_TOOLS = {"read_file", "list_dir", "grep", "find_files"}
-
-# Base commands that only read/inspect the system (recon included). Anything NOT
-# here makes run_command ask — the allowlist fails closed, so we never need to
-# enumerate every dangerous command.
-_READONLY_BINS = {
-    "cd", "pushd", "popd", "true", "false", "test", "sleep", "seq",
-    "ls", "dir", "cat", "head", "tail", "less", "more", "stat", "file", "wc",
-    "sort", "uniq", "cut", "tr", "column", "tac", "nl", "fold", "rev",
-    "grep", "egrep", "fgrep", "rg", "ag", "find", "locate", "which", "whereis",
-    "type", "tree", "readlink", "realpath", "basename", "dirname",
-    "echo", "printf", "pwd", "date", "cal", "uptime", "uname", "hostname",
-    "whoami", "id", "groups", "who", "w", "last", "lscpu", "lsblk", "lsusb",
-    "lspci", "env", "printenv", "du", "df", "free", "ps", "pstree", "top",
-    "lsof", "vmstat", "ss", "netstat", "ip", "ifconfig", "route", "arp",
-    "dig", "nslookup", "host", "whois", "ping", "traceroute", "tracepath",
-    "mtr", "curl", "wget", "nmap", "masscan", "nc", "ncat", "netcat",
-    "awk", "sed", "xxd", "hexdump", "od", "strings", "base64", "base32",
-    "md5sum", "sha1sum", "sha256sum", "cksum", "git", "jq", "yq",
-    "nikto", "whatweb", "gobuster", "feroxbuster", "dirb", "dirsearch", "ffuf",
-    "wpscan", "enum4linux", "smbclient", "smbmap", "dnsrecon", "dnsenum",
-    "sslscan", "sslyze", "testssl.sh", "nuclei", "httpx", "subfinder", "amass",
-}
-
-# High-signal dangerous constructs → confirm with a clear reason (the allowlist
-# would already flag most of these, but an explicit reason is better UX).
-_DANGER_PATTERNS = [
-    (re.compile(r'(^|[\s;&|(])(sudo|doas|su)([\s;&|)]|$)'), "runs with elevated privileges (sudo)"),
-    (re.compile(r'(^|[\s;&|(])(rm|rmdir|shred|unlink)([\s;&|)]|$)'), "deletes files"),
-    (re.compile(r'(^|[\s;&|(])(dd|mkfs\S*|fdisk|parted|wipefs|blkdiscard|sgdisk)([\s;&|)]|$)'), "writes to disks/partitions"),
-    (re.compile(r'(^|[\s;&|(])(mv|cp|ln|tee|truncate|touch|install|rsync)([\s;&|)]|$)'), "creates/moves/overwrites files"),
-    (re.compile(r'(^|[\s;&|(])(chmod|chown|chgrp)([\s;&|)]|$)'), "changes permissions/ownership"),
-    (re.compile(r'(^|[\s;&|(])(kill|pkill|killall)([\s;&|)]|$)'), "kills processes"),
-    (re.compile(r'(^|[\s;&|(])(systemctl|service|initctl|rc-service)([\s;&|)]|$)'), "controls system services"),
-    (re.compile(r'(^|[\s;&|(])(apt|apt-get|aptitude|dpkg|pip|pip3|pipx|npm|gem|snap|flatpak|pacman|yum|dnf|brew)([\s;&|)]|$)'), "changes installed packages"),
-    (re.compile(r'(^|[\s;&|(])(mount|umount|swapon|swapoff)([\s;&|)]|$)'), "changes mounts"),
-    (re.compile(r'(^|[\s;&|(])(reboot|shutdown|halt|poweroff|init|telinit)([\s;&|)]|$)'), "reboots or powers off the host"),
-    (re.compile(r'(^|[\s;&|(])(useradd|userdel|usermod|groupadd|groupdel|passwd|chpasswd|adduser|deluser)([\s;&|)]|$)'), "modifies users/groups"),
-    (re.compile(r'(^|[\s;&|(])(iptables|ip6tables|nft|ufw|firewall-cmd)([\s;&|)]|$)'), "changes firewall rules"),
-    (re.compile(r'(^|[\s;&|(])(crontab|at)([\s;&|)]|$)'), "schedules jobs"),
-    (re.compile(r':\s*\(\s*\)\s*\{.*[|&].*\}'), "looks like a fork bomb"),
-    (re.compile(r'\|\s*(sudo\s+)?(sh|bash|zsh|dash|python\d?|perl|ruby)\b'), "pipes output into an interpreter"),
-]
-
-
-def _has_write_redirect(cmd: str) -> bool:
-    """True if the command redirects output into a file (not /dev/null or an fd
-    dup like 2>&1) — i.e. it writes somewhere."""
-    for m in re.finditer(r'\d*>>?', cmd):
-        rest = cmd[m.end():].lstrip()
-        if rest[:1] == "&" or rest.startswith("/dev/null"):
-            continue
-        return True
-    return False
-
-
-def _classify_command(command: str):
-    """(needs_confirm, reason) for a run_command shell string in semi-auto."""
-    cmd = command.strip()
-    if not cmd:
-        return False, ""
-    for pat, why in _DANGER_PATTERNS:
-        if pat.search(cmd):
-            return True, why
-    if _has_write_redirect(cmd):
-        return True, "redirects output into a file"
-    bins = []
-    for seg in re.split(r'[;&|]+', cmd):
-        seg = seg.strip()
-        if not seg:
-            continue
-        try:
-            toks = shlex.split(seg)
-        except ValueError:
-            return True, "command could not be parsed safely"
-        if toks:
-            bins.append(os.path.basename(toks[0]))
-    if bins and all(b in _READONLY_BINS for b in bins):
-        return False, ""
-    unknown = next((b for b in bins if b not in _READONLY_BINS), cmd[:30])
-    return True, f"not a known read-only command ({unknown})"
-
-
-def _needs_confirm(mode: str, name: str, args: dict):
-    """(confirm?, reason) for a resolved tool call under the given run mode."""
-    if mode == "auto":
-        return False, ""
-    if mode == "confirm":
-        return True, ""
-    if mode != "semi-auto":
-        return False, ""
-    server, tool = mcp_client.split_namespaced(name)
-    # The read-only / command classifier only understands the built-in hacktools
-    # server's tools. Anything from a third-party MCP server is unknown → ask, even
-    # if its tool name collides with a built-in one (e.g. another "read_file").
-    if server != _BUILTIN_TOOLS_SERVER:
-        return True, "external MCP tool — behaviour unknown"   # fail-closed
-    if tool in _READONLY_TOOLS:
-        return False, ""
-    if tool == "run_command":
-        return _classify_command(str(args.get("command", "")))
-    if tool == "http_request":
-        method = str(args.get("method", "GET")).upper()
-        if method in ("GET", "HEAD", "OPTIONS"):
-            return False, ""
-        return True, f"{method} request may change server state"
-    if tool in ("write_file", "edit_file"):
-        return True, "modifies a file on disk"
-    return True, "unclassified tool"                  # fail-closed
-
-
-def _approval_key(name: str, args: dict) -> str:
-    """Identity of a tool call for the 'always allow' memory: the full namespaced
-    tool name PLUS its exact arguments. So 'always' remembers this SPECIFIC call
-    (e.g. this exact command), not the whole tool — a different command through the
-    same tool still asks."""
-    try:
-        blob = json.dumps(args, sort_keys=True, ensure_ascii=False)
-    except Exception:                                  # noqa: BLE001
-        blob = str(args)
-    return f"{name}\x00{blob}"
+# The run-mode classifier (READONLY_*/DANGER_PATTERNS, classify_command,
+# needs_confirm, approval_key) lives in run_mode.py (pure, unit-tested);
+# re-bound above under its historical private names.
 
 
 def _confirm_action(name: str, args: dict, reason: str, approvals=None) -> bool:
@@ -2198,56 +2100,10 @@ ANTHROPIC_VERSION    = "2023-06-01"
 ANTHROPIC_MAX_TOKENS = 4096          # required by the Messages API; caps reply length
 
 
-def _oai_tools_to_anthropic(tools: list) -> list:
-    """OpenAI function schemas → Anthropic tool defs (input_schema, no wrapper)."""
-    out = []
-    for t in tools or []:
-        fn = t.get("function") if t.get("type") == "function" else t
-        if not fn or not fn.get("name"):
-            continue
-        out.append({"name": fn["name"],
-                    "description": fn.get("description", ""),
-                    "input_schema": fn.get("parameters")
-                    or {"type": "object", "properties": {}}})
-    return out
+# The OpenAI↔Anthropic transcript/tool converters live in wire_format.py (pure,
+# unit-tested); re-bound above as _oai_tools_to_anthropic / _oai_msgs_to_anthropic.
 
 
-def _oai_msgs_to_anthropic(messages: list):
-    """(system_str, anthropic_messages) from an OpenAI-shaped transcript. The system
-    message becomes the top-level `system`; assistant tool_calls become `tool_use`
-    blocks; `role:"tool"` results become `tool_result` blocks merged into one user
-    turn (Anthropic groups a turn's results together)."""
-    system_parts, out = [], []
-    for m in messages:
-        role = m.get("role")
-        if role == "system":
-            if m.get("content"):
-                system_parts.append(m["content"])
-        elif role == "tool":
-            block = {"type": "tool_result", "tool_use_id": m.get("tool_call_id"),
-                     "content": m.get("content") or ""}
-            if out and out[-1]["role"] == "user" and out[-1].get("_tr"):
-                out[-1]["content"].append(block)
-            else:
-                out.append({"role": "user", "content": [block], "_tr": True})
-        elif role == "assistant":
-            content = []
-            if m.get("content"):
-                content.append({"type": "text", "text": m["content"]})
-            for tc in m.get("tool_calls") or []:
-                fn = tc.get("function") or {}
-                try:
-                    inp = json.loads(fn.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    inp = {}
-                content.append({"type": "tool_use", "id": tc.get("id"),
-                                "name": fn.get("name", ""), "input": inp})
-            out.append({"role": "assistant", "content": content or ""})
-        else:                                          # user (or anything else)
-            out.append({"role": "user", "content": m.get("content") or ""})
-    for m in out:
-        m.pop("_tr", None)
-    return "\n\n".join(system_parts), out
 
 
 def _chat_stream_anthropic(endpoint: str, api_key: str, body: dict, on_text,
@@ -2579,15 +2435,8 @@ TOOLS_RESERVATION_TOKENS = 900
 MEMORY_LOOKUP_TOKENS = 2000
 
 # ── Context budget: how the model window is apportioned ────────────────────────
-# We never fill the whole window. Two reasons: quality degrades as a model nears
-# its native limit ("lost in the middle" — worse the smaller the model), and the
-# model needs room to generate its reply. FILL_FRAC is the quality-safe input
-# ceiling; OUTPUT_FLOOR guarantees generation room in *absolute* tokens so a tiny
-# window doesn't starve the reply. The effective input budget is the smaller of the
-# two, so on big windows FILL_FRAC governs and on tiny ones OUTPUT_FLOOR does. The
-# quality margin and the output reserve both live inside the unused (1-FILL_FRAC).
-FILL_FRAC    = 0.80
-OUTPUT_FLOOR = 6000     # tokens always kept free for the model's reply
+# FILL_FRAC (quality-safe input ceiling) and OUTPUT_FLOOR (absolute tokens kept
+# free for the reply) live in agent_context.py; re-bound above under these names.
 
 # The elastic pool = budget − HEADER − memory-lookup reservation. It is apportioned
 # between the live conversation and findings. Two distinct mechanics:
@@ -4741,93 +4590,10 @@ def _review_worker(eng: dict) -> None:
         _post(eng["ctx"], lambda: _start_service_exploitation(eng))   # → phase 5
 
 
-# ── Context guard for the agent loop ──────────────────────────────────────────
-# Unlike normal-mode chat (which has _maybe_summarize), _run_hacktools_agent only
-# APPENDS to its transcript — every tool result (each already capped at the server's
-# MAX_OUTPUT) piles up round after round. On a small window that overflows mid-run.
-# Before each model call we trim the transcript to the window, preserving the
-# system+task preamble and every assistant+tool group (splitting a group would
-# orphan a tool result, which the API rejects).
-AGENT_KEEP_LAST_GROUPS = 3         # newest N tool-call groups always kept in full
-AGENT_OUTPUT_RESERVE_TOK = 2000    # room left for the model's reply this round
-AGENT_DBCTX_FRAC = 0.25            # max share of the window the findings dump may take
-AGENT_TRIM_PLACEHOLDER = ("[earlier tool output trimmed to fit the context window — "
-                          "the full result is saved as a finding]")
+# The agent-loop context guard (budget math + transcript trimming) lives in
+# agent_context.py (pure, unit-tested); re-bound above under its historical names.
 
 
-def _split_msg_groups(tail: list) -> list:
-    """Split post-preamble messages into groups: each an assistant(tool_calls) turn
-    plus the tool results answering it, so trimming never orphans a tool result."""
-    groups: list = []
-    for m in tail:
-        if m.get("role") == "assistant" or not groups:
-            groups.append([m])
-        else:
-            groups[-1].append(m)
-    return groups
-
-
-def _msgs_chars(msgs: list) -> int:
-    return sum(len(m.get("content") or "")
-               + (len(json.dumps(m.get("tool_calls"), default=str))
-                  if m.get("tool_calls") else 0)
-               for m in msgs)
-
-
-def _msgs_budget_chars(maxc, schemas: list):
-    """Char budget for a tool-loop's msgs before a call: the model window minus an output
-    reserve and the always-sent tools-field, in chars (~4/token, like _conv_budget).
-    None when the window `maxc` is unknown → caller skips trimming (today's behaviour)."""
-    if not maxc:
-        return None
-    try:
-        schema_chars = len(json.dumps(schemas, default=str))
-    except Exception:                                  # noqa: BLE001
-        schema_chars = 0
-    return max(0, int(maxc * 4 * FILL_FRAC) - AGENT_OUTPUT_RESERVE_TOK * 4 - schema_chars)
-
-
-def _trim_agent_msgs(msgs: list, budget_chars, preamble: int = 2) -> bool:
-    """Keep a tool-loop's msgs within budget_chars, preserving the first `preamble`
-    messages (system[+history]) and every assistant+tool group after them. Tier 1: blank
-    out big OLD tool outputs (keeping the call trail so the model won't repeat work).
-    Tier 2: drop whole oldest groups. Last resort: hard-cap the oldest kept tool result.
-    Mutates msgs; returns True if it trimmed anything."""
-    if budget_chars is None or _msgs_chars(msgs) <= budget_chars:
-        return False
-    head, groups = msgs[:preamble], _split_msg_groups(msgs[preamble:])
-    trimmed = False
-
-    # Tier 1 — replace large tool-result bodies in older groups with a placeholder.
-    old = groups[:-AGENT_KEEP_LAST_GROUPS] if len(groups) > AGENT_KEEP_LAST_GROUPS else []
-    for g in old:
-        for m in g:
-            if (m.get("role") == "tool"
-                    and len(m.get("content") or "") > len(AGENT_TRIM_PLACEHOLDER)):
-                m["content"] = AGENT_TRIM_PLACEHOLDER
-                trimmed = True
-    msgs[:] = head + [m for g in groups for m in g]
-    if _msgs_chars(msgs) <= budget_chars:
-        return trimmed
-
-    # Tier 2 — drop whole oldest groups, always keeping the last K.
-    while len(groups) > AGENT_KEEP_LAST_GROUPS:
-        groups.pop(0)
-        trimmed = True
-        msgs[:] = head + [m for g in groups for m in g]
-        if _msgs_chars(msgs) <= budget_chars:
-            return trimmed
-
-    # Last resort — one huge kept group + big system still over: hard-cap a tool body
-    # so we never ship an over-window request.
-    over = _msgs_chars(msgs) - budget_chars
-    if over > 0:
-        for m in msgs[preamble:]:
-            if m.get("role") == "tool" and len(m.get("content") or "") > over + 200:
-                m["content"] = m["content"][:len(m["content"]) - over - 200] + "\n[…truncated]"
-                trimmed = True
-                break
-    return trimmed
 
 
 def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
