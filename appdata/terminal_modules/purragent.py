@@ -4397,7 +4397,7 @@ def _exploit_worker(eng: dict) -> None:
                       _print_exploit_outcome(lc, st, f, num=nm, reason=rs))
         if missing_tools:
             def _miss(mc=missing_cmds, tools=sorted(missing_tools)):
-                line = Text("      ")
+                line = Text("  ")           # align marker with [running]/[complete]
                 line.append("[skipped]", style="red")
                 line.append(f" {mc} command(s) — tool(s) not installed: ",
                             style="red")
@@ -4406,7 +4406,7 @@ def _exploit_worker(eng: dict) -> None:
             _post(eng["ctx"], _miss)
         if skipped:
             _post(eng["ctx"], lambda s=skipped: console.print(Text(
-                f"      ({s} command(s) skipped — need creds/listener or out of scope)",
+                f"  ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
     _run_exploit_agent(eng)                            # LLM credentialed follow-up
     _run_final_report(eng)                             # pentest summary — printed last
