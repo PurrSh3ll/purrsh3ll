@@ -2448,8 +2448,9 @@ _SAVE_MEMORY_TOOL = {
 _MEMORY_GUIDE = (
     "MEMORY: when the user gives a STANDING instruction (do X every time / always / from "
     "now on / at the end of each answer / za każdym razem / każdorazowo) or asks you to "
-    "remember or forget something, call save_memory to persist it — don't just follow it "
-    "once. Keep applying the stored USER INSTRUCTIONS shown above on every turn.")
+    "remember or forget something, call save_memory ONCE to persist it — a single call, "
+    "then stop (do not save it again, delete it, or re-save). The stored USER "
+    "INSTRUCTIONS above already apply on every turn, so just keep following them.")
 
 _DISCOVERY_GUIDE = (
     "TOOLS: you can act on the system through tools. The catalog below has two "
@@ -6589,15 +6590,20 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                 text = str(args.get("text") or "").strip()
                 action = str(args.get("action") or "save").strip().lower()
                 on_event("call", name, {"action": action, "text": text})
+                # Acks steer the model to STOP — weak models otherwise re-save / delete /
+                # re-save in a loop (the normal tool loop has no dedup).
                 if action == "delete":
                     removed = _delete_memory(base_dir, text) if text else []
-                    ack = (f"Forgot {len(removed)} memory item(s)." if removed
-                           else "Nothing matched to forget.")
+                    ack = (f"Forgot {len(removed)} memory item(s). Done — do not call "
+                           "save_memory again." if removed else
+                           "Nothing matched to forget. Do not retry.")
                 else:
                     kind = str(args.get("kind") or "fact").strip().lower()
                     saved = _add_memory(base_dir, text, kind) if text else False
-                    ack = ("Saved to memory." if saved else
-                           "Nothing saved (empty or already remembered).")
+                    ack = ("Saved. It is stored and applies automatically from now on — "
+                           "do NOT call save_memory again for this." if saved else
+                           "Already stored — nothing to do. Do NOT save or delete it; "
+                           "just continue answering.")
                 on_event("result", name, {"text": ack})
                 msgs.append({"role": "tool", "tool_call_id": call_id, "content": ack})
                 continue
