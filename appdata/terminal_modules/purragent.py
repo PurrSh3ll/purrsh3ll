@@ -203,6 +203,52 @@ def _save_state(base_dir: str, **updates) -> None:
         pass  # non-fatal: selection just won't persist to next launch
 
 
+# ── User memory (normal mode) ──────────────────────────────────────────────────
+# Things the user explicitly asks the model to remember — a standing 'instruction'
+# (always injected into the system prompt) or a 'fact' to keep. Persisted in the
+# state file (survives sessions), injected into context each turn; written only when
+# the model calls the save_memory tool.
+MEMORY_KINDS = ("instruction", "fact")
+
+
+def _load_memories(base_dir: str) -> list:
+    mems = _load_state(base_dir).get("memories")
+    return mems if isinstance(mems, list) else []
+
+
+def _add_memory(base_dir: str, text: str, kind: str) -> bool:
+    """Store one memory, deduped on text (case-insensitive). Returns True if added."""
+    from datetime import datetime, timezone
+    text = (text or "").strip()
+    if not text:
+        return False
+    kind = kind if kind in MEMORY_KINDS else "fact"
+    mems = _load_memories(base_dir)
+    if any((m.get("text") or "").strip().lower() == text.lower() for m in mems):
+        return False
+    mems.append({"text": text, "kind": kind,
+                 "created": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    _save_state(base_dir, memories=mems)
+    return True
+
+
+def _memory_block(base_dir: str) -> str:
+    """Remembered instructions + facts as a system-prompt block; empty when none."""
+    mems = _load_memories(base_dir)
+    if not mems:
+        return ""
+    instr = [m["text"] for m in mems if m.get("kind") == "instruction"]
+    facts = [m["text"] for m in mems if m.get("kind") != "instruction"]
+    parts = []
+    if instr:
+        parts.append("USER INSTRUCTIONS (always follow):\n"
+                     + "\n".join(f"- {t}" for t in instr))
+    if facts:
+        parts.append("REMEMBERED (facts the user asked you to keep):\n"
+                     + "\n".join(f"- {t}" for t in facts))
+    return "\n\n".join(parts)
+
+
 # ── Profiles ───────────────────────────────────────────────────────────────────
 
 def _profiles(config: dict) -> list:
@@ -2297,6 +2343,51 @@ _HACK_TRIGGER_GUIDE = (
     "enable_hacking_mode with enable=true instead of guessing tools — the user "
     "then confirms. Don't call it for general security questions or explanations."
 )
+
+SAVE_MEMORY_TOOL_NAME = "save_memory"
+_SAVE_MEMORY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": SAVE_MEMORY_TOOL_NAME,
+        "description": (
+            "Persist something the USER explicitly asked you to remember, across this "
+            "conversation and future sessions: a standing INSTRUCTION (how to behave, "
+            "something to always do/add) or a FACT to keep. Only call this when the "
+            "user clearly asks to remember/save/note something or to always do "
+            "something — never for a normal answer. Store the distilled point, not the "
+            "whole message."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string",
+                         "description": "The distilled thing to remember, one line."},
+                "kind": {"type": "string", "enum": ["instruction", "fact"],
+                         "description": ("'instruction' = a standing rule to always "
+                                         "follow (e.g. always add X to answers); "
+                                         "'fact' = a piece of information to keep.")},
+            },
+            "required": ["text", "kind"],
+        },
+    },
+}
+
+# Cheap, no-LLM gate that decides whether to OFFER save_memory this turn (multilingual).
+# It only gates tool AVAILABILITY — the model still decides whether to actually save —
+# so a miss just means "not this turn" (recoverable), and the tool stays out of the
+# schema on every ordinary turn (≈0 baseline tool cost).
+_MEMORY_INTENT = re.compile(
+    r"\b(remember|memoriz|don'?t forget|keep in mind|make a note|note that|"
+    r"from now on|take note|save this|bear in mind|"
+    r"zapami[eę]taj|pami[eę]taj|nie zapomnij|od teraz|zawsze|notuj|"
+    r"zapisz sobie|na przysz[lł]o[sś][cć]|miej na uwadze)\b", re.IGNORECASE)
+
+
+def _wants_memory(history: list) -> bool:
+    """Did the latest user turn ask to remember something? Gates offering save_memory."""
+    for m in reversed(history):
+        if m.get("role") == "user":
+            return bool(_MEMORY_INTENT.search(str(m.get("content") or "")))
+    return False
 
 _DISCOVERY_GUIDE = (
     "TOOLS: you can act on the system through tools. The catalog below has two "
@@ -6278,8 +6369,14 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         sys_parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
     if offer_hack and not planning:
         sys_parts.append(_HACK_TRIGGER_GUIDE)
+    mem_block = _memory_block(base_dir)                 # remembered instructions + facts
+    if mem_block:
+        sys_parts.append(mem_block)
     if custom_system:
         sys_parts.append(custom_system)
+    # Offer save_memory only when the latest user turn asks to remember something
+    # (no-LLM gate), so it stays out of the schema on ordinary turns.
+    offer_save = (not planning) and _wants_memory(history)
     # Local working copy of the transcript: the raw assistant tool-call messages
     # and tool results live only here, not in the caller's plain history.
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
@@ -6303,6 +6400,7 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         tools_field = ([] if planning
                        else ([_META_TOOL] if offer_meta else [])
                        + ([_ENABLE_HACK_TOOL] if offer_hack else [])
+                       + ([_SAVE_MEMORY_TOOL] if offer_save else [])
                        + list(active.values()))
 
         body = {"model": model, "messages": msgs}
@@ -6366,6 +6464,17 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            "differently, or answer without a tool.")
                 msgs.append({"role": "tool", "tool_call_id": call_id,
                              "content": ack})
+                continue
+
+            if name == SAVE_MEMORY_TOOL_NAME:
+                text = str(args.get("text") or "").strip()
+                kind = str(args.get("kind") or "fact").strip().lower()
+                on_event("call", name, {"kind": kind, "text": text})
+                saved = _add_memory(base_dir, text, kind) if text else False
+                ack = ("Saved to memory." if saved else
+                       "Nothing saved (empty or already remembered).")
+                on_event("result", name, {"text": ack})
+                msgs.append({"role": "tool", "tool_call_id": call_id, "content": ack})
                 continue
 
             if name == ENABLE_HACK_TOOL_NAME:
