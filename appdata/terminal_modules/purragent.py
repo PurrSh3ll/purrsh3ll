@@ -4761,19 +4761,36 @@ def _v_mongo(c, host, port):
     return "mongo_query", args
 
 
-def _ok_nxc(t, e):   return "[+]" in t or "pwn3d" in t.lower()
-def _ok_ssh(t, e):   return not e and "uid=" in t
-def _ok_ftp(t, e):   return not e and "530" not in t and "denied" not in t.lower()
-def _ok_mysql(t, e): return not e and "access denied" not in t.lower() \
+def _is_anon_cred(cred) -> bool:
+    """A null / guest / anonymous login (empty username, or guest/anonymous, with no
+    secret) — the one case where SMB's guest fallback IS the intended positive result."""
+    if not cred:
+        return False
+    u = (cred.get("username") or "").strip().lower()
+    return not cred.get("secret") and u in ("", "guest", "anonymous")
+
+
+def _ok_nxc(t, e, cred=None):
+    """netexec success. Guard against SMB guest FALLBACK: when guest access is enabled,
+    nxc prints [+] …(Guest) for ANY credential, which would make every guess look valid.
+    A (Guest) result only counts for an explicitly anonymous/guest/null credential."""
+    if "[+]" not in t and "pwn3d" not in t.lower():
+        return False
+    if "(guest)" in t.lower():
+        return _is_anon_cred(cred)
+    return True
+def _ok_ssh(t, e, cred=None):   return not e and "uid=" in t
+def _ok_ftp(t, e, cred=None):   return not e and "530" not in t and "denied" not in t.lower()
+def _ok_mysql(t, e, cred=None): return not e and "access denied" not in t.lower() \
                             and "error 1045" not in t.lower()
-def _ok_psql(t, e):  return not e and "authentication failed" not in t.lower() \
+def _ok_psql(t, e, cred=None):  return not e and "authentication failed" not in t.lower() \
                             and "fatal" not in t.lower()
-def _ok_redis(t, e): return "redis_version" in t
-def _ok_ldap(t, e):
+def _ok_redis(t, e, cred=None): return "redis_version" in t
+def _ok_ldap(t, e, cred=None):
     low = t.lower()
     return not e and "invalid credentials" not in low and "ldap_bind" not in low \
         and any(m in low for m in ("dn:", "numentries", "search result", "objectclass"))
-def _ok_mongo(t, e):
+def _ok_mongo(t, e, cred=None):
     low = t.lower()
     return not e and not any(m in low for m in (
         "authentication failed", "requires authentication", "mongoservererror"))
@@ -4830,23 +4847,24 @@ def _attempt_login(mcp, host: str, present: dict, cred: dict, budget: list):
         if key not in _CRED_VALIDATORS or key not in present:
             continue
         arg_fn, ok_fn = _CRED_VALIDATORS[key]
-        for port in present[key][:1]:                  # one port per service class
-            if budget[0] <= 0:
-                return tested, None, None
-            built = arg_fn(cred, host, port)
-            if not built:
-                continue
-            tool, args = built
-            tested = True
-            budget[0] -= 1
-            name = mcp_client._namespaced("hacktools", tool)
-            try:
-                res = mcp.call(name, args, timeout=_CRED_VALIDATE_TIMEOUT)
-            except Exception:                          # noqa: BLE001
-                res = {"text": "", "is_error": True}
-            is_err = bool(res.get("is_error") or res.get("isError"))
-            if ok_fn(res.get("text") or "", is_err):
-                return tested, key, port
+        ports = present[key]
+        port = 445 if key == "smb" and 445 in ports else ports[0]   # prefer 445 over 139
+        if budget[0] <= 0:
+            return tested, None, None
+        built = arg_fn(cred, host, port)
+        if not built:
+            continue
+        tool, args = built
+        tested = True
+        budget[0] -= 1
+        name = mcp_client._namespaced("hacktools", tool)
+        try:
+            res = mcp.call(name, args, timeout=_CRED_VALIDATE_TIMEOUT)
+        except Exception:                              # noqa: BLE001
+            res = {"text": "", "is_error": True}
+        is_err = bool(res.get("is_error") or res.get("isError"))
+        if ok_fn(res.get("text") or "", is_err, cred):
+            return tested, key, port
     return tested, None, None
 
 
@@ -4972,7 +4990,11 @@ def _run_cred_derivation(eng: dict) -> None:
     if mcp is None or eng.get("cancelled"):
         return
     base, tid, host = eng["base_dir"], eng["tid"], eng["ip"]
-    present = _present_services(base, tid)
+    creds = purragent_db.fetch_credentials(base, tid)
+    # Skip services we can already log into (a validated cred, incl. anon/guest access) —
+    # guessing more logins there is pointless and, on SMB guest-fallback, floods the store.
+    present = {k: ports for k, ports in _present_services(base, tid).items()
+               if not _service_has_login(creds, k, ports[0])}
     if not (set(present) & _CRED_AUTH_SERVICES):
         return
     cands = _derive_candidates(base, tid, present)
@@ -5355,9 +5377,9 @@ def _exploit_worker(eng: dict) -> None:
             svc_finds = [f["finding"] for f in eng["exploit_findings"]
                          if f.get("port") == port]
             _run_service_review(eng, port, proto, key, label, svc_finds, ran_cmds)
-    _run_exploit_agent(eng)                            # final cross-service correlation
     _run_cred_harvest(eng)                             # seed/extract/validate credentials
     _run_cred_derivation(eng)                          # deduced logins (before brute)
+    _run_exploit_agent(eng)                            # cross-service correlation (now has creds)
     _run_final_report(eng)                             # pentest summary — printed last
     _run_brute_gate(eng)                               # background brute for logins we lack
     _post(eng["ctx"], lambda: _finish_recon(eng))
