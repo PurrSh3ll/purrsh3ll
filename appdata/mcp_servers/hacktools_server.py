@@ -3442,6 +3442,33 @@ _REQUIRES = {
     "whatweb": "whatweb", "login_bruteforce": "hydra",
 }
 
+# Python libraries a python-native tool needs. Each entry is a list of groups; a group is
+# a tuple (import-name alternatives, pip hint) satisfied if ANY of its modules imports.
+# Checked SERVER-SIDE (this process's own env, which is where the tool runs) and the
+# unsatisfied groups' hints are advertised as `py_missing` in tools/list, so /doctor can
+# flag a native tool whose library is absent (most native tools are stdlib-only).
+_PY_REQUIRES = {
+    "gpp_decrypt": [(("Crypto", "cryptography"), "pip: pycryptodome")],
+}
+
+
+def _py_missing(name):
+    """pip hints for this tool's unsatisfied python-lib groups (empty when all present)."""
+    import importlib.util
+    out = []
+    for mods, hint in _PY_REQUIRES.get(name, ()):
+        ok = False
+        for m in mods:
+            try:
+                if importlib.util.find_spec(m) is not None:
+                    ok = True
+                    break
+            except Exception:                          # noqa: BLE001 — bad/broken module
+                pass
+        if not ok:
+            out.append(hint)
+    return out
+
 
 def _tools_list():
     # `description` is the standard model-facing text (any MCP client works).
@@ -3459,6 +3486,7 @@ def _tools_list():
             "exampleQueries": examples,
             "timeout": _TIMEOUTS.get(name, _DEFAULT_TOOL_TIMEOUT),
             "requires": _REQUIRES.get(name),      # external binary, or null if native
+            "py_missing": _py_missing(name),      # unsatisfied python libs (native tools)
             "inputSchema": schema,
         })
     return out

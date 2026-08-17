@@ -1309,11 +1309,18 @@ def _doctor_view(mcp: "mcp_client.MCPManager") -> None:
         return
     ready = 0
     missing: dict = {}                                 # binary -> [tool names]
+    missing_py: dict = {}                              # pip hint -> [tool names]
     which_cache: dict = {}
     for t in tools:
+        tool = mcp_client.split_namespaced(t["name"])[1]
         binary = t.get("requires")
-        if not binary:                                 # python-native → always runnable
-            ready += 1
+        if not binary:                                 # python-native tool
+            py_missing = t.get("py_missing") or []
+            if py_missing:                             # …but a python lib is absent
+                for hint in py_missing:
+                    missing_py.setdefault(hint, []).append(tool)
+            else:
+                ready += 1
             continue
         ok = which_cache.get(binary)
         if ok is None:
@@ -1322,26 +1329,35 @@ def _doctor_view(mcp: "mcp_client.MCPManager") -> None:
         if ok:
             ready += 1
         else:
-            missing.setdefault(binary, []).append(
-                mcp_client.split_namespaced(t["name"])[1])
+            missing.setdefault(binary, []).append(tool)
     console.print(Text("purragent — hacktools doctor", style=f"bold {VIOLET}"))
     console.print(Text(""))
     console.print(Text(f"  ✓ {ready} tool(s) ready", style="green"))
-    if not missing:
-        console.print(Text("    every hacktool has its program installed.",
+    if not missing and not missing_py:
+        console.print(Text("    every hacktool has its program and libraries installed.",
                            style="bright_black"))
         return
-    n_tools = sum(len(v) for v in missing.values())
-    console.print(Text(f"  ✗ {n_tools} tool(s) unavailable — install "
-                       f"{len(missing)} program(s):", style="red"))
-    console.print(Text(""))
-    width = max(len(b) for b in missing)
-    for binary in sorted(missing):
-        line = Text("    ")
-        line.append(binary.ljust(width), style="bold red")
-        line.append("  " + _PKG_HINT.get(binary, f"apt: {binary}"), style="cyan")
-        line.append("  → " + ", ".join(sorted(missing[binary])), style="bright_black")
-        console.print(line)
+    if missing:
+        n_tools = sum(len(v) for v in missing.values())
+        console.print(Text(f"  ✗ {n_tools} tool(s) need a program — install "
+                           f"{len(missing)}:", style="red"))
+        width = max(len(b) for b in missing)
+        for binary in sorted(missing):
+            line = Text("    ")
+            line.append(binary.ljust(width), style="bold red")
+            line.append("  " + _PKG_HINT.get(binary, f"apt: {binary}"), style="cyan")
+            line.append("  → " + ", ".join(sorted(missing[binary])), style="bright_black")
+            console.print(line)
+    if missing_py:
+        n_tools = len({tl for v in missing_py.values() for tl in v})
+        console.print(Text(f"  ✗ {n_tools} tool(s) need a python library:", style="red"))
+        width = max(len(h) for h in missing_py)
+        for hint in sorted(missing_py):
+            line = Text("    ")
+            line.append(hint.ljust(width), style="cyan")
+            line.append("  → " + ", ".join(sorted(set(missing_py[hint]))),
+                        style="bright_black")
+            console.print(line)
 
 
 def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:

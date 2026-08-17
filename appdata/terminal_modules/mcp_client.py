@@ -1185,6 +1185,7 @@ class MCPManager:
             "schema": self._openai_schema(server, t),
             "builtin": is_builtin_server(self.specs.get(server, {})),
             "requires": t.get("requires"),        # external binary this tool needs, if any
+            "py_missing": t.get("py_missing") or [],   # its unsatisfied python libs, if any
         }
 
     def schema_for(self, namespaced_name: str):
