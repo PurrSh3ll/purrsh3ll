@@ -4232,9 +4232,9 @@ _REVIEW_TASK = ("Review the nmap recon above. If it looks complete and reliable,
 _AGENT_SECRET_ARGS = {"password", "hash", "bearer", "api_token"}
 
 
-def _print_agent_call(label: str, tool: str, args: dict) -> None:
+def _print_agent_call(label: str, tool: str, args: dict, num=None) -> None:
     line = Text("  ")
-    line.append("[running]", style="default")
+    line.append("[running" + (f" {num}" if num else "") + "]", style="default")
     line.append(f" ▸ {label} · {tool}")
     prev = ", ".join(f"{k}={v}" for k, v in list(args.items())[:4]
                      if v not in (None, "") and k not in _AGENT_SECRET_ARGS)
@@ -4245,10 +4245,10 @@ def _print_agent_call(label: str, tool: str, args: dict) -> None:
     console.print(line)
 
 
-def _print_agent_result(label: str, tool: str, result: dict) -> None:
+def _print_agent_result(label: str, tool: str, result: dict, num=None) -> None:
     snippet = "\n".join((result.get("text") or "").strip().splitlines()[:8])
     line = Text("  ")
-    line.append("[complete]", style="default")
+    line.append("[complete" + (f" {num}" if num else "") + "]", style="default")
     line.append(f" ▸ {label} · {tool}")
     if snippet:
         line.append("\n")
@@ -4384,16 +4384,18 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
                              "was:\n" + seen[key] + "\nDo not repeat it — try a "
                              "different tool or arguments, or stop and summarise."})
                 continue
-            _post(ctx, lambda lb=label, b=bare, ar=args: _print_agent_call(lb, b, ar))
             calls += 1
+            cno = calls                                # pairs [running N] with [complete N]
+            _post(ctx, lambda lb=label, b=bare, ar=args, n=cno:
+                  _print_agent_call(lb, b, ar, num=n))
             try:
                 # No explicit budget — the client waits per the tool's advertised
                 # timeout, then kills it.
                 result = mcp.call(name, args)
             except Exception as exc:                   # noqa: BLE001
                 result = {"text": f"error: {exc}", "isError": True}
-            _post(ctx, lambda lb=label, b=bare, r=result:
-                  _print_agent_result(lb, b, r))
+            _post(ctx, lambda lb=label, b=bare, r=result, n=cno:
+                  _print_agent_result(lb, b, r, num=n))
             text = result.get("text") or "(no output)"
             seen[key] = text
             msgs.append({"role": "tool", "tool_call_id": call_id, "content": text})
@@ -5124,11 +5126,12 @@ def _run_brute_proc(argv: list, cancel, deadline_s: float) -> dict:
             "timed_out": timed_out}
 
 
-def _print_brute_line(state: str, key: str, port: int, extra: str = "") -> None:
+def _print_brute_line(state: str, key: str, port: int, extra: str = "",
+                      num=None) -> None:
     color = {"running": "default", "found": "green", "none": "bright_black",
              "aborted": "magenta", "timeout": "red"}.get(state, "bright_black")
     line = Text("  ")
-    line.append(f"[{state}]", style=color)
+    line.append(f"[{state}" + (f" {num}" if num else "") + "]", style=color)
     line.append(f" ▸ brute · {key}  → {port}", style=color)
     if extra:
         line.append(f"  {extra}", style=color)
@@ -5136,7 +5139,7 @@ def _print_brute_line(state: str, key: str, port: int, extra: str = "") -> None:
 
 
 def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str,
-                  userfile: str, passfile: str) -> None:
+                  userfile: str, passfile: str, num: int) -> None:
     """One backgrounded hydra job against a single service; on a hit, stores the
     credential (validated) and adds the username to the pool."""
     ctx, base, tid, host = eng["ctx"], eng["base_dir"], eng["tid"], eng["ip"]
@@ -5144,7 +5147,7 @@ def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str
         if job["cancel"].is_set():
             job["state"] = "aborted"
             return
-        _post(ctx, lambda: _print_brute_line("running", key, port))
+        _post(ctx, lambda: _print_brute_line("running", key, port, num=num))
         argv = ["hydra", "-L", userfile, "-P", passfile, "-t", str(BRUTE_THREADS),
                 "-f", "-I", "-s", str(port), host, hydra_svc]
         res = _run_brute_proc(argv, job["cancel"], BRUTE_MINUTES * 60)
@@ -5163,17 +5166,18 @@ def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str
             except Exception:                          # noqa: BLE001
                 pass
             _post(ctx, lambda u=user: _print_brute_line(
-                "found", key, port, f"{u}:***"))
+                "found", key, port, f"{u}:***", num=num))
     elif res["cancelled"]:
         job["state"] = "aborted"
-        _post(ctx, lambda: _print_brute_line("aborted", key, port))
+        _post(ctx, lambda: _print_brute_line("aborted", key, port, num=num))
     elif res["timed_out"]:
         job["state"] = "error"
         _post(ctx, lambda: _print_brute_line("timeout", key, port,
-                                             f"({BRUTE_MINUTES}m budget)"))
+                                             f"({BRUTE_MINUTES}m budget)", num=num))
     else:
         job["state"] = "complete"
-        _post(ctx, lambda: _print_brute_line("none", key, port, "no login found"))
+        _post(ctx, lambda: _print_brute_line("none", key, port, "no login found",
+                                             num=num))
 
 
 def _brute_reaper(eng: dict, threads: list, tmp_files: list) -> None:
@@ -5227,12 +5231,12 @@ def _run_brute_gate(eng: dict) -> None:
         f"(max {BRUTE_MINUTES}m each)", style="bright_black")))
     sem = threading.Semaphore(BRUTE_MAX_PARALLEL)
     threads = []
-    for key, port in eligible:
+    for i, (key, port) in enumerate(eligible, 1):      # number each brute job
         job = _job(f"hydra -L users -P pass -s {port} {host} {_BRUTE_SERVICES[key]}")
         phase["jobs"].append(job)
         t = threading.Thread(target=_brute_worker,
                              args=(eng, sem, job, port, key, _BRUTE_SERVICES[key],
-                                   userfile, passfile), daemon=True)
+                                   userfile, passfile, i), daemon=True)
         t.start()
         threads.append(t)
     threading.Thread(target=_brute_reaper,
