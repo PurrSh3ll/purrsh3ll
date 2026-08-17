@@ -488,6 +488,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
             cat_chars = len(_DISCOVERY_GUIDE) + len(_catalog_block(all_tools))
             tools_chars = TOOLS_RESERVATION_TOKENS * 4
     custom_chars = len((p.get("custom_system", "") or "").strip())
+    mem_chars = len(_memory_block(base_dir))     # saved /memory, injected every turn
     hist_chars = sum(len(m.get("content")) for m in history
                      if isinstance(m.get("content"), str))
 
@@ -495,6 +496,7 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
         ("system prompt&env",       sys_chars),
         ("tool catalog",            cat_chars),
         ("custom instructions",     custom_chars),
+        ("user memory (/memory)",   mem_chars),
         ("mcp tools (reserved)",    tools_chars),
     ]
     fixed_chars = sum(c for _, c in fixed)
