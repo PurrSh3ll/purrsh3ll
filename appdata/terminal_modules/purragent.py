@@ -2439,26 +2439,15 @@ _SAVE_MEMORY_TOOL = {
     },
 }
 
-# Cheap, no-LLM gate that decides whether to OFFER save_memory this turn (multilingual).
-# It only gates tool AVAILABILITY — the model still decides whether to actually save —
-# so a miss just means "not this turn" (recoverable), and the tool stays out of the
-# schema on every ordinary turn (≈0 baseline tool cost).
-_MEMORY_INTENT = re.compile(
-    r"\b(remember|memoriz|don'?t forget|keep in mind|make a note|note that|"
-    r"from now on|take note|save this|bear in mind|forget|stop remembering|"
-    r"no longer|remove from memory|delete .*memory|"
-    r"zapami[eę]taj|pami[eę]taj|nie zapomnij|od teraz|zawsze|notuj|"
-    r"zapisz sobie|na przysz[lł]o[sś][cć]|miej na uwadze|"
-    r"zapomnij|usu[nń] z pami[eę]ci|przesta[nń] pami[eę]ta[cć]|skasuj z pami[eę]ci)\b",
-    re.IGNORECASE)
-
-
-def _wants_memory(history: list) -> bool:
-    """Did the latest user turn ask to remember something? Gates offering save_memory."""
-    for m in reversed(history):
-        if m.get("role") == "user":
-            return bool(_MEMORY_INTENT.search(str(m.get("content") or "")))
-    return False
+# save_memory is offered on every normal turn (it's one small tool). A keyword gate was
+# too brittle — it missed common standing-instruction phrasings ("za każdym razem",
+# "każdorazowo", "each response"), so the model never got the tool and silently failed to
+# remember. Always offering it and letting the model decide is the reliable choice.
+_MEMORY_GUIDE = (
+    "MEMORY: when the user gives a STANDING instruction (do X every time / always / from "
+    "now on / at the end of each answer / za każdym razem / każdorazowo) or asks you to "
+    "remember or forget something, call save_memory to persist it — don't just follow it "
+    "once. Keep applying the stored USER INSTRUCTIONS shown above on every turn.")
 
 _DISCOVERY_GUIDE = (
     "TOOLS: you can act on the system through tools. The catalog below has two "
@@ -6502,9 +6491,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         sys_parts.append(mem_block)
     if custom_system:
         sys_parts.append(custom_system)
-    # Offer save_memory only when the latest user turn asks to remember something
-    # (no-LLM gate), so it stays out of the schema on ordinary turns.
-    offer_save = (not planning) and _wants_memory(history)
+    offer_save = not planning              # always available (except in plan mode)
+    if offer_save:
+        sys_parts.append(_MEMORY_GUIDE)    # nudge weaker models to actually save
     # Local working copy of the transcript: the raw assistant tool-call messages
     # and tool results live only here, not in the caller's plain history.
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
