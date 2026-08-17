@@ -856,6 +856,12 @@ PLAN_MODE_NOTE = (
     "actually execute."
 )
 
+# The built-in tools server (appdata/mcp_servers/hacktools_server.py). Its tools
+# are the only ones whose behaviour we know, so the semi-auto read-only allowlist
+# applies ONLY to them — a third-party MCP server's tool that happens to share a
+# name (e.g. its own "read_file") must not inherit the "safe" verdict.
+_BUILTIN_TOOLS_SERVER = "hacktools"
+
 # Tools that only read/inspect — safe to run unattended in semi-auto.
 _READONLY_TOOLS = {"read_file", "list_dir", "grep", "find_files"}
 
@@ -948,7 +954,12 @@ def _needs_confirm(mode: str, name: str, args: dict):
         return True, ""
     if mode != "semi-auto":
         return False, ""
-    tool = mcp_client.split_namespaced(name)[1]
+    server, tool = mcp_client.split_namespaced(name)
+    # The read-only / command classifier only understands the built-in hacktools
+    # server's tools. Anything from a third-party MCP server is unknown → ask, even
+    # if its tool name collides with a built-in one (e.g. another "read_file").
+    if server != _BUILTIN_TOOLS_SERVER:
+        return True, "external MCP tool — behaviour unknown"   # fail-closed
     if tool in _READONLY_TOOLS:
         return False, ""
     if tool == "run_command":
@@ -960,7 +971,7 @@ def _needs_confirm(mode: str, name: str, args: dict):
         return True, f"{method} request may change server state"
     if tool in ("write_file", "edit_file"):
         return True, "modifies a file on disk"
-    return True, "external / unclassified tool"       # fail-closed
+    return True, "unclassified tool"                  # fail-closed
 
 
 def _confirm_action(name: str, args: dict, reason: str) -> bool:
