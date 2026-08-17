@@ -2164,20 +2164,205 @@ _THINK_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"   # same braille frames pschat
 
 
 def _supports_tool_loop(profile: dict) -> bool:
-    """The tool loop only speaks the OpenAI /chat/completions tool format."""
-    return profile.get("provider", "") not in ("anthropic",)
+    """The tool loop speaks two wire formats: OpenAI /chat/completions for the
+    OpenAI-compatible providers, and Anthropic /v1/messages for the anthropic
+    provider (the OpenAI-shaped transcript is converted at the wire in _chat_stream)."""
+    return True
 
 
 def _openai_endpoint(profile: dict, base_dir: str):
-    """(endpoint, api_key) for the profile's OpenAI-compatible chat endpoint."""
+    """(endpoint, api_key) for the profile's chat endpoint. For OpenAI-compatible
+    providers this is …/chat/completions; for the anthropic provider it is the
+    …/v1/messages endpoint (the /messages suffix is how _chat_stream routes to the
+    Anthropic wire format)."""
     provider = profile.get("provider", "ollama")
     url = profile.get("url", "") or psai._DEFAULT_URLS.get(provider, "")
+    if provider == "anthropic":
+        base = (url.rstrip("/") or "https://api.anthropic.com")
+        endpoint = base + ("/messages" if base.endswith("/v1") else "/v1/messages")
+        return endpoint, psai._load_api_key(profile.get("name", ""), base_dir)
     if provider == "ollama":                     # native URL lacks the /v1 suffix
         base = url.rstrip("/")
         url = base if base.endswith("/v1") else base + "/v1"
     endpoint = url.rstrip("/") + "/chat/completions"
     api_key = psai._load_api_key(profile.get("name", ""), base_dir)
     return endpoint, api_key
+
+
+# ── Anthropic wire format (native /v1/messages tool loop) ─────────────────────
+# The agent loop keeps its transcript in OpenAI shape (system/user/assistant with
+# `tool_calls`, and `role:"tool"` results). For the anthropic provider we convert
+# that to the Messages API at the wire and normalise the reply back to the OpenAI
+# shape, so the loop, the mode gate and the context trimmer all stay format-agnostic.
+ANTHROPIC_VERSION    = "2023-06-01"
+ANTHROPIC_MAX_TOKENS = 4096          # required by the Messages API; caps reply length
+
+
+def _oai_tools_to_anthropic(tools: list) -> list:
+    """OpenAI function schemas → Anthropic tool defs (input_schema, no wrapper)."""
+    out = []
+    for t in tools or []:
+        fn = t.get("function") if t.get("type") == "function" else t
+        if not fn or not fn.get("name"):
+            continue
+        out.append({"name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters")
+                    or {"type": "object", "properties": {}}})
+    return out
+
+
+def _oai_msgs_to_anthropic(messages: list):
+    """(system_str, anthropic_messages) from an OpenAI-shaped transcript. The system
+    message becomes the top-level `system`; assistant tool_calls become `tool_use`
+    blocks; `role:"tool"` results become `tool_result` blocks merged into one user
+    turn (Anthropic groups a turn's results together)."""
+    system_parts, out = [], []
+    for m in messages:
+        role = m.get("role")
+        if role == "system":
+            if m.get("content"):
+                system_parts.append(m["content"])
+        elif role == "tool":
+            block = {"type": "tool_result", "tool_use_id": m.get("tool_call_id"),
+                     "content": m.get("content") or ""}
+            if out and out[-1]["role"] == "user" and out[-1].get("_tr"):
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block], "_tr": True})
+        elif role == "assistant":
+            content = []
+            if m.get("content"):
+                content.append({"type": "text", "text": m["content"]})
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                try:
+                    inp = json.loads(fn.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    inp = {}
+                content.append({"type": "tool_use", "id": tc.get("id"),
+                                "name": fn.get("name", ""), "input": inp})
+            out.append({"role": "assistant", "content": content or ""})
+        else:                                          # user (or anything else)
+            out.append({"role": "user", "content": m.get("content") or ""})
+    for m in out:
+        m.pop("_tr", None)
+    return "\n\n".join(system_parts), out
+
+
+def _chat_stream_anthropic(endpoint: str, api_key: str, body: dict, on_text,
+                           hide_thinking: bool = False, render_reasoning: bool = True,
+                           max_seconds: float | None = None) -> dict:
+    """Stream one Anthropic /v1/messages turn, converting the OpenAI-shaped `body`
+    (messages + tools) at the wire and returning the SAME normalised assistant dict
+    {content, tool_calls} that _chat_stream returns."""
+    system, messages = _oai_msgs_to_anthropic(body.get("messages") or [])
+    payload = {"model": body.get("model", ""), "messages": messages, "stream": True,
+               "max_tokens": int(body.get("max_tokens") or ANTHROPIC_MAX_TOKENS)}
+    if system:
+        payload["system"] = system
+    tools = _oai_tools_to_anthropic(body.get("tools") or [])
+    if tools:
+        payload["tools"] = tools
+        if body.get("tool_choice") in (None, "auto"):
+            payload["tool_choice"] = {"type": "auto"}
+    for k in ("temperature", "top_p", "top_k", "stop_sequences"):  # whitelist only
+        if body.get(k) is not None:
+            payload[k] = body[k]
+    headers = {"Content-Type": "application/json", "x-api-key": api_key,
+               "anthropic-version": ANTHROPIC_VERSION, "User-Agent": "Mozilla/5.0"}
+    req = urllib.request.Request(endpoint, data=json.dumps(payload).encode(),
+                                 headers=headers, method="POST")
+    psai._debug_dump_request("anthropic (agent)", endpoint, "POST", headers, payload)
+
+    content_parts: list = []
+    blocks: dict = {}          # index -> {type, id, name, json}
+    thinking = {"on": False, "spin": 0}
+
+    def _end_thinking():
+        if not thinking["on"]:
+            return
+        if not render_reasoning:
+            thinking["on"] = False
+            return
+        if hide_thinking:
+            sys.stderr.write("\r" + " " * 44 + "\r")
+            sys.stderr.flush()
+        else:
+            sys.stdout.write("\033[0m\n")
+            sys.stdout.flush()
+        thinking["on"] = False
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        on_text(f"[tool loop] HTTP {e.code}: {detail[:400]}")
+        return {"role": "assistant", "content": f"[tool loop] HTTP {e.code}"}
+
+    stream_start = time.time()
+    with resp:
+        for raw in resp:
+            if max_seconds and (time.time() - stream_start) > max_seconds:
+                break
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            try:
+                ev = json.loads(line[5:].strip())
+            except json.JSONDecodeError:
+                continue
+            etype = ev.get("type", "")
+            if etype == "content_block_start":
+                idx = ev.get("index", 0)
+                cb = ev.get("content_block") or {}
+                if cb.get("type") == "tool_use":
+                    blocks[idx] = {"type": "tool_use", "id": cb.get("id"),
+                                   "name": cb.get("name", ""), "json": ""}
+                else:
+                    blocks[idx] = {"type": cb.get("type", "text")}
+            elif etype == "content_block_delta":
+                d = ev.get("delta") or {}
+                dt = d.get("type", "")
+                if dt == "text_delta":
+                    piece = d.get("text", "")
+                    if piece:
+                        _end_thinking()
+                        content_parts.append(piece)
+                        on_text(piece)
+                elif dt == "input_json_delta":
+                    b = blocks.setdefault(ev.get("index", 0),
+                                          {"type": "tool_use", "id": None,
+                                           "name": "", "json": ""})
+                    b["json"] += d.get("partial_json", "")
+                elif dt == "thinking_delta" and render_reasoning:
+                    r = d.get("thinking", "")
+                    if r and hide_thinking:
+                        thinking["spin"] += 1
+                        frame = _THINK_SPINNER[thinking["spin"] % len(_THINK_SPINNER)]
+                        sys.stderr.write(f"\r\033[90mthinking… {frame}\033[0m")
+                        sys.stderr.flush()
+                        thinking["on"] = True
+                    elif r:
+                        if not thinking["on"]:
+                            sys.stdout.write("\033[90m")
+                        sys.stdout.write(r)
+                        sys.stdout.flush()
+                        thinking["on"] = True
+            elif etype == "error":
+                msg = (ev.get("error") or {}).get("message", "unknown error")
+                on_text(f"[tool loop] anthropic error: {msg[:300]}")
+            elif etype == "message_stop":
+                break
+
+    _end_thinking()
+    msg = {"role": "assistant", "content": "".join(content_parts) or None}
+    tcs = [{"id": b.get("id"), "type": "function",
+            "function": {"name": b.get("name", ""), "arguments": b.get("json") or "{}"}}
+           for _i, b in sorted(blocks.items()) if b.get("type") == "tool_use"]
+    if tcs:
+        msg["tool_calls"] = tcs
+    return msg
 
 
 def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
@@ -2192,6 +2377,11 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
     `max_seconds` caps the whole turn on the wall clock: the per-read socket timeout
     can't stop a model stuck streaming reasoning forever (each token resets it), so
     automated/background calls pass a cap to abort a runaway turn."""
+    # Anthropic provider: its endpoint is …/v1/messages (see _openai_endpoint), which
+    # needs the Messages wire format — convert + parse there, same return shape.
+    if endpoint.rstrip("/").endswith("/messages"):
+        return _chat_stream_anthropic(endpoint, api_key, body, on_text,
+                                      hide_thinking, render_reasoning, max_seconds)
     body = dict(body)
     body["stream"] = True
     headers = {
