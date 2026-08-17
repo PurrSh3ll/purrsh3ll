@@ -33,6 +33,14 @@ import tempfile
 import threading
 import time
 
+# Importing readline gives every plain input() prompt (the /hack step-1 IP, step-2
+# ports, the [y/N] confirms, target edits) full line editing — backspace, arrow keys,
+# and history — instead of raw cooked-mode entry. Guarded: not present on all platforms.
+try:
+    import readline  # noqa: F401
+except ImportError:
+    pass
+
 # Reuse psai's provider/profile/LLM plumbing. psai lives in the same directory;
 # importing it is side-effect-free (its main() is guarded by __main__).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
