@@ -4167,12 +4167,13 @@ def _review_worker(eng: dict) -> None:
 
 def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
                          summary_label, store_service, store_step,
-                         max_rounds, max_calls, budget_min) -> None:
+                         max_rounds, max_calls, budget_min, store_port=0) -> None:
     """Bounded agentic loop over a chosen subset of the hacktools MCP tools, seeded
     with the target's findings. The model calls tools, reacts to their output, and
-    finally summarises; the summary is stored. Shared by the phase-4.5 nmap review and
-    the phase-5 credentialed exploitation layer. No-ops when a model, the MCP client,
-    or the hacktools server isn't available."""
+    finally summarises; the summary is stored (tagged with store_port, 0 for a
+    whole-host step). Shared by the phase-4.5 nmap review, the phase-5 per-service
+    review, and the phase-5 cross-service exploitation layer. No-ops when a model, the
+    MCP client, or the hacktools server isn't available."""
     ctx, base_dir = eng["ctx"], eng["base_dir"]
     profile, mcp = ctx.get("profile"), ctx.get("mcp")
     if not profile or mcp is None or not _supports_tool_loop(profile) \
@@ -4225,10 +4226,10 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
             if summary:
                 _post(ctx, lambda s=summary: _print_agent_summary(summary_label, s))
                 try:
-                    purragent_db.add_exploit_finding(base_dir, eng["tid"], 0, "tcp",
-                        store_service, store_step, "", summary)
+                    purragent_db.add_exploit_finding(base_dir, eng["tid"],
+                        store_port, "tcp", store_service, store_step, "", summary)
                     eng.setdefault("exploit_findings", []).append(
-                        {"port": 0, "finding": summary})
+                        {"port": store_port, "finding": summary})
                 except Exception:                      # noqa: BLE001
                     pass
             return
@@ -4284,15 +4285,86 @@ def _run_targeted_review(eng: dict) -> None:
         max_calls=REVIEW_MAX_TOOLCALLS, budget_min=REVIEW_BUDGET_MINUTES)
 
 
-# ── phase 5 credentialed exploitation layer (LLM over hacktools) ──────────────
-# After the deterministic no-credential enum, the model uses the findings (incl. any
-# discovered credentials) to run TARGETED credentialed follow-up via the hacktools MCP
-# — reuse creds across services, loot shares, dump hashes, run one command, query DBs,
-# confirm a web vuln. Bounded (rounds / tool-calls / time); no brute-force, no broad
-# scanning, single host. Skipped cleanly with no model / MCP / hacktools.
-EXPLOIT_AGENT_MAX_ROUNDS = 6
-EXPLOIT_AGENT_MAX_TOOLCALLS = 10
-EXPLOIT_AGENT_BUDGET_MINUTES = 15
+# ── phase 5 per-service review (LLM over a RAG-picked hacktools subset) ────────
+# After a service's deterministic no-credential enum finishes, the model looks at THAT
+# service's findings + the exact commands already run, and decides whether any further
+# enumeration/exploitation command adds value — mirroring the phase-4.5 review, but
+# scoped to one service. Tools are RAG-selected from the safe exploit set (no brute /
+# no creds it doesn't have — that stays for the deterministic gate). Tight budget since
+# it runs once per service. Cross-service correlation is left to the final agent below.
+SERVICE_REVIEW_MAX_ROUNDS = 3
+SERVICE_REVIEW_MAX_TOOLCALLS = 5
+SERVICE_REVIEW_BUDGET_MINUTES = 5
+_SERVICE_REVIEW_SYSTEM = (
+    "You are a penetration tester reviewing ONE service after its deterministic "
+    "no-credential enumeration. Below are the findings for this service and the exact "
+    "commands already run against it. Decide whether any FURTHER enumeration or "
+    "exploitation command would add real value here, and if so run it via the tools. "
+    "Do NOT repeat any command already run. Do NOT brute-force and do NOT use "
+    "credentials you were not given (those are handled elsewhere). Stay on THIS host "
+    "and THIS service. If nothing more is worth running, reply with a one-line note "
+    "saying so and stop.")
+
+
+def _service_review_allowed(base_dir: str, mcp, need: str) -> set:
+    """RAG-pick the hacktools most relevant to this service's findings, narrowed to the
+    safe exploit set (brute/creds tools stay out). Falls back to the whole safe set when
+    embeddings are unavailable, so the review still works without RAG."""
+    universe = _EXPLOIT_AGENT_TOOLS
+    try:
+        r = _get_retriever(base_dir, mcp.all_tools())
+        if r:
+            picked = {mcp_client.split_namespaced(n)[1]
+                      for n, _ in r.retrieve(need, top_n=12)}
+            picked &= universe
+            if picked:
+                return picked
+    except Exception:                                  # noqa: BLE001
+        pass
+    return universe
+
+
+def _service_review_task(port: int, key: str, label: str, findings: list,
+                         cmds: list) -> str:
+    """Compact per-service prompt: what the service is, what was found, what already ran."""
+    finds = "\n".join(f"- {f}" for f in findings) or "- (no findings recorded)"
+    ran = "\n".join(f"$ {c}" for c in cmds) or "(none ran)"
+    return (f"Service: {port}/{key} — {label}\n\n"
+            f"Findings so far for this service:\n{finds}\n\n"
+            f"Commands already run against this service (do not repeat these):\n{ran}\n\n"
+            "Decide whether any further enumeration/exploitation adds value here; run it "
+            "with the tools if so, otherwise say there is nothing more and stop.")
+
+
+def _run_service_review(eng: dict, port: int, proto: str, key: str, label: str,
+                        findings: list, cmds: list) -> None:
+    """Phase-5 per-service review: bounded LLM follow-up over a RAG-picked hacktools
+    subset, scoped to a single service. No-op without model / MCP / hacktools."""
+    ctx = eng["ctx"]
+    mcp = ctx.get("mcp")
+    if mcp is None or eng.get("cancelled"):
+        return
+    need = f"{key} {label} " + " ".join(str(f) for f in findings)
+    allowed = _service_review_allowed(eng["base_dir"], mcp, need)
+    _run_hacktools_agent(
+        eng, allowed=allowed, system_prompt=_SERVICE_REVIEW_SYSTEM,
+        task=_service_review_task(port, key, label, findings, cmds),
+        intro=f"reviewing {port}/{key} — the model may run a few more checks",
+        label="review", summary_label=f"{port}/{key} review",
+        store_service=f"review:{key}", store_step=f"{port}/{key} review",
+        max_rounds=SERVICE_REVIEW_MAX_ROUNDS, max_calls=SERVICE_REVIEW_MAX_TOOLCALLS,
+        budget_min=SERVICE_REVIEW_BUDGET_MINUTES, store_port=port)
+
+
+# ── phase 5 cross-service exploitation layer (LLM over hacktools) ──────────────
+# After every service has been enumerated and per-service-reviewed, one final agent
+# does what a per-service pass structurally can't: CROSS-SERVICE correlation — reuse a
+# credential or artefact found on one service against another (FTP creds on SMB, a
+# config password on a DB). Bounded (rounds / tool-calls / time); no brute-force, no
+# broad scanning, single host. Skipped cleanly with no model / MCP / hacktools.
+EXPLOIT_AGENT_MAX_ROUNDS = 5
+EXPLOIT_AGENT_MAX_TOOLCALLS = 8
+EXPLOIT_AGENT_BUDGET_MINUTES = 10
 _EXPLOIT_AGENT_TOOLS = {
     "smb_client", "netexec_smb", "ldap_search", "rpc_enum", "secretsdump",
     "impacket_exec", "kerberos_roast", "enum4linux", "smbmap", "certipy",
@@ -4302,28 +4374,31 @@ _EXPLOIT_AGENT_TOOLS = {
     "cve_lookup", "payload_gen",
 }
 _EXPLOIT_AGENT_SYSTEM = (
-    "You are a penetration tester in the EXPLOITATION phase. No-credential enumeration "
-    "has already run against this host; its findings — including any credentials "
-    "discovered — are below. Using the tools, do TARGETED credentialed follow-up on "
-    "THIS host only: try discovered credentials against its services, list and loot "
-    "readable shares, dump hashes, run a single command, query databases, or confirm a "
-    "web vulnerability. REUSE credentials across services (e.g. FTP creds on SMB). Pass "
-    "credentials as the tools' typed parameters. Do NOT brute-force, do NOT scan the "
-    "network broadly, and stay on this host. When you have exhausted the useful "
-    "follow-ups, reply with a short summary of what you achieved and stop.")
+    "You are a penetration tester doing a final CROSS-SERVICE pass. Every service has "
+    "already been enumerated and individually reviewed; the combined findings — "
+    "including any credentials or artefacts discovered — are below. Your job is the one "
+    "thing a per-service review cannot do: CORRELATE ACROSS SERVICES. Reuse a "
+    "credential or artefact found on one service against another (e.g. FTP creds on "
+    "SMB, a config password against a database, a hash dumped from one host used to "
+    "authenticate to another service). Pass credentials as the tools' typed "
+    "parameters. Do NOT brute-force, do NOT scan the network broadly, do NOT repeat "
+    "single-service enumeration already done, and stay on this host. When the useful "
+    "cross-service follow-ups are exhausted, reply with a short summary and stop.")
 _EXPLOIT_AGENT_TASK = (
-    "Exploit this host using the findings above. Run targeted credentialed follow-up "
-    "with the tools where it clearly helps, then summarise. If there are no usable "
-    "credentials or leads, say so briefly and stop.")
+    "Using the combined findings above, correlate across services: reuse any discovered "
+    "credential or artefact from one service against the others where it clearly helps, "
+    "then summarise. If there is nothing to correlate, say so briefly and stop.")
 
 
 def _run_exploit_agent(eng: dict) -> None:
-    """Phase 5 credentialed layer: LLM-driven follow-up over the exploitation hacktools."""
+    """Phase 5 final layer: LLM-driven cross-service correlation over the exploitation
+    hacktools (per-service depth is already handled by _run_service_review)."""
     _run_hacktools_agent(
         eng, allowed=_EXPLOIT_AGENT_TOOLS, system_prompt=_EXPLOIT_AGENT_SYSTEM,
         task=_EXPLOIT_AGENT_TASK,
-        intro="exploitation — the model may run credentialed follow-up",
-        label="exploit", summary_label="exploitation", store_service="exploit-agent",
+        intro="cross-service correlation — reusing findings across services",
+        label="exploit", summary_label="cross-service exploitation",
+        store_service="exploit-agent",
         store_step="credentialed follow-up", max_rounds=EXPLOIT_AGENT_MAX_ROUNDS,
         max_calls=EXPLOIT_AGENT_MAX_TOOLCALLS, budget_min=EXPLOIT_AGENT_BUDGET_MINUTES)
 
@@ -4357,6 +4432,7 @@ def _exploit_worker(eng: dict) -> None:
               console.print(Text(f"    → {p}/{k}  ·  {lb}", style="bright_black")))
         ran = skipped = missing_cmds = 0
         missing_tools: set = set()
+        ran_cmds: list = []                    # commands actually run, for the review
         for n, step in enumerate(steps, 1):
             if eng.get("cancelled"):
                 break
@@ -4374,6 +4450,7 @@ def _exploit_worker(eng: dict) -> None:
                     missing_cmds += 1
                     continue
                 ran += 1
+                ran_cmds.append(cmd)
                 label_cmd = f"{port}/{key}  ·  {cmd}"
                 job = _job(cmd)
                 with eng["lock"]:
@@ -4432,7 +4509,11 @@ def _exploit_worker(eng: dict) -> None:
             _post(eng["ctx"], lambda s=skipped: console.print(Text(
                 f"  ({s} command(s) skipped — need creds/listener or out of scope)",
                 style="bright_black")))
-    _run_exploit_agent(eng)                            # LLM credentialed follow-up
+        if ran and not eng.get("cancelled"):           # LLM reviews this service
+            svc_finds = [f["finding"] for f in eng["exploit_findings"]
+                         if f.get("port") == port]
+            _run_service_review(eng, port, proto, key, label, svc_finds, ran_cmds)
+    _run_exploit_agent(eng)                            # final cross-service correlation
     _run_final_report(eng)                             # pentest summary — printed last
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
