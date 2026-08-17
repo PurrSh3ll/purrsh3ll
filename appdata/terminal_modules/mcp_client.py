@@ -1184,6 +1184,7 @@ class MCPManager:
             "examples": t.get("exampleQueries") or [],
             "schema": self._openai_schema(server, t),
             "builtin": is_builtin_server(self.specs.get(server, {})),
+            "requires": t.get("requires"),        # external binary this tool needs, if any
         }
 
     def schema_for(self, namespaced_name: str):

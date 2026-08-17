@@ -104,6 +104,7 @@ SLASH = [
     ("/model",    "switch the attached model (or detach)"),
     ("/mode",     "set how the agent runs (auto / semi-auto / confirm / plan)"),
     ("/mcp",      "manage MCP servers"),
+    ("/doctor",   "check which hacktools need a program installed"),
     ("/hack",     "run the auto-hacking loop against a target"),
     ("/target",   "show the recorded hacking-mode target database"),
     ("/upgrade",  "re-launch purragent as root (sudo)"),
@@ -1271,6 +1272,76 @@ def _toggle_notice(status: str, info: str) -> str:
         "error":    f"  ✗ {info[:44]}",
         "missing":  "  ✗ no such server",
     }.get(status, "")
+
+
+# Install hint per program the hacktools tools need — how to get it (apt / pip / go /
+# github). Unlisted programs default to "apt: <name>". Used by /doctor.
+_PKG_HINT = {
+    "nxc": "apt: netexec",
+    "impacket-secretsdump": "apt: impacket-scripts",
+    "impacket-wmiexec": "apt: impacket-scripts",
+    "impacket-GetUserSPNs": "apt: impacket-scripts",
+    "dig": "apt: dnsutils", "ldapsearch": "apt: ldap-utils",
+    "rpcclient": "apt: samba-common-bin", "showmount": "apt: nfs-common",
+    "redis-cli": "apt: redis-tools", "mongosh": "apt: mongodb-mongosh",
+    "mysql": "apt: default-mysql-client", "psql": "apt: postgresql-client",
+    "searchsploit": "apt: exploitdb", "msfvenom": "apt: metasploit-framework",
+    "theHarvester": "apt: theharvester", "bloodhound-python": "pip: bloodhound",
+    "certipy": "pip: certipy-ad", "kerbrute": "github: ropnop/kerbrute",
+    "gau": "go: lc/gau", "katana": "go: projectdiscovery/katana",
+    "dalfox": "go: hahwul/dalfox", "subfinder": "go: projectdiscovery/subfinder",
+    "sshpass": "apt: sshpass",
+}
+
+
+def _doctor_view(mcp: "mcp_client.MCPManager") -> None:
+    """/doctor — which hacktools tools can't run because their program isn't on PATH,
+    grouped by the missing program with an install hint. hacktools is a local stdio
+    server, so it shares this host's PATH; the check is a plain shutil.which here."""
+    try:
+        tools = [t for t in mcp.all_tools()
+                 if mcp_client.split_namespaced(t["name"])[0] == "hacktools"]
+    except Exception:                                  # noqa: BLE001
+        tools = []
+    if not tools:
+        console.print("  [yellow]hacktools MCP server not available[/yellow] "
+                      "[dim]— run /mcp to check it's enabled[/dim]")
+        return
+    ready = 0
+    missing: dict = {}                                 # binary -> [tool names]
+    which_cache: dict = {}
+    for t in tools:
+        binary = t.get("requires")
+        if not binary:                                 # python-native → always runnable
+            ready += 1
+            continue
+        ok = which_cache.get(binary)
+        if ok is None:
+            ok = bool(shutil.which(binary))
+            which_cache[binary] = ok
+        if ok:
+            ready += 1
+        else:
+            missing.setdefault(binary, []).append(
+                mcp_client.split_namespaced(t["name"])[1])
+    console.print(Text("purragent — hacktools doctor", style=f"bold {VIOLET}"))
+    console.print(Text(""))
+    console.print(Text(f"  ✓ {ready} tool(s) ready", style="green"))
+    if not missing:
+        console.print(Text("    every hacktool has its program installed.",
+                           style="bright_black"))
+        return
+    n_tools = sum(len(v) for v in missing.values())
+    console.print(Text(f"  ✗ {n_tools} tool(s) unavailable — install "
+                       f"{len(missing)} program(s):", style="red"))
+    console.print(Text(""))
+    width = max(len(b) for b in missing)
+    for binary in sorted(missing):
+        line = Text("    ")
+        line.append(binary.ljust(width), style="bold red")
+        line.append("  " + _PKG_HINT.get(binary, f"apt: {binary}"), style="cyan")
+        line.append("  → " + ", ".join(sorted(missing[binary])), style="bright_black")
+        console.print(line)
 
 
 def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
@@ -6732,6 +6803,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # the next repaint clears it, so pause to let the message be read.
                 if not conversation_started and sub in (
                         "add", "enable", "disable", "remove", "rm", "delete"):
+                    _pause_after_command()
+            elif cmd == "/doctor":
+                mcp.connect()          # ensure the hacktools stdio server is spawned
+                _doctor_view(mcp)
+                if not conversation_started:
                     _pause_after_command()
             elif cmd == "/hack":
                 if hack_mode:

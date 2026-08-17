@@ -3414,6 +3414,34 @@ _TIMEOUTS = {
     "memcached_stats": 30, "gpp_decrypt": 15,
 }
 
+# The external program each tool needs on PATH (None = python-native, always runnable).
+# Advertised in tools/list as `requires` so a client can report which tools are usable
+# and which need a program installed (purragent's /doctor). For tools whose exact binary
+# depends on a mode/method (impacket exec/roast) the representative one is listed — they
+# ship in the same package. `ssh_exec` also needs `sshpass` for password auth.
+_REQUIRES = {
+    "port_discovery": "nmap", "service_discovery": "nmap", "script_scan": "nmap",
+    "smb_enum": "nmap", "ssl_cert": "nmap", "ftp_anon": "nmap", "banner_grab": "nmap",
+    "http_headers": "curl", "http_request": "curl", "ftp_transfer": "curl",
+    "dns_lookup": "dig", "dns_zone_transfer": "dig", "snmp_walk": "snmpwalk",
+    "searchsploit": "searchsploit", "whois": "whois", "ldap_search": "ldapsearch",
+    "rpc_enum": "rpcclient", "secretsdump": "impacket-secretsdump",
+    "impacket_exec": "impacket-wmiexec", "kerberos_roast": "impacket-GetUserSPNs",
+    "mysql_query": "mysql", "mssql_query": "nxc", "psql_query": "psql",
+    "redis_cli": "redis-cli", "mongo_query": "mongosh", "ssh_exec": "ssh",
+    "winrm_exec": "nxc", "netexec_smb": "nxc", "smb_client": "smbclient",
+    "smbmap": "smbmap", "enum4linux": "enum4linux-ng", "certipy": "certipy",
+    "bloodhound_python": "bloodhound-python", "kerbrute": "kerbrute",
+    "nfs_enum": "showmount", "rsync_enum": "rsync", "nikto_scan": "nikto",
+    "nuclei_scan": "nuclei", "sqlmap": "sqlmap", "wpscan": "wpscan",
+    "testssl": "testssl", "web_content_discovery": "ffuf", "vhost_fuzz": "ffuf",
+    "subdomain_enum": "subfinder", "katana": "katana", "gau": "gau", "arjun": "arjun",
+    "dalfox": "dalfox", "commix": "commix", "dnsrecon": "dnsrecon", "nbtscan": "nbtscan",
+    "theharvester": "theHarvester", "msfvenom": "msfvenom", "ssh_audit": "ssh-audit",
+    "smtp_user_enum": "smtp-user-enum", "wafw00f": "wafw00f", "traceroute": "traceroute",
+    "whatweb": "whatweb", "login_bruteforce": "hydra",
+}
+
 
 def _tools_list():
     # `description` is the standard model-facing text (any MCP client works).
@@ -3430,6 +3458,7 @@ def _tools_list():
             "longDescription": long,
             "exampleQueries": examples,
             "timeout": _TIMEOUTS.get(name, _DEFAULT_TOOL_TIMEOUT),
+            "requires": _REQUIRES.get(name),      # external binary, or null if native
             "inputSchema": schema,
         })
     return out
