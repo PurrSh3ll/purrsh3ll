@@ -47,6 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
 import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol) client
 import tool_retriever  # noqa: E402  — client-side RAG for semantic tool discovery
+import conv_memory  # noqa: E402  — semantic recall of older / cross-session conversation
 import purragent_db  # noqa: E402  — hacking-mode engagement / target intake store
 
 import urllib.request  # noqa: E402  — the tool-use loop's streaming chat call
@@ -6548,11 +6549,76 @@ def _maybe_summarize(profile: dict, base_dir: str, ctx: dict, mcp, mode: str,
                            style="bright_black"))
 
 
+# ── Memory lookup (semantic recall into the reserved context slot) ────────────
+# The other half of the reserved conversation budget: recall the most relevant PAST
+# exchanges (older turns condensed out of the window, or from other sessions on this
+# workspace) and inject them, so the model "remembers" specifics without keeping the
+# whole history verbatim. Complementary to the summary (lossy overview vs. targeted,
+# lossless recall). Gated by config + graceful when embeddings are unavailable.
+def _memory_lookup_enabled(base_dir: str) -> bool:
+    try:
+        with open(os.path.join(base_dir, "appdata", "app_config.json")) as f:
+            v = (json.load(f).get("purragent") or {}).get("memory_lookup")
+        return True if v is None else bool(v)
+    except Exception:                                  # noqa: BLE001
+        return True
+
+
+def _conv_mem(ctx: dict, base_dir: str):
+    cm = ctx.get("conv_mem")
+    if cm is None:
+        cm = conv_memory.ConversationMemory(base_dir)
+        ctx["conv_mem"] = cm
+    return cm
+
+
+def _remember_exchange(ctx: dict, base_dir: str, user_text: str,
+                       assistant_text: str) -> None:
+    """Index one completed exchange for future recall (no-op if disabled/unavailable)."""
+    if not _memory_lookup_enabled(base_dir) or not (user_text or "").strip():
+        return
+    try:
+        _conv_mem(ctx, base_dir).add(user_text, assistant_text,
+                                     ctx.get("session_id", "?"))
+    except Exception:                                  # noqa: BLE001
+        pass
+
+
+def _maybe_recall(ctx: dict, base_dir: str, history: list) -> str:
+    """Recall relevant past exchanges for the latest user turn, fitted to the reserved
+    memory-lookup slot. Returns the injectable block, or '' (disabled / nothing / no
+    embedder). Excludes exchanges whose user turn is still verbatim in `history`."""
+    if not _memory_lookup_enabled(base_dir):
+        return ""
+    query = next((m.get("content") or "" for m in reversed(history)
+                  if m.get("role") == "user"), "")
+    if not query.strip():
+        return ""
+    recent_users = {m.get("content") for m in history if m.get("role") == "user"}
+    try:
+        hits = _conv_mem(ctx, base_dir).recall(query, recent_users, top_k=8)
+    except Exception:                                  # noqa: BLE001
+        return ""
+    budget = MEMORY_LOOKUP_TOKENS * 4
+    lines, used = [], 0
+    for text, _score in hits:
+        one = "- " + " ".join(text.split())            # flatten whitespace
+        if used + len(one) > budget:
+            break
+        lines.append(one)
+        used += len(one)
+    ctx["recall_chars"] = used                         # for /context display
+    if not lines:
+        return ""
+    return ("RECALLED EARLIER CONTEXT (semantically relevant past turns / sessions):\n"
+            + "\n".join(lines))
+
+
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text,
                            mode: str = "auto", on_confirm=None,
                            offer_hack: bool = False, on_hack=None,
-                           summary: str = "") -> str:
+                           summary: str = "", recall: str = "") -> str:
     """Run the agent loop and return the model's final text answer.
 
     `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
@@ -6595,6 +6661,8 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     if summary:                                         # condensed older conversation
         sys_parts.append("EARLIER CONVERSATION SUMMARY (older turns, condensed):\n"
                          + summary)
+    if recall:                                          # semantically recalled past turns
+        sys_parts.append(recall)
     if custom_system:
         sys_parts.append(custom_system)
     offer_save = not planning              # always available (except in plan mode)
@@ -6845,7 +6913,9 @@ class SlashCompleter(Completer):
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
 def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
-    ctx = {"profile": profile, "max_context": None}   # max_context: session override
+    ctx = {"profile": profile, "max_context": None,   # max_context: session override
+           "session_id": str(int(time.time())),       # tags this session's recalled turns
+           "conv_mem": conv_memory.ConversationMemory(base_dir)}   # created once (no race)
     # The engagement store is session-ephemeral (holds credentials): wipe any DB
     # left over from a previous (possibly crashed) session so we always start clean.
     purragent_db.reset(base_dir)
@@ -7428,11 +7498,15 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         # provider speaks the OpenAI tool format; otherwise use the plain text path.
         use_tools = (_supports_tool_loop(ctx["profile"])
                      and _model_has_tools(ctx["profile"], base_dir))
+        recall_block = ""
         if use_tools:
             ensure_mcp()
             # Keep the verbatim history within its % budget: condense the oldest turns
             # that overflow into ctx['summary'] (dropping them from history).
             _maybe_summarize(ctx["profile"], base_dir, ctx, mcp, mode, history)
+            # Fill the reserved memory-lookup slot: recall relevant past/other-session
+            # turns for the current question.
+            recall_block = _maybe_recall(ctx, base_dir, history)
 
         # Pre-flight guard: if the request would STILL overflow the model's window after
         # summarisation (a too-small /setcontext, or one giant turn), don't send it — a
@@ -7546,7 +7620,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                                mode=mode, on_confirm=_confirm_action,
                                                offer_hack=not hack_mode,
                                                on_hack=_on_hack,
-                                               summary=ctx.get("summary", ""))
+                                               summary=ctx.get("summary", ""),
+                                               recall=recall_block)
                 _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
@@ -7571,7 +7646,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         reply = query_model_with_tools(
                             ctx["profile"], base_dir, history, mcp, _on_tool,
                             _on_text, mode=mode, on_confirm=_confirm_action,
-                            offer_hack=False, summary=ctx.get("summary", ""))
+                            offer_hack=False, summary=ctx.get("summary", ""),
+                            recall=recall_block)
                         _stop_tool_spin()
                         if streamed_text:
                             sys.stdout.write("\n")
@@ -7600,6 +7676,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             note = "[interrupted]" if interrupted else "[no response]"
             history.append({"role": "assistant",
                             "content": f"{partial}\n\n{note}" if partial else note})
+
+        # Index the just-completed exchange for future recall (normal chat only, in the
+        # background so the embed + disk write never blocks the next prompt).
+        if (not hack_mode and len(history) >= 2
+                and history[-1].get("role") == "assistant"
+                and history[-2].get("role") == "user"):
+            threading.Thread(
+                target=_remember_exchange,
+                args=(ctx, base_dir, history[-2].get("content"),
+                      history[-1].get("content")), daemon=True).start()
 
     mcp.close()   # shut down any MCP server subprocesses we spawned
     purragent_db.reset(base_dir)   # wipe the session's engagement store (credentials)

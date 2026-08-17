@@ -30,6 +30,7 @@ appdata/mcp_tokens.json
 appdata/mcp_cache.json
 appdata/session.json
 appdata/purragent_state.json
+appdata/conv_memory/
 appdata/psnotes.txt
 appdata/ob_panel_state.json
 appdata/terminal_fifos/
