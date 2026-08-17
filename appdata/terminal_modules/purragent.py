@@ -2474,6 +2474,27 @@ _DISCOVERY_GUIDE = (
 )
 
 
+_TOOL_AVAIL_CACHE: dict = {}      # binary -> installed?, per session
+
+
+def _tool_available(t: dict) -> bool:
+    """True if the tool can actually run on this host — native/built-in (no program
+    needed), or its required program is on PATH and its python libs are present. Used to
+    keep uninstallable tools OUT of what the model is offered, so it never wastes an
+    LLM call on a tool that can only return '[not installed]'. (Hack mode's deterministic
+    phase-5 walk still prints [skipped] for missing tools so the user sees them.)"""
+    if t.get("py_missing"):
+        return False
+    binary = t.get("requires")
+    if not binary:
+        return True
+    ok = _TOOL_AVAIL_CACHE.get(binary)
+    if ok is None:
+        ok = bool(shutil.which(binary))
+        _TOOL_AVAIL_CACHE[binary] = ok
+    return ok
+
+
 def _catalog_signature(tool: dict) -> str:
     """`write_file(path, content, [append])` — the tool's bare name plus its
     parameter list, required params bare and optional ones in [brackets], read
@@ -4468,7 +4489,8 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
     try:
         tools = [t for t in mcp.all_tools()
                  if mcp_client.split_namespaced(t["name"])[0] == "hacktools"
-                 and mcp_client.split_namespaced(t["name"])[1] in allowed]
+                 and mcp_client.split_namespaced(t["name"])[1] in allowed
+                 and _tool_available(t)]              # skip tools whose program is missing
     except Exception:                                  # noqa: BLE001
         return
     if not tools:
@@ -6429,7 +6451,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     custom_system = profile.get("custom_system", "").strip()
     hide_thinking = bool(profile.get("hide_thinking", False))
 
-    all_tools = mcp.all_tools()
+    # Only offer tools that can actually run here — a tool whose program/library isn't
+    # installed would only return '[not installed]' and waste the call.
+    all_tools = [t for t in mcp.all_tools() if _tool_available(t)]
     retriever = _get_retriever(base_dir, all_tools)
     discovery = retriever is not None      # False → fall back to sending all schemas
 
