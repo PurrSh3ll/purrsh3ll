@@ -4690,13 +4690,52 @@ def _cred_display(cred: dict) -> str:
 
 
 def _print_cred_result(state: str, cred: dict, key: str, port: int) -> None:
-    color = "green" if state == "valid" else "bright_black"
+    color = "green" if state in ("valid", "derived") else "bright_black"
     line = Text("  ")
     line.append(f"[{state}]", style=color)
     line.append(f" ▸ cred · {key}  {_cred_display(cred)}", style=color)
-    if state == "valid":
+    if state in ("valid", "derived"):
         line.append(f"  → {port}", style="green")
     console.print(line)
+
+
+def _present_services(base_dir: str, tid: int) -> dict:
+    """{service_key: [ports]} for the target, in exploitation-priority order."""
+    present: dict = {}
+    for port, _proto, _label, key, _ver in _exploit_order(base_dir, tid):
+        present.setdefault(key, []).append(port)
+    return present
+
+
+def _attempt_login(mcp, host: str, present: dict, cred: dict, budget: list):
+    """Try `cred` (dict with username/secret/secret_type/service_hint) against its
+    candidate services, one login each, until one works or the shared attempt budget
+    (budget[0]) runs out. Returns (tested, hit_key, hit_port)."""
+    hint = cred.get("service_hint") or "*"
+    keys = list(present) if hint == "*" else [hint]
+    tested = False
+    for key in keys:
+        if key not in _CRED_VALIDATORS or key not in present:
+            continue
+        arg_fn, ok_fn = _CRED_VALIDATORS[key]
+        for port in present[key][:1]:                  # one port per service class
+            if budget[0] <= 0:
+                return tested, None, None
+            built = arg_fn(cred, host, port)
+            if not built:
+                continue
+            tool, args = built
+            tested = True
+            budget[0] -= 1
+            name = mcp_client._namespaced("hacktools", tool)
+            try:
+                res = mcp.call(name, args, timeout=_CRED_VALIDATE_TIMEOUT)
+            except Exception:                          # noqa: BLE001
+                res = {"text": "", "is_error": True}
+            is_err = bool(res.get("is_error") or res.get("isError"))
+            if ok_fn(res.get("text") or "", is_err):
+                return tested, key, port
+    return tested, None, None
 
 
 def _validate_creds(eng: dict) -> None:
@@ -4707,49 +4746,24 @@ def _validate_creds(eng: dict) -> None:
     if mcp is None or eng.get("cancelled"):
         return
     base, tid, host = eng["base_dir"], eng["tid"], eng["ip"]
-    present: dict = {}
-    for port, _proto, _label, key, _ver in _exploit_order(base, tid):
-        present.setdefault(key, []).append(port)
+    present = _present_services(base, tid)
     if not (set(present) & _CRED_AUTH_SERVICES):
         return
-    attempts = 0
+    budget = [CRED_VALIDATE_MAX]
     for c in purragent_db.fetch_credentials(base, tid):
-        if eng.get("cancelled") or attempts >= CRED_VALIDATE_MAX:
+        if eng.get("cancelled") or budget[0] <= 0:
             break
         if c.get("validated"):                         # already decided (seed/brute)
             continue
-        hint = c.get("service_hint") or "*"
-        keys = list(present) if hint == "*" else [hint]
-        got, tested, hit_key, hit_port = False, False, None, None
-        for key in keys:
-            if got or key not in _CRED_VALIDATORS or key not in present:
-                continue
-            arg_fn, ok_fn = _CRED_VALIDATORS[key]
-            for port in present[key][:1]:              # one port per service class
-                if attempts >= CRED_VALIDATE_MAX or eng.get("cancelled"):
-                    break
-                built = arg_fn(c, host, port)
-                if not built:
-                    continue
-                tool, args = built
-                tested = True
-                attempts += 1
-                name = mcp_client._namespaced("hacktools", tool)
-                try:
-                    res = mcp.call(name, args, timeout=_CRED_VALIDATE_TIMEOUT)
-                except Exception:                      # noqa: BLE001
-                    res = {"text": "", "is_error": True}
-                is_err = bool(res.get("is_error") or res.get("isError"))
-                if ok_fn(res.get("text") or "", is_err):
-                    got, hit_key, hit_port = True, key, port
-                    break
-        if got:
+        tested, hit_key, hit_port = _attempt_login(mcp, host, present, c, budget)
+        if hit_key:
             purragent_db.set_cred_validated(base, c["id"], True, hit_port)
             _post(ctx, lambda cc=c, k=hit_key, p=hit_port:
                   _print_cred_result("valid", cc, k, p))
         elif tested:
             purragent_db.set_cred_validated(base, c["id"], False)
-            _post(ctx, lambda cc=c, k=(keys[0] if keys else "?"):
+            hint = c.get("service_hint") or "*"
+            _post(ctx, lambda cc=c, k=(hint if hint != "*" else "?"):
                   _print_cred_result("invalid", cc, k, 0))
 
 
@@ -4774,6 +4788,113 @@ def _run_cred_harvest(eng: dict) -> None:
     _post(ctx, lambda n=len(creds), v=len(valid), u=len(users): console.print(Text(
         f"    {v} valid / {n} candidate credential(s) · {u} username(s) for brute",
         style=("green" if valid else "bright_black"))))
+
+
+# ── phase 5 credential derivation (deduced guesses, validated before brute) ────
+# A narrow, quiet tier between validation and brute: build candidate logins DEDUCED from
+# what we already know — username-as-password (kali:kali), known-password × known-username
+# reuse across services, light username mutations, and a few product defaults — then test
+# each with one real login (reusing the validation machinery). Hits are stored as
+# validated 'derived' creds, which the brute gate then skips. Deterministic (no LLM),
+# hard-capped so it can't degrade into a hidden brute.
+DERIVE_VALIDATE_MAX = 150          # hard cap on derivation login attempts per host
+DERIVE_BUDGET_MINUTES = 8          # wall-clock ceiling for the derivation step
+_DERIVE_SUFFIXES = ["123", "1", "!", "12345", "2024", "2025"]
+_DEFAULT_CREDS = {                 # per service class: a few classic defaults
+    "ssh":    [("root", "root"), ("admin", "admin")],
+    "ftp":    [("ftp", "ftp"), ("admin", "admin")],
+    "mysql":  [("root", "root"), ("root", "mysql")],
+    "psql":   [("postgres", "postgres")],
+    "mssql":  [("sa", "sa")],
+    "smb":    [("administrator", "administrator")],
+    "rdp":    [("administrator", "administrator")],
+    "telnet": [("root", "root"), ("admin", "admin")],
+}
+
+
+def _derive_candidates(base_dir: str, tid: int, present: dict) -> list:
+    """Build deduced (username, secret) login candidates from the known users/secrets,
+    highest-signal first, deduped against credentials already in the store."""
+    creds = purragent_db.fetch_credentials(base_dir, tid)
+    users, seen_u = [], set()
+    for u in ([r["username"] for r in purragent_db.fetch_usernames(base_dir, tid)]
+              + [c["username"] for c in creds if c["username"]]):
+        if u and u not in seen_u:
+            seen_u.add(u)
+            users.append(u)
+    secrets, seen_s = [], set()
+    for c in creds:
+        s = c["secret"]
+        if s and s not in seen_s and c.get("secret_type") in (None, "", "password", "none"):
+            seen_s.add(s)
+            secrets.append(s)
+    existing = {(c["username"], c["secret"]) for c in creds}
+    cands: list = []
+
+    def _add(user, secret, hint="*"):
+        if not user or not secret or (user, secret) in existing:
+            return
+        existing.add((user, secret))
+        cands.append({"username": user, "secret": secret,
+                      "secret_type": "password", "service_hint": hint})
+
+    for u in users:                                    # 2: username as password
+        _add(u, u)
+    for u in users:                                    # 1: password reuse across accounts
+        for s in secrets:
+            _add(u, s)
+    for key in present:                                # 5: product defaults
+        for du, dp in _DEFAULT_CREDS.get(key, []):
+            _add(du, dp, hint=key)
+    for u in users:                                    # 3: light mutations (lowest signal)
+        for suf in _DERIVE_SUFFIXES:
+            _add(u, u + suf)
+    return cands
+
+
+def _run_cred_derivation(eng: dict) -> None:
+    """Test deduced login candidates (see _derive_candidates) with one login each; store
+    the hits as validated 'derived' creds. Bounded, cancel-aware, no brute-force."""
+    ctx = eng["ctx"]
+    mcp = ctx.get("mcp")
+    if mcp is None or eng.get("cancelled"):
+        return
+    base, tid, host = eng["base_dir"], eng["tid"], eng["ip"]
+    present = _present_services(base, tid)
+    if not (set(present) & _CRED_AUTH_SERVICES):
+        return
+    cands = _derive_candidates(base, tid, present)
+    if not cands:
+        return
+    _post(ctx, lambda n=len(cands): console.print(Text(
+        f"  ▸ credential derivation — testing {n} deduced login(s)",
+        style="bright_black")))
+    budget = [DERIVE_VALIDATE_MAX]
+    deadline = time.time() + DERIVE_BUDGET_MINUTES * 60
+    found = 0
+    for cand in cands:
+        if eng.get("cancelled") or budget[0] <= 0 or time.time() > deadline:
+            break
+        _tested, hit_key, hit_port = _attempt_login(mcp, host, present, cand, budget)
+        if hit_key:
+            try:
+                cid = purragent_db.add_credential(base, tid, cand["username"],
+                    cand["secret"], "password", scope="specific",
+                    service_hint=hit_key, source="derived")
+                purragent_db.set_cred_validated(base, cid, True, hit_port)
+                purragent_db.add_username(base, tid, cand["username"],
+                                          source="derived", service_hint=hit_key)
+                eng.setdefault("exploit_findings", []).append(
+                    {"port": hit_port,
+                     "finding": f"derived {hit_key} login {cand['username']}"})
+            except Exception:                          # noqa: BLE001
+                pass
+            found += 1
+            _post(ctx, lambda cc=cand, k=hit_key, p=hit_port:
+                  _print_cred_result("derived", cc, k, p))
+    _post(ctx, lambda f=found: console.print(Text(
+        f"    {f} login(s) derived from findings",
+        style=("green" if found else "bright_black"))))
 
 
 # ── phase 5 brute-force gate (background, fire-and-forget) ────────────────────
@@ -5120,6 +5241,7 @@ def _exploit_worker(eng: dict) -> None:
             _run_service_review(eng, port, proto, key, label, svc_finds, ran_cmds)
     _run_exploit_agent(eng)                            # final cross-service correlation
     _run_cred_harvest(eng)                             # seed/extract/validate credentials
+    _run_cred_derivation(eng)                          # deduced logins (before brute)
     _run_final_report(eng)                             # pentest summary — printed last
     _run_brute_gate(eng)                               # background brute for logins we lack
     _post(eng["ctx"], lambda: _finish_recon(eng))
