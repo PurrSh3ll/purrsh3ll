@@ -118,6 +118,15 @@ SLASH = [
     ("/exit",     "quit purragent"),
 ]
 
+# Slash commands that only work while hacking mode is on (/hack). Offered in the
+# dropdown only in that state, and listed under their own heading in /help.
+HACK_SLASH = [
+    ("/target",   "show the recorded hacking-mode target database"),
+    ("/start",    "start hacking the recorded target"),
+    ("/stop",     "stop the agent (pause hacking)"),
+    ("/status",   "show the background scan status"),
+]
+
 # Second-level completions offered after "<command> " (e.g. "/mcp add").
 SLASH_SUBCOMMANDS = {
     "/mcp": [
@@ -1779,10 +1788,20 @@ def _help_body() -> str:
     grid.add_column(style="dim")
     for cmd, hint in SLASH:
         grid.add_row(cmd, hint)
+    hack_grid = Table.grid(padding=(0, 2))
+    hack_grid.add_column(style=f"bold {VIOLET}", no_wrap=True)
+    hack_grid.add_column(style="dim")
+    for cmd, hint in HACK_SLASH:
+        hack_grid.add_row(cmd, hint)
     return _render_ansi(Group(
         Text("purragent — commands", style="bold white"),
         Text(""),
         grid,
+        Text(""),
+        Text.from_markup("hacking mode only [dim]— enable with[/dim] "
+                         "[bold]/hack[/bold]", style="bold white"),
+        Text(""),
+        hack_grid,
         Text(""),
         Text.from_markup(
             "Type a message and press [bold]Enter[/bold] to ask the attached model.\n"
@@ -7035,11 +7054,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 for n, s in mcp.load_config().get("servers", {}).items()
                 if not mcp_client.is_builtin_server(s)],
             # /target, /start, /stop, /status are offered only while hacking mode is on.
-            extra_provider=lambda: ([("/target", "show the recorded hacking-mode target database"),
-                                     ("/start", "start hacking the recorded target"),
-                                     ("/stop", "stop the agent (pause hacking)"),
-                                     ("/status", "show the background scan status")]
-                                    if hack_mode else [])),
+            extra_provider=lambda: (list(HACK_SLASH) if hack_mode else [])),
         # complete_while_typing=False so the menu's reserved rows are claimed only
         # while a completion is actually active — not permanently, which left a big
         # gap above the model toolbar. reserve_space_for_menu is the on-demand
