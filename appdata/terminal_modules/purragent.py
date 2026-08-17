@@ -4560,6 +4560,7 @@ def _review_worker(eng: dict) -> None:
 # orphan a tool result, which the API rejects).
 AGENT_KEEP_LAST_GROUPS = 3         # newest N tool-call groups always kept in full
 AGENT_OUTPUT_RESERVE_TOK = 2000    # room left for the model's reply this round
+AGENT_DBCTX_FRAC = 0.25            # max share of the window the findings dump may take
 AGENT_TRIM_PLACEHOLDER = ("[earlier tool output trimmed to fit the context window — "
                           "the full result is saved as a finding]")
 
@@ -4583,11 +4584,10 @@ def _msgs_chars(msgs: list) -> int:
                for m in msgs)
 
 
-def _agent_msgs_budget_chars(ctx: dict, base_dir: str, schemas: list):
-    """Char budget for an agent's msgs before a call: the model window minus an output
+def _msgs_budget_chars(maxc, schemas: list):
+    """Char budget for a tool-loop's msgs before a call: the model window minus an output
     reserve and the always-sent tools-field, in chars (~4/token, like _conv_budget).
-    None when the window is unknown → caller skips trimming (today's behaviour)."""
-    maxc = _effective_max_context(ctx, base_dir)
+    None when the window `maxc` is unknown → caller skips trimming (today's behaviour)."""
     if not maxc:
         return None
     try:
@@ -4597,15 +4597,15 @@ def _agent_msgs_budget_chars(ctx: dict, base_dir: str, schemas: list):
     return max(0, int(maxc * 4 * FILL_FRAC) - AGENT_OUTPUT_RESERVE_TOK * 4 - schema_chars)
 
 
-def _trim_agent_msgs(msgs: list, budget_chars) -> bool:
-    """Keep an agent's msgs within budget_chars, preserving the system+task preamble
-    and every assistant+tool group. Tier 1: blank out big OLD tool outputs (keeping the
-    call trail so the model won't repeat enumeration). Tier 2: drop whole oldest groups.
-    Last resort: hard-cap the oldest kept tool result. Mutates msgs; returns True if it
-    trimmed anything."""
+def _trim_agent_msgs(msgs: list, budget_chars, preamble: int = 2) -> bool:
+    """Keep a tool-loop's msgs within budget_chars, preserving the first `preamble`
+    messages (system[+history]) and every assistant+tool group after them. Tier 1: blank
+    out big OLD tool outputs (keeping the call trail so the model won't repeat work).
+    Tier 2: drop whole oldest groups. Last resort: hard-cap the oldest kept tool result.
+    Mutates msgs; returns True if it trimmed anything."""
     if budget_chars is None or _msgs_chars(msgs) <= budget_chars:
         return False
-    head, groups = msgs[:2], _split_msg_groups(msgs[2:])
+    head, groups = msgs[:preamble], _split_msg_groups(msgs[preamble:])
     trimmed = False
 
     # Tier 1 — replace large tool-result bodies in older groups with a placeholder.
@@ -4632,7 +4632,7 @@ def _trim_agent_msgs(msgs: list, budget_chars) -> bool:
     # so we never ship an over-window request.
     over = _msgs_chars(msgs) - budget_chars
     if over > 0:
-        for m in msgs[2:]:
+        for m in msgs[preamble:]:
             if m.get("role") == "tool" and len(m.get("content") or "") > over + 200:
                 m["content"] = m["content"][:len(m["content"]) - over - 200] + "\n[…truncated]"
                 trimmed = True
@@ -4664,7 +4664,10 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
     if not tools:
         return
     schemas = [t["schema"] for t in tools]
-    dbctx = _target_db_context(base_dir) or ""
+    # dbctx rides in the untrimmable system slot, so bound it to a share of the window.
+    _dbmax = _effective_max_context(ctx, base_dir)
+    dbctx = _target_db_context(
+        base_dir, int(_dbmax * 4 * AGENT_DBCTX_FRAC) if _dbmax else None) or ""
     system = "\n\n".join(p for p in (system_prompt, _env_block(), dbctx) if p)
     msgs = [{"role": "system", "content": system},
             {"role": "user", "content": task}]
@@ -4682,7 +4685,8 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
             break
         # Keep the growing transcript within the window (tool outputs pile up with no
         # summariser here). Trim oldest groups first; tell the operator once.
-        if _trim_agent_msgs(msgs, _agent_msgs_budget_chars(ctx, base_dir, schemas)) \
+        if _trim_agent_msgs(
+                msgs, _msgs_budget_chars(_effective_max_context(ctx, base_dir), schemas)) \
                 and not trim_noted:
             trim_noted = True
             _post(ctx, lambda: console.print(Text(
@@ -5799,8 +5803,11 @@ _REPORT_SYSTEM = (
     "report, say so briefly.")
 
 
-def _report_context(base_dir: str, tid: int) -> str:
-    """A compact, deterministic dump of the findings (no commands) to summarise."""
+def _report_context(base_dir: str, tid: int, max_chars=None) -> str:
+    """A compact, deterministic dump of the findings (no commands) to summarise. The
+    ports/vuln/CVE sections are small and always included; the enumeration findings
+    (each up to the server's output cap) are added only while they fit `max_chars`, so
+    a big engagement can't build a report prompt that overflows the model's window."""
     lines = []
     ports = purragent_db.fetch_ports(base_dir, tid)
     if ports:
@@ -5826,11 +5833,22 @@ def _report_context(base_dir: str, tid: int) -> str:
           if e.get("service") not in ("review", "report")]
     if ef:
         lines.append("Service enumeration findings:")
+        used = len("\n".join(lines))
+        omitted = 0
         for e in ef:
             where = e["port"] if e.get("port") else "host"
-            for ln in (e.get("finding") or "").splitlines():
-                if ln.strip():
-                    lines.append(f"  [{where}] {ln.strip()}")
+            entry = [f"  [{where}] {ln.strip()}"
+                     for ln in (e.get("finding") or "").splitlines() if ln.strip()]
+            if not entry:
+                continue
+            chunk = len("\n".join(entry)) + 1
+            if max_chars and used + chunk > max_chars:
+                omitted += 1
+                continue
+            lines.extend(entry)
+            used += chunk
+        if omitted:
+            lines.append(f"  … (+{omitted} more finding(s) omitted to fit the window)")
     return "\n".join(lines)
 
 
@@ -5868,7 +5886,12 @@ def _run_final_report(eng: dict) -> None:
     profile = ctx.get("profile")
     if not profile or eng.get("cancelled"):
         return
-    context = _report_context(base, eng["tid"])
+    # Fit the findings dump to the window: leave room for the system prompt and the
+    # model's reply. None window → no cap (keeps prior behaviour).
+    maxc = _effective_max_context(ctx, base)
+    budget = (max(0, int(maxc * 4 * FILL_FRAC) - len(_REPORT_SYSTEM)
+                  - AGENT_OUTPUT_RESERVE_TOK * 4) if maxc else None)
+    context = _report_context(base, eng["tid"], budget)
     if not context.strip():
         return
     body = {"model": profile.get("model", ""),
@@ -6119,9 +6142,11 @@ def _start_hacking(ctx: dict, base_dir: str, goal) -> None:
     _start_port_discovery(ctx, base_dir, target)
 
 
-def _target_db_context(base_dir: str) -> str:
-    """Everything the engagement database knows about the current target, as plain
-    text — injected into `btw` questions so the model answers with full context."""
+def _target_db_context(base_dir: str, max_chars=None) -> str:
+    """Everything the engagement database knows about the current target, as plain text.
+    The priority block (objective, target, ports, credentials) is always kept; the
+    potentially long/numerous endpoints and notes are added only while they fit
+    `max_chars`, so this can't grow past its share of the model's window."""
     try:
         engs = purragent_db.fetch_all(base_dir)
     except Exception:
@@ -6143,11 +6168,24 @@ def _target_db_context(base_dir: str) -> str:
     for c in eng.get("credentials", []):
         lines.append(f"credential: {c.get('username') or ''}:{c.get('secret') or ''}"
                      + (f" ({c['secret_type']})" if c.get("secret_type") else ""))
-    for e in eng.get("endpoints", []):
-        lines.append(f"endpoint: {e.get('url')}")
-    for n in eng.get("notes", []):
-        if n.get("kind") != "raw-intake" and n.get("text"):
-            lines.append(f"note: {n['text']}")
+    # Lower-priority, unbounded-in-count section: fit to the remaining budget.
+    extra = [f"endpoint: {e.get('url')}" for e in eng.get("endpoints", [])]
+    extra += [f"note: {n['text']}" for n in eng.get("notes", [])
+              if n.get("kind") != "raw-intake" and n.get("text")]
+    if max_chars is None:
+        lines += extra
+    else:
+        used = len("\n".join(lines))
+        omitted = 0
+        for x in extra:
+            if used + len(x) + 1 > max_chars:
+                omitted += 1
+                continue
+            lines.append(x)
+            used += len(x) + 1
+        if omitted:
+            lines.append(f"note: (+{omitted} more endpoint(s)/note(s) omitted to fit "
+                         "the window)")
     return "\n".join(lines)
 
 
@@ -6162,7 +6200,12 @@ def _btw(ctx: dict, base_dir: str, question: str) -> None:
                       "[cyan]/model[/cyan] to choose one first.")
         return
     sys_parts = [PURRAGENT_SYSTEM, _env_block()]
-    dbctx = _target_db_context(base_dir)
+    # Fit the findings dump to the window (this is a single tool-free call: system +
+    # dbctx + the question). None window → uncapped, as before.
+    _bmax = _effective_max_context(ctx, base_dir)
+    dbctx = _target_db_context(
+        base_dir, max(0, int(_bmax * 4 * FILL_FRAC) - len(PURRAGENT_SYSTEM)
+                      - AGENT_OUTPUT_RESERVE_TOK * 4) if _bmax else None)
     if dbctx:
         sys_parts.append(dbctx)
     custom = profile.get("custom_system", "").strip()
@@ -6776,7 +6819,8 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text,
                            mode: str = "auto", on_confirm=None,
                            offer_hack: bool = False, on_hack=None,
-                           summary: str = "", recall: str = "") -> str:
+                           summary: str = "", recall: str = "",
+                           max_context=None) -> str:
     """Run the agent loop and return the model's final text answer.
 
     `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
@@ -6790,6 +6834,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     `offer_hack` adds the enable_hacking_mode tool (only when hacking is off); if
     the model calls it with enable=true, `on_hack()` is invoked and the turn ends
     so the caller can run the /hack flow.
+    `max_context` is the effective window (honouring /setcontext); when omitted it
+    falls back to the model's advertised window. Used to trim this turn's tool
+    transcript if it overflows.
     """
     planning = (mode == "plan")
     provider = profile.get("provider", "ollama")
@@ -6829,6 +6876,12 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     # Local working copy of the transcript: the raw assistant tool-call messages
     # and tool results live only here, not in the caller's plain history.
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
+    # Everything up to here (system + the caller's conversation) is the untouchable
+    # preamble; tool-call groups appended during THIS turn's loop are what we trim if
+    # they pile up past the window (the pre-flight guard only checks the pre-turn size).
+    preamble = len(msgs)
+    maxc = max_context or _model_context(profile, base_dir)
+    trim_noted = False
 
     # Accumulating set of full schemas the model may call. In discovery mode it
     # starts empty and grows as request_tool surfaces tools; in fallback mode it
@@ -6851,6 +6904,15 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                        + ([_ENABLE_HACK_TOOL] if offer_hack else [])
                        + ([_SAVE_MEMORY_TOOL] if offer_save else [])
                        + list(active.values()))
+
+        # Keep this turn's growing transcript within the window: tool results pile up
+        # across rounds with no summariser here (the pre-flight guard only sizes the
+        # pre-turn history). Trim oldest tool groups; tell the user once per turn.
+        if _trim_agent_msgs(msgs, _msgs_budget_chars(maxc, tools_field), preamble) \
+                and not trim_noted:
+            trim_noted = True
+            console.print(Text("  ▸ trimmed earlier tool output to fit the context "
+                               "window", style="bright_black"))
 
         body = {"model": model, "messages": msgs}
         if tools_field:
@@ -7799,7 +7861,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                                offer_hack=not hack_mode,
                                                on_hack=_on_hack,
                                                summary=ctx.get("summary", ""),
-                                               recall=recall_block)
+                                               recall=recall_block,
+                                               max_context=_effective_max_context(
+                                                   ctx, base_dir))
                 _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
@@ -7825,7 +7889,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                             ctx["profile"], base_dir, history, mcp, _on_tool,
                             _on_text, mode=mode, on_confirm=_confirm,
                             offer_hack=False, summary=ctx.get("summary", ""),
-                            recall=recall_block)
+                            recall=recall_block,
+                            max_context=_effective_max_context(ctx, base_dir))
                         _stop_tool_spin()
                         if streamed_text:
                             sys.stdout.write("\n")

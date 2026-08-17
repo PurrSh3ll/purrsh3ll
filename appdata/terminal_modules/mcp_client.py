@@ -34,6 +34,21 @@ _NS_PREFIX = "mcp"
 
 _KEYRING_SERVICE = "purrsh3ll"   # same store the app uses for model API keys
 
+# Client-side cap on a tool result's text. Our built-in servers already cap their
+# output (hacktools 8000, toolkit 20000 chars), but a third-party / connect-only
+# server can return an arbitrarily large blob that would blow the model's window.
+# We cap those here so no single external result can overflow the context.
+MAX_EXTERNAL_OUTPUT = 20000
+
+
+def _cap_external(result: dict) -> dict:
+    """Truncate an external server's result text to MAX_EXTERNAL_OUTPUT chars."""
+    text = result.get("text")
+    if isinstance(text, str) and len(text) > MAX_EXTERNAL_OUTPUT:
+        result["text"] = (text[:MAX_EXTERNAL_OUTPUT]
+                          + f"\n… [truncated, {len(text) - MAX_EXTERNAL_OUTPUT} more chars]")
+    return result
+
 
 def is_builtin_server(spec: dict) -> bool:
     """True for a server bundled with purragent (its script lives under
@@ -1245,13 +1260,13 @@ class MCPManager:
             return {"text": f"no such MCP server: {server_name}", "is_error": True}
         call_timeout = self._call_timeout(server_name, tool_name, timeout)
 
-        if "url" in spec:                               # attached HTTP server
+        if "url" in spec:                               # attached HTTP server (external)
             token = load_token(self.base_dir, server_name)
             if self._resolve_transport(server_name, spec, token) == "sse":
-                return call_sse_tool(spec["url"], token, tool_name, arguments,
-                                     timeout=call_timeout)
-            return call_http_tool(spec["url"], token, tool_name, arguments,
-                                  timeout=call_timeout)
+                return _cap_external(call_sse_tool(spec["url"], token, tool_name,
+                                                   arguments, timeout=call_timeout))
+            return _cap_external(call_http_tool(spec["url"], token, tool_name,
+                                                arguments, timeout=call_timeout))
 
         srv = self.servers.get(server_name)
         if srv is None or not srv.alive():          # (re)connect a missing/dead server
@@ -1267,7 +1282,8 @@ class MCPManager:
             if srv is not None:
                 result = srv.call_tool(tool_name, arguments, timeout=call_timeout)
         result.pop("dead", None)
-        return result
+        # Built-in servers self-cap; cap third-party stdio servers here as a backstop.
+        return result if is_builtin_server(spec) else _cap_external(result)
 
     def status(self) -> list:
         """[(server, ok, info_or_error, [tool_names])] for the /mcp view. HTTP
