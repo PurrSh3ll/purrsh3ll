@@ -7247,9 +7247,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 if chosen:
                     mode = chosen
                     _save_state(base_dir, mode=mode)
+                    # Changing the mode resets the trust posture: drop any 'always
+                    # allow' choices so a switch to a stricter mode really re-asks.
+                    forgot = len(approvals)
+                    approvals.clear()
                     hint = next((h for n, h in AGENT_MODES if n == mode), "")
                     console.print(f"  [green]▸[/green] agent mode: "
                                   f"[bold]{mode}[/bold] [dim]— {hint}[/dim]")
+                    if forgot:
+                        console.print(Text(f"      cleared {forgot} remembered "
+                                           "approval(s)", style="bright_black"))
             elif cmd == "/mcp":
                 parts = text.split()
                 sub = parts[1].lower() if len(parts) > 1 else ""
