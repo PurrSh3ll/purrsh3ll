@@ -488,9 +488,12 @@ def _fixed_header_parts(profile: dict, base_dir: str, mcp, mode: str) -> list:
 
 
 def _conv_budget(profile: dict, base_dir: str, ctx: dict, mcp, mode: str):
-    """(recent_budget_chars, summ_cap_chars): the verbatim window and the summary cap,
-    using the exact percentage split /context shows. None when the model window is
-    unknown (→ no enforcement). Recent verbatim = pool − summary cap (− findings floor)."""
+    """(avail_chars, recent_target_chars, summ_cap_chars) using the EXACT split /context
+    shows. None when the model window is unknown (→ no enforcement).
+      • avail          = the whole conversation pool (recent may borrow all of it while
+                         nothing is summarised — matches the /debug 'borrow' column);
+      • recent_target  = avail − summary cap = where recent is trimmed to once it spills;
+      • summ_cap       = the summary slot ceiling."""
     maxc = _effective_max_context(ctx, base_dir)
     if not maxc:
         return None
@@ -501,7 +504,7 @@ def _conv_budget(profile: dict, base_dir: str, ctx: dict, mcp, mode: str):
     findings_chars = min(max(0, FINDINGS_FLOOR_TOKENS * 4), int(FINDINGS_CAP_FRAC * pool))
     avail = max(0, pool - findings_chars)
     summ_cap = int(SUMMARIZED_CAP_FRAC * pool)
-    return max(0, avail - summ_cap), summ_cap
+    return avail, max(0, avail - summ_cap), summ_cap
 
 
 def _context_view(ctx: dict, base_dir: str, history: list, mcp,
@@ -6515,19 +6518,20 @@ def _maybe_summarize(profile: dict, base_dir: str, ctx: dict, mcp, mode: str,
     budget = _conv_budget(profile, base_dir, ctx, mcp, mode)
     if budget is None:
         return
-    recent_budget, summ_cap = budget
-    if recent_budget <= 0:
+    avail, recent_target, summ_cap = budget
+    if avail <= 0:
         return
     hist_chars = sum(len(m.get("content") or "") for m in history
                      if isinstance(m.get("content"), str))
-    if hist_chars <= recent_budget:
-        return                                         # verbatim history still fits
-    # Keep the newest turns that fit recent_budget; the older ones overflow.
+    if hist_chars <= avail:
+        return                                         # fits — recent borrows summary's
+                                                       # idle space (matches /context)
+    # Overflowed the pool: keep the newest turns within recent_target, summarise the rest.
     total, keep_from = 0, len(history)
     for i in range(len(history) - 1, -1, -1):
         c = len(history[i].get("content") or "") \
             if isinstance(history[i].get("content"), str) else 0
-        if total + c > recent_budget and i < len(history) - 1:
+        if total + c > recent_target and i < len(history) - 1:
             break                                      # always keep at least the last turn
         total += c
         keep_from = i
