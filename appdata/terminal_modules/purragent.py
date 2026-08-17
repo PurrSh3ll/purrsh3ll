@@ -1294,18 +1294,18 @@ _PKG_HINT = {
 }
 
 
-def _doctor_view(mcp: "mcp_client.MCPManager") -> None:
-    """/doctor — which hacktools tools can't run because their program isn't on PATH,
-    grouped by the missing program with an install hint. hacktools is a local stdio
-    server, so it shares this host's PATH; the check is a plain shutil.which here."""
+def _doctor_render(mcp: "mcp_client.MCPManager", out: "Console") -> None:
+    """Render the hacktools doctor report to `out`: which tools can't run because their
+    program (PATH) or python library is missing, grouped with an install hint. hacktools
+    is a local stdio server, so it shares this host's PATH; the check is shutil.which."""
     try:
         tools = [t for t in mcp.all_tools()
                  if mcp_client.split_namespaced(t["name"])[0] == "hacktools"]
     except Exception:                                  # noqa: BLE001
         tools = []
     if not tools:
-        console.print("  [yellow]hacktools MCP server not available[/yellow] "
-                      "[dim]— run /mcp to check it's enabled[/dim]")
+        out.print("  [yellow]hacktools MCP server not available[/yellow] "
+                  "[dim]— run /mcp to check it's enabled[/dim]")
         return
     ready = 0
     missing: dict = {}                                 # binary -> [tool names]
@@ -1330,34 +1330,49 @@ def _doctor_view(mcp: "mcp_client.MCPManager") -> None:
             ready += 1
         else:
             missing.setdefault(binary, []).append(tool)
-    console.print(Text("purragent — hacktools doctor", style=f"bold {VIOLET}"))
-    console.print(Text(""))
-    console.print(Text(f"  ✓ {ready} tool(s) ready", style="green"))
+    out.print(Text("purragent — hacktools doctor", style=f"bold {VIOLET}"))
+    out.print(Text(""))
+    out.print(Text(f"  ✓ {ready} tool(s) ready", style="green"))
     if not missing and not missing_py:
-        console.print(Text("    every hacktool has its program and libraries installed.",
-                           style="bright_black"))
+        out.print(Text("    every hacktool has its program and libraries installed.",
+                       style="bright_black"))
         return
     if missing:
         n_tools = sum(len(v) for v in missing.values())
-        console.print(Text(f"  ✗ {n_tools} tool(s) need a program — install "
-                           f"{len(missing)}:", style="red"))
+        out.print(Text(f"  ✗ {n_tools} tool(s) need a program — install "
+                       f"{len(missing)}:", style="red"))
         width = max(len(b) for b in missing)
         for binary in sorted(missing):
             line = Text("    ")
             line.append(binary.ljust(width), style="bold red")
             line.append("  " + _PKG_HINT.get(binary, f"apt: {binary}"), style="cyan")
             line.append("  → " + ", ".join(sorted(missing[binary])), style="bright_black")
-            console.print(line)
+            out.print(line)
     if missing_py:
         n_tools = len({tl for v in missing_py.values() for tl in v})
-        console.print(Text(f"  ✗ {n_tools} tool(s) need a python library:", style="red"))
+        out.print(Text(f"  ✗ {n_tools} tool(s) need a python library:", style="red"))
         width = max(len(h) for h in missing_py)
         for hint in sorted(missing_py):
             line = Text("    ")
             line.append(hint.ljust(width), style="cyan")
             line.append("  → " + ", ".join(sorted(set(missing_py[hint]))),
                         style="bright_black")
-            console.print(line)
+            out.print(line)
+
+
+def _doctor_view(mcp: "mcp_client.MCPManager") -> None:
+    """/doctor — the hacktools install report. On a TTY it opens in its own alt-screen
+    window (like /mcp and /status), so background hack-mode prints can't corrupt it;
+    otherwise it prints once inline."""
+    if not sys.stdin.isatty():
+        _doctor_render(mcp, console)
+        return
+    buf = io.StringIO()
+    cols = shutil.get_terminal_size((80, 24)).columns
+    cap = Console(file=buf, force_terminal=True, color_system="truecolor",
+                  width=cols, highlight=False)
+    _doctor_render(mcp, cap)
+    show_view(buf.getvalue(), hint="q to return")
 
 
 def _mcp_view(mcp: "mcp_client.MCPManager", tools_ok: bool) -> None:
@@ -2922,7 +2937,7 @@ def _phase_banner(n: int, name: str, budget: bool = True, minutes=None,
     command run is shown as a dimmed subline (like the exploit `$ …` lines), so the
     user can see and reproduce exactly what was executed."""
     b = Text("  ", style="bright_black")               # whole line dimmed
-    b.append("[running" + (f" {num}" if num else "") + "]", style="bright_black")
+    b.append("[running" + (f" {num}" if num else "") + "]", style="default")
     b.append(f" ▸ {name}", style="bright_black")
     if budget:
         b.append(f"  ·  ⏱ {minutes or PORT_SCAN_MINUTES}m budget",
@@ -4219,7 +4234,7 @@ _AGENT_SECRET_ARGS = {"password", "hash", "bearer", "api_token"}
 
 def _print_agent_call(label: str, tool: str, args: dict) -> None:
     line = Text("  ")
-    line.append("[running]", style="yellow")
+    line.append("[running]", style="default")
     line.append(f" ▸ {label} · {tool}")
     prev = ", ".join(f"{k}={v}" for k, v in list(args.items())[:4]
                      if v not in (None, "") and k not in _AGENT_SECRET_ARGS)
@@ -5110,7 +5125,7 @@ def _run_brute_proc(argv: list, cancel, deadline_s: float) -> dict:
 
 
 def _print_brute_line(state: str, key: str, port: int, extra: str = "") -> None:
-    color = {"running": "yellow", "found": "green", "none": "bright_black",
+    color = {"running": "default", "found": "green", "none": "bright_black",
              "aborted": "magenta", "timeout": "red"}.get(state, "bright_black")
     line = Text("  ")
     line.append(f"[{state}]", style=color)
@@ -5324,6 +5339,8 @@ def _exploit_worker(eng: dict) -> None:
                 line.append(f" {mc} command(s) — tool(s) not installed: ",
                             style="red")
                 line.append(", ".join(tools), style="bold red")
+                line.append("  · run /doctor to list missing tools",
+                            style="bright_black")
                 console.print(line)
             _post(eng["ctx"], _miss)
         if skipped:
@@ -5527,7 +5544,7 @@ def _pause_engagement(ctx) -> None:
 
 
 # /status — pshunter-style read-only view (no view/stop/abort actions).
-_STATUS_STATE = {"running": ("yellow", "running"), "complete": ("green", "complete"),
+_STATUS_STATE = {"running": ("default", "running"), "complete": ("green", "complete"),
                  "error": ("red", "error"), "aborted": ("magenta", "aborted")}
 
 
@@ -6822,9 +6839,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     _pause_after_command()
             elif cmd == "/doctor":
                 mcp.connect()          # ensure the hacktools stdio server is spawned
-                _doctor_view(mcp)
-                if not conversation_started:
-                    _pause_after_command()
+                _doctor_view(mcp)      # own alt-screen window on a TTY, else inline
             elif cmd == "/hack":
                 if hack_mode:
                     # Already on → /hack again offers to turn it off.
