@@ -2753,6 +2753,9 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     English announcement (no LLM — small models are unreliable at this) and ask for
     the target IP as step 1. Returns (announcement, goal_shortcode) if enabled — the
     caller waits for the IP next; (None, None) if declined/cancelled/no model."""
+    console.print(Text("      runs autonomously — an automated recon → exploitation "
+                       "loop that won't stop to ask (independent of /mode)",
+                       style="bright_black"))
     console.print(Text("  ⚠ enable hacking mode? [y/N] ", style="yellow"), end="")
     try:
         ans = input().strip().lower()
