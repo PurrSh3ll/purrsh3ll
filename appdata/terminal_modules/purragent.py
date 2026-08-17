@@ -107,7 +107,6 @@ SLASH = [
     ("/mcp",      "manage MCP servers"),
     ("/doctor",   "check which hacktools need a program installed"),
     ("/hack",     "run the auto-hacking loop against a target"),
-    ("/target",   "show the recorded hacking-mode target database"),
     ("/memory",   "view or forget what the model has remembered"),
     ("/upgrade",  "re-launch purragent as root (sudo)"),
     ("/debug",    "toggle showing the raw request sent to the model"),
@@ -7035,8 +7034,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 (n, bool(s.get("enabled", True)))
                 for n, s in mcp.load_config().get("servers", {}).items()
                 if not mcp_client.is_builtin_server(s)],
-            # /start, /stop, /status are offered only while hacking mode is on.
-            extra_provider=lambda: ([("/start", "start hacking the recorded target"),
+            # /target, /start, /stop, /status are offered only while hacking mode is on.
+            extra_provider=lambda: ([("/target", "show the recorded hacking-mode target database"),
+                                     ("/start", "start hacking the recorded target"),
                                      ("/stop", "stop the agent (pause hacking)"),
                                      ("/status", "show the background scan status")]
                                     if hack_mode else [])),
@@ -7332,7 +7332,11 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
             elif cmd == "/target":
                 # Deleting the last target in /target re-arms the target-IP prompt
                 # (only meaningful while hacking mode is on).
-                if _db_view(base_dir) and hack_mode:
+                if not hack_mode:
+                    console.print("  [yellow]/target[/yellow] is only available in "
+                                  "hacking mode [dim]— enable it with[/dim] "
+                                  "[cyan]/hack[/cyan]")
+                elif _db_view(base_dir):
                     awaiting_target = True       # prompt shows "step 1 — enter the target IP:"
                     conversation_started = True
             elif cmd == "/start":
@@ -7351,7 +7355,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 else:
                     _start_hacking(ctx, base_dir, hack_goal)
             elif cmd == "/status":
-                _status_view(ctx)
+                if not hack_mode:
+                    console.print("  [yellow]/status[/yellow] is only available in "
+                                  "hacking mode [dim]— enable it with[/dim] "
+                                  "[cyan]/hack[/cyan]")
+                else:
+                    _status_view(ctx)
             elif cmd == "/stop":
                 # Interrupt whatever the agent is running (kills the scan) and pause
                 # the engagement so you can chat / fix data before resuming.
