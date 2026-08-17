@@ -4551,6 +4551,95 @@ def _review_worker(eng: dict) -> None:
         _post(eng["ctx"], lambda: _start_service_exploitation(eng))   # → phase 5
 
 
+# ── Context guard for the agent loop ──────────────────────────────────────────
+# Unlike normal-mode chat (which has _maybe_summarize), _run_hacktools_agent only
+# APPENDS to its transcript — every tool result (each already capped at the server's
+# MAX_OUTPUT) piles up round after round. On a small window that overflows mid-run.
+# Before each model call we trim the transcript to the window, preserving the
+# system+task preamble and every assistant+tool group (splitting a group would
+# orphan a tool result, which the API rejects).
+AGENT_KEEP_LAST_GROUPS = 3         # newest N tool-call groups always kept in full
+AGENT_OUTPUT_RESERVE_TOK = 2000    # room left for the model's reply this round
+AGENT_TRIM_PLACEHOLDER = ("[earlier tool output trimmed to fit the context window — "
+                          "the full result is saved as a finding]")
+
+
+def _split_msg_groups(tail: list) -> list:
+    """Split post-preamble messages into groups: each an assistant(tool_calls) turn
+    plus the tool results answering it, so trimming never orphans a tool result."""
+    groups: list = []
+    for m in tail:
+        if m.get("role") == "assistant" or not groups:
+            groups.append([m])
+        else:
+            groups[-1].append(m)
+    return groups
+
+
+def _msgs_chars(msgs: list) -> int:
+    return sum(len(m.get("content") or "")
+               + (len(json.dumps(m.get("tool_calls"), default=str))
+                  if m.get("tool_calls") else 0)
+               for m in msgs)
+
+
+def _agent_msgs_budget_chars(ctx: dict, base_dir: str, schemas: list):
+    """Char budget for an agent's msgs before a call: the model window minus an output
+    reserve and the always-sent tools-field, in chars (~4/token, like _conv_budget).
+    None when the window is unknown → caller skips trimming (today's behaviour)."""
+    maxc = _effective_max_context(ctx, base_dir)
+    if not maxc:
+        return None
+    try:
+        schema_chars = len(json.dumps(schemas, default=str))
+    except Exception:                                  # noqa: BLE001
+        schema_chars = 0
+    return max(0, int(maxc * 4 * FILL_FRAC) - AGENT_OUTPUT_RESERVE_TOK * 4 - schema_chars)
+
+
+def _trim_agent_msgs(msgs: list, budget_chars) -> bool:
+    """Keep an agent's msgs within budget_chars, preserving the system+task preamble
+    and every assistant+tool group. Tier 1: blank out big OLD tool outputs (keeping the
+    call trail so the model won't repeat enumeration). Tier 2: drop whole oldest groups.
+    Last resort: hard-cap the oldest kept tool result. Mutates msgs; returns True if it
+    trimmed anything."""
+    if budget_chars is None or _msgs_chars(msgs) <= budget_chars:
+        return False
+    head, groups = msgs[:2], _split_msg_groups(msgs[2:])
+    trimmed = False
+
+    # Tier 1 — replace large tool-result bodies in older groups with a placeholder.
+    old = groups[:-AGENT_KEEP_LAST_GROUPS] if len(groups) > AGENT_KEEP_LAST_GROUPS else []
+    for g in old:
+        for m in g:
+            if (m.get("role") == "tool"
+                    and len(m.get("content") or "") > len(AGENT_TRIM_PLACEHOLDER)):
+                m["content"] = AGENT_TRIM_PLACEHOLDER
+                trimmed = True
+    msgs[:] = head + [m for g in groups for m in g]
+    if _msgs_chars(msgs) <= budget_chars:
+        return trimmed
+
+    # Tier 2 — drop whole oldest groups, always keeping the last K.
+    while len(groups) > AGENT_KEEP_LAST_GROUPS:
+        groups.pop(0)
+        trimmed = True
+        msgs[:] = head + [m for g in groups for m in g]
+        if _msgs_chars(msgs) <= budget_chars:
+            return trimmed
+
+    # Last resort — one huge kept group + big system still over: hard-cap a tool body
+    # so we never ship an over-window request.
+    over = _msgs_chars(msgs) - budget_chars
+    if over > 0:
+        for m in msgs[2:]:
+            if m.get("role") == "tool" and len(m.get("content") or "") > over + 200:
+                m["content"] = m["content"][:len(m["content"]) - over - 200] + "\n[…truncated]"
+                trimmed = True
+                break
+    return trimmed
+
+
 def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
                          summary_label, store_service, store_step,
                          max_rounds, max_calls, budget_min, store_port=0) -> None:
@@ -4583,6 +4672,7 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
     custom_params = psai._parse_custom_params(profile)
     deadline = time.time() + budget_min * 60
     calls = 0
+    trim_noted = False       # note the first context trim once per agent run
     seen: dict = {}          # (tool, canonical args) -> prior result text, for dedup
     if intro:
         _post(ctx, lambda: console.print(Text("  ▸ " + intro, style="bright_black")))
@@ -4590,6 +4680,14 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
     for _round in range(max_rounds):
         if eng.get("cancelled") or time.time() > deadline:
             break
+        # Keep the growing transcript within the window (tool outputs pile up with no
+        # summariser here). Trim oldest groups first; tell the operator once.
+        if _trim_agent_msgs(msgs, _agent_msgs_budget_chars(ctx, base_dir, schemas)) \
+                and not trim_noted:
+            trim_noted = True
+            _post(ctx, lambda: console.print(Text(
+                "  ▸ trimmed older tool output to fit the context window",
+                style="bright_black")))
         body = {"model": profile.get("model", ""), "messages": msgs,
                 "tools": schemas, "tool_choice": "auto",
                 "temperature": AGENT_TEMPERATURE}
