@@ -2819,16 +2819,20 @@ def _job(command: str) -> dict:
 
 
 def _phase_banner(n: int, name: str, budget: bool = True, minutes=None,
-                  num=None) -> "Text":
+                  num=None, cmd=None) -> "Text":
     """Uniform phase header: a [running] tag (with the command's number when a phase
     runs several, so you can pair it with its [complete N] line), plus the time
-    budget (skipped for the offline CVE lookup)."""
+    budget (skipped for the offline CVE lookup). When `cmd` is given, the actual
+    command run is shown as a dimmed subline (like the exploit `$ …` lines), so the
+    user can see and reproduce exactly what was executed."""
     b = Text("  ", style="bright_black")               # whole line dimmed
     b.append("[running" + (f" {num}" if num else "") + "]", style="bright_black")
     b.append(f" ▸ {name}", style="bright_black")
     if budget:
         b.append(f"  ·  ⏱ {minutes or PORT_SCAN_MINUTES}m budget",
                  style="bright_black")
+    if cmd:
+        b.append("\n        $ " + cmd, style="bright_black")
     return b
 
 
@@ -2964,7 +2968,8 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
 
     for i, ((label, args), job) in enumerate(zip(specs, port_phase["jobs"]), 1):
         proto = "udp" if label == "udp" else "tcp"
-        console.print(_phase_banner(1, _pass_label(label), num=i))  # announce each pass
+        console.print(_phase_banner(1, _pass_label(label), num=i,
+                                    cmd=job["command"]))          # announce each pass
         threading.Thread(target=_port_pass, args=(eng, label, args, proto, job, i),
                          daemon=True).start()
     threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
@@ -3030,8 +3035,8 @@ def _finalise_port_discovery(eng: dict) -> None:
         rjob = _job("nmap -Pn --top-ports 1000 " + eng["ip"] + "  (firewall retry)")
         eng["port_phase"]["jobs"].append(rjob)
         rnum = len(eng["port_phase"]["jobs"])
-    _post(eng["ctx"], lambda: console.print(
-        _phase_banner(1, "firewall-retry port discovery", num=rnum)))
+    _post(eng["ctx"], lambda c=rjob["command"]: console.print(
+        _phase_banner(1, "firewall-retry port discovery", num=rnum, cmd=c)))
     tcp = "-sS" if _is_root() else "-sT"
     r = _run_one_port_pass(["-Pn", tcp, "-n", "--open", "-T4", "--top-ports",
                             "1000"], eng["ip"], "tcp", rjob["cancel"])
@@ -3084,8 +3089,8 @@ def _svc_trigger(eng: dict, reason: str) -> None:
         job = _job(cmd)
         eng["svc_phase"]["jobs"].append(job)
         num = len(eng["svc_phase"]["jobs"])
-    _post(eng["ctx"], lambda l=label, nm=num:
-          console.print(_phase_banner(2, l, num=nm)))
+    _post(eng["ctx"], lambda l=label, nm=num, c=job["command"]:
+          console.print(_phase_banner(2, l, num=nm, cmd=c)))
     threading.Thread(target=_svc_batch,
                      args=(eng, new_tcp, new_udp, include_os, job, label, num),
                      daemon=True).start()
@@ -3515,7 +3520,7 @@ def _start_vuln_scan(eng: dict) -> None:
         _start_cve_lookup(eng)
         return
     for i, (label, scripts, ports, job) in enumerate(jobs, 1):   # announce each family
-        console.print(_phase_banner(3, label, num=i))
+        console.print(_phase_banner(3, label, num=i, cmd=job["command"]))
         threading.Thread(target=_vuln_pass,
                          args=(eng, label, scripts, ports, job, i), daemon=True).start()
 
