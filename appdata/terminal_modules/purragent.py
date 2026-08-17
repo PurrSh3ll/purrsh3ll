@@ -4128,6 +4128,15 @@ def _print_agent_result(label: str, tool: str, result: dict) -> None:
     console.print(line)
 
 
+def _print_agent_dup(label: str, tool: str) -> None:
+    """A repeated call (same tool + args) the model tried again — short-circuited."""
+    line = Text("  ")
+    line.append("[skipped]", style="bright_black")
+    line.append(f" ▸ {label} · {tool}", style="bright_black")
+    line.append("  (duplicate — reusing earlier result)", style="bright_black")
+    console.print(line)
+
+
 def _print_agent_summary(label_text: str, summary: str) -> None:
     console.print(Text(f"  ✓ {label_text} — ", style="green").append(
         summary.splitlines()[0] if summary else "done", style="green"))
@@ -4181,6 +4190,7 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
     custom_params = psai._parse_custom_params(profile)
     deadline = time.time() + budget_min * 60
     calls = 0
+    seen: dict = {}          # (tool, canonical args) -> prior result text, for dedup
     if intro:
         _post(ctx, lambda: console.print(Text("  ▸ " + intro, style="bright_black")))
 
@@ -4236,6 +4246,14 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
                 msgs.append({"role": "tool", "tool_call_id": call_id,
                              "content": "That tool is not available in this step."})
                 continue
+            key = bare + ":" + json.dumps(args, sort_keys=True, default=str)
+            if key in seen:                            # identical call already run
+                _post(ctx, lambda lb=label, b=bare: _print_agent_dup(lb, b))
+                msgs.append({"role": "tool", "tool_call_id": call_id,
+                             "content": "You already ran this exact call; its result "
+                             "was:\n" + seen[key] + "\nDo not repeat it — try a "
+                             "different tool or arguments, or stop and summarise."})
+                continue
             _post(ctx, lambda lb=label, b=bare, ar=args: _print_agent_call(lb, b, ar))
             calls += 1
             try:
@@ -4246,8 +4264,9 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
                 result = {"text": f"error: {exc}", "isError": True}
             _post(ctx, lambda lb=label, b=bare, r=result:
                   _print_agent_result(lb, b, r))
-            msgs.append({"role": "tool", "tool_call_id": call_id,
-                         "content": result.get("text") or "(no output)"})
+            text = result.get("text") or "(no output)"
+            seen[key] = text
+            msgs.append({"role": "tool", "tool_call_id": call_id, "content": text})
 
 
 def _run_targeted_review(eng: dict) -> None:
