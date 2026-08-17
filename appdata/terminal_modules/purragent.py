@@ -5367,8 +5367,11 @@ def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str
                 purragent_db.set_cred_validated(base, cid, True, port)
                 purragent_db.add_username(base, tid, user, source="brute",
                                           service_hint=key)
+                finding = f"brute-forced {key} login: {user}"
+                purragent_db.add_exploit_finding(base, tid, port, "tcp", key,
+                                                 "brute-force", "", finding)
                 eng.setdefault("exploit_findings", []).append(
-                    {"port": port, "finding": f"brute-forced {key} login {user}"})
+                    {"port": port, "finding": finding})
             except Exception:                          # noqa: BLE001
                 pass
             _post(ctx, lambda u=user: _print_brute_line(
@@ -5386,9 +5389,10 @@ def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str
                                              num=num))
 
 
-def _brute_reaper(eng: dict, threads: list, tmp_files: list) -> None:
-    """Wait for every background brute job, clean up temp wordlists, then post a one-line
-    closing summary — without blocking the walk that already handed back to the operator."""
+def _brute_reaper(eng: dict, threads: list, tmp_files: list, on_done) -> None:
+    """Wait for every background brute job, clean up temp wordlists, post a one-line
+    closing summary, then run on_done (the final report + finish) so the summary reflects
+    any brute-forced logins. Runs off the walk thread, so the REPL stays responsive."""
     for t in threads:
         t.join()
     for p in tmp_files:
@@ -5403,30 +5407,33 @@ def _brute_reaper(eng: dict, threads: list, tmp_files: list) -> None:
     _post(eng["ctx"], lambda n=len(found): console.print(Text(
         f"  ▸ brute-force finished — {n} login(s) cracked",
         style=("green" if found else "bright_black"))))
+    on_done()
 
 
-def _run_brute_gate(eng: dict) -> None:
+def _run_brute_gate(eng: dict, on_done) -> bool:
     """Launch background brute-force for every eligible service (no validated cred / no
-    anon login), then return immediately so the operator regains control. No-op when
-    disabled, hydra is missing, or nothing is eligible."""
+    anon login). Returns True if jobs were launched — in which case on_done (the final
+    report + finish) runs from the reaper once every job completes, so the summary
+    reflects the brute results. Returns False (nothing launched) when disabled, hydra is
+    missing, or nothing is eligible — the caller then runs on_done itself."""
     ctx, base, tid, host = eng["ctx"], eng["base_dir"], eng["tid"], eng["ip"]
     if eng.get("cancelled") or not _brute_enabled(base):
-        return
+        return False
     present: dict = {}
     for port, _proto, _label, key, _ver in _exploit_order(base, tid):
         if key in _BRUTE_SERVICES and key not in present:
             present[key] = port                        # first port per service class
     if not present:
-        return
+        return False
     creds = purragent_db.fetch_credentials(base, tid)
     eligible = [(k, p) for k, p in present.items()
                 if not _service_has_login(creds, k, p)]
     if not eligible:
-        return
+        return False
     if not shutil.which("hydra"):
         _post(ctx, lambda: console.print(Text(
             "  ▸ brute-force skipped — hydra not installed", style="bright_black")))
-        return
+        return False
     passfile, pass_tmp = _brute_passfile()
     userfile = _write_tmp_list(_brute_userlist(base, tid), "purr_user_")
     phase = {"phase": "brute-force", "ip": host, "jobs": [], "background": True}
@@ -5434,7 +5441,8 @@ def _run_brute_gate(eng: dict) -> None:
     eng["brute_count"] = len(eligible)
     _post(ctx, lambda n=len(eligible): console.print(Text(
         f"  ▸ brute-force — {n} service(s) with no login, running in background "
-        f"(max {BRUTE_MINUTES}m each)", style="bright_black")))
+        f"(max {BRUTE_MINUTES}m each) — summary follows when done",
+        style="bright_black")))
     sem = threading.Semaphore(BRUTE_MAX_PARALLEL)
     threads = []
     for i, (key, port) in enumerate(eligible, 1):      # number each brute job
@@ -5446,7 +5454,9 @@ def _run_brute_gate(eng: dict) -> None:
         t.start()
         threads.append(t)
     threading.Thread(target=_brute_reaper,
-                     args=(eng, threads, [userfile, pass_tmp]), daemon=True).start()
+                     args=(eng, threads, [userfile, pass_tmp], on_done),
+                     daemon=True).start()
+    return True
 
 
 def _start_service_exploitation(eng: dict) -> None:
@@ -5564,9 +5574,17 @@ def _exploit_worker(eng: dict) -> None:
     _run_cred_harvest(eng)                             # seed/extract/validate credentials
     _run_cred_derivation(eng)                          # deduced logins (before brute)
     _run_exploit_agent(eng)                            # cross-service correlation (now has creds)
-    _run_final_report(eng)                             # pentest summary — printed last
-    _run_brute_gate(eng)                               # background brute for logins we lack
-    _post(eng["ctx"], lambda: _finish_recon(eng))
+
+    def _finish():                                     # summary + close-out
+        if eng.get("cancelled"):                       # user /stopped during brute
+            return
+        _run_final_report(eng)                         # summary — reflects brute results
+        _post(eng["ctx"], lambda: _finish_recon(eng))
+
+    # Brute runs in the background; the summary waits for it (via the reaper) so it can
+    # include any cracked logins. When nothing is brute-forced, summarise right away.
+    if not _run_brute_gate(eng, _finish):
+        _finish()
 
 
 def _print_exploit_outcome(label: str, state: str, finding, num=None,
