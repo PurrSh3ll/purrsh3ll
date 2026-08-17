@@ -107,6 +107,7 @@ SLASH = [
     ("/doctor",   "check which hacktools need a program installed"),
     ("/hack",     "run the auto-hacking loop against a target"),
     ("/target",   "show the recorded hacking-mode target database"),
+    ("/memory",   "view or forget what the model has remembered"),
     ("/upgrade",  "re-launch purragent as root (sudo)"),
     ("/debug",    "toggle showing the raw request sent to the model"),
     ("/greeting", "set the welcome name (e.g. /greeting Neo)"),
@@ -124,6 +125,10 @@ SLASH_SUBCOMMANDS = {
         ("enable",  "enable a server (pull its tools)"),
         ("disable", "disable a server"),
         ("remove",  "remove an MCP server (and all its data)"),
+    ],
+    "/memory": [
+        ("delete",  "forget an entry by its number"),
+        ("clear",   "forget everything"),
     ],
 }
 
@@ -267,6 +272,42 @@ def _memory_block(base_dir: str) -> str:
         parts.append("REMEMBERED (facts the user asked you to keep):\n"
                      + "\n".join(f"- {t}" for t in facts))
     return "\n\n".join(parts)
+
+
+def _delete_memory_index(base_dir: str, idx: int):
+    """Forget the memory at 1-based position `idx` (as shown by /memory). Returns its
+    text, or None if out of range."""
+    mems = _load_memories(base_dir)
+    if idx < 1 or idx > len(mems):
+        return None
+    removed = mems.pop(idx - 1)
+    _save_state(base_dir, memories=mems)
+    return removed.get("text")
+
+
+def _clear_memories(base_dir: str) -> int:
+    """Forget everything; returns how many items were cleared."""
+    n = len(_load_memories(base_dir))
+    _save_state(base_dir, memories=[])
+    return n
+
+
+def _memory_view(base_dir: str) -> None:
+    """/memory — the numbered list of remembered instructions + facts."""
+    mems = _load_memories(base_dir)
+    console.print(Text("purragent — memory", style=f"bold {VIOLET}"))
+    if not mems:
+        console.print(Text("  nothing remembered yet — ask the model to remember "
+                           "something and it saves it here.", style="bright_black"))
+        return
+    for i, m in enumerate(mems, 1):
+        kind = m.get("kind", "fact")
+        line = Text(f"  {i}. ", style="bright_black")
+        line.append(f"[{kind}] ",
+                    style=("cyan" if kind == "instruction" else "green"))
+        line.append(m.get("text", ""))
+        console.print(line)
+    console.print(Text("  /memory delete <n> · /memory clear", style="bright_black"))
 
 
 # ── Profiles ───────────────────────────────────────────────────────────────────
@@ -7038,6 +7079,28 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # End the welcome banner: otherwise the next turn clears the
                         # screen (\x1b[2J) and wipes the intro we just printed.
                         conversation_started = True
+            elif cmd == "/memory":
+                parts = text.split()
+                sub = parts[1].lower() if len(parts) > 1 else ""
+                if sub in ("delete", "del", "rm", "remove"):
+                    if len(parts) > 2 and parts[2].isdigit():
+                        gone = _delete_memory_index(base_dir, int(parts[2]))
+                        if gone:
+                            console.print(Text("  ▸ forgot: ", style="yellow").append(
+                                gone, style="bright_black"))
+                        else:
+                            console.print("  [yellow]no memory entry with that "
+                                          "number[/yellow] [dim]— see /memory[/dim]")
+                    else:
+                        console.print("  [yellow]usage:[/yellow] /memory delete <number> "
+                                      " [dim](numbers from /memory)[/dim]")
+                elif sub == "clear":
+                    n = _clear_memories(base_dir)
+                    console.print(f"  [yellow]▸[/yellow] cleared {n} memory item(s)")
+                else:
+                    _memory_view(base_dir)
+                if not conversation_started:
+                    _pause_after_command()
             elif cmd == "/target":
                 # Deleting the last target in /target re-arms the target-IP prompt
                 # (only meaningful while hacking mode is on).
