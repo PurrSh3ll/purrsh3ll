@@ -29,6 +29,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -2922,17 +2923,30 @@ def _invalidate_toolbar(ctx: dict) -> None:
         pass
 
 
-def _cancel_engagement(ctx: dict) -> None:
+def _cancel_engagement(ctx: dict, include_background: bool = False) -> None:
     """Stop all in-flight pipeline scans (kills their nmap) and mark the engagement
-    cancelled so it won't advance."""
+    cancelled so it won't advance. Background phases (the fire-and-forget brute-force
+    jobs) survive the end-of-run auto-stop and are only killed on an explicit /stop
+    (include_background=True)."""
     eng = ctx.get("engagement")
     if eng:
         eng["cancelled"] = True
     for ph in ctx.get("phases", []):
+        if ph.get("background") and not include_background:
+            continue
         for job in ph.get("jobs", []):
             c = job.get("cancel")
             if c is not None:
                 c.set()
+
+
+def _brute_running(ctx: dict) -> bool:
+    """True while any background brute-force job is still in flight."""
+    for ph in ctx.get("phases", []):
+        if ph.get("background") and any(j.get("state") == "running"
+                                        for j in ph.get("jobs", [])):
+            return True
+    return False
 
 
 def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
@@ -4762,6 +4776,238 @@ def _run_cred_harvest(eng: dict) -> None:
         style=("green" if valid else "bright_black"))))
 
 
+# ── phase 5 brute-force gate (background, fire-and-forget) ────────────────────
+# Last resort per service: when NO validated credential and NO working anonymous/null
+# login exists for it, spray the harvested usernames (or a default userlist) against a
+# small password list. Run OUTSIDE the MCP server — a 15-min hydra over one stdio pipe
+# would block every other tool — as a backgrounded subprocess with its own deadline +
+# killpg, a few in parallel, so the operator gets control back immediately and results
+# land as they finish. Deliberately bounded (small lists, -f stop-on-first, capped
+# threads); gated by config so it stays off for lockout-sensitive engagements.
+BRUTE_MINUTES = 15                 # per-service hydra deadline
+BRUTE_MAX_PARALLEL = 2             # concurrent hydra processes
+BRUTE_THREADS = 4                  # hydra -t (parallel logins within one job)
+_BRUTE_SERVICES = {                # pshunter service class → hydra module
+    "ssh": "ssh", "ftp": "ftp", "smb": "smb", "mysql": "mysql", "mssql": "mssql",
+    "psql": "postgres", "rdp": "rdp", "telnet": "telnet", "vnc": "vnc",
+}
+_BRUTE_SEED_USERS = ["root", "admin", "administrator", "user", "guest", "test",
+                     "oracle", "postgres", "mysql", "service"]
+_BRUTE_PASS_FILES = [
+    "/usr/share/wordlists/fasttrack.txt",
+    "/usr/share/seclists/Passwords/Common-Credentials/top-passwords-shortlist.txt",
+    "/usr/share/wordlists/metasploit/unix_passwords.txt",
+]
+_BRUTE_FALLBACK_PASSWORDS = [
+    "password", "123456", "admin", "root", "toor", "letmein", "password123",
+    "qwerty", "welcome", "changeme", "P@ssw0rd", "administrator", "12345678",
+    "test", "guest", "1234", "root123", "admin123", "pass123", "secret",
+]
+_HYDRA_HIT = re.compile(
+    r"\[\d+\]\[[^\]]+\]\s+host:\s*\S+\s+login:\s*(\S+)\s+password:\s*(\S*)")
+
+
+def _brute_enabled(base_dir: str) -> bool:
+    """The single gate for auto brute-force. Reads appdata/app_config.json
+    purragent.bruteforce (default True) — the switch to bind to a ctf/pentest mode."""
+    try:
+        with open(os.path.join(base_dir, "appdata", "app_config.json")) as f:
+            v = (json.load(f).get("purragent") or {}).get("bruteforce")
+        return True if v is None else bool(v)
+    except Exception:                                  # noqa: BLE001
+        return True
+
+
+def _service_has_login(creds: list, key: str, port: int) -> bool:
+    """True when a validated credential (or working null/anon login) already covers this
+    service — in which case brute-force is pointless and skipped."""
+    for c in creds:
+        if c.get("validated") != 1:
+            continue
+        try:
+            vp = json.loads(c.get("valid_on") or "[]")
+        except (ValueError, TypeError):
+            vp = []
+        if c.get("service_hint") == key or port in vp:
+            return True
+    return False
+
+
+def _write_tmp_list(items: list, prefix: str) -> str:
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".txt")
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(items) + "\n")
+    return path
+
+
+def _brute_passfile():
+    """Return (path, tmp_to_cleanup): an existing small password list if present, else a
+    built-in fallback written to a temp file."""
+    for p in _BRUTE_PASS_FILES:
+        if os.path.exists(p):
+            return p, None
+    path = _write_tmp_list(_BRUTE_FALLBACK_PASSWORDS, "purr_pw_")
+    return path, path
+
+
+def _brute_userlist(base_dir: str, tid: int) -> list:
+    """The harvested usernames (targeted) or the default seed list when the pool is
+    empty (the 'nothing known' case), deduped, order-preserving."""
+    users = [u["username"] for u in purragent_db.fetch_usernames(base_dir, tid)]
+    if not users:
+        users = list(_BRUTE_SEED_USERS)
+    seen, uniq = set(), []
+    for u in users:
+        if u and u not in seen:
+            seen.add(u)
+            uniq.append(u)
+    return uniq
+
+
+def _run_brute_proc(argv: list, cancel, deadline_s: float) -> dict:
+    """Run one hydra to completion as its own process group, cancellable + deadlined.
+    Returns {output, cancelled, timed_out}."""
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, start_new_session=True)
+    except Exception as exc:                           # noqa: BLE001
+        return {"output": str(exc), "cancelled": False, "timed_out": False}
+    start, timed_out = time.time(), False
+    while proc.poll() is None:
+        if cancel is not None and cancel.is_set():
+            _kill_proc_group(proc)
+            break
+        if (time.time() - start) > deadline_s:
+            timed_out = True
+            _kill_proc_group(proc)
+            break
+        time.sleep(0.4)
+    try:
+        out, _e = proc.communicate(timeout=5)
+    except Exception:                                  # noqa: BLE001
+        _kill_proc_group(proc)
+        out = ""
+    return {"output": out or "",
+            "cancelled": bool(cancel is not None and cancel.is_set()),
+            "timed_out": timed_out}
+
+
+def _print_brute_line(state: str, key: str, port: int, extra: str = "") -> None:
+    color = {"running": "yellow", "found": "green", "none": "bright_black",
+             "aborted": "magenta", "timeout": "red"}.get(state, "bright_black")
+    line = Text("  ")
+    line.append(f"[{state}]", style=color)
+    line.append(f" ▸ brute · {key}  → {port}", style=color)
+    if extra:
+        line.append(f"  {extra}", style=color)
+    console.print(line)
+
+
+def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str,
+                  userfile: str, passfile: str) -> None:
+    """One backgrounded hydra job against a single service; on a hit, stores the
+    credential (validated) and adds the username to the pool."""
+    ctx, base, tid, host = eng["ctx"], eng["base_dir"], eng["tid"], eng["ip"]
+    with sem:                                          # cap concurrent hydra processes
+        if job["cancel"].is_set():
+            job["state"] = "aborted"
+            return
+        _post(ctx, lambda: _print_brute_line("running", key, port))
+        argv = ["hydra", "-L", userfile, "-P", passfile, "-t", str(BRUTE_THREADS),
+                "-f", "-I", "-s", str(port), host, hydra_svc]
+        res = _run_brute_proc(argv, job["cancel"], BRUTE_MINUTES * 60)
+    hits = _HYDRA_HIT.findall(res["output"])
+    if hits:
+        job["state"] = "complete"
+        for user, pw in hits:
+            try:
+                cid = purragent_db.add_credential(base, tid, user, pw, "password",
+                    scope="specific", service_hint=key, source="brute")
+                purragent_db.set_cred_validated(base, cid, True, port)
+                purragent_db.add_username(base, tid, user, source="brute",
+                                          service_hint=key)
+                eng.setdefault("exploit_findings", []).append(
+                    {"port": port, "finding": f"brute-forced {key} login {user}"})
+            except Exception:                          # noqa: BLE001
+                pass
+            _post(ctx, lambda u=user: _print_brute_line(
+                "found", key, port, f"{u}:***"))
+    elif res["cancelled"]:
+        job["state"] = "aborted"
+        _post(ctx, lambda: _print_brute_line("aborted", key, port))
+    elif res["timed_out"]:
+        job["state"] = "error"
+        _post(ctx, lambda: _print_brute_line("timeout", key, port,
+                                             f"({BRUTE_MINUTES}m budget)"))
+    else:
+        job["state"] = "complete"
+        _post(ctx, lambda: _print_brute_line("none", key, port, "no login found"))
+
+
+def _brute_reaper(eng: dict, threads: list, tmp_files: list) -> None:
+    """Wait for every background brute job, clean up temp wordlists, then post a one-line
+    closing summary — without blocking the walk that already handed back to the operator."""
+    for t in threads:
+        t.join()
+    for p in tmp_files:
+        if p:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    base, tid = eng["base_dir"], eng["tid"]
+    found = [c for c in purragent_db.fetch_credentials(base, tid)
+             if c.get("source") == "brute"]
+    _post(eng["ctx"], lambda n=len(found): console.print(Text(
+        f"  ▸ brute-force finished — {n} login(s) cracked",
+        style=("green" if found else "bright_black"))))
+
+
+def _run_brute_gate(eng: dict) -> None:
+    """Launch background brute-force for every eligible service (no validated cred / no
+    anon login), then return immediately so the operator regains control. No-op when
+    disabled, hydra is missing, or nothing is eligible."""
+    ctx, base, tid, host = eng["ctx"], eng["base_dir"], eng["tid"], eng["ip"]
+    if eng.get("cancelled") or not _brute_enabled(base):
+        return
+    present: dict = {}
+    for port, _proto, _label, key, _ver in _exploit_order(base, tid):
+        if key in _BRUTE_SERVICES and key not in present:
+            present[key] = port                        # first port per service class
+    if not present:
+        return
+    creds = purragent_db.fetch_credentials(base, tid)
+    eligible = [(k, p) for k, p in present.items()
+                if not _service_has_login(creds, k, p)]
+    if not eligible:
+        return
+    if not shutil.which("hydra"):
+        _post(ctx, lambda: console.print(Text(
+            "  ▸ brute-force skipped — hydra not installed", style="bright_black")))
+        return
+    passfile, pass_tmp = _brute_passfile()
+    userfile = _write_tmp_list(_brute_userlist(base, tid), "purr_user_")
+    phase = {"phase": "brute-force", "ip": host, "jobs": [], "background": True}
+    ctx.setdefault("phases", []).append(phase)
+    eng["brute_count"] = len(eligible)
+    _post(ctx, lambda n=len(eligible): console.print(Text(
+        f"  ▸ brute-force — {n} service(s) with no login, running in background "
+        f"(max {BRUTE_MINUTES}m each)", style="bright_black")))
+    sem = threading.Semaphore(BRUTE_MAX_PARALLEL)
+    threads = []
+    for key, port in eligible:
+        job = _job(f"hydra -L users -P pass -s {port} {host} {_BRUTE_SERVICES[key]}")
+        phase["jobs"].append(job)
+        t = threading.Thread(target=_brute_worker,
+                             args=(eng, sem, job, port, key, _BRUTE_SERVICES[key],
+                                   userfile, passfile), daemon=True)
+        t.start()
+        threads.append(t)
+    threading.Thread(target=_brute_reaper,
+                     args=(eng, threads, [userfile, pass_tmp]), daemon=True).start()
+
+
 def _start_service_exploitation(eng: dict) -> None:
     """Phase 5 entry: kick off the sequential exploitation walk in the background."""
     with eng["lock"]:
@@ -4875,6 +5121,7 @@ def _exploit_worker(eng: dict) -> None:
     _run_exploit_agent(eng)                            # final cross-service correlation
     _run_cred_harvest(eng)                             # seed/extract/validate credentials
     _run_final_report(eng)                             # pentest summary — printed last
+    _run_brute_gate(eng)                               # background brute for logins we lack
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
 
@@ -5034,8 +5281,18 @@ def _finish_recon(eng: dict) -> None:
     hint.append("  ·  deeper exploitation (creds/shells/privesc) is manual.",
                 style="bright_black")
     console.print(hint)
+    if _brute_running(eng["ctx"]):
+        note = Text("    ", style="bright_black")
+        note.append(f"{eng.get('brute_count', 0)} brute-force job(s) still running in "
+                    "the background — ", style="bright_black")
+        note.append("/status", style="cyan")
+        note.append(" to watch, ", style="bright_black")
+        note.append("/stop", style="cyan")
+        note.append(" to abort them.", style="bright_black")
+        console.print(note)
     # Auto-/stop: the automated run is done, so leave the agent in the stopped state
     # (as if the operator typed /stop) — /start re-runs, /target changes the target.
+    # Background brute jobs deliberately survive this (only an explicit /stop kills them).
     _cancel_engagement(eng["ctx"])
     eng["ctx"]["hacking"] = False
 
@@ -6403,10 +6660,16 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     console.print("  [yellow]/stop[/yellow] is only available in "
                                   "hacking mode")
                 elif not ctx.get("hacking"):
-                    console.print("  [dim]already stopped — "
-                                  "[/dim][cyan]/start[/cyan][dim] to resume[/dim]")
+                    if _brute_running(ctx):          # run auto-stopped, brute still going
+                        _cancel_engagement(ctx, include_background=True)
+                        console.print(Text("  ▸ aborted the background brute-force "
+                                           "job(s).", style="yellow"))
+                    else:
+                        console.print("  [dim]already stopped — "
+                                      "[/dim][cyan]/start[/cyan][dim] to resume[/dim]")
                 else:
-                    _cancel_engagement(ctx)          # kill all running nmap processes
+                    # include background so /stop during the run also kills any brute
+                    _cancel_engagement(ctx, include_background=True)
                     ctx["hacking"] = False
                     stop = Text("  ▸ stopped the agent. ", style="yellow")
                     stop.append("/start", style="cyan")

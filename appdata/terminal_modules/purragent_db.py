@@ -142,7 +142,8 @@ def _connect(base_dir: str) -> sqlite3.Connection:
     """Open the DB (creating it + schema on first use) with FKs on."""
     conn = sqlite3.connect(_db_path(base_dir))
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(_SCHEMA)
+    conn.execute("PRAGMA busy_timeout = 5000")     # wait out concurrent writers (brute
+    conn.executescript(_SCHEMA)                    # threads, scan passes) not error out
     _migrate(conn)
     return conn
 
