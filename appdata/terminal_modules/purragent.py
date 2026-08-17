@@ -974,9 +974,30 @@ def _needs_confirm(mode: str, name: str, args: dict):
     return True, "unclassified tool"                  # fail-closed
 
 
-def _confirm_action(name: str, args: dict, reason: str) -> bool:
-    """Prompt the user to approve a tool call. Returns True to run it."""
+def _approval_key(name: str, args: dict) -> str:
+    """Identity of a tool call for the 'always allow' memory: the full namespaced
+    tool name PLUS its exact arguments. So 'always' remembers this SPECIFIC call
+    (e.g. this exact command), not the whole tool — a different command through the
+    same tool still asks."""
+    try:
+        blob = json.dumps(args, sort_keys=True, ensure_ascii=False)
+    except Exception:                                  # noqa: BLE001
+        blob = str(args)
+    return f"{name}\x00{blob}"
+
+
+def _confirm_action(name: str, args: dict, reason: str, approvals=None) -> bool:
+    """Prompt the user to approve a tool call. Returns True to run it.
+
+    `approvals` is an optional per-session set of keys the user chose to 'always
+    allow'. If this exact call (tool + args) is in it, it runs silently; picking
+    'a' at the prompt adds it so identical calls this session won't ask again."""
+    key = _approval_key(name, args)
     tool = mcp_client.split_namespaced(name)[1]
+    if approvals is not None and key in approvals:
+        console.print(Text(f"  ✓ {tool} ", style="green")
+                      .append("(approved earlier this session)", style="bright_black"))
+        return True
     preview = _tool_arg_preview(args)
     line = Text("  ⚠ confirm  ", style="yellow")
     line.append(tool, style=f"bold {VIOLET}")
@@ -985,10 +1006,17 @@ def _confirm_action(name: str, args: dict, reason: str) -> bool:
     console.print(line)
     if reason:
         console.print(Text(f"      {reason}", style="bright_black"))
+    prompt = ("      run this? [y/N/a] " if approvals is not None
+              else "      run this? [y/N] ")
     try:
-        ans = input("      run this? [y/N] ").strip().lower()
+        ans = input(prompt).strip().lower()
     except (EOFError, KeyboardInterrupt):
         ans = ""
+    if ans in ("a", "always") and approvals is not None:
+        approvals.add(key)                             # remember this exact call
+        console.print(Text("      won't ask again for this exact call this session",
+                           style="bright_black"))
+        return True
     if ans in ("y", "yes"):
         return True
     console.print(Text("      skipped", style="bright_black"))
@@ -6955,6 +6983,12 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     debug = False   # /debug: mirror pschat's --debug (dump the request to the model)
     hack_mode = False   # /hack: hacking mode on → shows in the toolbar; /hack again disables
     hack_goal = None    # /hack: chosen objective shortcode (flag/privesc/vuln/access)
+    # semi-auto/confirm 'always allow' memory: exact calls approved with 'a' this
+    # session (in-RAM only, never persisted; cleared by /clear).
+    approvals: set = set()
+
+    def _confirm(name, args, reason):
+        return _confirm_action(name, args, reason, approvals)
 
     # First-ever launch: greet without "back". Mark it so later launches say "back".
     first_launch = not _state.get("launched")
@@ -7183,6 +7217,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # conversation is left visible or scrollable.
                 history.clear()
                 ctx.pop("summary", None)               # also drop the condensed summary
+                approvals.clear()                      # forget 'always allow' choices
                 if sys.stdout.isatty():
                     sys.stdout.write("\x1b[3J\x1b[2J\x1b[H")   # scrollback + screen
                     sys.stdout.flush()
@@ -7652,7 +7687,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # The answer is streamed live via _on_text (defined above).
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
                                                mcp, _on_tool, _on_text,
-                                               mode=mode, on_confirm=_confirm_action,
+                                               mode=mode, on_confirm=_confirm,
                                                offer_hack=not hack_mode,
                                                on_hack=_on_hack,
                                                summary=ctx.get("summary", ""),
@@ -7680,7 +7715,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                            style="bright_black"))
                         reply = query_model_with_tools(
                             ctx["profile"], base_dir, history, mcp, _on_tool,
-                            _on_text, mode=mode, on_confirm=_confirm_action,
+                            _on_text, mode=mode, on_confirm=_confirm,
                             offer_hack=False, summary=ctx.get("summary", ""),
                             recall=recall_block)
                         _stop_tool_spin()
