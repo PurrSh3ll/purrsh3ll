@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS credentials (
     confidence   REAL,                     -- extraction confidence (0-1), NULL if n/a
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
+CREATE TABLE IF NOT EXISTS usernames (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id    INTEGER,
+    username     TEXT,
+    source       TEXT DEFAULT 'extracted',  -- extracted / enum / cred / seed
+    service_hint TEXT,                       -- service it was seen on, or '*'
+    created      TEXT,
+    UNIQUE (target_id, username),
+    FOREIGN KEY (target_id) REFERENCES targets(id)
+);
 CREATE TABLE IF NOT EXISTS endpoints (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     target_id  INTEGER,
@@ -525,6 +535,37 @@ def set_cred_validated(base_dir: str, cred_id: int, valid: bool,
         conn.close()
 
 
+def add_username(base_dir: str, target_id: int, username, source: str = "extracted",
+                 service_hint=None) -> None:
+    """Record a possible username for the brute userlist, deduped on (target_id,
+    username). Empty names are dropped (a blank user is a null-login concern, not a
+    brute candidate)."""
+    username = _clean(username)
+    if not username:
+        return
+    conn = _connect(base_dir)
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO usernames (target_id, username, source, "
+            "service_hint, created) VALUES (?, ?, ?, ?, ?)",
+            (target_id, username, _clean(source), _clean(service_hint), _now()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_usernames(base_dir: str, target_id: int) -> list:
+    """All possible usernames for a target (for the brute userlist), in insert order."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM usernames WHERE target_id = ? ORDER BY id",
+            (target_id,))]
+    finally:
+        conn.close()
+
+
 def fetch_vulns(base_dir: str, target_id: int) -> list:
     """Phase-3 findings for a target, worst risk first then by port."""
     conn = _connect(base_dir)
@@ -574,6 +615,7 @@ def remove_engagement(base_dir: str, engagement_id: int) -> None:
         for tid in tids:
             conn.execute("DELETE FROM ports WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM credentials WHERE target_id = ?", (tid,))
+            conn.execute("DELETE FROM usernames WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM endpoints WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM scripts WHERE target_id = ?", (tid,))
             conn.execute("DELETE FROM vulns WHERE target_id = ?", (tid,))

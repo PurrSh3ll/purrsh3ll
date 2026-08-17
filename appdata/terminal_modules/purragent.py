@@ -4447,35 +4447,56 @@ def _seed_null_anon_creds(eng: dict) -> int:
 
 
 _CRED_EXTRACT_SYSTEM = (
-    "You are a penetration tester. From the enumeration findings below, extract every "
-    "CREDENTIAL that is explicitly present in the text: username+password pairs, "
-    "password hashes, private keys, API tokens, or a username on its own. Ground every "
-    "item STRICTLY in the findings — never guess or invent. Reply with ONLY a JSON "
-    "array, no prose, each item exactly: "
-    '{"username": str, "secret": str, "type": "password|ntlm_hash|ssh_key|token|none", '
-    '"service_hint": "<service such as ssh/smb/ftp/mysql, or * if unknown>", '
-    '"source": "<short where-from>", "confidence": <0.0-1.0>}. '
-    "Use empty strings for a missing username or secret. If there are no credentials in "
-    "the findings, reply with exactly: []")
+    "You are a penetration tester. From the enumeration findings below, extract, grounded "
+    "STRICTLY in the text (never guess or invent), two things:\n"
+    "1) CREDENTIALS — entries that include a secret: username+password pairs, password "
+    "hashes, private keys, or API tokens.\n"
+    "2) USERNAMES — possible usernames with NO known secret: enumerated users, account "
+    "names, email local-parts, names in configs/banners.\n"
+    "Reply with ONLY a JSON object, no prose:\n"
+    '{"credentials": [{"username": str, "secret": str, '
+    '"type": "password|ntlm_hash|ssh_key|token", '
+    '"service_hint": "<ssh/smb/ftp/mysql/… or *>", "source": "<where-from>", '
+    '"confidence": <0.0-1.0>}], '
+    '"usernames": [{"username": str, "service_hint": "<service or *>", '
+    '"source": "<where-from>"}]}\n'
+    "Put an entry in credentials ONLY if it has a secret; a bare username goes in "
+    "usernames. If a section is empty use []. If nothing at all, reply: "
+    '{"credentials": [], "usernames": []}')
 
 
-def _parse_cred_json(text: str) -> list:
-    """Pull the first JSON array out of the model reply, tolerant of prose / code fences.
-    Returns [] on anything unparseable — a bad reply must never crash the harvest."""
+def _parse_extraction(text: str):
+    """Pull the {credentials:[…], usernames:[…]} object out of the model reply, tolerant
+    of prose / code fences. Falls back to treating a bare array as credentials. Returns
+    (creds, usernames); either may be [] — a bad reply must never crash the harvest."""
     if not text:
-        return []
-    m = re.search(r"\[.*\]", text, re.S)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(0))
-    except (ValueError, TypeError):
-        return []
-    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+        return [], []
+    m = re.search(r"\{.*\}", text, re.S)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if isinstance(obj, dict) and ("credentials" in obj or "usernames" in obj):
+                creds = [d for d in (obj.get("credentials") or [])
+                         if isinstance(d, dict)]
+                users = [d for d in (obj.get("usernames") or [])
+                         if isinstance(d, dict)]
+                return creds, users
+        except (ValueError, TypeError):
+            pass
+    m = re.search(r"\[.*\]", text, re.S)                # legacy: bare array = creds
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            if isinstance(data, list):
+                return [d for d in data if isinstance(d, dict)], []
+        except (ValueError, TypeError):
+            pass
+    return [], []
 
 
 def _extract_creds(eng: dict) -> int:
-    """D: one tool-free LLM pass over the findings → structured creds into the store."""
+    """D: one tool-free LLM pass over the findings → structured creds AND usernames into
+    the store (one call, two outputs). Returns the number of credentials stored."""
     profile = eng["ctx"].get("profile")
     if not profile or eng.get("cancelled"):
         return 0
@@ -4503,13 +4524,16 @@ def _extract_creds(eng: dict) -> int:
     finally:
         eng["thinking"] = False
         _invalidate_toolbar(eng["ctx"])
+    creds, users = _parse_extraction("".join(parts))
     n = 0
-    for c in _parse_cred_json("".join(parts)):
+    for c in creds:
         user, secret = str(c.get("username") or ""), str(c.get("secret") or "")
-        if not user and not secret:
+        hint = (str(c.get("service_hint") or "*").strip() or "*")
+        if not secret:                                 # no secret → it's a username
+            purragent_db.add_username(base, tid, user, source="extracted",
+                                      service_hint=hint)
             continue
         st = (str(c.get("type") or "").strip().lower() or None)
-        hint = (str(c.get("service_hint") or "*").strip() or "*")
         scope = "global" if hint == "*" else "specific"
         try:
             conf = float(c.get("confidence"))
@@ -4518,9 +4542,15 @@ def _extract_creds(eng: dict) -> int:
         try:
             purragent_db.add_credential(base, tid, user, secret, st, scope=scope,
                 service_hint=hint, source="extracted", confidence=conf)
+            purragent_db.add_username(base, tid, user, source="cred",
+                                      service_hint=hint)   # cred user → brute pool too
             n += 1
         except Exception:                              # noqa: BLE001
             pass
+    for u in users:
+        purragent_db.add_username(base, tid, str(u.get("username") or ""),
+                                  source="extracted",
+                                  service_hint=(str(u.get("service_hint") or "*")))
     return n
 
 
@@ -4726,8 +4756,9 @@ def _run_cred_harvest(eng: dict) -> None:
     _validate_creds(eng)
     creds = purragent_db.fetch_credentials(base, tid)
     valid = [c for c in creds if c.get("validated") == 1]
-    _post(ctx, lambda n=len(creds), v=len(valid): console.print(Text(
-        f"    {v} valid / {n} candidate credential(s)",
+    users = purragent_db.fetch_usernames(base, tid)
+    _post(ctx, lambda n=len(creds), v=len(valid), u=len(users): console.print(Text(
+        f"    {v} valid / {n} candidate credential(s) · {u} username(s) for brute",
         style=("green" if valid else "bright_black"))))
 
 
