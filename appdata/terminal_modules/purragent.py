@@ -459,6 +459,51 @@ def _estimate_context_tokens(profile: dict, base_dir: str, history: list,
     return total_chars // 4 + tools_tok
 
 
+def _fixed_header_parts(profile: dict, base_dir: str, mcp, mode: str) -> list:
+    """The fixed per-prompt overhead as [(label, chars)] — system prompt+env, tool
+    catalog, custom instructions, saved /memory, and the tools-field reservation. Shared
+    by /context (display) and the conversation-budget math so they can't drift."""
+    planning = (mode == "plan")
+    use_tools = (not planning) and _supports_tool_loop(profile) \
+        and _model_has_tools(profile, base_dir)
+    sys_chars = len(PURRAGENT_SYSTEM) + len(_env_block())
+    if planning:
+        sys_chars += len(PLAN_MODE_NOTE)
+    cat_chars = tools_chars = 0
+    if use_tools and mcp is not None:
+        try:
+            all_tools = [t for t in mcp.all_tools() if _tool_available(t)]
+        except Exception:                              # noqa: BLE001
+            all_tools = []
+        if all_tools:
+            cat_chars = len(_DISCOVERY_GUIDE) + len(_catalog_block(all_tools))
+            tools_chars = TOOLS_RESERVATION_TOKENS * 4
+    return [
+        ("system prompt&env",     sys_chars),
+        ("tool catalog",          cat_chars),
+        ("custom instructions",   len((profile.get("custom_system", "") or "").strip())),
+        ("user memory (/memory)", len(_memory_block(base_dir))),
+        ("mcp tools (reserved)",  tools_chars),
+    ]
+
+
+def _conv_budget(profile: dict, base_dir: str, ctx: dict, mcp, mode: str):
+    """(recent_budget_chars, summ_cap_chars): the verbatim window and the summary cap,
+    using the exact percentage split /context shows. None when the model window is
+    unknown (→ no enforcement). Recent verbatim = pool − summary cap (− findings floor)."""
+    maxc = _effective_max_context(ctx, base_dir)
+    if not maxc:
+        return None
+    budget_tok = max(0, min(int(maxc * FILL_FRAC), maxc - OUTPUT_FLOOR))
+    fixed_chars = sum(c for _, c in _fixed_header_parts(profile, base_dir, mcp, mode))
+    memory_chars = MEMORY_LOOKUP_TOKENS * 4
+    pool = max(0, budget_tok * 4 - fixed_chars - memory_chars)
+    findings_chars = min(max(0, FINDINGS_FLOOR_TOKENS * 4), int(FINDINGS_CAP_FRAC * pool))
+    avail = max(0, pool - findings_chars)
+    summ_cap = int(SUMMARIZED_CAP_FRAC * pool)
+    return max(0, avail - summ_cap), summ_cap
+
+
 def _context_view(ctx: dict, base_dir: str, history: list, mcp,
                   mode: str = "auto", debug: bool = False) -> None:
     """Alt-screen view of context-window usage, split into two groups: the fixed
@@ -471,34 +516,9 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
         console.print("  [yellow]No model attached.[/yellow] "
                       "[dim]/model to choose one[/dim]")
         return
-    planning = (mode == "plan")
-    use_tools = (not planning) and _supports_tool_loop(p) and _model_has_tools(p, base_dir)
-    sys_chars = len(PURRAGENT_SYSTEM) + len(_env_block())
-    if planning:
-        sys_chars += len(PLAN_MODE_NOTE)     # plan mode swaps the catalog for this
-    cat_chars = tools_chars = 0
-    if use_tools and mcp is not None:
-        try:
-            all_tools = mcp.all_tools()
-        except Exception:
-            all_tools = []
-        if all_tools:
-            # Catalog is exactly known (sent every prompt); the tools field size
-            # varies with what gets surfaced, so budget a fixed reservation.
-            cat_chars = len(_DISCOVERY_GUIDE) + len(_catalog_block(all_tools))
-            tools_chars = TOOLS_RESERVATION_TOKENS * 4
-    custom_chars = len((p.get("custom_system", "") or "").strip())
-    mem_chars = len(_memory_block(base_dir))     # saved /memory, injected every turn
+    fixed = _fixed_header_parts(p, base_dir, mcp, mode)
     hist_chars = sum(len(m.get("content")) for m in history
                      if isinstance(m.get("content"), str))
-
-    fixed = [
-        ("system prompt&env",       sys_chars),
-        ("tool catalog",            cat_chars),
-        ("custom instructions",     custom_chars),
-        ("user memory (/memory)",   mem_chars),
-        ("mcp tools (reserved)",    tools_chars),
-    ]
     fixed_chars = sum(c for _, c in fixed)
     maxc = _effective_max_context(ctx, base_dir)
 
@@ -533,22 +553,12 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
     else:
         findings_chars = findings_demand
 
-    # recent conversation vs summarized share the pool left after findings. While
-    # the conversation fits, recent stays fully verbatim and *borrows* summary's
-    # (and findings') unused space. Once it overflows, summary reclaims its reserved
-    # space (up to its cap) to hold the spilled older turns and recent keeps the
-    # rest — recent+summary == the available pool, so it never pushes total context
-    # past the budget. (Real summarisation isn't wired; this only accounts tokens.)
-    if pool is not None:
-        avail = max(0, pool - findings_chars)
-        summ_reserve = int(SUMMARIZED_CAP_FRAC * pool)
-        if hist_chars <= avail:
-            recent_chars, summarized_chars = hist_chars, 0
-        else:
-            recent_chars = max(0, avail - summ_reserve)
-            summarized_chars = min(hist_chars - recent_chars, summ_reserve)
-    else:
-        recent_chars, summarized_chars = hist_chars, 0
+    # recent conversation = the verbatim (trimmed) history; summarized = the actual
+    # running summary (older turns condensed by _maybe_summarize). They never exceed the
+    # pool because _maybe_summarize keeps recent within pool−summary_cap and caps the
+    # summary at summary_cap.
+    recent_chars = hist_chars
+    summarized_chars = len((ctx.get("summary") or ""))
     conversation_chars = recent_chars + summarized_chars + memory_chars
 
     total_chars = fixed_chars + conversation_chars + findings_chars
@@ -6449,10 +6459,96 @@ def _db_view(base_dir: str) -> bool:
                 return True          # deleted the last target → caller re-asks for IP
 
 
+# ── Conversation summarisation (keep the window within its % budget) ──────────
+# When the verbatim history grows past its share of the pool (pool − summary cap), the
+# oldest turns that spill over are folded into a rolling summary by one LLM call, and
+# dropped from the live history. The summary is injected as a system block and capped at
+# the summarised slot, so recent + summary never push past the budget.
+_SUMMARY_SYSTEM = (
+    "You maintain a running summary of a conversation so its older turns can be dropped "
+    "without losing context. Merge the EXISTING SUMMARY with the OLDER TURNS below into "
+    "ONE concise summary. Preserve: decisions made, facts/data established, the user's "
+    "stated preferences and standing instructions, unfinished threads and open "
+    "questions, and important names/paths/values. Drop small talk and redundancy. Write "
+    "compact notes (third person, no preamble, no meta-comments).")
+
+
+def _summarize_turns(profile: dict, base_dir: str, existing: str, turns: list,
+                     cap_chars: int):
+    """Fold `turns` (and the existing summary) into an updated summary via one tool-free
+    LLM call, hard-capped at cap_chars. Returns None on failure/empty (caller then keeps
+    the old summary and history, and retries next turn) so context is never lost."""
+    convo = "\n".join(f"{m.get('role', '?')}: {m.get('content', '')}" for m in turns
+                      if isinstance(m.get("content"), str) and m.get("content").strip())
+    if not convo.strip():
+        return None
+    words = max(120, cap_chars // 6)
+    user = ("EXISTING SUMMARY:\n" + (existing or "(none)")
+            + "\n\nOLDER TURNS to fold in:\n" + convo
+            + f"\n\nReturn the updated summary (under ~{words} words).")
+    body = {"model": profile.get("model", ""),
+            "messages": [{"role": "system", "content": _SUMMARY_SYSTEM},
+                         {"role": "user", "content": user}],
+            "temperature": AGENT_TEMPERATURE}
+    custom = psai._parse_custom_params(profile)
+    if custom:
+        body.update(custom)
+    try:
+        endpoint, api_key = _openai_endpoint(profile, base_dir)
+        parts: list = []
+        _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
+                     hide_thinking=True, render_reasoning=False,
+                     max_seconds=AGENT_TURN_MAX_SECONDS)
+    except Exception:                                  # noqa: BLE001
+        return None
+    out = "".join(parts).strip()
+    return out[:cap_chars] if out else None
+
+
+def _maybe_summarize(profile: dict, base_dir: str, ctx: dict, mcp, mode: str,
+                     history: list) -> None:
+    """Keep the verbatim history within its budget: summarise + drop the oldest turns
+    that overflow. Mutates `history` in place and updates ctx['summary']. No-op without a
+    model, in plan mode, or when the window is unknown / the history still fits."""
+    if not profile or mode == "plan":
+        return
+    budget = _conv_budget(profile, base_dir, ctx, mcp, mode)
+    if budget is None:
+        return
+    recent_budget, summ_cap = budget
+    if recent_budget <= 0:
+        return
+    hist_chars = sum(len(m.get("content") or "") for m in history
+                     if isinstance(m.get("content"), str))
+    if hist_chars <= recent_budget:
+        return                                         # verbatim history still fits
+    # Keep the newest turns that fit recent_budget; the older ones overflow.
+    total, keep_from = 0, len(history)
+    for i in range(len(history) - 1, -1, -1):
+        c = len(history[i].get("content") or "") \
+            if isinstance(history[i].get("content"), str) else 0
+        if total + c > recent_budget and i < len(history) - 1:
+            break                                      # always keep at least the last turn
+        total += c
+        keep_from = i
+    overflow = history[:keep_from]
+    if not overflow:
+        return
+    new_summary = _summarize_turns(profile, base_dir, ctx.get("summary", ""),
+                                   overflow, summ_cap)
+    if new_summary:
+        ctx["summary"] = new_summary
+        history[:] = history[keep_from:]               # drop the summarised turns
+        console.print(Text(f"  ▸ condensed {len(overflow)} older turn(s) into the "
+                           "summary (keeping the window in budget)",
+                           style="bright_black"))
+
+
 def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mcp: "mcp_client.MCPManager", on_event, on_text,
                            mode: str = "auto", on_confirm=None,
-                           offer_hack: bool = False, on_hack=None) -> str:
+                           offer_hack: bool = False, on_hack=None,
+                           summary: str = "") -> str:
     """Run the agent loop and return the model's final text answer.
 
     `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
@@ -6492,6 +6588,9 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     mem_block = _memory_block(base_dir)                 # remembered instructions + facts
     if mem_block:
         sys_parts.append(mem_block)
+    if summary:                                         # condensed older conversation
+        sys_parts.append("EARLIER CONVERSATION SUMMARY (older turns, condensed):\n"
+                         + summary)
     if custom_system:
         sys_parts.append(custom_system)
     offer_save = not planning              # always available (except in plan mode)
@@ -6983,6 +7082,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 # drop back to the fresh welcome banner — so no trace of the old
                 # conversation is left visible or scrollable.
                 history.clear()
+                ctx.pop("summary", None)               # also drop the condensed summary
                 if sys.stdout.isatty():
                     sys.stdout.write("\x1b[3J\x1b[2J\x1b[H")   # scrollback + screen
                     sys.stdout.flush()
@@ -7326,12 +7426,14 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                      and _model_has_tools(ctx["profile"], base_dir))
         if use_tools:
             ensure_mcp()
+            # Keep the verbatim history within its % budget: condense the oldest turns
+            # that overflow into ctx['summary'] (dropping them from history).
+            _maybe_summarize(ctx["profile"], base_dir, ctx, mcp, mode, history)
 
-        # Pre-flight guard: if the request would overflow the model's context window
-        # (a too-small /setcontext, or a genuinely large history/param), don't send
-        # it — a blown window truncates or errors mid-generation. Warn and point at
-        # /context and /setcontext. (No real summarisation yet, so the whole history
-        # is sent verbatim; this catches the overflow before it reaches the model.)
+        # Pre-flight guard: if the request would STILL overflow the model's window after
+        # summarisation (a too-small /setcontext, or one giant turn), don't send it — a
+        # blown window truncates or errors mid-generation. Warn and point at /context
+        # and /setcontext.
         maxc = _effective_max_context(ctx, base_dir)
         if maxc:
             est = _estimate_context_tokens(ctx["profile"], base_dir, history,
@@ -7439,7 +7541,8 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                                mcp, _on_tool, _on_text,
                                                mode=mode, on_confirm=_confirm_action,
                                                offer_hack=not hack_mode,
-                                               on_hack=_on_hack)
+                                               on_hack=_on_hack,
+                                               summary=ctx.get("summary", ""))
                 _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
@@ -7464,7 +7567,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         reply = query_model_with_tools(
                             ctx["profile"], base_dir, history, mcp, _on_tool,
                             _on_text, mode=mode, on_confirm=_confirm_action,
-                            offer_hack=False)
+                            offer_hack=False, summary=ctx.get("summary", ""))
                         _stop_tool_spin()
                         if streamed_text:
                             sys.stdout.write("\n")
