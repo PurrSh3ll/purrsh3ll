@@ -2748,28 +2748,11 @@ def _hack_intro_message(profile: dict, base_dir: str, history: list,
     return text
 
 
-def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool,
-              mode: str = "auto"):
+def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
     """/hack — enable hacking mode. Confirm, pick the objective, then print a static
     English announcement (no LLM — small models are unreliable at this) and ask for
     the target IP as step 1. Returns (announcement, goal_shortcode) if enabled — the
     caller waits for the IP next; (None, None) if declined/cancelled/no model."""
-    # Plan mode turns function calling OFF, but hacking mode is entirely driven by
-    # tool calls (recon → exploitation → brute-force). Refuse instead of enabling a
-    # mode that can't act — point the user to a mode that calls tools.
-    if mode == "plan":
-        console.print(Text("  ⚠ hacking mode needs function calling — you're in "
-                           "plan mode", style="yellow"))
-        console.print(Text("      Hacking mode runs a full pentest / Hack The Box "
-                           "engagement by calling tools, which plan mode disables.",
-                           style="bright_black"))
-        note = Text("      switch with ", style="bright_black")
-        note.append("/mode", style="cyan")
-        note.append(" (auto or semi-auto), then run ", style="bright_black")
-        note.append("/hack", style="cyan")
-        note.append(" again", style="bright_black")
-        console.print(note)
-        return None, None
     console.print(Text("  ⚠ enable hacking mode? [y/N] ", style="yellow"), end="")
     try:
         ans = input().strip().lower()
@@ -7384,7 +7367,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     else:
                         console.print(Text("      cancelled", style="bright_black"))
                 else:
-                    msg, goal = _run_hack(ctx, base_dir, history, mcp, debug, mode)
+                    msg, goal = _run_hack(ctx, base_dir, history, mcp, debug)
                     if msg:
                         hack_mode = True          # lights up the toolbar
                         hack_goal = goal          # objective shortcode on the toolbar
@@ -7723,9 +7706,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 if hack_signal["requested"] and not hack_mode:
                     # Model proposed hacking mode. Discard its detour reply and run
                     # the exact same flow as /hack (confirm + objective + announce).
-                    # (Unreachable in plan mode — tools are off there — but kept
-                    # consistent so the plan-mode guard applies on every path.)
-                    msg, goal = _run_hack(ctx, base_dir, history, mcp, debug, mode)
+                    msg, goal = _run_hack(ctx, base_dir, history, mcp, debug)
                     if msg:
                         hack_mode = True
                         hack_goal = goal
