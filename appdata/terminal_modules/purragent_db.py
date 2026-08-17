@@ -10,6 +10,7 @@ table left as a hedge for later attack-path / graph analysis — not populated b
 the intake yet.
 """
 
+import json
 import os
 import sqlite3
 from datetime import datetime, timezone
@@ -52,14 +53,17 @@ CREATE TABLE IF NOT EXISTS ports (
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
 CREATE TABLE IF NOT EXISTS credentials (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    target_id   INTEGER,
-    scope       TEXT,                      -- service/url/host it applies to
-    username    TEXT,
-    secret      TEXT,
-    secret_type TEXT,                      -- password/hash/ssh_key/token/api_key
-    source      TEXT DEFAULT 'user',       -- user / discovered
-    validated   INTEGER DEFAULT 0,
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id    INTEGER,
+    scope        TEXT,                     -- 'global' (try anywhere) / 'specific'
+    username     TEXT,                     -- may be '' (empty/null login)
+    secret       TEXT,                     -- may be '' (passwordless / anonymous)
+    secret_type  TEXT,                     -- password/ntlm_hash/ssh_key/token/none
+    source       TEXT DEFAULT 'user',      -- user / null-auth seed / extracted / brute
+    validated    INTEGER DEFAULT 0,        -- 0 unverified, 1 valid, -1 invalid
+    service_hint TEXT,                     -- service class it targets (smb/ssh/…) or '*'
+    valid_on     TEXT DEFAULT '[]',        -- JSON list of ports it authenticated to
+    confidence   REAL,                     -- extraction confidence (0-1), NULL if n/a
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
 CREATE TABLE IF NOT EXISTS endpoints (
@@ -129,7 +133,20 @@ def _connect(base_dir: str) -> sqlite3.Connection:
     conn = sqlite3.connect(_db_path(base_dir))
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn) -> None:
+    """Add columns introduced after a table first shipped, for DBs created by an older
+    build within the same session (the store is wiped on start, so this is belt-and-
+    suspenders). CREATE TABLE IF NOT EXISTS never alters an existing table."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(credentials)")}
+    for name, ddl in (("service_hint", "TEXT"),
+                      ("valid_on", "TEXT DEFAULT '[]'"),
+                      ("confidence", "REAL")):
+        if name not in have:
+            conn.execute(f"ALTER TABLE credentials ADD COLUMN {name} {ddl}")
 
 
 def reset(base_dir: str) -> None:
@@ -431,6 +448,79 @@ def fetch_exploit_findings(base_dir: str, target_id: int) -> list:
         return [dict(r) for r in conn.execute(
             "SELECT * FROM exploit_findings WHERE target_id = ? ORDER BY port, id",
             (target_id,))]
+    finally:
+        conn.close()
+
+
+def add_credential(base_dir: str, target_id: int, username, secret,
+                   secret_type=None, scope: str = "global", service_hint=None,
+                   source: str = "discovered", confidence=None) -> int:
+    """Upsert a credential, keyed by (target_id, username, secret, secret_type). Unlike
+    the intake path, EMPTY username/secret are preserved — anonymous / null / passwordless
+    logins are real credentials worth tracking and testing before any brute-force.
+    Returns the row id."""
+    username = "" if username is None else str(username)
+    secret = "" if secret is None else str(secret)
+    st = _clean(secret_type)
+    conn = _connect(base_dir)
+    try:
+        row = conn.execute(
+            "SELECT id FROM credentials WHERE target_id = ? AND username = ? AND "
+            "secret = ? AND IFNULL(secret_type,'') = IFNULL(?,'')",
+            (target_id, username, secret, st)).fetchone()
+        if row:
+            cid = row[0]
+            conn.execute(
+                "UPDATE credentials SET scope = ?, service_hint = ?, "
+                "confidence = COALESCE(?, confidence) WHERE id = ?",
+                (scope, _clean(service_hint), confidence, cid))
+        else:
+            cur = conn.execute(
+                "INSERT INTO credentials (target_id, scope, username, secret, "
+                "secret_type, source, validated, service_hint, valid_on, confidence) "
+                "VALUES (?, ?, ?, ?, ?, ?, 0, ?, '[]', ?)",
+                (target_id, scope, username, secret, st, _clean(source),
+                 _clean(service_hint), confidence))
+            cid = cur.lastrowid
+        conn.commit()
+        return cid
+    finally:
+        conn.close()
+
+
+def fetch_credentials(base_dir: str, target_id: int) -> list:
+    """All credentials for a target (seeded, extracted, user-supplied), in insert order."""
+    conn = _connect(base_dir)
+    conn.row_factory = sqlite3.Row
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM credentials WHERE target_id = ? ORDER BY id",
+            (target_id,))]
+    finally:
+        conn.close()
+
+
+def set_cred_validated(base_dir: str, cred_id: int, valid: bool,
+                       port: int = None) -> None:
+    """Mark a credential valid (1) or invalid (-1); on success append the port it
+    authenticated to into valid_on (deduped)."""
+    conn = _connect(base_dir)
+    try:
+        if valid and port is not None:
+            row = conn.execute("SELECT valid_on FROM credentials WHERE id = ?",
+                               (cred_id,)).fetchone()
+            try:
+                ports = json.loads(row[0]) if row and row[0] else []
+            except (ValueError, TypeError):
+                ports = []
+            if port not in ports:
+                ports.append(port)
+            conn.execute("UPDATE credentials SET validated = 1, valid_on = ? "
+                         "WHERE id = ?", (json.dumps(ports), cred_id))
+        else:
+            conn.execute("UPDATE credentials SET validated = ? WHERE id = ?",
+                         (1 if valid else -1, cred_id))
+        conn.commit()
     finally:
         conn.close()
 

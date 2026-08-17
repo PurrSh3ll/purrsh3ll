@@ -4403,6 +4403,334 @@ def _run_exploit_agent(eng: dict) -> None:
         max_calls=EXPLOIT_AGENT_MAX_TOOLCALLS, budget_min=EXPLOIT_AGENT_BUDGET_MINUTES)
 
 
+# ── phase 5 credential harvest → validation (seed / extract / verify) ─────────
+# Bridge from free-text findings to the (upcoming) deterministic brute gate. Three
+# deterministic-in-decision steps run after the cross-service agent, before the report:
+#   B  seed the always-worth-trying anonymous / null / passwordless logins,
+#   D  have the model pull STRUCTURED credentials out of the findings (data only),
+#   E  TEST every candidate with one real login each and mark it valid / invalid.
+# Only a VALIDATED credential (or a working null/anon login) should later suppress
+# brute-force — an extracted-but-unverified cred never does. No brute-force here: each
+# credential gets exactly one authentication attempt.
+CRED_VALIDATE_MAX = 40             # hard cap on validation logins per host
+_CRED_VALIDATE_TIMEOUT = 45        # seconds per validation login
+
+# B — per service class, the anonymous / null / passwordless logins cheap enough to
+# always try first (username, secret, secret_type); '' means empty.
+_NULL_ANON_CREDS = {
+    "ftp":     [("anonymous", "", "none"), ("anonymous", "anonymous@", "none")],
+    "smb":     [("", "", "none"), ("guest", "", "none")],
+    "ldap":    [("", "", "none")],
+    "redis":   [("", "", "none")],
+    "mongodb": [("", "", "none")],
+    "mysql":   [("root", "", "none")],
+    "mssql":   [("sa", "", "none")],
+    "psql":    [("postgres", "", "none")],
+}
+
+
+def _seed_null_anon_creds(eng: dict) -> int:
+    """B: seed canonical anonymous/null/passwordless logins for each auth service present
+    on the host, so validation tries them before any brute-force."""
+    base, tid = eng["base_dir"], eng["tid"]
+    present = {k for _p, _pr, _lb, k, _v in _exploit_order(base, tid)}
+    n = 0
+    for key in present & set(_NULL_ANON_CREDS):
+        for user, secret, st in _NULL_ANON_CREDS[key]:
+            try:
+                purragent_db.add_credential(base, tid, user, secret, st,
+                    scope="specific", service_hint=key, source="null-auth seed")
+                n += 1
+            except Exception:                          # noqa: BLE001
+                pass
+    return n
+
+
+_CRED_EXTRACT_SYSTEM = (
+    "You are a penetration tester. From the enumeration findings below, extract every "
+    "CREDENTIAL that is explicitly present in the text: username+password pairs, "
+    "password hashes, private keys, API tokens, or a username on its own. Ground every "
+    "item STRICTLY in the findings — never guess or invent. Reply with ONLY a JSON "
+    "array, no prose, each item exactly: "
+    '{"username": str, "secret": str, "type": "password|ntlm_hash|ssh_key|token|none", '
+    '"service_hint": "<service such as ssh/smb/ftp/mysql, or * if unknown>", '
+    '"source": "<short where-from>", "confidence": <0.0-1.0>}. '
+    "Use empty strings for a missing username or secret. If there are no credentials in "
+    "the findings, reply with exactly: []")
+
+
+def _parse_cred_json(text: str) -> list:
+    """Pull the first JSON array out of the model reply, tolerant of prose / code fences.
+    Returns [] on anything unparseable — a bad reply must never crash the harvest."""
+    if not text:
+        return []
+    m = re.search(r"\[.*\]", text, re.S)
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(0))
+    except (ValueError, TypeError):
+        return []
+    return [d for d in data if isinstance(d, dict)] if isinstance(data, list) else []
+
+
+def _extract_creds(eng: dict) -> int:
+    """D: one tool-free LLM pass over the findings → structured creds into the store."""
+    profile = eng["ctx"].get("profile")
+    if not profile or eng.get("cancelled"):
+        return 0
+    base, tid = eng["base_dir"], eng["tid"]
+    findings = _report_context(base, tid)
+    if not findings.strip():
+        return 0
+    body = {"model": profile.get("model", ""),
+            "messages": [{"role": "system", "content": _CRED_EXTRACT_SYSTEM},
+                         {"role": "user", "content": findings[:12000]}],
+            "temperature": AGENT_TEMPERATURE}
+    custom_params = psai._parse_custom_params(profile)
+    if custom_params:
+        body.update(custom_params)
+    eng["thinking"] = True
+    _invalidate_toolbar(eng["ctx"])
+    try:
+        endpoint, api_key = _openai_endpoint(profile, base)
+        parts: list = []
+        _chat_stream(endpoint, api_key, body, lambda t: parts.append(t),
+                     hide_thinking=True, render_reasoning=False,
+                     max_seconds=EXTRACT_TURN_MAX_SECONDS)
+    except Exception:                                  # noqa: BLE001
+        return 0
+    finally:
+        eng["thinking"] = False
+        _invalidate_toolbar(eng["ctx"])
+    n = 0
+    for c in _parse_cred_json("".join(parts)):
+        user, secret = str(c.get("username") or ""), str(c.get("secret") or "")
+        if not user and not secret:
+            continue
+        st = (str(c.get("type") or "").strip().lower() or None)
+        hint = (str(c.get("service_hint") or "*").strip() or "*")
+        scope = "global" if hint == "*" else "specific"
+        try:
+            conf = float(c.get("confidence"))
+        except (TypeError, ValueError):
+            conf = None
+        try:
+            purragent_db.add_credential(base, tid, user, secret, st, scope=scope,
+                service_hint=hint, source="extracted", confidence=conf)
+            n += 1
+        except Exception:                              # noqa: BLE001
+            pass
+    return n
+
+
+# E — one login attempt per (credential, service). Each entry: arg-builder → (tool, args)
+# or None when the credential can't apply (e.g. a passwordless non-anon cred on ssh), and
+# a success test over the tool output. netexec ([+]) covers smb/mssql/winrm.
+def _v_ssh(c, host, port):
+    if not c["username"]:
+        return None
+    args = {"host": host, "port": port, "username": c["username"], "command": "id"}
+    if c.get("secret_type") == "ssh_key" and c["secret"]:
+        args["key"] = c["secret"]
+    elif c["secret"]:
+        args["password"] = c["secret"]
+    else:
+        return None
+    return "ssh_exec", args
+
+
+def _v_ftp(c, host, port):
+    return "ftp_transfer", {"host": host, "port": port, "action": "list",
+                            "username": c["username"] or "anonymous",
+                            "password": c["secret"]}
+
+
+def _v_smb(c, host, port):
+    args = {"host": host, "action": "shares", "username": c["username"]}
+    if c.get("secret_type") == "ntlm_hash" and c["secret"]:
+        args["hash"] = c["secret"]
+    else:
+        args["password"] = c["secret"]
+    return "netexec_smb", args
+
+
+def _v_mssql(c, host, port):
+    return "mssql_query", {"host": host, "username": c["username"],
+                           "password": c["secret"], "query": "SELECT 1",
+                           "local_auth": True}
+
+
+def _v_winrm(c, host, port):
+    if not c["username"]:
+        return None
+    args = {"host": host, "username": c["username"], "command": "whoami"}
+    if c.get("secret_type") == "ntlm_hash" and c["secret"]:
+        args["hash"] = c["secret"]
+    elif c["secret"]:
+        args["password"] = c["secret"]
+    else:
+        return None
+    return "winrm_exec", args
+
+
+def _v_mysql(c, host, port):
+    return "mysql_query", {"host": host, "port": port,
+                           "username": c["username"] or "root",
+                           "password": c["secret"], "query": "SELECT 1"}
+
+
+def _v_psql(c, host, port):
+    return "psql_query", {"host": host, "port": port,
+                          "username": c["username"] or "postgres",
+                          "password": c["secret"], "query": "SELECT 1"}
+
+
+def _v_ldap(c, host, port):
+    args = {"host": host, "port": port, "filter": "(objectClass=*)"}
+    if c["username"]:
+        args["username"], args["password"] = c["username"], c["secret"]
+    return "ldap_search", args
+
+
+def _v_redis(c, host, port):
+    return "redis_cli", {"host": host, "port": port, "password": c["secret"],
+                         "command": "INFO server"}
+
+
+def _v_mongo(c, host, port):
+    args = {"host": host, "port": port, "command": "db.getMongo().getDBNames()"}
+    if c["username"]:
+        args["username"], args["password"] = c["username"], c["secret"]
+    return "mongo_query", args
+
+
+def _ok_nxc(t, e):   return "[+]" in t or "pwn3d" in t.lower()
+def _ok_ssh(t, e):   return not e and "uid=" in t
+def _ok_ftp(t, e):   return not e and "530" not in t and "denied" not in t.lower()
+def _ok_mysql(t, e): return not e and "access denied" not in t.lower() \
+                            and "error 1045" not in t.lower()
+def _ok_psql(t, e):  return not e and "authentication failed" not in t.lower() \
+                            and "fatal" not in t.lower()
+def _ok_redis(t, e): return "redis_version" in t
+def _ok_ldap(t, e):
+    low = t.lower()
+    return not e and "invalid credentials" not in low and "ldap_bind" not in low \
+        and any(m in low for m in ("dn:", "numentries", "search result", "objectclass"))
+def _ok_mongo(t, e):
+    low = t.lower()
+    return not e and not any(m in low for m in (
+        "authentication failed", "requires authentication", "mongoservererror"))
+
+
+_CRED_VALIDATORS = {
+    "ssh":     (_v_ssh, _ok_ssh),     "ftp":   (_v_ftp, _ok_ftp),
+    "smb":     (_v_smb, _ok_nxc),     "mssql": (_v_mssql, _ok_nxc),
+    "winrm":   (_v_winrm, _ok_nxc),   "mysql": (_v_mysql, _ok_mysql),
+    "psql":    (_v_psql, _ok_psql),   "ldap":  (_v_ldap, _ok_ldap),
+    "redis":   (_v_redis, _ok_redis), "mongodb": (_v_mongo, _ok_mongo),
+}
+_CRED_AUTH_SERVICES = set(_CRED_VALIDATORS)
+
+
+def _cred_display(cred: dict) -> str:
+    """A safe one-line label: username + masked secret (secrets never printed)."""
+    user = cred["username"] or "∅"
+    if not cred["secret"]:
+        sec = "(empty)"
+    else:
+        sec = "***"
+    st = cred.get("secret_type")
+    tag = f" [{st}]" if st and st not in ("none", "password") else ""
+    return f"{user}:{sec}{tag}"
+
+
+def _print_cred_result(state: str, cred: dict, key: str, port: int) -> None:
+    color = "green" if state == "valid" else "bright_black"
+    line = Text("  ")
+    line.append(f"[{state}]", style=color)
+    line.append(f" ▸ cred · {key}  {_cred_display(cred)}", style=color)
+    if state == "valid":
+        line.append(f"  → {port}", style="green")
+    console.print(line)
+
+
+def _validate_creds(eng: dict) -> None:
+    """E: try each candidate credential against its service(s) with a single login, and
+    record valid/invalid. Bounded and cancel-aware; no brute-force."""
+    ctx = eng["ctx"]
+    mcp = ctx.get("mcp")
+    if mcp is None or eng.get("cancelled"):
+        return
+    base, tid, host = eng["base_dir"], eng["tid"], eng["ip"]
+    present: dict = {}
+    for port, _proto, _label, key, _ver in _exploit_order(base, tid):
+        present.setdefault(key, []).append(port)
+    if not (set(present) & _CRED_AUTH_SERVICES):
+        return
+    attempts = 0
+    for c in purragent_db.fetch_credentials(base, tid):
+        if eng.get("cancelled") or attempts >= CRED_VALIDATE_MAX:
+            break
+        if c.get("validated"):                         # already decided (seed/brute)
+            continue
+        hint = c.get("service_hint") or "*"
+        keys = list(present) if hint == "*" else [hint]
+        got, tested, hit_key, hit_port = False, False, None, None
+        for key in keys:
+            if got or key not in _CRED_VALIDATORS or key not in present:
+                continue
+            arg_fn, ok_fn = _CRED_VALIDATORS[key]
+            for port in present[key][:1]:              # one port per service class
+                if attempts >= CRED_VALIDATE_MAX or eng.get("cancelled"):
+                    break
+                built = arg_fn(c, host, port)
+                if not built:
+                    continue
+                tool, args = built
+                tested = True
+                attempts += 1
+                name = mcp_client._namespaced("hacktools", tool)
+                try:
+                    res = mcp.call(name, args, timeout=_CRED_VALIDATE_TIMEOUT)
+                except Exception:                      # noqa: BLE001
+                    res = {"text": "", "is_error": True}
+                is_err = bool(res.get("is_error") or res.get("isError"))
+                if ok_fn(res.get("text") or "", is_err):
+                    got, hit_key, hit_port = True, key, port
+                    break
+        if got:
+            purragent_db.set_cred_validated(base, c["id"], True, hit_port)
+            _post(ctx, lambda cc=c, k=hit_key, p=hit_port:
+                  _print_cred_result("valid", cc, k, p))
+        elif tested:
+            purragent_db.set_cred_validated(base, c["id"], False)
+            _post(ctx, lambda cc=c, k=(keys[0] if keys else "?"):
+                  _print_cred_result("invalid", cc, k, 0))
+
+
+def _run_cred_harvest(eng: dict) -> None:
+    """Phase-5 credential harvest: seed null/anon (B) → LLM-extract (D) → validate (E).
+    Runs only when the host has an auth-capable service. No-op cleanly otherwise."""
+    ctx, base, tid = eng["ctx"], eng["base_dir"], eng["tid"]
+    if eng.get("cancelled"):
+        return
+    present = {k for _p, _pr, _lb, k, _v in _exploit_order(base, tid)}
+    if not (present & _CRED_AUTH_SERVICES):
+        return
+    _post(ctx, lambda: console.print(Text(
+        "  ▸ credential check — collect and verify logins before brute-force",
+        style="bright_black")))
+    _seed_null_anon_creds(eng)
+    _extract_creds(eng)
+    _validate_creds(eng)
+    creds = purragent_db.fetch_credentials(base, tid)
+    valid = [c for c in creds if c.get("validated") == 1]
+    _post(ctx, lambda n=len(creds), v=len(valid): console.print(Text(
+        f"    {v} valid / {n} candidate credential(s)",
+        style=("green" if valid else "bright_black"))))
+
+
 def _start_service_exploitation(eng: dict) -> None:
     """Phase 5 entry: kick off the sequential exploitation walk in the background."""
     with eng["lock"]:
@@ -4514,6 +4842,7 @@ def _exploit_worker(eng: dict) -> None:
                          if f.get("port") == port]
             _run_service_review(eng, port, proto, key, label, svc_finds, ran_cmds)
     _run_exploit_agent(eng)                            # final cross-service correlation
+    _run_cred_harvest(eng)                             # seed/extract/validate credentials
     _run_final_report(eng)                             # pentest summary — printed last
     _post(eng["ctx"], lambda: _finish_recon(eng))
 
