@@ -3145,6 +3145,14 @@ def _pass_label(label: str) -> str:
     return _PORT_PASS_LABEL.get(label, f"{label} port discovery")
 
 
+def _next_seq(eng: dict) -> int:
+    """Next engagement-wide command number, so [running N]/[complete N] increase
+    monotonically across ALL phases (each command keeps the N it was announced with)."""
+    with eng["lock"]:
+        eng["seq"] = eng.get("seq", 0) + 1
+        return eng["seq"]
+
+
 _STATE_TAG = {"complete": ("complete", "default"),    # normal, like the rest of the line
               "error": ("failed", "red"),
               "aborted": ("aborted", "magenta")}
@@ -3268,16 +3276,17 @@ def _start_port_discovery(ctx: dict, base_dir: str, target: dict) -> None:
         "vuln_phase": None, "vuln_findings": [], "vuln_advanced": False,
         "cve_phase": None, "cve_results": [], "cve_no_index": False,
         "exploit_phase": None, "exploit_findings": [],
-        "thinking": False, "recon_done": False,
+        "thinking": False, "recon_done": False, "seq": 0,
     }
     ctx["engagement"] = eng
     ctx["phases"] = [port_phase]
 
     for i, ((label, args), job) in enumerate(zip(specs, port_phase["jobs"]), 1):
         proto = "udp" if label == "udp" else "tcp"
-        console.print(_phase_banner(1, _pass_label(label), num=i,
+        n = _next_seq(eng)
+        console.print(_phase_banner(1, _pass_label(label), num=n,
                                     cmd=job["command"]))          # announce each pass
-        threading.Thread(target=_port_pass, args=(eng, label, args, proto, job, i),
+        threading.Thread(target=_port_pass, args=(eng, label, args, proto, job, n),
                          daemon=True).start()
     threading.Timer(15.0, lambda: _svc_trigger(eng, "15s")).start()
 
@@ -3341,7 +3350,8 @@ def _finalise_port_discovery(eng: dict) -> None:
         eng["retried_pn"] = True
         rjob = _job("nmap -Pn --top-ports 1000 " + eng["ip"] + "  (firewall retry)")
         eng["port_phase"]["jobs"].append(rjob)
-        rnum = len(eng["port_phase"]["jobs"])
+        eng["seq"] = eng.get("seq", 0) + 1             # under lock → inline (no re-lock)
+        rnum = eng["seq"]
     _post(eng["ctx"], lambda c=rjob["command"]: console.print(
         _phase_banner(1, "firewall-retry port discovery", num=rnum, cmd=c)))
     tcp = "-sS" if _is_root() else "-sT"
@@ -3395,7 +3405,8 @@ def _svc_trigger(eng: dict, reason: str) -> None:
                + ",".join(str(p) for p in batch) + " " + eng["ip"])
         job = _job(cmd)
         eng["svc_phase"]["jobs"].append(job)
-        num = len(eng["svc_phase"]["jobs"])
+        eng["seq"] = eng.get("seq", 0) + 1             # under lock → inline
+        num = eng["seq"]
     _post(eng["ctx"], lambda l=label, nm=num, c=job["command"]:
           console.print(_phase_banner(2, l, num=nm, cmd=c)))
     threading.Thread(target=_svc_batch,
@@ -3826,10 +3837,11 @@ def _start_vuln_scan(eng: dict) -> None:
     if not jobs:                                       # nothing to scan → phase 4
         _start_cve_lookup(eng)
         return
-    for i, (label, scripts, ports, job) in enumerate(jobs, 1):   # announce each family
-        console.print(_phase_banner(3, label, num=i, cmd=job["command"]))
+    for label, scripts, ports, job in jobs:                      # announce each family
+        n = _next_seq(eng)
+        console.print(_phase_banner(3, label, num=n, cmd=job["command"]))
         threading.Thread(target=_vuln_pass,
-                         args=(eng, label, scripts, ports, job, i), daemon=True).start()
+                         args=(eng, label, scripts, ports, job, n), daemon=True).start()
 
 
 def _vuln_pass(eng: dict, label: str, scripts: str, ports: list, job: dict,
@@ -4066,7 +4078,8 @@ def _start_cve_lookup(eng: dict) -> None:
         job = _job("cve-index lookup (offline NVD)  ·  " + eng["ip"])
         eng["cve_phase"] = {"phase": "cve lookup", "ip": eng["ip"], "jobs": [job]}
         eng["ctx"].setdefault("phases", []).append(eng["cve_phase"])
-    console.print(_phase_banner(4, "CVE lookup", budget=False))
+    eng["cve_num"] = _next_seq(eng)
+    console.print(_phase_banner(4, "CVE lookup", budget=False, num=eng["cve_num"]))
     console.print(Text("    matching service CPEs against the offline NVD index",
                        style="bright_black"))
     threading.Thread(target=_cve_pass, args=(eng, job), daemon=True).start()
@@ -4098,20 +4111,20 @@ def _finish_cve_lookup(eng: dict) -> None:
         if eng["cancelled"]:
             return
         results, no_index = list(eng.get("cve_results") or []), eng.get("cve_no_index")
-    _cve_outcome(results, no_index)
+    _cve_outcome(results, no_index, eng.get("cve_num"))
     _start_targeted_review(eng)                        # phase 4.5 → then phase 5
 
 
-def _cve_outcome(results: list, no_index: bool) -> None:
+def _cve_outcome(results: list, no_index: bool, num=None) -> None:
     """Phase-4 outcome: counts only — how many KEV (CISA known-exploited) vs other
     CVEs per service. The CVE ids themselves are stored as findings (see /target),
     not listed here. A [complete]/[failed] state line leads, like the other phases."""
     if no_index:
-        console.print(_phase_state_line(4, "CVE lookup", "error"))
+        console.print(_phase_state_line(4, "CVE lookup", "error", num=num))
         console.print(Text("  ○ CVE lookup — offline NVD index not present "
                            "(appdata/cve_index.db)", style="bright_black"))
         return
-    console.print(_phase_state_line(4, "CVE lookup", "complete"))
+    console.print(_phase_state_line(4, "CVE lookup", "complete", num=num))
     if not results:
         console.print(Text("  ○ CVE lookup — no versioned service CPE matched the "
                            "index", style="bright_black"))
@@ -4569,7 +4582,7 @@ def _run_hacktools_agent(eng, allowed, system_prompt, task, intro, label,
                              "different tool or arguments, or stop and summarise."})
                 continue
             calls += 1
-            cno = calls                                # pairs [running N] with [complete N]
+            cno = _next_seq(eng)                        # engagement-wide, pairs running/complete
             _post(ctx, lambda lb=label, b=bare, ar=args, n=cno:
                   _print_agent_call(lb, b, ar, num=n))
             try:
@@ -5445,12 +5458,13 @@ def _run_brute_gate(eng: dict, on_done) -> bool:
         style="bright_black")))
     sem = threading.Semaphore(BRUTE_MAX_PARALLEL)
     threads = []
-    for i, (key, port) in enumerate(eligible, 1):      # number each brute job
+    for key, port in eligible:                         # number each brute job
+        n = _next_seq(eng)
         job = _job(f"hydra -L users -P pass -s {port} {host} {_BRUTE_SERVICES[key]}")
         phase["jobs"].append(job)
         t = threading.Thread(target=_brute_worker,
                              args=(eng, sem, job, port, key, _BRUTE_SERVICES[key],
-                                   userfile, passfile, i), daemon=True)
+                                   userfile, passfile, n), daemon=True)
         t.start()
         threads.append(t)
     threading.Thread(target=_brute_reaper,
@@ -5511,7 +5525,8 @@ def _exploit_worker(eng: dict) -> None:
                 job = _job(cmd)
                 with eng["lock"]:
                     eng["exploit_phase"]["jobs"].append(job)
-                    cnum = len(eng["exploit_phase"]["jobs"])
+                    eng["seq"] = eng.get("seq", 0) + 1     # under lock → inline
+                    cnum = eng["seq"]
                 _post(eng["ctx"], lambda lc=label_cmd, nm=cnum: console.print(
                     _phase_banner(5, lc, minutes=EXPLOIT_CMD_MINUTES, num=nm)))
                 result = _run_exploit_cmd(cmd, job["cancel"])
