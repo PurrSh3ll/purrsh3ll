@@ -4791,9 +4791,9 @@ def _run_service_review(eng: dict, port: int, proto: str, key: str, label: str,
 # credential or artefact found on one service against another (FTP creds on SMB, a
 # config password on a DB). Bounded (rounds / tool-calls / time); no brute-force, no
 # broad scanning, single host. Skipped cleanly with no model / MCP / hacktools.
-EXPLOIT_AGENT_MAX_ROUNDS = 5
-EXPLOIT_AGENT_MAX_TOOLCALLS = 8
-EXPLOIT_AGENT_BUDGET_MINUTES = 10
+EXPLOIT_AGENT_MAX_ROUNDS = 6
+EXPLOIT_AGENT_MAX_TOOLCALLS = 12
+EXPLOIT_AGENT_BUDGET_MINUTES = 12
 _EXPLOIT_AGENT_TOOLS = {
     "smb_client", "netexec_smb", "ldap_search", "rpc_enum", "secretsdump",
     "impacket_exec", "kerberos_roast", "enum4linux", "smbmap", "certipy",
@@ -4801,22 +4801,33 @@ _EXPLOIT_AGENT_TOOLS = {
     "mongo_query", "ssh_exec", "winrm_exec", "ftp_transfer", "sqlmap", "nuclei_scan",
     "wpscan", "http_request", "git_dump", "hash_identify", "default_creds",
     "cve_lookup", "payload_gen",
+    "linux_privesc_enum", "windows_privesc_enum", "gtfobins_lookup", "read_file",
 }
 _EXPLOIT_AGENT_SYSTEM = (
-    "You are a penetration tester doing a final CROSS-SERVICE pass. Every service has "
-    "already been enumerated and individually reviewed; the combined findings — "
-    "including any credentials or artefacts discovered — are below. Your job is the one "
-    "thing a per-service review cannot do: CORRELATE ACROSS SERVICES. Reuse a "
-    "credential or artefact found on one service against another (e.g. FTP creds on "
-    "SMB, a config password against a database, a hash dumped from one host used to "
-    "authenticate to another service). Pass credentials as the tools' typed "
-    "parameters. Do NOT brute-force, do NOT scan the network broadly, do NOT repeat "
-    "single-service enumeration already done, and stay on this host. When the useful "
-    "cross-service follow-ups are exhausted, reply with a short summary and stop.")
+    "You are a penetration tester doing a final CROSS-SERVICE and PRIVILEGE-ESCALATION "
+    "pass. Every service has already been enumerated and individually reviewed; the "
+    "combined findings — including any credentials or artefacts discovered — are below. "
+    "Do the two things a per-service review cannot:\n"
+    "1) CORRELATE ACROSS SERVICES: reuse a credential or artefact found on one service "
+    "against another (e.g. FTP creds on SMB, a config password against a database, a "
+    "hash dumped from one host used to authenticate to another service).\n"
+    "2) ESCALATE PRIVILEGES to capture the flag: where you hold a validated shell login "
+    "(ssh/winrm), enumerate local privesc with linux_privesc_enum / windows_privesc_enum "
+    "(their output may already be in the findings below), turn a SUID binary or a "
+    "`sudo -l` entry into a concrete technique with gtfobins_lookup, run that technique "
+    "via ssh_exec / winrm_exec, and read the root/flag file (e.g. /root/root.txt) with "
+    "read_file. THE OBJECTIVE IS THE FLAG, including the ROOT flag.\n"
+    "Pass credentials as the tools' typed parameters. Do NOT brute-force, do NOT scan "
+    "the network broadly, do NOT repeat single-service enumeration already done, and "
+    "stay on this host. When the useful follow-ups are exhausted, reply with a short "
+    "summary — quoting any flag you captured — and stop.")
 _EXPLOIT_AGENT_TASK = (
-    "Using the combined findings above, correlate across services: reuse any discovered "
-    "credential or artefact from one service against the others where it clearly helps, "
-    "then summarise. If there is nothing to correlate, say so briefly and stop.")
+    "Using the combined findings above: (1) correlate any discovered credential or "
+    "artefact across services where it clearly helps, and (2) where you have a shell "
+    "login, escalate privileges to capture the flag — enumerate privesc, use "
+    "gtfobins_lookup on any SUID/sudo entry, run the technique, and read the root/flag "
+    "file. Then summarise, quoting any flag you captured. If there is nothing to do, say "
+    "so briefly and stop.")
 
 
 def _run_exploit_agent(eng: dict) -> None:
@@ -5352,6 +5363,117 @@ def _run_flag_hunt(eng: dict) -> None:
             "    no flag found in the usual locations", style="bright_black")))
 
 
+# ── phase 5 privesc enumeration (gather local-privesc vectors with a shell login) ─
+# With a validated shell login, run the platform privesc-enum tool once per distinct
+# (user, service) to gather sudo/SUID/caps/… vectors. Stored as findings so BOTH the
+# report and the cross-service exploit agent — which then reasons over them with
+# gtfobins_lookup + ssh_exec to reach the ROOT flag — can see them. Bounded, cancel-aware.
+PRIVESC_ENUM_MAX = 4                 # hard cap on privesc sweeps per host
+PRIVESC_ENUM_BUDGET_MINUTES = 8      # wall-clock ceiling for the privesc step
+_PRIVESC_ENUM_TIMEOUT = 150          # seconds per sweep (find / can be slow)
+_PRIVESC_FINDING_CAP = 1800          # chars of sweep output kept in the stored finding
+_PRIVESC_SERVICES = {"ssh", "winrm"}    # shell services we can enumerate over
+
+
+def _privesc_call(cred: dict, host: str, port: int, key: str):
+    """(tool, args) for the platform privesc-enum MCP tool with this credential, or None
+    when the credential can't drive a shell (mirrors _v_ssh / _v_winrm)."""
+    if not cred.get("username"):
+        return None
+    if key == "ssh":
+        args = {"host": host, "port": port, "username": cred["username"]}
+        if cred.get("secret_type") == "ssh_key" and cred["secret"]:
+            args["key"] = cred["secret"]
+        elif cred["secret"]:
+            args["password"] = cred["secret"]
+        else:
+            return None
+        return "linux_privesc_enum", args
+    if key == "winrm":
+        args = {"host": host, "username": cred["username"]}
+        if cred.get("secret_type") == "ntlm_hash" and cred["secret"]:
+            args["hash"] = cred["secret"]
+        elif cred["secret"]:
+            args["password"] = cred["secret"]
+        else:
+            return None
+        return "windows_privesc_enum", args
+    return None
+
+
+def _print_privesc_line(key: str, cred: dict) -> None:
+    line = Text("  ")
+    line.append("[privesc]", style="bold yellow")
+    line.append(f" ▸ enum · {key}  {_cred_display(cred)}", style="yellow")
+    console.print(line)
+
+
+def _run_privesc_enum(eng: dict) -> None:
+    """Phase-5 privesc enumeration: with a validated shell login, sweep the local-privesc
+    vectors (sudo/SUID/caps/… via the hacktools privesc-enum tools) and store them as
+    findings for the report and the exploit agent. Bounded, cancel-aware; a clean no-op
+    without a shell login or a validated credential."""
+    ctx = eng["ctx"]
+    mcp = ctx.get("mcp")
+    if mcp is None or eng.get("cancelled"):
+        return
+    base, tid, host = eng["base_dir"], eng["tid"], eng["ip"]
+    present = _present_services(base, tid)
+    targets = {k: present[k] for k in present if k in _PRIVESC_SERVICES}
+    if not targets:
+        return
+    creds = [c for c in purragent_db.fetch_credentials(base, tid)
+             if c.get("validated") == 1]
+    if not creds:
+        return
+    _post(ctx, lambda: console.print(Text(
+        "  ▸ privesc enum — gather local escalation vectors with a validated login",
+        style="bright_black")))
+    budget = [PRIVESC_ENUM_MAX]
+    deadline = time.time() + PRIVESC_ENUM_BUDGET_MINUTES * 60
+    done_pairs: set = set()          # (username, service) already swept
+    ran = 0
+    for c in creds:
+        if eng.get("cancelled") or budget[0] <= 0 or time.time() > deadline:
+            break
+        hint = c.get("service_hint") or "*"
+        keys = list(targets) if hint == "*" else ([hint] if hint in targets else [])
+        for key in keys:
+            if budget[0] <= 0 or eng.get("cancelled") or time.time() > deadline:
+                break
+            pair = (c.get("username") or "", key)
+            if pair in done_pairs:
+                continue
+            built = _privesc_call(c, host, targets[key][0], key)
+            if not built:
+                continue
+            tool, args = built
+            budget[0] -= 1
+            done_pairs.add(pair)
+            name = mcp_client._namespaced("hacktools", tool)
+            try:
+                res = mcp.call(name, args, timeout=_PRIVESC_ENUM_TIMEOUT)
+            except Exception:                              # noqa: BLE001
+                continue
+            text = (res.get("text") or "").strip()
+            if not text or res.get("is_error") or res.get("isError"):
+                continue
+            port = targets[key][0]
+            body = text[:_PRIVESC_FINDING_CAP] + (
+                "\n[…truncated]" if len(text) > _PRIVESC_FINDING_CAP else "")
+            finding = f"privesc vectors ({key}, {_cred_display(c)}):\n{body}"
+            purragent_db.add_exploit_finding(base, tid, port, "tcp", "privesc",
+                                             "privesc-enum", "", finding)
+            eng.setdefault("exploit_findings", []).append(
+                {"port": port, "finding": finding})
+            ran += 1
+            _post(ctx, lambda k=key, cc=c: _print_privesc_line(k, cc))
+    if ran == 0 and not eng.get("cancelled"):
+        _post(ctx, lambda: console.print(Text(
+            "    no shell login available for privesc enumeration",
+            style="bright_black")))
+
+
 # ── phase 5 credential derivation (deduced guesses, validated before brute) ────
 # A narrow, quiet tier between validation and brute: build candidate logins DEDUCED from
 # what we already know — username-as-password (kali:kali), known-password × known-username
@@ -5824,7 +5946,8 @@ def _exploit_worker(eng: dict) -> None:
     _run_cred_harvest(eng)                             # seed/extract/validate credentials
     _run_cred_derivation(eng)                          # deduced logins (before brute)
     _run_flag_hunt(eng)                                # loot common flag paths with valid logins
-    _run_exploit_agent(eng)                            # cross-service correlation (now has creds)
+    _run_privesc_enum(eng)                             # gather local-privesc vectors (→ root flag)
+    _run_exploit_agent(eng)                            # cross-service correlation + privesc (has creds)
 
     def _finish():                                     # summary + close-out
         if eng.get("cancelled"):                       # user /stopped during brute
@@ -6236,8 +6359,12 @@ def _target_db_context(base_dir: str, max_chars=None) -> str:
     for c in eng.get("credentials", []):
         lines.append(f"credential: {c.get('username') or ''}:{c.get('secret') or ''}"
                      + (f" ({c['secret_type']})" if c.get("secret_type") else ""))
-    # Lower-priority, unbounded-in-count section: fit to the remaining budget.
-    extra = [f"endpoint: {e.get('url')}" for e in eng.get("endpoints", [])]
+    # Lower-priority, unbounded-in-count section: fit to the remaining budget. Findings
+    # (incl. the privesc-enum dumps) come first so the exploit agent can act on them.
+    extra = [f"finding [{f.get('port') or 'host'}] {f.get('service') or ''}: {f['finding']}"
+             for f in eng.get("exploit_findings", [])
+             if f.get("finding") and f.get("service") != "report"]
+    extra += [f"endpoint: {e.get('url')}" for e in eng.get("endpoints", [])]
     extra += [f"note: {n['text']}" for n in eng.get("notes", [])
               if n.get("kind") != "raw-intake" and n.get("text")]
     if max_chars is None:
