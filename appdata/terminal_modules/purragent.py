@@ -2167,7 +2167,7 @@ ANTHROPIC_MAX_TOKENS = 4096          # required by the Messages API; caps reply 
 
 def _chat_stream_anthropic(endpoint: str, api_key: str, body: dict, on_text,
                            hide_thinking: bool = False, render_reasoning: bool = True,
-                           max_seconds: float | None = None) -> dict:
+                           max_seconds: float | None = None, on_activity=None) -> dict:
     """Stream one Anthropic /v1/messages turn, converting the OpenAI-shaped `body`
     (messages + tools) at the wire and returning the SAME normalised assistant dict
     {content, tool_calls} that _chat_stream returns."""
@@ -2193,6 +2193,7 @@ def _chat_stream_anthropic(endpoint: str, api_key: str, body: dict, on_text,
     content_parts: list = []
     blocks: dict = {}          # index -> {type, id, name, json}
     thinking = {"on": False, "spin": 0}
+    activity_fired = False     # on_activity: fire once on the first content block
 
     def _end_thinking():
         if not thinking["on"]:
@@ -2228,6 +2229,13 @@ def _chat_stream_anthropic(endpoint: str, api_key: str, body: dict, on_text,
             except json.JSONDecodeError:
                 continue
             etype = ev.get("type", "")
+            if on_activity is not None and not activity_fired and etype in (
+                    "content_block_start", "content_block_delta"):
+                activity_fired = True
+                try:
+                    on_activity()
+                except Exception:                          # noqa: BLE001
+                    pass
             if etype == "content_block_start":
                 idx = ev.get("index", 0)
                 cb = ev.get("content_block") or {}
@@ -2282,7 +2290,7 @@ def _chat_stream_anthropic(endpoint: str, api_key: str, body: dict, on_text,
 
 def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
                  hide_thinking: bool = False, render_reasoning: bool = True,
-                 max_seconds: float | None = None) -> dict:
+                 max_seconds: float | None = None, on_activity=None) -> dict:
     """Stream one /chat/completions turn (SSE). Prints content deltas live via
     on_text(piece); accumulates tool_call deltas. Reasoning deltas drive a
     'thinking…' spinner when hide_thinking is set, or print greyed inline when
@@ -2296,7 +2304,8 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
     # needs the Messages wire format — convert + parse there, same return shape.
     if endpoint.rstrip("/").endswith("/messages"):
         return _chat_stream_anthropic(endpoint, api_key, body, on_text,
-                                      hide_thinking, render_reasoning, max_seconds)
+                                      hide_thinking, render_reasoning, max_seconds,
+                                      on_activity)
     body = dict(body)
     body["stream"] = True
     headers = {
@@ -2313,6 +2322,7 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
     content_parts: list = []
     tool_calls: dict = {}      # index -> {id, name, args}
     thinking = {"on": False, "spin": 0}
+    activity_fired = False     # on_activity: fire once on the first delta of any kind
 
     def _end_thinking():
         """Clear the spinner / close the greyed reasoning block once real output
@@ -2358,6 +2368,17 @@ def _chat_stream(endpoint: str, api_key: str, body: dict, on_text,
             if not choices:
                 continue
             delta = choices[0].get("delta") or {}
+
+            # First sign of life from the model — let the caller drop any "warming up"
+            # spinner BEFORE we render reasoning/content, so the two never collide.
+            if on_activity is not None and not activity_fired and (
+                    delta.get("reasoning") or delta.get("reasoning_content")
+                    or delta.get("content") or delta.get("tool_calls")):
+                activity_fired = True
+                try:
+                    on_activity()
+                except Exception:                          # noqa: BLE001
+                    pass
 
             # Reasoning / chain-of-thought: providers name it differently.
             reasoning = delta.get("reasoning") or delta.get("reasoning_content")
@@ -7172,7 +7193,7 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                            mode: str = "auto", on_confirm=None,
                            offer_hack: bool = False, on_hack=None,
                            summary: str = "", recall: str = "",
-                           max_context=None) -> str:
+                           max_context=None, on_first_token=None) -> str:
     """Run the agent loop and return the model's final text answer.
 
     `on_event(kind, name, payload)` reports progress: kind is 'call' (payload is
@@ -7265,6 +7286,18 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     # would produce two user turns in a row — fold the plan into the system slot there.
     plan_in_system = endpoint.rstrip("/").endswith("/messages")
 
+    # Fire on_first_token exactly once, on the model's first streamed byte — the REPL
+    # uses it to drop the "warming up" spinner shown during retriever build + TTFT.
+    _first = {"done": False}
+    def _fire_first():
+        if not _first["done"]:
+            _first["done"] = True
+            if on_first_token is not None:
+                try:
+                    on_first_token()
+                except Exception:                          # noqa: BLE001
+                    pass
+
     _round = 0
     while _round < (PLANNED_MAX_ROUNDS if plan else TOOL_LOOP_MAX_ROUNDS):
         _round += 1
@@ -7314,7 +7347,8 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
         if custom_params:
             body.update(custom_params)
 
-        message = _chat_stream(endpoint, api_key, body, trimmer.feed, hide_thinking)
+        message = _chat_stream(endpoint, api_key, body, trimmer.feed, hide_thinking,
+                               on_activity=_fire_first)
 
         tool_calls = message.get("tool_calls") or []
         if not tool_calls:
@@ -8229,6 +8263,10 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         streamed_text: list = []
         interrupted = False
         tool_spin = {"obj": None}
+        # "Warming up" spinner shown between hitting Enter and the first output — covers
+        # the one-time tool-retriever build (embedding model load) + the request's
+        # time-to-first-token, so the first prompt never looks frozen.
+        warmup = {"obj": None}
         # Set by the tool loop if the model calls enable_hacking_mode(enable=true);
         # a mutable holder because a closure can't rebind run_repl's locals.
         hack_signal = {"requested": False}
@@ -8241,7 +8279,13 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                 tool_spin["obj"].stop()
                 tool_spin["obj"] = None
 
+        def _stop_warmup():
+            if warmup["obj"] is not None:
+                warmup["obj"].stop()
+                warmup["obj"] = None
+
         def _on_text(piece):
+            _stop_warmup()             # first content byte — backstop for on_first_token
             streamed_text.append(piece)
             sys.stdout.write(piece)
             sys.stdout.flush()
@@ -8249,6 +8293,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         try:
             if use_tools and mcp.has_tools():
                 def _on_tool(kind, name, payload):
+                    _stop_warmup()     # first tool activity — backstop for on_first_token
                     if not debug:
                         # Concise (Claude-Code-style): one line per call — the tool
                         # name plus a short preview of its main argument, clipped to
@@ -8311,6 +8356,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         console.print(f"    [{mark}]→[/{mark}] [dim]{out}[/dim]")
 
                 # The answer is streamed live via _on_text (defined above).
+                warmup["obj"] = _ToolSpinner("working").start()   # until first output
                 reply = query_model_with_tools(ctx["profile"], base_dir, history,
                                                mcp, _on_tool, _on_text,
                                                mode=mode, on_confirm=_confirm,
@@ -8319,7 +8365,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                                                summary=ctx.get("summary", ""),
                                                recall=recall_block,
                                                max_context=_effective_max_context(
-                                                   ctx, base_dir))
+                                                   ctx, base_dir),
+                                               on_first_token=_stop_warmup)
+                _stop_warmup()             # defensive: never leave the warmup spinner on
                 _stop_tool_spin()          # defensive: never leave one animating
                 if streamed_text:
                     sys.stdout.write("\n")
@@ -8341,12 +8389,15 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         # it responds normally instead of leaving the task dangling.
                         console.print(Text("  ↻ answering without hacking mode",
                                            style="bright_black"))
+                        warmup["obj"] = _ToolSpinner("working").start()
                         reply = query_model_with_tools(
                             ctx["profile"], base_dir, history, mcp, _on_tool,
                             _on_text, mode=mode, on_confirm=_confirm,
                             offer_hack=False, summary=ctx.get("summary", ""),
                             recall=recall_block,
-                            max_context=_effective_max_context(ctx, base_dir))
+                            max_context=_effective_max_context(ctx, base_dir),
+                            on_first_token=_stop_warmup)
+                        _stop_warmup()
                         _stop_tool_spin()
                         if streamed_text:
                             sys.stdout.write("\n")
@@ -8362,6 +8413,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                     history.append({"role": "assistant", "content": reply})
         except (KeyboardInterrupt, SystemExit):
             # psai's streamers sys.exit(130) on Ctrl-C mid-reply; stay in the REPL.
+            _stop_warmup()             # clear the warmup spinner if we broke early
             _stop_tool_spin()          # clear the spinner if we broke mid tool call
             interrupted = True
             console.print("\n  [dim]interrupted[/dim]")
