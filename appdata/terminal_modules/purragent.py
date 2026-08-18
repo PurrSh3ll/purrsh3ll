@@ -328,6 +328,60 @@ def _clear_memories(base_dir: str) -> int:
     return n
 
 
+# ── Agent findings (normal mode) ───────────────────────────────────────────────
+# Concrete facts the model DISCOVERS about a target/system (open port, version,
+# credential, vuln, path, misconfig) — distinct from user memory (preferences the
+# USER asks to keep). Persisted in the state file, injected into context each turn
+# so the model can build on them and include them in its final summary; written only
+# when the model calls the save_finding tool. This is the normal-mode counterpart to
+# hack mode's exploit_findings DB, which /context reserves a FINDINGS slot for.
+FINDINGS_MAX = 50    # cap stored findings (agent-written — unlike the few user memories)
+
+
+def _load_findings(base_dir: str) -> list:
+    fs = _load_state(base_dir).get("findings")
+    return fs if isinstance(fs, list) else []
+
+
+def _add_finding(base_dir: str, text: str, where: str = "") -> bool:
+    """Store one discovered finding, deduped on text (case-insensitive). Keeps the most
+    recent FINDINGS_MAX. Returns True if added (False = empty or duplicate)."""
+    from datetime import datetime, timezone
+    text = (text or "").strip()
+    if not text:
+        return False
+    where = (where or "").strip()
+    fs = _load_findings(base_dir)
+    if any((f.get("text") or "").strip().lower() == text.lower() for f in fs):
+        return False
+    fs.append({"text": text, "where": where,
+               "created": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    if len(fs) > FINDINGS_MAX:
+        fs = fs[-FINDINGS_MAX:]
+    _save_state(base_dir, findings=fs)
+    return True
+
+
+def _findings_block(base_dir: str) -> str:
+    """Recorded findings as a system-prompt block; empty when none."""
+    fs = _load_findings(base_dir)
+    if not fs:
+        return ""
+    lines = []
+    for f in fs:
+        w = (f.get("where") or "").strip()
+        lines.append(f"- [{w}] {f['text']}" if w else f"- {f['text']}")
+    return ("FINDINGS (concrete facts you discovered this session — build on them and "
+            "include the relevant ones in your final answer):\n" + "\n".join(lines))
+
+
+def _clear_findings(base_dir: str) -> int:
+    """Forget all recorded findings; returns how many were cleared."""
+    n = len(_load_findings(base_dir))
+    _save_state(base_dir, findings=[])
+    return n
+
+
 def _memory_view(base_dir: str) -> None:
     """/memory — the numbered list of remembered instructions + facts."""
     mems = _load_memories(base_dir)
@@ -537,7 +591,9 @@ def _conv_budget(profile: dict, base_dir: str, ctx: dict, mcp, mode: str):
     fixed_chars = sum(c for _, c in _fixed_header_parts(profile, base_dir, mcp, mode))
     memory_chars = MEMORY_LOOKUP_TOKENS * 4
     pool = max(0, budget_tok * 4 - fixed_chars - memory_chars)
-    findings_chars = min(max(0, FINDINGS_FLOOR_TOKENS * 4), int(FINDINGS_CAP_FRAC * pool))
+    findings_demand = len(_findings_block(base_dir))    # recorded findings injected each turn
+    findings_chars = min(max(findings_demand, FINDINGS_FLOOR_TOKENS * 4),
+                         int(FINDINGS_CAP_FRAC * pool))
     avail = max(0, pool - findings_chars)
     summ_cap = int(SUMMARIZED_CAP_FRAC * pool)
     return avail, max(0, avail - summ_cap), summ_cap
@@ -584,8 +640,9 @@ def _context_view(ctx: dict, base_dir: str, history: list, mcp,
     else:
         pool = None
 
-    # FINDINGS: reservation (floor) held, capped once its DB is wired; 0 demand now.
-    findings_demand = 0
+    # FINDINGS: recorded findings (save_finding) are injected each turn — their real
+    # size is the demand; the floor is still held and the cap bounds borrowing.
+    findings_demand = len(_findings_block(base_dir))
     if pool is not None:
         findings_cap = int(FINDINGS_CAP_FRAC * pool)
         findings_chars = min(max(findings_demand, findings_floor_chars), findings_cap)
@@ -2061,7 +2118,9 @@ def query_model(profile: dict, base_dir: str, history: list) -> str:
 # which is every provider psai routes through /chat/completions. Others fall back
 # to the plain text path (query_model) with no tools.
 
-TOOL_LOOP_MAX_ROUNDS = 8
+TOOL_LOOP_MAX_ROUNDS = 8        # plain chat / single-action tasks
+PLANNED_MAX_ROUNDS   = 15       # raised ceiling once the model has an active update_plan
+PLAN_MAX_STEPS       = 6        # soft cap on plan length (weak models drift past ~6 steps)
 _THINK_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"   # same braille frames pschat uses
 
 
@@ -2561,6 +2620,104 @@ _MEMORY_GUIDE = (
     "remember or forget something, call save_memory ONCE to persist it — a single call, "
     "then stop (do not save it again, delete it, or re-save). The stored USER "
     "INSTRUCTIONS above already apply on every turn, so just keep following them.")
+
+UPDATE_PLAN_TOOL_NAME = "update_plan"
+_UPDATE_PLAN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": UPDATE_PLAN_TOOL_NAME,
+        "description": (
+            "Record or update a short ordered to-do plan for a MULTI-STEP task, so you "
+            "keep track of progress across tool calls. Send the WHOLE plan every time "
+            f"(3-{PLAN_MAX_STEPS} steps, resent in full), each with a status: 'todo' (not "
+            "started), 'doing' (the one step you are working on now), or 'done'. Call this "
+            "first to lay out the plan, then again after finishing a step to move it to "
+            "'done' and mark the next 'doing'. Do NOT use it for a simple question or a "
+            "single action — only when the task genuinely has several distinct steps."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "description": ("The full plan in order. Resend every step each time "
+                                    "with its current status — this replaces the prior "
+                                    "plan, it is not a delta."),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string",
+                                     "description": "One concise step (an action to take)."},
+                            "status": {"type": "string",
+                                       "enum": ["todo", "doing", "done"],
+                                       "description": "Progress on this step."},
+                        },
+                        "required": ["text", "status"],
+                    },
+                },
+            },
+            "required": ["steps"],
+        },
+    },
+}
+
+_PLAN_GUIDE = (
+    "PLANNING: for a MULTI-STEP task (roughly 3+ distinct actions — e.g. enumerate a "
+    "host, build something in stages, a targeted pentest/HTB task), call update_plan "
+    f"ONCE up front with a short ordered plan (3-{PLAN_MAX_STEPS} steps), then call it "
+    "again after each step to keep statuses current (finished → 'done', the step you are "
+    "on → 'doing'). The current plan is shown to you each turn; work through it and stop "
+    "when every step is done. For a simple question or a single action, do NOT plan.")
+
+
+def _render_plan(steps: list) -> str:
+    """One-line-per-step checklist of the model's current update_plan, injected each
+    round so it stays in view (weak models otherwise lose the thread mid-task)."""
+    mark = {"done": "x", "doing": "»", "todo": " "}
+    lines = []
+    for i, s in enumerate(steps, 1):
+        st = str((s or {}).get("status") or "todo").strip().lower()
+        txt = str((s or {}).get("text") or "").strip()
+        lines.append(f"[{mark.get(st, ' ')}] {i}. {txt}")
+    return ("CURRENT PLAN (your update_plan — keep working through it, call update_plan "
+            "to change a status):\n" + "\n".join(lines))
+
+
+SAVE_FINDING_TOOL_NAME = "save_finding"
+_SAVE_FINDING_TOOL = {
+    "type": "function",
+    "function": {
+        "name": SAVE_FINDING_TOOL_NAME,
+        "description": (
+            "Record a concrete FINDING you discovered about the target or system — an "
+            "open port, a service/version, a credential, a vulnerability, a path, a "
+            "misconfiguration. It is stored and shown back to you on later turns so you "
+            "can build on it and include it in your final summary. Save ONE distilled "
+            "fact per call (the important bit, not a whole tool dump); call again for "
+            "each new finding. This is for DISCOVERIES about the target, NOT user "
+            "preferences (those go to save_memory)."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "finding": {"type": "string",
+                            "description": ("One concise discovered fact — the important "
+                                            "bit only, e.g. 'SMB anonymous listing allowed; "
+                                            "share backups readable'.")},
+                "where": {"type": "string",
+                          "description": ("Optional: where it applies — host/IP, port, or "
+                                          "service (e.g. '10.10.10.5:445 smb').")},
+            },
+            "required": ["finding"],
+        },
+    },
+}
+
+_FINDING_GUIDE = (
+    "FINDINGS: when you DISCOVER a concrete fact about the target/system (open port, "
+    "service version, credential, vulnerability, path, misconfiguration), call "
+    "save_finding ONCE with that distilled fact so it is kept and available for your "
+    "final summary. One fact per call. Do NOT put user preferences here — those go to "
+    "save_memory.")
+
 
 _DISCOVERY_GUIDE = (
     "TOOLS: you can act on the system through tools. The catalog below has two "
@@ -7058,6 +7215,10 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     mem_block = _memory_block(base_dir)                 # remembered instructions + facts
     if mem_block:
         sys_parts.append(mem_block)
+    if not planning:
+        find_block = _findings_block(base_dir)          # facts the model discovered before
+        if find_block:
+            sys_parts.append(find_block)
     if summary:                                         # condensed older conversation
         sys_parts.append("EARLIER CONVERSATION SUMMARY (older turns, condensed):\n"
                          + summary)
@@ -7068,6 +7229,12 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     offer_save = not planning              # always available (except in plan mode)
     if offer_save:
         sys_parts.append(_MEMORY_GUIDE)    # nudge weaker models to actually save
+    offer_plan = not planning              # multi-step to-do tracking (model decides when)
+    if offer_plan:
+        sys_parts.append(_PLAN_GUIDE)
+    offer_finding = not planning           # record concrete discoveries about the target
+    if offer_finding:
+        sys_parts.append(_FINDING_GUIDE)
     # Local working copy of the transcript: the raw assistant tool-call messages
     # and tool results live only here, not in the caller's plain history.
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
@@ -7090,14 +7257,25 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     run_cmd = next((t for t in all_tools
                     if mcp_client.split_namespaced(t["name"])[1] == "run_command"),
                    None)
+    seen: dict = {}   # (tool name + canonical args) -> prior result text, for dedup
+    plan: list = []           # the model's current update_plan steps (this turn only)
+    plan_msg = None           # trailing plan reminder we re-inject (OpenAI-compat path)
+    base_system = msgs[0]["content"]      # system content without the live-plan block
+    # Anthropic groups tool results into a user turn, so a trailing user plan message
+    # would produce two user turns in a row — fold the plan into the system slot there.
+    plan_in_system = endpoint.rstrip("/").endswith("/messages")
 
-    for _round in range(TOOL_LOOP_MAX_ROUNDS):
+    _round = 0
+    while _round < (PLANNED_MAX_ROUNDS if plan else TOOL_LOOP_MAX_ROUNDS):
+        _round += 1
         offer_meta = (not planning and discovery
                       and discovery_rounds < DISCOVERY_MAX_ROUNDS)
         tools_field = ([] if planning
                        else ([_META_TOOL] if offer_meta else [])
                        + ([_ENABLE_HACK_TOOL] if offer_hack else [])
                        + ([_SAVE_MEMORY_TOOL] if offer_save else [])
+                       + ([_UPDATE_PLAN_TOOL] if offer_plan else [])
+                       + ([_SAVE_FINDING_TOOL] if offer_finding else [])
                        + list(active.values()))
 
         # Keep this turn's growing transcript within the window: tool results pile up
@@ -7108,6 +7286,24 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
             trim_noted = True
             console.print(Text("  ▸ trimmed earlier tool output to fit the context "
                                "window", style="bright_black"))
+
+        # Re-inject the live plan each round so it stays in view (weak models lose the
+        # thread mid-task). Sandwich: the policy rides in the system slot up top; the
+        # working checklist goes as close to the model's next decision as the wire
+        # format allows — a trailing user message (recency) on OpenAI-compat, folded
+        # into the system slot on Anthropic. Kept to a single, always-current copy.
+        if plan_msg is not None and plan_msg in msgs:
+            msgs.remove(plan_msg)
+            plan_msg = None
+        if plan:
+            block = _render_plan(plan)
+            if plan_in_system:
+                msgs[0]["content"] = base_system + "\n\n" + block
+            else:
+                plan_msg = {"role": "user", "content": block}
+                msgs.append(plan_msg)
+        elif plan_in_system and msgs[0]["content"] != base_system:
+            msgs[0]["content"] = base_system
 
         body = {"model": model, "messages": msgs}
         if tools_field:
@@ -7194,6 +7390,55 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                 msgs.append({"role": "tool", "tool_call_id": call_id, "content": ack})
                 continue
 
+            if name == UPDATE_PLAN_TOOL_NAME:
+                # Replace the whole plan (not a delta). Keep only well-formed steps and
+                # cap the length so a weak model can't sprawl. The plan is re-injected
+                # each round by the sandwich block above; here we just store it + ack.
+                raw = args.get("steps")
+                steps = []
+                if isinstance(raw, list):
+                    for s in raw[:PLAN_MAX_STEPS]:
+                        if isinstance(s, dict) and str(s.get("text") or "").strip():
+                            st = str(s.get("status") or "todo").strip().lower()
+                            steps.append({"text": str(s["text"]).strip(),
+                                          "status": st if st in
+                                          ("todo", "doing", "done") else "todo"})
+                plan = steps                       # raises the round cap once non-empty
+                on_event("call", name,
+                         {"steps": "; ".join(s["text"] for s in plan) or "(empty)"})
+                if plan:
+                    done = sum(1 for s in plan if s["status"] == "done")
+                    ack = (f"Plan recorded ({done}/{len(plan)} done). It is shown to you "
+                           "each turn — now DO the next step (call its tool). Call "
+                           "update_plan again only to change a step's status, not to "
+                           "restate the same plan.")
+                else:
+                    ack = ("Empty plan ignored. Either answer directly or call "
+                           "update_plan with real steps.")
+                on_event("result", name, {"text": ack})
+                msgs.append({"role": "tool", "tool_call_id": call_id, "content": ack})
+                continue
+
+            if name == SAVE_FINDING_TOOL_NAME:
+                ftext = str(args.get("finding") or "").strip()
+                where = str(args.get("where") or "").strip()
+                on_event("call", name,
+                         {"finding": (f"[{where}] " if where else "") + ftext})
+                saved = _add_finding(base_dir, ftext, where) if ftext else False
+                # Ack steers the model to STOP re-saving (the loop has dedup, but the ack
+                # keeps weak models from re-recording the same fact).
+                if saved:
+                    ack = ("Finding recorded — it is kept and shown to you on later turns "
+                           "and in your final summary. Do not save it again; continue.")
+                elif ftext:
+                    ack = ("Already recorded — nothing to do. Do not save it again; "
+                           "continue with the task.")
+                else:
+                    ack = "Empty finding ignored — nothing saved."
+                on_event("result", name, {"text": ack})
+                msgs.append({"role": "tool", "tool_call_id": call_id, "content": ack})
+                continue
+
             if name == ENABLE_HACK_TOOL_NAME:
                 # Model proposes hacking mode. Hand control to the /hack flow (same
                 # as if the user typed /hack): signal the caller and end the turn —
@@ -7241,6 +7486,20 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
                                      "parameters (do not invent argument names).")})
                     continue
 
+            # Skip a call the model has already run verbatim this turn: weak models
+            # otherwise re-issue an identical call and burn rounds. Feed back the prior
+            # result and steer them elsewhere (the hacktools agent has the same guard).
+            # Meta/control tools (request_tool, save_memory, enable_hacking_mode) never
+            # reach here — they 'continue' above — so dedup only covers real MCP calls.
+            key = name + ":" + json.dumps(args, sort_keys=True, default=str)
+            if key in seen:
+                msgs.append({"role": "tool", "tool_call_id": call_id,
+                             "content": ("You already ran this exact call; its result "
+                                         "was:\n" + seen[key] + "\nDo not repeat it — "
+                                         "try different arguments or another tool, or "
+                                         "give your final answer.")})
+                continue
+
             # Run-mode gate: ask the user before flagged calls (confirm / semi-auto).
             need, reason = _needs_confirm(mode, name, args)
             if need and on_confirm is not None and not on_confirm(name, args, reason):
@@ -7255,10 +7514,12 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
             on_event("call", name, args)
             result = mcp.call(name, args)
             on_event("result", name, result)
+            text = result.get("text") or "(no output)"
+            seen[key] = text
             msgs.append({
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": result.get("text") or "(no output)",
+                "content": text,
             })
 
     return "[tool loop] stopped: reached the tool-call limit without a final answer."
