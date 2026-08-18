@@ -789,6 +789,102 @@ def _b_ftp_transfer(a):
     raise ValueError("`action` must be list or get")
 
 
+# ── authenticated loot (read a file / hunt a flag with recovered creds) ───────
+# Read-only post-auth tools: use credentials found elsewhere to pull a file — or sweep
+# the usual flag/secret spots — off the target. Safe by design (only reads); they give
+# the agent a first-class way to capture a flag in normal (non-hack) mode.
+
+# One read-only filesystem sweep per platform. Single line each: the exec path forbids
+# control characters, so no real newlines. Covers the classic CTF spots + common names.
+_NIX_FLAG_SWEEP = (
+    "cat /root/root.txt /root/flag.txt /root/flag /home/*/user.txt /home/*/flag.txt "
+    "/home/*/flag /home/*/Desktop/* /flag /flag.txt /var/www/flag* 2>/dev/null; "
+    "find / -maxdepth 5 -type f \\( -iname 'flag*' -o -iname 'user.txt' -o -iname "
+    "'root.txt' -o -iname 'proof.txt' -o -iname 'local.txt' \\) 2>/dev/null | head -n 40"
+)
+_WIN_FLAG_SWEEP = (
+    "Get-ChildItem C:\\Users,C:\\ -Recurse -Include user.txt,root.txt,flag.txt,flag,"
+    "proof.txt,local.txt -ErrorAction SilentlyContinue -File | Select-Object -First 30 "
+    "| ForEach-Object { $_.FullName; Get-Content $_.FullName -ErrorAction SilentlyContinue }"
+)
+
+
+def _ssh_run_argv(host, a, remote_cmd):
+    """(argv, binary) running `remote_cmd` over ssh with a password (sshpass) or key —
+    the shared shape used by read_file / flag_hunt (mirrors ssh_exec)."""
+    port = _port(a, 22)
+    user = _db_ident((a.get("username") or "").strip(), "username")
+    if not user:
+        raise ValueError("`username` is required for ssh")
+    common = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+              "-p", str(port), f"{user}@{host}", remote_cmd]
+    key = (a.get("key") or "").strip()
+    if key:
+        if re.search(r"[;\s\x00-\x1f]", key):
+            raise ValueError("`key` must be a path with no spaces")
+        return ["ssh", "-i", key] + common, "ssh"
+    password = str(a.get("password") or "")
+    if password:
+        return ["sshpass", "-p", password, "ssh"] + common, "sshpass"
+    raise ValueError("provide `password` or `key` for ssh")
+
+
+def _winrm_run_argv(host, a, remote_cmd):
+    """(argv, binary) running `remote_cmd` on Windows over WinRM (nxc)."""
+    user, password, nthash, domain = _creds(a, require=True)
+    argv = ["nxc", "winrm", host] + _nxc_auth(user, password, nthash, domain)
+    return argv + ["-x", remote_cmd], "nxc"
+
+
+def _b_read_file(a):
+    """Read a single file off a host over an authenticated service (ssh / winrm / smb /
+    ftp). Read-only loot with recovered credentials — pull a known flag/secret path."""
+    host = _req_host(a)
+    service = (a.get("service") or "").strip().lower()
+    path = _no_ctrl(_word(a, "path"), "path")
+    if service == "ssh":
+        import shlex
+        return _ssh_run_argv(host, a, "cat -- " + shlex.quote(path))
+    if service == "winrm":
+        ps = path.replace("'", "''")                  # single-quote a PS literal path
+        return _winrm_run_argv(
+            host, a, f"Get-Content -LiteralPath '{ps}' -ErrorAction SilentlyContinue")
+    if service == "ftp":
+        a2 = dict(a); a2["action"], a2["path"] = "get", path
+        return _b_ftp_transfer(a2)
+    if service == "smb":
+        user, password, nthash, domain = _creds(a)
+        share = _word(a, "share")
+        if not re.match(r"^[A-Za-z0-9._$ -]+$", share):
+            raise ValueError("`share` has invalid characters")
+        if re.search(r'[;"\x00-\x1f]', path):
+            raise ValueError("`path` has invalid characters")
+        rpath = path.lstrip("/").replace("/", "\\")
+        if not user:
+            auth = ["-N"]                             # null session
+        else:
+            userspec = f"{domain}\\{user}" if domain else user
+            auth = (["-U", f"{userspec}%{nthash}", "--pw-nt-hash"] if nthash
+                    else ["-U", f"{userspec}%{password}"])
+        return (["smbclient", f"//{host}/{share}"] + auth
+                + ["-c", f'get "{rpath}" -'], "smbclient")   # stream to stdout
+    raise ValueError("`service` must be ssh / winrm / smb / ftp")
+
+
+def _b_flag_hunt(a):
+    """Sweep the usual flag/secret locations on a host over an authenticated SHELL
+    service (ssh on Linux, winrm on Windows) and return what it finds. Read-only, one
+    login. Non-shell services (smb/ftp/db) can't traverse a filesystem — use read_file
+    once you know the path."""
+    host = _req_host(a)
+    service = (a.get("service") or "").strip().lower()
+    if service == "ssh":
+        return _ssh_run_argv(host, a, _NIX_FLAG_SWEEP)
+    if service == "winrm":
+        return _winrm_run_argv(host, a, _WIN_FLAG_SWEEP)
+    raise ValueError("`service` must be ssh or winrm (a shell is needed to sweep the FS)")
+
+
 # ── recon batch ───────────────────────────────────────────────────────────────
 def _b_subdomain_enum(a):
     domain = _word(a, "domain")
@@ -1816,5 +1912,5 @@ def _b_gpp_decrypt(a):
         pw = dec.decode("utf-8", "replace")
     return f"decrypted GPP password: {pw}"
 
-__all__ = ['MAX_OUTPUT', '_HOST_RE', '_PORTS_RE', '_ANSI_RE', '_req_host', '_port', '_ports', '_word', '_is_root', '_URL_RE', '_req_url', '_no_ctrl', '_WORDLISTS', '_resolve_wordlist', '_DNS_WORDLISTS', '_resolve_dns_wordlist', '_creds', '_hashes_arg', '_impacket_target', '_nxc_auth', '_run', '_NSE_DENY', '_nmap_tuning', '_RANGE_PORTS', '_b_port_discovery', '_b_service_discovery', '_b_script_scan', '_b_http_headers', '_b_ftp_anon', '_b_smb_enum', '_b_snmp_walk', '_b_dns', '_b_ssl_cert', '_b_banner', '_b_searchsploit', '_b_whois', '_b_http_request', '_b_web_content', '_b_whatweb', '_b_nikto', '_b_nuclei', '_b_smb_client', '_NXC_ACTIONS', '_b_nxc_smb', '_b_ldap_search', '_b_rpc_enum', '_b_secretsdump', '_IMPACKET_EXEC', '_b_impacket_exec', '_b_kerberos_roast', '_db_ident', '_b_mysql_query', '_b_mssql_query', '_b_psql_query', '_REDIS_DENY', '_b_redis_cli', '_b_mongo_query', '_b_ssh_exec', '_b_winrm_exec', '_b_ftp_transfer', '_b_subdomain_enum', '_b_dns_zone_transfer', '_b_traceroute', '_b_vhost_fuzz', '_ROOT', '_b_hash_identify', '_b_jwt_decode', '_b_data_transform', '_b_cidr_expand', '_b_ip_info', '_SHELL_TEMPLATES', '_b_payload_gen', '_DEFAULT_CREDS', '_b_default_creds', '_ver_key', '_b_cve_lookup', '_b_tls_analyze', '_b_robots_sitemap', '_b_sqlmap', '_b_wpscan', '_b_enum4linux', '_b_smbmap', '_b_certipy', '_b_testssl', '_b_ssh_audit', '_b_smtp_user_enum', '_b_wafw00f', '_http_get', '_b_git_dump', '_b_s3_check', '_SEC_HEADERS', '_b_security_headers', '_b_cookie_analyze', '_mmh3_32', '_b_favicon_hash', '_b_js_endpoints', '_b_cors_check', '_SUBDOMAINS', '_b_dns_bruteforce', '_b_bloodhound', '_b_katana', '_b_gau', '_b_arjun', '_b_dalfox', '_b_commix', '_b_dnsrecon', '_b_nbtscan', '_b_theharvester', '_MSF_FORMATS', '_b_msfvenom', '_USER_WORDLISTS', '_PASS_WORDLISTS', '_resolve_preset', '_HYDRA_SERVICES', '_b_login_bruteforce', '_KERBRUTE_MODES', '_b_kerbrute', '_b_nfs_enum', '_b_rsync_enum', '_b_memcached_stats', '_GPP_KEY', '_b_gpp_decrypt']
+__all__ = ['MAX_OUTPUT', '_HOST_RE', '_PORTS_RE', '_ANSI_RE', '_req_host', '_port', '_ports', '_word', '_is_root', '_URL_RE', '_req_url', '_no_ctrl', '_WORDLISTS', '_resolve_wordlist', '_DNS_WORDLISTS', '_resolve_dns_wordlist', '_creds', '_hashes_arg', '_impacket_target', '_nxc_auth', '_run', '_NSE_DENY', '_nmap_tuning', '_RANGE_PORTS', '_b_port_discovery', '_b_service_discovery', '_b_script_scan', '_b_http_headers', '_b_ftp_anon', '_b_smb_enum', '_b_snmp_walk', '_b_dns', '_b_ssl_cert', '_b_banner', '_b_searchsploit', '_b_whois', '_b_http_request', '_b_web_content', '_b_whatweb', '_b_nikto', '_b_nuclei', '_b_smb_client', '_NXC_ACTIONS', '_b_nxc_smb', '_b_ldap_search', '_b_rpc_enum', '_b_secretsdump', '_IMPACKET_EXEC', '_b_impacket_exec', '_b_kerberos_roast', '_db_ident', '_b_mysql_query', '_b_mssql_query', '_b_psql_query', '_REDIS_DENY', '_b_redis_cli', '_b_mongo_query', '_b_ssh_exec', '_b_winrm_exec', '_b_ftp_transfer', '_b_subdomain_enum', '_b_dns_zone_transfer', '_b_traceroute', '_b_vhost_fuzz', '_ROOT', '_b_hash_identify', '_b_jwt_decode', '_b_data_transform', '_b_cidr_expand', '_b_ip_info', '_SHELL_TEMPLATES', '_b_payload_gen', '_DEFAULT_CREDS', '_b_default_creds', '_ver_key', '_b_cve_lookup', '_b_tls_analyze', '_b_robots_sitemap', '_b_sqlmap', '_b_wpscan', '_b_enum4linux', '_b_smbmap', '_b_certipy', '_b_testssl', '_b_ssh_audit', '_b_smtp_user_enum', '_b_wafw00f', '_http_get', '_b_git_dump', '_b_s3_check', '_SEC_HEADERS', '_b_security_headers', '_b_cookie_analyze', '_mmh3_32', '_b_favicon_hash', '_b_js_endpoints', '_b_cors_check', '_SUBDOMAINS', '_b_dns_bruteforce', '_b_bloodhound', '_b_katana', '_b_gau', '_b_arjun', '_b_dalfox', '_b_commix', '_b_dnsrecon', '_b_nbtscan', '_b_theharvester', '_MSF_FORMATS', '_b_msfvenom', '_USER_WORDLISTS', '_PASS_WORDLISTS', '_resolve_preset', '_HYDRA_SERVICES', '_b_login_bruteforce', '_KERBRUTE_MODES', '_b_kerbrute', '_b_nfs_enum', '_b_rsync_enum', '_b_memcached_stats', '_GPP_KEY', '_b_gpp_decrypt', '_b_read_file', '_b_flag_hunt']
 

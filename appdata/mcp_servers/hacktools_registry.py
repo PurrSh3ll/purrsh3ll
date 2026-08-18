@@ -1607,5 +1607,67 @@ _PY_REQUIRES = {
     "gpp_decrypt": [(("Crypto", "cryptography"), "pip: pycryptodome")],
 }
 
+
+# ── authenticated loot tools (registered after the tables above) ──────────────
+# read_file / flag_hunt dispatch to ssh/winrm/smb/ftp by `service`, so no single binary
+# is advertised (the runner reports [not installed] for whichever one a call needs).
+_KEYFILE = {"type": "string", "description": "Path to an SSH private key (instead of a "
+            "password), for service=ssh."}
+HACKTOOLS["read_file"] = (
+    _b_read_file,
+    "Read ONE file off a host over an authenticated service (ssh/winrm/smb/ftp) with "
+    "recovered credentials — e.g. cat a known flag or config path. Read-only.",
+    {"type": "object", "properties": {
+        "host": _H, "port": _PORT,
+        "service": {"type": "string", "description": "ssh · winrm · smb · ftp — the "
+                    "authenticated service to read the file over."},
+        "path": {"type": "string", "description": "Path of the file to read (e.g. "
+                 "/root/root.txt, or a share-relative path for smb)."},
+        "share": {"type": "string", "description": "SMB share the path is on "
+                  "(service=smb)."},
+        "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
+        "key": _KEYFILE},
+     "required": ["host", "service", "path"]})
+HACKTOOLS["flag_hunt"] = (
+    _b_flag_hunt,
+    "Hunt for a flag on a host: with a validated shell login (ssh on Linux, winrm on "
+    "Windows) sweep the usual flag/secret locations (/root, /home/*, Desktop, user.txt/"
+    "root.txt/flag*, …) and return what's found. Read-only, one login.",
+    {"type": "object", "properties": {
+        "host": _H, "port": _PORT,
+        "service": {"type": "string", "description": "ssh (Linux) · winrm (Windows) — "
+                    "the shell service to sweep the filesystem over."},
+        "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN,
+        "key": _KEYFILE},
+     "required": ["host", "service"]})
+
+_META["read_file"] = (
+    "Read a file over ssh/winrm/smb/ftp with creds.",
+    "Authenticated file read: pull a single file off a host over ssh (cat), winrm "
+    "(Get-Content), smb (smbclient get) or ftp (curl), using recovered credentials. "
+    "Read-only loot of a KNOWN path. Keywords: read file, cat, get-content, download, "
+    "loot, flag, user.txt, root.txt, config, credentials, post-exploitation, smb get.",
+    ["read /root/root.txt over ssh with these creds",
+     "cat user.txt from the box using the password",
+     "grab C:\\Users\\bob\\Desktop\\user.txt over winrm",
+     "download config.php from the smb share",
+     "read the flag file with the recovered login"])
+_META["flag_hunt"] = (
+    "Sweep the usual paths for a flag using a login.",
+    "Flag hunt: with a validated shell login (ssh/winrm) sweep the common flag and "
+    "secret locations across the filesystem and return what's found — the fast way to "
+    "capture a flag once you have credentials. Read-only. Keywords: flag, capture the "
+    "flag, ctf, user.txt, root.txt, proof.txt, loot, find flag, HTB, search filesystem, "
+    "post-exploitation, foothold, privilege.",
+    ["hunt for the flag over ssh with these creds",
+     "find the flag on the box using the password",
+     "sweep for user.txt and root.txt over winrm",
+     "look for a flag now that I have a login",
+     "search the filesystem for the flag"])
+
+_TIMEOUTS["read_file"] = 90
+_TIMEOUTS["flag_hunt"] = 180
+
+
 __all__ = ['HACKTOOLS', '_META', '_DEFAULT_TOOL_TIMEOUT', '_TIMEOUTS', '_REQUIRES', '_PY_REQUIRES']
 
