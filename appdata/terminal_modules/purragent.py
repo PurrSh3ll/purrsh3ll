@@ -47,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import psai  # noqa: E402
 import mcp_client  # noqa: E402  — dependency-free MCP (Model Context Protocol) client
 import tool_retriever  # noqa: E402  — client-side RAG for semantic tool discovery
-import conv_memory  # noqa: E402  — semantic recall of older / cross-session conversation
+import conv_memory  # noqa: E402  — semantic recall of earlier conversation (this session)
 import purragent_db  # noqa: E402  — hacking-mode engagement / target intake store
 import agent_context  # noqa: E402  — context-window budgeting + transcript trimming (pure)
 import wire_format  # noqa: E402  — OpenAI ↔ Anthropic wire conversion (pure)
@@ -246,9 +246,10 @@ def _save_state(base_dir: str, **updates) -> None:
 
 # ── User memory (normal mode) ──────────────────────────────────────────────────
 # Things the user explicitly asks the model to remember — a standing 'instruction'
-# (always injected into the system prompt) or a 'fact' to keep. Persisted in the
-# state file (survives sessions), injected into context each turn; written only when
-# the model calls the save_memory tool.
+# (always injected into the system prompt) or a 'fact' to keep. Kept in the state
+# file for the session and injected into context each turn; written only when the
+# model calls the save_memory tool. Wiped at each new session start (run_repl), so a
+# fresh session never inherits a previous one's memory.
 MEMORY_KINDS = ("instruction", "fact")
 
 
@@ -2603,7 +2604,7 @@ _SAVE_MEMORY_TOOL = {
     "function": {
         "name": SAVE_MEMORY_TOOL_NAME,
         "description": (
-            "Manage what you remember across this conversation and future sessions, when "
+            "Manage what you remember for the rest of this session, when "
             "the USER explicitly asks. action='save' persists a standing INSTRUCTION (how "
             "to behave, something to always do/add) or a FACT to keep; action='delete' "
             "forgets a previously stored memory (match it by the text shown in the "
@@ -7626,9 +7627,18 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     ctx = {"profile": profile, "max_context": None,   # max_context: session override
            "session_id": str(int(time.time())),       # tags this session's recalled turns
            "conv_mem": conv_memory.ConversationMemory(base_dir)}   # created once (no race)
-    # The engagement store is session-ephemeral (holds credentials): wipe any DB
-    # left over from a previous (possibly crashed) session so we always start clean.
+    # A new session starts with a clean slate — nothing carries over. Wipe every
+    # remembered store: the engagement DB (targets/credentials from a previous or
+    # crashed run), the user memories (/memory) and recorded findings (save_finding)
+    # kept in the state file, and the conversation-recall index. Config (attached
+    # profile, mode, greeting) lives in the same state file but is left intact.
     purragent_db.reset(base_dir)
+    _clear_memories(base_dir)
+    _clear_findings(base_dir)
+    try:
+        ctx["conv_mem"].reset()
+    except Exception:                                  # noqa: BLE001
+        pass
     history: list = []
     _state = _load_state(base_dir)
     greeting = _state.get("greeting") or DEFAULT_GREETING

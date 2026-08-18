@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-# PurrSh3ll — conversation memory (semantic recall of older / cross-session turns)
+# PurrSh3ll — conversation memory (semantic recall of earlier turns this session)
 # Copyright (C) 2024-2025  PurrSh3ll Contributors
 #
 # Fills purragent's reserved "memory lookup" context slot. Every completed
 # exchange (a user turn + the assistant's reply) is embedded and appended to a
-# small persistent per-workspace store; before a new turn, the current question
-# is embedded and the most semantically similar PAST exchanges — including from
-# earlier turns condensed out of the live window, and from OTHER sessions on the
-# same workspace — are recalled and injected. It reuses the exact embedder the
-# tool retriever and knowledge-base RAG use (appdata/rag settings), keeps the
-# vectors in a numpy array next to a JSON sidecar, and degrades to a clean no-op
-# when embeddings are unavailable.
+# small per-workspace store; before a new turn, the current question is embedded
+# and the most semantically similar PAST exchanges — earlier turns condensed out
+# of the live window — are recalled and injected. The store is wiped at each new
+# session start (purragent's run_repl calls reset()), so recall never reaches into
+# a previous session. It reuses the exact embedder the tool retriever and
+# knowledge-base RAG use (appdata/rag settings), keeps the vectors in a numpy array
+# next to a JSON sidecar, and degrades to a clean no-op when embeddings are
+# unavailable.
 
 import json
 import os
@@ -113,6 +114,20 @@ class ConversationMemory:
                 json.dump(self._items, f)
         except Exception:                              # noqa: BLE001 — non-fatal
             pass
+
+    def reset(self) -> None:
+        """Wipe the persisted store so a new session starts with no recall of earlier
+        ones. Clears the in-memory index and removes the on-disk vectors/meta files."""
+        with self._lock:
+            self._items, self._matrix = [], None
+            self._loaded = True                        # nothing to load; don't re-read
+            for p in (self._vec_path, self._meta_path):
+                try:
+                    os.remove(p)
+                except FileNotFoundError:
+                    pass
+                except Exception:                      # noqa: BLE001 — non-fatal
+                    pass
 
     # -- index / recall ---------------------------------------------------- #
     def add(self, user_text: str, assistant_text: str, session: str) -> None:
