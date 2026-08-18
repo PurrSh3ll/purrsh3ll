@@ -1669,5 +1669,71 @@ _TIMEOUTS["read_file"] = 90
 _TIMEOUTS["flag_hunt"] = 180
 
 
+# ── privilege-escalation tools ────────────────────────────────────────────────
+HACKTOOLS["linux_privesc_enum"] = (
+    _b_linux_privesc_enum,
+    "Enumerate LOCAL privilege-escalation vectors on a Linux host over an authenticated "
+    "ssh login: sudo -l, SUID/SGID binaries, capabilities, cron, writable service files, "
+    "kernel version, NFS exports, writable dirs. Read-only (a LinPEAS-lite sweep).",
+    {"type": "object", "properties": {
+        "host": _H, "port": _PORT,
+        "username": _USER, "password": _PASS, "domain": _DOMAIN, "key": _KEYFILE},
+     "required": ["host", "username"]})
+HACKTOOLS["windows_privesc_enum"] = (
+    _b_windows_privesc_enum,
+    "Enumerate LOCAL privilege-escalation vectors on a Windows host over an authenticated "
+    "WinRM login: token privileges (SeImpersonate…), group memberships, unquoted service "
+    "paths, AlwaysInstallElevated, stored credentials (cmdkey), hotfix level. Read-only.",
+    {"type": "object", "properties": {
+        "host": _H, "port": _PORT,
+        "username": _USER, "password": _PASS, "hash": _HASH, "domain": _DOMAIN},
+     "required": ["host", "username"]})
+HACKTOOLS["gtfobins_lookup"] = (
+    _b_gtfobins_lookup,
+    "Look up a binary in the bundled GTFOBins set: given a program found SUID or allowed "
+    "via sudo, return the known local privilege-escalation command(s). Offline reference "
+    "— no target contact.",
+    {"type": "object", "properties": {
+        "binary": {"type": "string", "description": "Program name (or path), e.g. find, "
+                   "vim, python, tar — typically one seen in SUID or `sudo -l`."}},
+     "required": ["binary"]})
+
+_META["linux_privesc_enum"] = (
+    "Enumerate Linux local-privesc vectors over ssh.",
+    "Linux local privilege-escalation enumeration over an authenticated ssh login — a "
+    "read-only LinPEAS-lite sweep: sudo -l, SUID/SGID, capabilities, cron jobs, writable "
+    "systemd units, kernel version, NFS exports, writable directories. Post-foothold "
+    "root-hunting. Keywords: privesc, privilege escalation, linpeas, sudo -l, SUID, SGID, "
+    "getcap, cron, kernel exploit, root, post-exploitation, foothold, become root.",
+    ["enumerate privesc on the linux box with these creds",
+     "run a linpeas-style check over ssh", "find a way to root this host",
+     "check sudo -l and SUID binaries", "look for privilege escalation on linux"])
+_META["windows_privesc_enum"] = (
+    "Enumerate Windows local-privesc vectors over WinRM.",
+    "Windows local privilege-escalation enumeration over an authenticated WinRM login — a "
+    "read-only WinPEAS/PowerUp-lite sweep: whoami /priv (SeImpersonate, SeDebug…), group "
+    "memberships, unquoted service paths, AlwaysInstallElevated, cmdkey stored creds, "
+    "hotfix level. Post-foothold SYSTEM-hunting. Keywords: privesc, privilege escalation, "
+    "winpeas, powerup, SeImpersonate, potato, unquoted service path, AlwaysInstallElevated, "
+    "cmdkey, SYSTEM, administrator, token, post-exploitation.",
+    ["enumerate privesc on the windows box with these creds",
+     "run a winpeas-style check over winrm", "check my token privileges for SeImpersonate",
+     "find a path to SYSTEM on this host", "look for privilege escalation on windows"])
+_META["gtfobins_lookup"] = (
+    "Look up a binary's GTFOBins privesc technique.",
+    "GTFOBins lookup (offline): map a binary found SUID or sudo-allowed to its known "
+    "local privilege-escalation command — e.g. how to abuse find/vim/python/tar to get a "
+    "root shell. No target contact. Keywords: gtfobins, SUID exploit, sudo abuse, privilege "
+    "escalation technique, root shell, find exec, living off the land, how to exploit.",
+    ["how do I privesc with SUID find", "gtfobins technique for vim",
+     "abuse sudo python to get root", "what's the privesc for tar",
+     "how to exploit this SUID binary"])
+
+_TIMEOUTS["linux_privesc_enum"] = 300
+_TIMEOUTS["windows_privesc_enum"] = 240
+_TIMEOUTS["gtfobins_lookup"] = 15
+_REQUIRES["windows_privesc_enum"] = "nxc"
+
+
 __all__ = ['HACKTOOLS', '_META', '_DEFAULT_TOOL_TIMEOUT', '_TIMEOUTS', '_REQUIRES', '_PY_REQUIRES']
 
