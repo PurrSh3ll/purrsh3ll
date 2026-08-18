@@ -185,7 +185,18 @@ def _run(argv, binary):
         return (f"error running {binary}: {exc}", True)
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     out = _ANSI_RE.sub("", out) or "(no output)"
-    return (out[:MAX_OUTPUT], False)
+    if len(out) > MAX_OUTPUT:
+        # Don't truncate silently — the model would treat the head as the whole result
+        # (e.g. reading a large file and reasoning on a partial view). Mark it and steer
+        # toward a narrower request. Generic on purpose: _run caps every tool, so no
+        # specific tool name is named (that would be wrong for a scan/brute output and
+        # is unreliable under RAG tool discovery).
+        omitted = len(out) - MAX_OUTPUT
+        out = (out[:MAX_OUTPUT]
+               + f"\n\n… [output truncated to {MAX_OUTPUT} chars; {omitted} more omitted. "
+                 "This is NOT the full result — narrow the request (a more specific path, "
+                 "filter/grep, or port/target range) to surface the exact part you need.]")
+    return (out, False)
 
 
 _NSE_DENY = ("brute", "dos", "exploit")               # never run these NSE categories
