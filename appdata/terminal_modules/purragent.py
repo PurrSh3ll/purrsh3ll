@@ -2723,23 +2723,9 @@ _HACK_TRANSLATE_INSTRUCTIONS = (
     "no quotes, no notes.\n\nMessage:\n" + _HACK_ANNOUNCEMENT
 )
 
-# Objective of the engagement, chosen right after enabling hacking mode. Each is
-# picked to be objectively checkable by the agent later. Tuple: (menu label, menu
-# hint, toolbar shortcode).
-_HACK_GOALS = [
-    ("Find the flag",          "CTF / HTB — capture a flag string",  "flag"),
-    ("Get highest privileges", "root / SYSTEM / Administrator",       "privesc"),
-    ("Confirm vulnerability",  "prove a specific vuln (PoC)",         "vuln"),
-    ("Get system access",      "initial foothold / command exec",     "access"),
-]
-
-
-def _select_hack_goal():
-    """Arrow-key menu of the engagement objective. Returns the chosen goal tuple
-    (label, hint, shortcode), or None if cancelled (Esc)."""
-    opts = [(label, hint) for label, hint, _code in _HACK_GOALS]
-    idx = select_option("What is the objective?", opts)
-    return None if idx is None else _HACK_GOALS[idx]
+# The engagement objective is fixed: capture the flag. Hacking mode is a CTF/HTB
+# flag hunt, so we no longer ask — the toolbar shortcode is always "flag".
+_HACK_GOAL = "flag"
 
 
 def _hack_intro_message(profile: dict, base_dir: str, history: list,
@@ -2788,10 +2774,10 @@ def _hack_intro_message(profile: dict, base_dir: str, history: list,
 
 
 def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
-    """/hack — enable hacking mode. Confirm, pick the objective, then print a static
-    English announcement (no LLM — small models are unreliable at this) and ask for
-    the target IP as step 1. Returns (announcement, goal_shortcode) if enabled — the
-    caller waits for the IP next; (None, None) if declined/cancelled/no model."""
+    """/hack — enable hacking mode. Confirm, then print a static English announcement
+    (no LLM — small models are unreliable at this) and ask for the target IP as step 1.
+    The objective is always "capture the flag". Returns (announcement, goal_shortcode)
+    if enabled — the caller waits for the IP next; (None, None) if declined/no model."""
     console.print(Text("      runs autonomously — an automated recon → exploitation "
                        "loop that won't stop to ask (independent of /mode)",
                        style="bright_black"))
@@ -2810,12 +2796,8 @@ def _run_hack(ctx: dict, base_dir: str, history: list, mcp, debug: bool):
                       "[cyan]/model[/cyan] to choose one first.")
         return None, None
 
-    # Objective for this engagement (arrow keys). Cancelling here cancels enabling.
-    goal = _select_hack_goal()
-    if goal is None:
-        console.print(Text("      cancelled", style="bright_black"))
-        return None, None
-    _label, _hint, code = goal
+    # Objective is always "capture the flag" — no prompt (hacking mode is a flag hunt).
+    code = _HACK_GOAL
     console.print()
     # Static English announcement — no LLM (small models are unreliable at this).
     console.print(Text(_HACK_ANNOUNCEMENT, style=VIOLET))
