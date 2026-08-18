@@ -5160,7 +5160,7 @@ def _present_services(base_dir: str, tid: int) -> dict:
 def _attempt_login(mcp, host: str, present: dict, cred: dict, budget: list):
     """Try `cred` (dict with username/secret/secret_type/service_hint) against its
     candidate services, one login each, until one works or the shared attempt budget
-    (budget[0]) runs out. Returns (tested, hit_key, hit_port)."""
+    (budget[0]) runs out. Returns (tested, hit_key, hit_port, hit_tool)."""
     hint = cred.get("service_hint") or "*"
     keys = list(present) if hint == "*" else [hint]
     tested = False
@@ -5171,7 +5171,7 @@ def _attempt_login(mcp, host: str, present: dict, cred: dict, budget: list):
         ports = present[key]
         port = 445 if key == "smb" and 445 in ports else ports[0]   # prefer 445 over 139
         if budget[0] <= 0:
-            return tested, None, None
+            return tested, None, None, None
         built = arg_fn(cred, host, port)
         if not built:
             continue
@@ -5185,8 +5185,8 @@ def _attempt_login(mcp, host: str, present: dict, cred: dict, budget: list):
             res = {"text": "", "is_error": True}
         is_err = bool(res.get("is_error") or res.get("isError"))
         if ok_fn(res.get("text") or "", is_err, cred):
-            return tested, key, port
-    return tested, None, None
+            return tested, key, port, tool
+    return tested, None, None, None
 
 
 def _validate_creds(eng: dict) -> None:
@@ -5206,9 +5206,9 @@ def _validate_creds(eng: dict) -> None:
             break
         if c.get("validated"):                         # already decided (seed/brute)
             continue
-        tested, hit_key, hit_port = _attempt_login(mcp, host, present, c, budget)
+        tested, hit_key, hit_port, hit_tool = _attempt_login(mcp, host, present, c, budget)
         if hit_key:
-            purragent_db.set_cred_validated(base, c["id"], True, hit_port)
+            purragent_db.set_cred_validated(base, c["id"], True, hit_port, tool=hit_tool)
             _post(ctx, lambda cc=c, k=hit_key, p=hit_port:
                   _print_cred_result("valid", cc, k, p))
         elif tested:
@@ -5330,13 +5330,13 @@ def _run_cred_derivation(eng: dict) -> None:
     for cand in cands:
         if eng.get("cancelled") or budget[0] <= 0 or time.time() > deadline:
             break
-        _tested, hit_key, hit_port = _attempt_login(mcp, host, present, cand, budget)
+        _tested, hit_key, hit_port, hit_tool = _attempt_login(mcp, host, present, cand, budget)
         if hit_key:
             try:
                 cid = purragent_db.add_credential(base, tid, cand["username"],
                     cand["secret"], "password", scope="specific",
                     service_hint=hit_key, source="derived")
-                purragent_db.set_cred_validated(base, cid, True, hit_port)
+                purragent_db.set_cred_validated(base, cid, True, hit_port, tool=hit_tool)
                 purragent_db.add_username(base, tid, cand["username"],
                                           source="derived", service_hint=hit_key)
                 eng.setdefault("exploit_findings", []).append(
@@ -5501,7 +5501,7 @@ def _brute_worker(eng: dict, sem, job: dict, port: int, key: str, hydra_svc: str
             try:
                 cid = purragent_db.add_credential(base, tid, user, pw, "password",
                     scope="specific", service_hint=key, source="brute")
-                purragent_db.set_cred_validated(base, cid, True, port)
+                purragent_db.set_cred_validated(base, cid, True, port, tool="hydra")
                 purragent_db.add_username(base, tid, user, source="brute",
                                           service_hint=key)
                 finding = f"brute-forced {key} login: {user}"

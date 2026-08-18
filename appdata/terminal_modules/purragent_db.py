@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS credentials (
     validated    INTEGER DEFAULT 0,        -- 0 unverified, 1 valid, -1 invalid
     service_hint TEXT,                     -- service class it targets (smb/ssh/…) or '*'
     valid_on     TEXT DEFAULT '[]',        -- JSON list of ports it authenticated to
+    valid_tool   TEXT,                     -- tool that performed the successful login
+                                           -- (an MCP login tool, or 'hydra' for brute)
     confidence   REAL,                     -- extraction confidence (0-1), NULL if n/a
     FOREIGN KEY (target_id) REFERENCES targets(id)
 );
@@ -155,6 +157,7 @@ def _migrate(conn) -> None:
     have = {r[1] for r in conn.execute("PRAGMA table_info(credentials)")}
     for name, ddl in (("service_hint", "TEXT"),
                       ("valid_on", "TEXT DEFAULT '[]'"),
+                      ("valid_tool", "TEXT"),
                       ("confidence", "REAL")):
         if name not in have:
             conn.execute(f"ALTER TABLE credentials ADD COLUMN {name} {ddl}")
@@ -512,9 +515,10 @@ def fetch_credentials(base_dir: str, target_id: int) -> list:
 
 
 def set_cred_validated(base_dir: str, cred_id: int, valid: bool,
-                       port: int = None) -> None:
+                       port: int = None, tool: str = None) -> None:
     """Mark a credential valid (1) or invalid (-1); on success append the port it
-    authenticated to into valid_on (deduped)."""
+    authenticated to into valid_on (deduped) and record the login `tool` (the tool
+    that performed the successful login), when given."""
     conn = _connect(base_dir)
     try:
         if valid and port is not None:
@@ -526,8 +530,9 @@ def set_cred_validated(base_dir: str, cred_id: int, valid: bool,
                 ports = []
             if port not in ports:
                 ports.append(port)
-            conn.execute("UPDATE credentials SET validated = 1, valid_on = ? "
-                         "WHERE id = ?", (json.dumps(ports), cred_id))
+            conn.execute("UPDATE credentials SET validated = 1, valid_on = ?, "
+                         "valid_tool = COALESCE(?, valid_tool) WHERE id = ?",
+                         (json.dumps(ports), tool, cred_id))
         else:
             conn.execute("UPDATE credentials SET validated = ? WHERE id = ?",
                          (1 if valid else -1, cred_id))
