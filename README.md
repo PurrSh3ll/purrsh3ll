@@ -285,10 +285,12 @@ purrsh3ll/
 │   ├── builders/              # UI builder functions
 │   ├── widgets/               # Custom Qt widgets
 │   ├── dialogs/               # Settings, erase-data, palette, …
-│   └── panels/                # Side panel widgets
+│   ├── panels/                # Side panel widgets
+│   └── watchers/              # Filesystem / module watchers
 ├── file_loaders/              # Polymorphic file viewer (50+ formats)
 ├── appdata/
-│   ├── terminal_modules/      # AI CLI tools (psask, pscmd, psrag…)
+│   ├── terminal_modules/      # AI CLI tools + purragent console agent (psask, pscmd, psrag, pshunter…)
+│   ├── mcp_servers/           # MCP tool servers used by purragent (hacktools, …)
 │   ├── agent_modes/           # Pentest and CTF agent skill sets
 │   └── themes.json            # Theme definitions
 └── appmodules/
@@ -317,20 +319,15 @@ purrsh3ll/
 | Secrets | keyring (OS credential store) |
 | File watching | watchdog |
 | Web panel | PyQt6-WebEngine |
+| Console agent | prompt_toolkit + rich REPL, MCP (Model Context Protocol) tool servers |
 
 ---
 
 ## Roadmap
 
-PurrSh3ll is under active development. This is not the final form.
+PurrSh3ll is under active development — this is not its final form.
 
-I have more ideas than time — building this solo alongside a full-time job means progress is steady but not instant. What's coming:
-
-- **purragent expansion** — the custom offensive-security agent is now in the app (see *purragent* above); next up are more automated phases, richer MCP tool integrations, and tighter reporting
-
-> **Note:** The app is still under manual testing, and unit tests are on the way. I also haven't tested the paid LLM API providers yet (Anthropic, OpenAI, …) — they are implemented from the official API docs. If you hit an issue, please open one.
-
-If any of this sounds useful — star the repo, open an issue, or contribute. Every bit of feedback helps prioritize what gets built next.
+It's a solo project built after hours alongside a full-time job. Right now the focus is manual testing, writing the unit-test suite, and filling out the documentation.
 
 ---
 
