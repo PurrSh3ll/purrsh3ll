@@ -43,7 +43,6 @@ Pillow==12.0.0
 # ── Terminal / UI ─────────────────────────────────────────────────────────────
 pyte==0.8.2
 pyfiglet==1.0.4
-pygame==2.6.1
 Pygments==2.19.2
 markdown2==2.5.4
 rich==14.2.0
@@ -55,6 +54,11 @@ pydantic==2.13.4
 requests==2.32.5
 PyYAML==6.0.3
 loguru==0.7.3
+
+# ── Optional (installed best-effort by install.sh — the app degrades gracefully
+#    without them; kept out of the mandatory set so a source build that fails on a
+#    given Python/platform never blocks the whole install) ───────────────────────
+# pygame==2.6.1       # audio playback in the file viewer + Cyb3rBreak mini-games
 
 # ── Voice (optional — installed by install.sh only when Voice is selected) ────
 # faster-whisper==1.2.1
