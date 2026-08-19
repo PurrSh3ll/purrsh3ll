@@ -8506,9 +8506,41 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
 # ── Entry ──────────────────────────────────────────────────────────────────────
 
+def _cli_help_epilog() -> str:
+    """Build the `--help` epilog from the same command/mode tables the REPL uses,
+    so CLI help never drifts from what the app actually offers."""
+    out = ["run modes (switch inside with /mode):"]
+    out += [f"  {name:<11} {hint}" for name, hint in AGENT_MODES]
+    out += ["", "commands (type these once purragent is running):"]
+    out += [f"  {cmd:<12} {hint}" for cmd, hint in SLASH]
+    out += ["", "hacking-mode commands (available after /hack):"]
+    out += [f"  {cmd:<12} {hint}" for cmd, hint in HACK_SLASH]
+    out += ["",
+            "first run: type /model to attach a model, then just start typing.",
+            "everything the agent remembers is wiped when the session ends."]
+    return "\n".join(out)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="purragent", add_help=True)
-    parser.add_argument("--base-dir", default=None)
+    parser = argparse.ArgumentParser(
+        prog="purragent",
+        description=(
+            "purragent — interactive console AI agent for PurrSh3ll.\n"
+            "\n"
+            "A tool-using agent that plans and works right in the terminal. It runs in\n"
+            "two modes: a general-purpose assistant for everyday and pentest/HTB tasks,\n"
+            "and an autonomous hacking mode (/hack). Tools are discovered on demand via\n"
+            "RAG, so you can connect unlimited MCP servers without bloating the prompt.\n"
+            "Works with local and cloud models (OpenAI-compatible and native Anthropic)."
+        ),
+        epilog=_cli_help_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=True,
+    )
+    parser.add_argument(
+        "--base-dir", default=None, metavar="DIR",
+        help="PurrSh3ll root directory (auto-detected; the launcher sets this — "
+             "you normally don't need it)")
     args = parser.parse_args()
 
     base_dir = args.base_dir or os.path.dirname(
