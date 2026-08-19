@@ -120,6 +120,16 @@ Per-profile controls: **function calling** (tool use), **temperature**, disable/
 - Runs multiple nmap scans **concurrently** (fast + full TCP split + UDP) streaming to its own SQLite store; browse hosts and per-host ports/services under `[d] database`
 - `v <n>` replays a scan's command + real output in a spawned terminal for report screenshots; `[u] upgrade` re-runs under `sudo` for SYN/UDP without losing progress
 
+### purragent — autonomous offensive AI agent (console)
+
+A purpose-built, tool-using AI agent that lives in the terminal and plans its own work in a bounded ReAct loop — my own agent, tuned for offensive security and for **small local models** (e.g. qwen3-14b), not a wrapper around a hosted assistant.
+
+- **Two modes.** A **normal assistant** for arbitrary or pentest/HTB tasks (it reasons, calls tools, and answers), and an autonomous **hacking mode** (`/hack`) that drives a full recon → enumeration → exploitation → privilege-escalation pipeline against a target and pursues the flag with minimal hand-holding.
+- **Plans and tracks its own progress.** Keeps a model-managed to-do plan (`update_plan`), a running findings log (`save_finding`) of credentials/hosts/loot it discovers, and short-term session memory (`save_memory`) — so it stays coherent across many steps instead of forgetting what it already tried.
+- **Connect unlimited MCP servers — RAG tool discovery.** Add as many [MCP](https://modelcontextprotocol.io) servers and tools as you like; there is **no practical limit and no context bloat**. Instead of stuffing every tool schema into the prompt (which overflows the window and degrades small models), purragent indexes all available tools and **semantically retrieves only the few relevant to the current step**. Bring your own recon, exploitation, or custom tooling as MCP servers and the agent will surface them on demand — the more you connect, the more capable it gets, without paying for it in the prompt.
+- **Works with any backend.** Speaks both OpenAI-compatible and **native Anthropic** (`/v1/messages`) tool-calling APIs, so it runs the same whether you point it at a local model or a cloud provider. The whole transcript is bounded to the model's context window, and oversized tool/file output is marked as truncated rather than silently cut.
+- **Ephemeral by design.** Every remembered store — memories, findings, conversation recall, and the engagement database (targets/credentials) — is wiped both at session start and on exit (including when you close the console window or kill the process). Nothing lingers between sessions.
+
 ### AI Chat Panel
 - Embedded web panel for Open WebUI or any OpenAI-compatible frontend
 - Launch and manage Docker-based LLM containers from the app (auto-cleanup on stop)
@@ -314,7 +324,7 @@ PurrSh3ll is under active development. This is not the final form.
 
 I have more ideas than time — building this solo alongside a full-time job means progress is steady but not instant. What's coming:
 
-- **A custom pentesting / hacking / CTF agent** — my own agent, purpose-built for offensive security and optimized for local models
+- **purragent expansion** — the custom offensive-security agent is now in the app (see *purragent* above); next up are more automated phases, richer MCP tool integrations, and tighter reporting
 
 > **Note:** The app is still under manual testing, and unit tests are on the way. I also haven't tested the paid LLM API providers yet (Anthropic, OpenAI, …) — they are implemented from the official API docs. If you hit an issue, please open one.
 
