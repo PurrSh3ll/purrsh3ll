@@ -13,19 +13,20 @@
 3. [Menus](#menus)
 4. [Terminal](#terminal)
 5. [AI Tools — ps* Commands](#ai-tools--ps-commands)
-6. [Chat Panel](#chat-panel)
-7. [RAG Knowledge Base](#rag-knowledge-base)
-8. [Script Manager](#script-manager)
-9. [Markdown Support](#markdown-support)
-10. [File Viewer](#file-viewer)
-11. [Environment Variables & Aliases](#environment-variables--aliases)
-12. [Voice Control](#voice-control)
-13. [Themes & Customization](#themes--customization)
-14. [AI Settings](#ai-settings)
-15. [Model Database](#model-database)
-16. [Session & Behavior](#session--behavior)
-17. [Maintenance & Data](#maintenance--data)
-18. [Optional Third-Party Tools](#optional-third-party-tools)
+6. [purragent — Console AI Agent](#purragent--console-ai-agent)
+7. [Chat Panel](#chat-panel)
+8. [RAG Knowledge Base](#rag-knowledge-base)
+9. [Script Manager](#script-manager)
+10. [Markdown Support](#markdown-support)
+11. [File Viewer](#file-viewer)
+12. [Environment Variables & Aliases](#environment-variables--aliases)
+13. [Voice Control](#voice-control)
+14. [Themes & Customization](#themes--customization)
+15. [AI Settings](#ai-settings)
+16. [Model Database](#model-database)
+17. [Session & Behavior](#session--behavior)
+18. [Maintenance & Data](#maintenance--data)
+19. [Optional Third-Party Tools](#optional-third-party-tools)
 
 ---
 
@@ -47,7 +48,7 @@ Type `pshelp` in any terminal to see all available AI tools. Before the AI tools
 
 The interface is divided into three main areas:
 
-- **Top menu bar** — File, Edit, View, and Help menus (see [Menus](#menus))
+- **Top menu bar** — File, Edit, View, and Help menus
 - **Left panel** — Chat, Script Manager, Notes, File Viewer, Environment Variables
 - **Center** — Terminal tabs and execution area
 - **Right panel** — Secondary tools and output
@@ -67,8 +68,8 @@ The left and right panels can be resized by dragging the splitters. Layouts adap
 **Edit**
 - **Command Palette** (`Ctrl+P`) — quick access to tools and actions
 - **Tool Categories** — organize and browse the tool catalog
-- **Update Model Database…** — refresh model context windows and function-calling support (see [Model Database](#model-database))
-- **Erase all data…** — selectively wipe collected data (see [Maintenance & Data](#maintenance--data))
+- **Update Model Database…** — refresh model context windows and function-calling support
+- **Erase all data…** — selectively wipe collected data
 
 **View**
 - **Change Theme** — pick from the built-in themes
@@ -325,6 +326,45 @@ Displays all available `ps*` commands with short descriptions.
 
 ---
 
+## purragent — Console AI Agent
+
+**purragent** is an interactive, tool-using AI agent that runs right in the terminal. Unlike the one-shot `ps*` commands, it holds a conversation, plans its own steps, and calls tools on its own to finish a task — a general-purpose assistant for everyday work as well as pentest/HTB engagements. It is tuned to run well even on small local models.
+
+Launch it from any terminal tab:
+
+```bash
+purragent          # start the agent
+purragent --help   # usage, run modes, and the command list
+```
+
+On first launch, type `/model` to attach a model (it uses the profiles from **File → AI Settings → Profiles**), then just start typing.
+
+**How it works:**
+
+- **Bounded agent loop** — for each request the model reasons, optionally calls one or more tools, reads the results, and continues until it has an answer. The whole transcript is automatically kept within the model's context window, and oversized tool/file output is marked as truncated rather than silently cut.
+- **Two modes** — a **general-purpose assistant** (files, scripting, research, and pentest/HTB tasks), and an autonomous **hacking mode** (`/hack`) that walks a target through recon → enumeration → exploitation → privilege escalation and pursues the flag with minimal supervision.
+- **RAG tool discovery** — instead of loading every tool into the prompt, purragent semantically retrieves only the tools relevant to the current step. This means you can connect **unlimited MCP servers** without bloating the prompt or slowing the model down.
+- **Plans and remembers** — it keeps a live to-do plan, records findings (credentials, hosts, loot) as it discovers them, and remembers useful facts for the rest of the session.
+- **Run modes** — control how much it does on its own: `auto` (runs commands without asking), `semi-auto` (asks only for risky actions), `confirm` (asks before each command), and `plan` (describes actions without executing). Switch any time with `/mode`.
+- **Any backend** — works with local and cloud models over both OpenAI-compatible and native Anthropic APIs.
+- **Ephemeral by design** — everything the agent remembers (memories, findings, conversation recall, and engagement data) is wiped when the session ends, so nothing carries over to the next run.
+
+**Connect your own tools (MCP):** purragent speaks the [Model Context Protocol](https://modelcontextprotocol.io). Add any number of MCP tool servers with `/mcp` and the agent surfaces them on demand — because of RAG tool discovery, the more you connect, the more capable it gets, without paying for it in the prompt.
+
+**Common commands** (type `/help` inside purragent for the full list):
+
+| Command | Description |
+|---------|-------------|
+| `/model` | attach or switch the model |
+| `/mode` | set how the agent runs (auto / semi-auto / confirm / plan) |
+| `/mcp` | manage MCP servers |
+| `/hack` | run the autonomous hacking loop against a target |
+| `/memory` | view or forget what the agent has remembered |
+| `/help` | show all commands and usage |
+| `/exit` | quit purragent |
+
+---
+
 ## Chat Panel
 
 The Chat panel provides a GUI interface for interacting with AI. Three modes are available via the top selector:
@@ -494,7 +534,7 @@ Configure the LLM backend:
 | URL | Base URL of the API endpoint |
 | API Key | Stored securely in the system keyring |
 
-**Fetch models:** in the Profiles tab you can fetch the live model list from the provider (some require the API key first). The **Context window** and **Function calling** shown for a model come from the local model database — keep it fresh with **Edit → Update Model Database…** (see [Model Database](#model-database)).
+**Fetch models:** in the Profiles tab you can fetch the live model list from the provider (some require the API key first). The **Context window** and **Function calling** shown for a model come from the local model database — keep it fresh with **Edit → Update Model Database…**.
 
 **Agent Mode:**
 - **Agent Role** — defines the system prompt and workflow (e.g. `pentest_mode`, `ctf_mode`)
@@ -514,10 +554,6 @@ Configure the LLM backend:
 > Check available RAM: `free -h` · Loaded model: `ollama ps` · Downloaded models: `ollama list`
 >
 > **Recommended models for CPU-only machines** (~3 GB free RAM): `gemma3:4b`, `qwen3:4b`, `llama3.2:3b`, `phi3.5`. Cloud providers (Groq, Gemini, OpenRouter) do not have this limitation.
-
-### RAG Tab
-
-Full RAG configuration — see the [RAG Knowledge Base](#rag-knowledge-base) section above.
 
 ### Profiles Tab
 
