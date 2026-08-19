@@ -193,7 +193,8 @@ def print_help() -> None:
 
     print(f"{BOLD}Navigation{RESET}")
     print(f"  {BOLD}h{RESET} / {BOLD}help{RESET} / {BOLD}?{RESET}   show this screen")
-    print(f"  {BOLD}b{RESET} / {BOLD}back{RESET}       return to the menu")
+    print(f"  {BOLD}b{RESET} / {BOLD}back{RESET}       step back to the previous view")
+    print(f"  {BOLD}m{RESET} / {BOLD}menu{RESET}       jump straight to the main menu (from any depth)")
     print(f"  {BOLD}/exit{RESET}          quit pshunter")
     print()
 
