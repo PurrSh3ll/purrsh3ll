@@ -7623,6 +7623,21 @@ class SlashCompleter(Completer):
 
 # ── REPL ───────────────────────────────────────────────────────────────────────
 
+def _wipe_session_stores(base_dir: str, ctx: dict) -> None:
+    """Erase every store a session remembers: the engagement DB (targets/credentials),
+    the user memories (/memory) and recorded findings (save_finding) kept in the state
+    file, and the conversation-recall index. Config in the state file (attached profile,
+    mode, greeting) is left intact. Run at BOTH session start and exit so nothing lingers
+    on disk between runs — not even in the window after the agent is closed."""
+    purragent_db.reset(base_dir)
+    _clear_memories(base_dir)
+    _clear_findings(base_dir)
+    try:
+        ctx["conv_mem"].reset()
+    except Exception:                                  # noqa: BLE001
+        pass
+
+
 def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     ctx = {"profile": profile, "max_context": None,   # max_context: session override
            "session_id": str(int(time.time())),       # tags this session's recalled turns
@@ -7632,14 +7647,9 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # crashed run), the user memories (/memory) and recorded findings (save_finding)
     # kept in the state file, and the conversation-recall index. Config (attached
     # profile, mode, greeting) lives in the same state file but is left intact.
-    purragent_db.reset(base_dir)
-    _clear_memories(base_dir)
-    _clear_findings(base_dir)
-    try:
-        ctx["conv_mem"].reset()
-    except Exception:                                  # noqa: BLE001
-        pass
+    _wipe_session_stores(base_dir, ctx)
     history: list = []
+    remember_thread = None    # last background conv-recall indexer; joined before exit wipe
     _state = _load_state(base_dir)
     greeting = _state.get("greeting") or DEFAULT_GREETING
     mode = _state.get("mode") or DEFAULT_MODE   # skeleton: inert
@@ -8443,13 +8453,19 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
         if (not hack_mode and len(history) >= 2
                 and history[-1].get("role") == "assistant"
                 and history[-2].get("role") == "user"):
-            threading.Thread(
+            remember_thread = threading.Thread(
                 target=_remember_exchange,
                 args=(ctx, base_dir, history[-2].get("content"),
-                      history[-1].get("content")), daemon=True).start()
+                      history[-1].get("content")), daemon=True)
+            remember_thread.start()
 
     mcp.close()   # shut down any MCP server subprocesses we spawned
-    purragent_db.reset(base_dir)   # wipe the session's engagement store (credentials)
+    # Wipe everything the session remembered so nothing lingers on disk after the agent
+    # is closed (not just at the next start). Join a still-running recall indexer first,
+    # otherwise its background write could re-create the conv-memory files after the wipe.
+    if remember_thread is not None and remember_thread.is_alive():
+        remember_thread.join(timeout=5)
+    _wipe_session_stores(base_dir, ctx)
     console.print("  [dim]bye[/dim]")
 
 

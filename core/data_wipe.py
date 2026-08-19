@@ -63,6 +63,15 @@ def build_wipe_items(base_path):
                  paths=[logs("terminal_history.db"), logs("terminal_history.db-wal"),
                         logs("terminal_history.db-shm"), logs("testdb")]),
 
+        WipeItem("pshunter_db", "pshunter engagement data", default=True,
+                 description="Everything pshunter discovered on a target: hosts, ports, "
+                             "services, script output, credentials, paths, OS and job "
+                             "history (pshunter.db), plus the ledger of targets it added "
+                             "to /etc/hosts (hosts_ledger.json). The offline CVE/KEV "
+                             "reference data is kept.",
+                 paths=[ap("pshunter.db"), ap("pshunter.db-wal"), ap("pshunter.db-shm"),
+                        ap("hosts_ledger.json")]),
+
         WipeItem("script_notes", ".py notes", default=True,
                  description="Notes attached to individual script files in the side panel "
                              "(scripts_notes/).",
