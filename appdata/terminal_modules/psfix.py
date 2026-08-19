@@ -229,6 +229,9 @@ _PSTOOL_MODULE = {
     "psview":    "psview.py",
     "psreport":  "psreport.py",
     "psai":      "psai.py",
+    "psnext":    "psnext.py",
+    "pshistory": "pshistory.py",
+    "psfix":     "psfix.py",   # a failed psfix runs `python psfix.py -h` as a plain subprocess — no recursion
     # Interactive console tools launched via a thin .zsh wrapper — the authoritative
     # -h lives in their .py (purragent: argparse; pshunter: print_help), so treat
     # them as module tools rather than reading the (launcher-only) wrapper.
