@@ -409,14 +409,16 @@ success "Core packages installed"
 
 # ── Audio playback (pygame — optional) ────────────────────────────────────────
 # pygame powers audio playback in the file viewer and the Cyb3rBreak mini-games,
-# both of which the app imports defensively and runs fine without. It ships no
-# wheel for every Python version yet, and a source build needs SDL dev headers,
-# so this is best-effort and NEVER fatal: try the pinned version, then fall back
-# to the latest (which may have a wheel for a newer Python), and only warn if both
-# fail.
+# both of which the app imports defensively and runs fine without. Classic pygame
+# ships no wheel for the newest Pythons yet (e.g. no cp314 for 3.14) and a source
+# build needs SDL dev headers, so this is best-effort and NEVER fatal. Try the
+# pinned version, then the latest, then pygame-ce — a drop-in fork that exposes
+# the same `import pygame` module and *does* ship cp314 wheels — and only warn if
+# all three fail.
 info "Installing audio playback support (pygame)..."
 if "$PIP" install --progress-bar off pygame==2.6.1 >>/tmp/_purrsh3ll_install.log 2>&1 \
-   || "$PIP" install --progress-bar off pygame           >>/tmp/_purrsh3ll_install.log 2>&1; then
+   || "$PIP" install --progress-bar off pygame       >>/tmp/_purrsh3ll_install.log 2>&1 \
+   || "$PIP" install --progress-bar off pygame-ce    >>/tmp/_purrsh3ll_install.log 2>&1; then
     success "Audio playback support installed"
 else
     warn "pygame could not be installed — audio playback and mini-games will be unavailable (the app runs fine without them)."
