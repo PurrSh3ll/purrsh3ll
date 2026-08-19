@@ -389,8 +389,21 @@ success "Virtual environment ready"
 info "Installing Python packages..."
 
 # Pinned dependencies live in requirements.txt (single source of truth).
-"$PIP" install --progress-bar off -r requirements.txt \
-    2>&1 | grep -E "^(Collecting|Downloading|Installing collected|Successfully installed|ERROR|error:)" || true
+# Full output is mirrored to the install log for diagnosis; only the key lines
+# are shown live. pip's REAL exit status is read from PIPESTATUS (not grep's),
+# and a failure here is FATAL: the app cannot run without these packages, so we
+# must not silently continue. (Previously the `| grep … || true` pipe masked a
+# failed install, leaving e.g. watchdog/fastembed missing and the app crashing
+# on first launch.)
+set +e
+"$PIP" install --progress-bar off -r requirements.txt 2>&1 \
+    | tee -a /tmp/_purrsh3ll_install.log \
+    | grep -E "^(Collecting|Downloading|Installing collected|Successfully installed|ERROR|error:)"
+_core_pip_rc=${PIPESTATUS[0]}
+set -e
+if [[ "$_core_pip_rc" -ne 0 ]]; then
+    die "Failed to install required Python packages (pip exit $_core_pip_rc). See the errors above or /tmp/_purrsh3ll_install.log — the app cannot run without them."
+fi
 
 success "Core packages installed"
 
