@@ -125,6 +125,8 @@ Per-profile controls: **function calling** (tool use), **temperature**, disable/
 
 A purpose-built, tool-using AI agent that lives in the terminal and plans its own work in a bounded ReAct loop — my own agent, tuned for offensive security and for **small local models** (e.g. qwen3-14b), not a wrapper around a hosted assistant.
 
+<img src="docs/images/purragent.png" width="900"/>
+
 - **Two modes.** A **general-purpose assistant** that reasons, calls tools, and gets things done — not limited to security work: it handles everyday tasks (files, scripting, research, quick automation) just as well as pentest/HTB workflows. And an autonomous **hacking mode** (`/hack`) that drives a full recon → enumeration → exploitation → privilege-escalation pipeline against a target and pursues the flag with minimal hand-holding.
 - **Plans and tracks its own progress.** Keeps a model-managed to-do plan (`update_plan`), a running findings log (`save_finding`) of credentials/hosts/loot it discovers, and short-term session memory (`save_memory`) — so it stays coherent across many steps instead of forgetting what it already tried.
 - **Connect unlimited MCP servers — RAG tool discovery.** Add as many [MCP](https://modelcontextprotocol.io) servers and tools as you like; there is **no practical limit and no context bloat**. Instead of stuffing every tool schema into the prompt (which overflows the window and degrades small models), purragent indexes all available tools and **semantically retrieves only the few relevant to the current step**. Bring your own recon, exploitation, or custom tooling as MCP servers and the agent will surface them on demand — the more you connect, the more capable it gets, without paying for it in the prompt.
