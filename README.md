@@ -61,12 +61,13 @@ AI tools available directly in the terminal — no GUI required:
 | `psrag` | Query your RAG knowledge base |
 | `psview` | Analyze a screenshot or image with AI vision |
 | `pshistory` | Query the terminal history database (findings, targets, stats) |
+| `pshunter` | Guided recon workflow — concurrent host discovery and port enumeration |
 | `pshelp` | List all available tools |
 
-**18 AI providers out of the box** — switch between them without leaving the app:
+**20 AI providers out of the box** (plus a generic OpenAI-compatible "custom" endpoint) — switch between them without leaving the app:
 
 - **Local:** Ollama, llama.cpp, LM Studio, Jan, koboldcpp
-- **Cloud:** OpenAI, Anthropic, Groq, Gemini, OpenRouter, Mistral, DeepSeek, xAI, Cerebras, Together AI, Perplexity, Fireworks AI, HuggingFace
+- **Cloud:** OpenAI, Anthropic, Groq, Gemini, OpenRouter, Mistral, DeepSeek, xAI, Cerebras, Together AI, Perplexity, Fireworks AI, NVIDIA, Z.ai, HuggingFace
 
 Per-profile controls: **function calling** (tool use), **temperature**, disable/hide model "thinking", RAG enrichment, and advanced custom parameters. Context-window awareness drives a live token/percentage indicator so you can see how full the model's context is.
 
@@ -124,11 +125,10 @@ Per-profile controls: **function calling** (tool use), **temperature**, disable/
 
 A purpose-built, tool-using AI agent that lives in the terminal and plans its own work in a bounded ReAct loop — my own agent, tuned for offensive security and for **small local models** (e.g. qwen3-14b), not a wrapper around a hosted assistant.
 
-- **Two modes.** A **normal assistant** for arbitrary or pentest/HTB tasks (it reasons, calls tools, and answers), and an autonomous **hacking mode** (`/hack`) that drives a full recon → enumeration → exploitation → privilege-escalation pipeline against a target and pursues the flag with minimal hand-holding.
+- **Two modes.** A **general-purpose assistant** that reasons, calls tools, and gets things done — not limited to security work: it handles everyday tasks (files, scripting, research, quick automation) just as well as pentest/HTB workflows. And an autonomous **hacking mode** (`/hack`) that drives a full recon → enumeration → exploitation → privilege-escalation pipeline against a target and pursues the flag with minimal hand-holding.
 - **Plans and tracks its own progress.** Keeps a model-managed to-do plan (`update_plan`), a running findings log (`save_finding`) of credentials/hosts/loot it discovers, and short-term session memory (`save_memory`) — so it stays coherent across many steps instead of forgetting what it already tried.
 - **Connect unlimited MCP servers — RAG tool discovery.** Add as many [MCP](https://modelcontextprotocol.io) servers and tools as you like; there is **no practical limit and no context bloat**. Instead of stuffing every tool schema into the prompt (which overflows the window and degrades small models), purragent indexes all available tools and **semantically retrieves only the few relevant to the current step**. Bring your own recon, exploitation, or custom tooling as MCP servers and the agent will surface them on demand — the more you connect, the more capable it gets, without paying for it in the prompt.
 - **Works with any backend.** Speaks both OpenAI-compatible and **native Anthropic** (`/v1/messages`) tool-calling APIs, so it runs the same whether you point it at a local model or a cloud provider. The whole transcript is bounded to the model's context window, and oversized tool/file output is marked as truncated rather than silently cut.
-- **Ephemeral by design.** Every remembered store — memories, findings, conversation recall, and the engagement database (targets/credentials) — is wiped both at session start and on exit (including when you close the console window or kill the process). Nothing lingers between sessions.
 
 ### AI Chat Panel
 - Embedded web panel for Open WebUI or any OpenAI-compatible frontend
