@@ -69,12 +69,12 @@ print_plan() {
     echo -e "${BOLD}  Installation plan:${NC}"
     echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB — Python venv + PyQt6)"
     echo -e "    ${GREEN}✓${NC}  CVE index            (~10 MB  — offline CPE→CVE for pshunter)"
-    [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
     [[ "$INSTALL_SKILLS"      == true ]]  && echo -e "    ${GREEN}✓${NC}  AI Skills            (~15 MB  — 7 git repos)"          || echo -e "    ${YELLOW}–${NC}  AI Skills                               (skipped)"
     [[ "$INSTALL_GAMES"       == true ]]  && echo -e "    ${GREEN}✓${NC}  cyber games          (~1 MB   — git repo)"             || echo -e "    ${YELLOW}–${NC}  cyber games                             (skipped)"
-    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
-    [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
     [[ "$INSTALL_EMBED_MODEL" == true ]]  && echo -e "    ${GREEN}✓${NC}  Embed model          (~220 MB — multilingual MiniLM)" || echo -e "    ${YELLOW}–${NC}  Embed model                             (skipped)"
+    [[ "$INSTALL_VOICE"       == true ]]  && echo -e "    ${GREEN}✓${NC}  Voice support        (~500 MB — Whisper + wake word)"  || echo -e "    ${YELLOW}–${NC}  Voice support                           (skipped)"
+    [[ "$INSTALL_AICHAT"      == true ]]  && echo -e "    ${GREEN}✓${NC}  aichat               (~15 MB  — CLI binary)"          || echo -e "    ${YELLOW}–${NC}  aichat                                  (skipped)"
+    [[ "$INSTALL_OLLAMA"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Ollama               (~1.5 GB — official install script)" || echo -e "    ${YELLOW}–${NC}  Ollama                                  (skipped)"
     [[ "$INSTALL_DOCKER"      == true ]]  && echo -e "    ${GREEN}✓${NC}  Docker               (~300 MB — container runtime)"   || echo -e "    ${YELLOW}–${NC}  Docker                                  (skipped)"
     [[ "$INSTALL_OPENWEBUI"   == true ]]  && echo -e "    ${GREEN}✓${NC}  Open WebUI image     (~4.8 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  Open WebUI image                        (skipped)"
     [[ "$INSTALL_WEBMAP"      == true ]]  && echo -e "    ${GREEN}✓${NC}  WebMap image         (~1.5 GB — Docker image)"        || echo -e "    ${YELLOW}–${NC}  WebMap image                            (skipped)"
@@ -173,11 +173,11 @@ are always installed regardless of selection.
 
 SPACE = toggle   |   ENTER = confirm" \
         23 68 9 \
-        "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    ON \
         "skills"     "AI Skills       ~15 MB   (7 git repos)"           ON \
         "games"      "cyber games     ~1 MB   (git repo)"              ON \
-        "aichat"     "aichat          ~15 MB   (CLI binary)"            ON \
         "embedmodel" "Embed model     ~220 MB  (multilingual MiniLM)"   ON \
+        "voice"      "Voice support   ~500 MB  (Whisper + wake word)"    OFF \
+        "aichat"     "aichat          ~15 MB   (CLI binary)"            OFF \
         "ollama"     "Ollama          ~1.5 GB  (LLM inference binary)"  OFF \
         "docker"     "Docker          ~300 MB  (container runtime)"     OFF \
         "openwebui"  "Open WebUI      ~4.8 GB  (Docker image)"          OFF \
@@ -744,12 +744,12 @@ _summary_row() {
 }
 
 echo -e "    ${GREEN}✓${NC}  Core application     (~1.5 GB)"
-_summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
 _summary_row "AI Skills           " "(~15 MB) " "$INSTALL_SKILLS"      "$SKILLS_OK"    "(skipped)"
 _summary_row "cyber games         " "(~1 MB)  " "$INSTALL_GAMES"       "$GAMES_OK"     "(skipped)"
-_summary_row "Ollama              " "(~1.5 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
-_summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
 _summary_row "Embedding model     " "(~220 MB)" "$INSTALL_EMBED_MODEL" "$EMBED_OK"     "(skipped — downloaded on first use)"
+_summary_row "Voice support       " "(~500 MB)" "$INSTALL_VOICE"       "$VOICE_OK"     "(skipped)"
+_summary_row "aichat              " "(~15 MB) " "$INSTALL_AICHAT"      "$AICHAT_OK"    "(skipped)"
+_summary_row "Ollama              " "(~1.5 GB)" "$INSTALL_OLLAMA"      "$OLLAMA_OK"    "(skipped)"
 _summary_row "Docker              " "(~300 MB)" "$INSTALL_DOCKER"      "$DOCKER_OK"    "(skipped)"
 _summary_row "Open WebUI image    " "(~4.8 GB)" "$INSTALL_OPENWEBUI"   "$OPENWEBUI_OK" "(skipped)"
 _summary_row "WebMap image        " "(~1.5 GB)" "$INSTALL_WEBMAP"      "$WEBMAP_OK"    "(skipped)"
