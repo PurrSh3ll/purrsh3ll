@@ -605,6 +605,25 @@ Configurable in **File → Settings**:
 
 Type-to-confirm and a second confirmation guard the action. Stored credentials are removed from the system keyring and the local fallback file.
 
+### Application Logs
+
+Diagnostic logs live in `appdata/logs/`:
+
+- **`app.log`** — the main application log: startup, GUI events, warnings, errors, and crash tracebacks. Rotated automatically so it never grows without bound.
+- **`pstools.log`** — exit codes and Python tracebacks from failed `ps*` tools (they run as separate subprocesses, so their crashes wouldn't otherwise reach `app.log`). API keys and tokens are **redacted** before anything is written here.
+- **`terminal_history.db`** — the SQLite session history (commands, output, findings); see [Terminal](#terminal).
+- Small runtime / IPC crumbs such as `psai_prompt_stats.json`, `rag_status`, and `app.lock`.
+
+The folder is created on first launch and is **not** tracked in git. Clear it any time with **Edit → Erase all data… → Application logs**.
+
+### API Keys & Secrets
+
+API keys for cloud providers are stored in the **operating system's keyring** (via the `keyring` library, under the service name `PurrSh3ll`), keyed by profile name. They are never kept in plaintext config and never printed to logs or terminal history.
+
+If the OS keyring is unavailable (for example on a headless box with no secret service), PurrSh3ll falls back to a local file, **`appdata/api_keys.json`** (gitignored). This is a fallback only — the keyring is used whenever it is available. MCP server tokens are handled the same way (kept in the secret store, never in `mcp_servers.json`).
+
+Remove every stored key with **Edit → Erase all data… → API keys (keyring + file)**, which clears both the keyring entries and the fallback file.
+
 > **Privacy:** PurrSh3ll is local-first. API keys are kept in the system keyring (never in logs or history), `ps*` command output is isolated from reports, and secrets are redacted before anything is written to the tool log.
 
 ---
