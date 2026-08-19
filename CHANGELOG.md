@@ -8,6 +8,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **purragent — interactive console AI agent**: a new terminal agent (`appdata/terminal_modules/purragent.py`) that plans and uses tools on its own in a bounded ReAct loop. Two modes — a **normal assistant** for arbitrary or pentest/HTB tasks and an autonomous **hacking mode** (`/hack`) that runs a fixed recon→enum→exploit→privesc pipeline and pursues the flag with minimal supervision. Discovers tools on demand via RAG instead of loading every tool into the prompt, keeps a model-managed to-do plan (`update_plan`) and a running findings log (`save_finding`), remembers useful facts within the session (`save_memory`), and works over both OpenAI-compatible and native Anthropic (`/v1/messages`) APIs. Designed for small local models (e.g. qwen3-14b), with the whole transcript bounded to the model's context window and oversized tool/file output marked as truncated rather than silently cut
+- **Edit → Erase data — pshunter engagement data**: new, default-checked category that clears everything pshunter discovered on a target — hosts, ports, services, script output, credentials, paths, OS and job history (`pshunter.db`) plus the ledger of targets it added to `/etc/hosts` — while keeping the offline CVE/KEV reference data. Previously the pshunter store was the one collected dataset the wipe never touched
+
+### Security
+
+- **purragent — nothing persists between sessions**: every remembered store — user memories (`/memory`), recorded findings, the conversation-recall index and the engagement database (targets/credentials) — is wiped both at session **start** and on **exit**, so a new session begins with a clean slate and nothing lingers on disk after the agent is closed. The exit wipe also runs when the console window is closed (SIGHUP) or the process is killed (SIGTERM), not just on a graceful quit; only the selected profile/mode config is kept
+
 ## [1.3.0] — 2026-07-12
 
 ### Added
