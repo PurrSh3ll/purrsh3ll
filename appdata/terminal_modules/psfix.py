@@ -223,12 +223,17 @@ def _clean_command(text: str) -> str:
 # Tools whose name would surface a DIFFERENT tool's help, or that have no static
 # help block (pshelp), are omitted so nothing wrong is ever injected.
 _PSTOOL_MODULE = {
-    "psrag":    "psrag_query.py",
-    "pscmd":    "pscmd.py",
-    "pstldr":   "pstldr.py",
-    "psview":   "psview.py",
-    "psreport": "psreport.py",
-    "psai":     "psai.py",
+    "psrag":     "psrag_query.py",
+    "pscmd":     "pscmd.py",
+    "pstldr":    "pstldr.py",
+    "psview":    "psview.py",
+    "psreport":  "psreport.py",
+    "psai":      "psai.py",
+    # Interactive console tools launched via a thin .zsh wrapper — the authoritative
+    # -h lives in their .py (purragent: argparse; pshunter: print_help), so treat
+    # them as module tools rather than reading the (launcher-only) wrapper.
+    "pshunter":  "pshunter.py",
+    "purragent": "purragent.py",
 }
 _PSTOOL_ZSH = {
     "psask":  "psai.zsh",
