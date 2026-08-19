@@ -15,6 +15,7 @@ plumbing is reused from psai.py so purragent shares the app's profiles.
 """
 
 import argparse
+import atexit
 import contextlib
 import functools
 import getpass
@@ -7648,6 +7649,40 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # kept in the state file, and the conversation-recall index. Config (attached
     # profile, mode, greeting) lives in the same state file but is left intact.
     _wipe_session_stores(base_dir, ctx)
+
+    # Guarantee the exit wipe also runs when the console window is closed (SIGHUP) or the
+    # process is killed (SIGTERM) — not only on a graceful /exit or Ctrl-D. The final wipe
+    # below is plain code after the loop, so a signal would otherwise skip it and leave
+    # memories/findings/conv-recall on disk until the next launch. atexit doesn't fire on
+    # those signals, so we also install explicit handlers that wipe then re-raise the
+    # signal with the default disposition. A once-guard keeps it to a single wipe no matter
+    # which path fires. (SIGINT is deliberately left alone: Ctrl-C at the prompt just
+    # clears the line and must not quit.)
+    _wiped = {"done": False}
+
+    def _wipe_once() -> None:
+        if _wiped["done"]:
+            return
+        _wiped["done"] = True
+        _wipe_session_stores(base_dir, ctx)
+
+    def _sig_wipe(signum, _frame):
+        _wipe_once()
+        try:                                   # restore default and re-raise for a clean exit
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        except Exception:                      # noqa: BLE001 — last resort
+            os._exit(0)
+
+    atexit.register(_wipe_once)
+    for _signame in ("SIGTERM", "SIGHUP"):
+        _sig = getattr(signal, _signame, None)
+        if _sig is not None:
+            try:
+                signal.signal(_sig, _sig_wipe)
+            except (ValueError, OSError):      # not main thread / unsupported — skip
+                pass
+
     history: list = []
     remember_thread = None    # last background conv-recall indexer; joined before exit wipe
     _state = _load_state(base_dir)
@@ -8465,7 +8500,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
     # otherwise its background write could re-create the conv-memory files after the wipe.
     if remember_thread is not None and remember_thread.is_alive():
         remember_thread.join(timeout=5)
-    _wipe_session_stores(base_dir, ctx)
+    _wipe_once()
     console.print("  [dim]bye[/dim]")
 
 
