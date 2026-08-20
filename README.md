@@ -13,10 +13,11 @@ PurrSh3ll turns your terminal into an integrated workspace: a **local AI** that 
 ## ★ What makes it different
 
 - **🧠 Your own knowledge base, inside the terminal.** Index your notes, writeups and PDFs into a local RAG store and query them straight from the shell (`psrag`) — and every AI answer is automatically enriched with the relevant bits. Your notes stop being a dead folder and become something the AI *uses*.
-- **📄 Executable markdown (`.purr`).** Write runbooks where the commands actually **run**. Cheatsheets, notes and scripts become one living document — perfect for learning ("how I rooted this box") and for repeatable pro workflows.
+- **📄 Executable markdown.** Write runbooks where the commands actually **run**. Cheatsheets, notes and scripts become one living document — perfect for learning ("how I rooted this box") and for repeatable pro workflows.
 - **⚡ Auto-injected environment variables.** Set `$IP`, `$USER` and friends once; they're injected into your commands automatically. No more re-`export`-ing the target every session.
-- **🔒 Local-first, security-native AI.** Runs entirely offline with Ollama — secrets are redacted from logs, API keys live in the OS keyring, and one dialog wipes everything. **Safe to point at real client data**, unlike cloud chatbots.
+- **🔒 Local-first, security-native AI.** Runs fully offline against a local model — Ollama, or any local AI exposed over an OpenAI-compatible API. Secrets are redacted from logs, API keys live in the OS keyring, and one dialog wipes everything. **Safe to point at real client data**, unlike cloud chatbots.
 - **🎯 A history that works for you.** Every command's output is parsed for **findings, credentials, hosts, ports, CVEs and flags** into a searchable SQLite store — and a failed command gets one-click AI **Explain / Fix / Analyze**.
+- **🛠️ AI tools in a plain terminal session.** Ask a quick question (`psask`), analyze a screenshot for security issues (`psview`), get the next pentest step from your history (`psnext`), or generate a report from your terminal sessions (`psreport`) — all without leaving the shell.
 - **🤖 An offensive AI agent, built in (`purragent`).** A tool-using agent tuned for **small local models** that plans its own recon → exploitation workflow, and connects **unlimited MCP tools without prompt bloat** thanks to RAG-based tool discovery.
 
 **Two audiences, one tool:** beginners get a friendlier, guided way into cyber and HTB; advanced users get automation, offline AI, and one window instead of five — because the same features scale from "learning" to "professional engagement".
