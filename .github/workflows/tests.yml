@@ -24,12 +24,13 @@ jobs:
 
       - name: Install test dependencies
         # The unit suite is intentionally light: it exercises pure logic, so it
-        # only needs pytest plus the two libraries imported by tested modules
-        # (PyQt6.QtCore in update_checker, packaging for version parsing). The
+        # only needs pytest plus the few libraries the tested modules / tests
+        # import directly — PyQt6.QtCore (update_checker), packaging (version
+        # parsing) and numpy (conv_memory / tool_retriever vector maths). The
         # heavy app stack (chromadb, torch, fitz, keyring, …) is not required.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest packaging PyQt6
+          pip install pytest packaging PyQt6 numpy
 
       - name: Run test suite
         # QtCore never opens a window, but set the offscreen platform anyway so
