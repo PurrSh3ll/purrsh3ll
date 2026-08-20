@@ -290,7 +290,7 @@ def test_nxc_host_line_records_target_and_port():
     assert any(p["port"] == 445 for p in db.ports)
 
 
-def test_nxc_auth_success_records_credential():
+def test_nxc_auth_success_records_credential_with_pwned():
     out = ("SMB   10.10.10.5   445   DC01   [+] "
            "corp.local\\administrator:Password123 (Pwn3d!)\n")
     db = run("nxc smb 10.10.10.5 -u administrator -p Password123", out)
@@ -299,10 +299,18 @@ def test_nxc_auth_success_records_credential():
     assert "administrator" in creds[0]["value"]
     assert "Password123" in creds[0]["value"]
     assert creds[0]["target"] == "10.10.10.5"
-    # NOTE (documents current behaviour): the "(Pwn3d!)" marker is NOT reflected
-    # here — _RE_NXC_AUTH stops matching at the password, so the trailing
-    # " (Pwn3d!)" falls outside m.group(0) that the Pwn3d check scans. The
-    # local-admin flag is therefore silently dropped for this line format.
+    # The "(Pwn3d!)" local-admin marker is captured (scanned on the full line,
+    # not just the regex match which ends at the password).
+    assert "Pwn3d" in creds[0]["value"]
+    assert "local admin" in creds[0]["notes"]
+
+
+def test_nxc_auth_success_without_pwned_has_no_marker():
+    out = ("SMB   10.10.10.5   445   DC01   [+] "
+           "corp.local\\lowpriv:Password123\n")
+    db = run("nxc smb 10.10.10.5", out)
+    creds = [f for f in db.findings if f["finding_type"] == "credential"]
+    assert len(creds) == 1
     assert "Pwn3d" not in creds[0]["value"]
 
 

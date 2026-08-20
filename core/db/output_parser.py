@@ -663,7 +663,11 @@ class OutputParser:
             if not _valid_ip(ip):
                 continue
             upn = f'{domain}\\{user}'
-            pwn3d = bool(_RE_NXC_PWND.search(m.group(0)))
+            # The match ends at the password, so "(Pwn3d!)" — which nxc prints
+            # after it — lives outside m.group(0). Scan the whole line instead so
+            # the local-admin flag isn't silently dropped.
+            line = _get_line(output, m.start())
+            pwn3d = bool(_RE_NXC_PWND.search(line))
             notes = f'nxc auth success  {domain}\\{user}'
             if pwn3d:
                 notes += '  (Pwn3d! — local admin)'
@@ -675,7 +679,7 @@ class OutputParser:
                     command_id=cmd_id,
                     target=ip,
                     confidence=0.95,
-                    raw_line=m.group(0),
+                    raw_line=line,
                     notes=notes,
                 )
 
