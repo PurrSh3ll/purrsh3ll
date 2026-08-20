@@ -1,12 +1,25 @@
 # PurrSh3ll
 
-**AI-powered terminal environment for penetration testers, CTF players, and security learners.**
+**A ready-made, offline-first workspace for hacking, CTFs, and security learning.**
 
 [![tests](https://github.com/PurrSh3ll/purrsh3ll/actions/workflows/tests.yml/badge.svg)](https://github.com/PurrSh3ll/purrsh3ll/actions/workflows/tests.yml)
 
-PurrSh3ll is a desktop application built on Kali Linux that brings together a multi-tab terminal, a local AI assistant, a RAG knowledge base, a voice interface, and a suite of AI-powered CLI tools — in one window, and fully offline if you want it to be. It talks to 18 AI providers (local and cloud), knows your terminal history and your notes, and gives you one-click control over every piece of data it stores.
+> **Kali Linux gives you the pentest _system_. PurrSh3ll gives you a ready _environment_ to work and learn in it** — friendlier than a bare terminal for beginners, more automated for pros.
+
+PurrSh3ll turns your terminal into an integrated workspace: a **local AI** that knows your history and notes, a **searchable knowledge base** you build as you go, **executable runbooks**, and a suite of AI-powered CLI tools — all in one window, and **fully offline** if you want it. Nothing like it exists off the shelf.
 
 <img src="docs/images/app_image1.png" width="900"/>
+
+## ★ What makes it different
+
+- **🧠 Your own knowledge base, inside the terminal.** Index your notes, writeups and PDFs into a local RAG store and query them straight from the shell (`psrag`) — and every AI answer is automatically enriched with the relevant bits. Your notes stop being a dead folder and become something the AI *uses*.
+- **📄 Executable markdown (`.purr`).** Write runbooks where the commands actually **run**. Cheatsheets, notes and scripts become one living document — perfect for learning ("how I rooted this box") and for repeatable pro workflows.
+- **⚡ Auto-injected environment variables.** Set `$IP`, `$USER` and friends once; they're injected into your commands automatically. No more re-`export`-ing the target every session.
+- **🔒 Local-first, security-native AI.** Runs entirely offline with Ollama — secrets are redacted from logs, API keys live in the OS keyring, and one dialog wipes everything. **Safe to point at real client data**, unlike cloud chatbots.
+- **🎯 A history that works for you.** Every command's output is parsed for **findings, credentials, hosts, ports, CVEs and flags** into a searchable SQLite store — and a failed command gets one-click AI **Explain / Fix / Analyze**.
+- **🤖 An offensive AI agent, built in (`purragent`).** A tool-using agent tuned for **small local models** that plans its own recon → exploitation workflow, and connects **unlimited MCP tools without prompt bloat** thanks to RAG-based tool discovery.
+
+**Two audiences, one tool:** beginners get a friendlier, guided way into cyber and HTB; advanced users get automation, offline AI, and one window instead of five — because the same features scale from "learning" to "professional engagement".
 
 ## Demo
 
@@ -16,20 +29,10 @@ https://www.youtube.com/watch?v=kpUUVxBdFqE
 
 ---
 
-## Why PurrSh3ll?
+<details>
+<summary><b>Why not just use ChatGPT + Obsidian + Claude Code?</b></summary>
 
-Security professionals juggle dozens of tools, notes, and context across long engagements. PurrSh3ll keeps everything in one window and makes AI assistance available without sending sensitive data to the cloud.
-
-- **Local-first** — run entirely offline with Ollama; your data never has to leave the machine
-- **Context-aware AI** — the assistant reads your terminal history, findings, and notes
-- **OpSec-minded** — one-click erase of everything the app collects; API keys in the OS keyring; secrets redacted from logs
-- **Built for the terminal** — not a browser, not an IDE, not a chat app
-
----
-
-## Why not just use ChatGPT, Obsidian, and Claude Code?
-
-That's exactly the stack most people run — in three separate windows. PurrSh3ll folds it into one:
+That's exactly the stack most people run — in three separate windows, all cloud. PurrSh3ll folds it into one, and keeps it local:
 
 | Instead of… | PurrSh3ll |
 |---|---|
@@ -37,9 +40,13 @@ That's exactly the stack most people run — in three separate windows. PurrSh3l
 | **Obsidian** for notes | RAG over your own notes, queried straight from the shell |
 | **Claude Code** | Claude Code integration built in — skills, goals, and agent behaviors, launched with one click |
 
+</details>
+
 ---
 
 ## Features
+
+<sub>The sections below are the full, detailed feature reference. Skim the headers, or jump to [Installation](#installation) and [Quick Start](#quick-start).</sub>
 
 ### Terminal
 - Multi-tab Zsh terminal with per-tab renaming, zoom, and custom environment variables
@@ -163,7 +170,7 @@ An optional, isolated collection of classic arcade games for downtime during lon
 | **Penetration testers** | Local AI, report generation, RAG over engagement notes, one-click data wipe |
 | **CTF players** | `psnext`, `pscmd`, history-aware suggestions, findings/flags extraction |
 | **Security students** | `psask`, `pschat`, a knowledge base that grows with you, ask-the-app onboarding |
-| **Bug bounty hunters** | Organized notes, `psreport`, 18 AI providers to choose from |
+| **Bug bounty hunters** | Organized notes, `psreport`, 20 AI providers to choose from |
 
 PurrSh3ll is designed to grow with you — from learning to professional engagements.
 
