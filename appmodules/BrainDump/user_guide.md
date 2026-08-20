@@ -453,6 +453,8 @@ PurrSh3ll renders Markdown files live and supports **action links** — clickabl
 - `action://change/theme/<name>` — switch theme
 - `action://open/window/<id>` — open an app dialog (e.g. `ai_settings`, `settings`)
 
+The command must be URL-encoded: a space is `%20` and a newline (which triggers execution) is `%0A`.
+
 This makes it possible to build interactive runbooks and checklists directly inside your notes.
 
 ---
