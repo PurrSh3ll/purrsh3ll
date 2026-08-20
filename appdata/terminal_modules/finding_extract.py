@@ -24,6 +24,34 @@ _AUTH_TITLE = {
 }
 
 
+# Discovered dir-brute paths worth elevating to MEDIUM: admin/login surfaces,
+# config/backup/dump artifacts and exposed VCS/secret files. Kept deliberately
+# tight (high-signal only) so most plain content stays LOW.
+_DIRB_SENSITIVE = re.compile(
+    r"(?i)(?:^|/)(?:admin|login|dashboard|console|manager|adminer|phpmyadmin|"
+    r"wp-admin|wp-login|config|configuration|settings|backup|backups|dump|"
+    r"phpinfo|server-status|actuator|\.git|\.svn|\.hg|\.env|\.htpasswd|"
+    r"id_rsa|id_dsa|\.ssh|\.sql|\.bak|\.old|\.swp|credentials?|secrets?)")
+
+# Exposed VCS / backup / secret artifacts that leak source, credentials or data
+# outright → HIGH (a strict subset of the sensitive set above).
+_VCS_HIGH_RE = re.compile(
+    r"(?i)(?:\.git/|\.svn/|\.hg/|\.env\b|\.sql\b|\.bak\b|\.old\b|dump|backup|"
+    r"id_rsa|id_dsa|\.pem\b|\.ppk\b|credentials?|passwo?rd|secrets?|"
+    r"wp-config|config\.php|\.htpasswd|\.ssh/)")
+
+# GET/POST parameter names that imply an injection / path-traversal / SSRF /
+# open-redirect surface → MEDIUM. Generic search-ish names (q, search, name…)
+# are intentionally excluded to avoid marking almost everything.
+_PARAM_DANGEROUS = {
+    "id", "file", "filename", "filepath", "path", "dir", "folder", "page",
+    "template", "include", "load", "document", "doc", "read", "download",
+    "url", "uri", "link", "src", "source", "dest", "destination", "redirect",
+    "redirect_uri", "return", "returnurl", "next", "continue", "callback",
+    "cmd", "exec", "command", "query", "data", "img", "image",
+}
+
+
 def _extract_finding(sid: str, output: str) -> "dict | None":
     """Turn one NSE script result into a finding, or None. Covers three sources with
     no re-scan (the output is already in the DB): the standard `vuln` library format

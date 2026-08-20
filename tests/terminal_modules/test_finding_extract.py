@@ -106,3 +106,79 @@ def test_summary_is_truncated_to_140_chars():
     output = f"VULNERABLE:\n{long_name}\n  State: VULNERABLE\n"
     f = extract("big", output)
     assert len(f["summary"]) <= 140
+
+
+# --------------------------------------------------------------------------- #
+# more phase-5 rules
+# --------------------------------------------------------------------------- #
+def test_vhost_fuzz_lists_discovered_vhosts():
+    output = "  + admin.target.htb\n  + dev.target.htb\n"
+    f = extract("vhost-fuzz", output)
+    assert f["state"] == "INFO"
+    assert "admin.target.htb" in f["summary"]
+    assert "(2)" in f["summary"]
+
+
+def test_vhost_fuzz_none_when_no_vhosts():
+    assert extract("vhost-fuzz", "nothing here\n") is None
+
+
+def test_dir_brute_lists_paths_and_elevates_sensitive():
+    output = "  + 200 /admin\n  + 301 /backup\n"
+    f = extract("dir-brute", output)
+    assert f["state"] == "INFO"
+    assert "/admin" in f["summary"]
+    assert "(2)" in f["summary"]
+    assert f["risk"] == "MEDIUM"          # /admin, /backup are sensitive
+
+
+def test_dir_brute_plain_paths_stay_low():
+    output = "  + 200 /about.html\n  + 200 /style.css\n"
+    f = extract("dir-brute", output)
+    assert f["risk"] == "LOW"
+
+
+def test_vcs_hunt_is_exposed_high_for_git():
+    output = "  ! 200 /.git/config\n"
+    f = extract("vcs-hunt", output)
+    assert f["state"] == "EXPOSED"
+    assert ".git/config" in f["summary"]
+    assert f["risk"] == "HIGH"            # exposed source → HIGH
+
+
+def test_login_brute_cracked_is_high():
+    output = "CRACKED admin @ http://target/login\n"
+    f = extract("login-brute", output)
+    assert f["state"] == "VULNERABLE"
+    assert f["risk"] == "HIGH"
+    assert "admin" in f["summary"]
+
+
+def test_login_brute_lockout_is_info():
+    output = "LOCKOUT ssh\n"
+    f = extract("login-brute", output)
+    assert f["state"] == "INFO"
+    assert "lockout" in f["summary"].lower()
+
+
+def test_sqli_scan_is_vulnerable():
+    output = "✗ SQLI id\n"        # ✗ SQLI <param>
+    f = extract("sqli-scan", output)
+    assert f["state"] == "VULNERABLE"
+    assert f["risk"] == "HIGH"
+    assert "id" in f["summary"]
+
+
+def test_param_hunt_lists_params_and_flags_risky():
+    output = "   /search?[q,page,id]\n"
+    f = extract("param-hunt", output)
+    assert f["state"] == "INFO"
+    assert "params:" in f["summary"]
+    assert "(3)" in f["summary"]
+    assert f["risk"] == "MEDIUM"          # page/id imply an injection surface
+
+
+def test_param_hunt_generic_params_stay_low():
+    output = "   /search?[q,term]\n"       # only generic search-ish names
+    f = extract("param-hunt", output)
+    assert f["risk"] == "LOW"
