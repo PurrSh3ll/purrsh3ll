@@ -1,0 +1,8 @@
+# PurrSh3ll — development-only dependencies.
+#
+# These are NOT installed for end users (install.sh uses requirements.txt).
+# Install locally with:  .venv/bin/pip install -r requirements-dev.txt
+#
+# Keep this list minimal — it only needs to run the test suite and linters.
+
+pytest>=8.0
