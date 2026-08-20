@@ -189,3 +189,87 @@ def test_scanner_ignores_out_of_range_or_bad_ip():
     out = "Discovered open port 22/tcp on 300.1.1.1\n"
     db = run("masscan", out)
     assert db.targets == [] and db.ports == []
+
+
+# --------------------------------------------------------------------------- #
+# web content discovery — feroxbuster / gobuster / ffuf
+# --------------------------------------------------------------------------- #
+def test_feroxbuster_records_interesting_path():
+    out = "200      GET       12l       34w      500c http://target/admin\n"
+    db = run("feroxbuster", out)
+    paths = [f for f in db.findings if f["finding_type"] == "path"]
+    assert len(paths) == 1
+    assert paths[0]["value"] == "http://target/admin"
+
+
+def test_feroxbuster_skips_uninteresting_status():
+    out = "404      GET       12l       34w      500c http://target/nope\n"
+    db = run("feroxbuster", out)
+    assert [f for f in db.findings if f["finding_type"] == "path"] == []
+
+
+def test_gobuster_records_path_with_status():
+    out = "/admin               (Status: 301) [Size: 312]\n"
+    db = run("gobuster dir -u http://target", out)
+    paths = [f for f in db.findings if f["finding_type"] == "path"]
+    assert len(paths) == 1
+    assert paths[0]["value"] == "/admin"
+
+
+def test_ffuf_records_fuzz_hit():
+    out = "admin                   [Status: 200, Size: 1234, Words: 56, Lines: 7]\n"
+    db = run("ffuf -w list.txt -u http://target/FUZZ", out)
+    paths = [f for f in db.findings if f["finding_type"] == "path"]
+    assert len(paths) == 1
+    assert paths[0]["value"] == "admin"
+
+
+def test_duplicate_path_recorded_once():
+    out = (
+        "/admin               (Status: 301) [Size: 312]\n"
+        "/admin               (Status: 301) [Size: 312]\n"
+    )
+    db = run("gobuster", out)
+    assert len([f for f in db.findings if f["finding_type"] == "path"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# nikto server banner
+# --------------------------------------------------------------------------- #
+def test_nikto_records_server_banner():
+    out = "+ Server: Apache/2.4.49 (Unix)\n"
+    db = run("nikto -h target", out)
+    svc = [f for f in db.findings if f["finding_type"] == "service"]
+    assert len(svc) == 1
+    assert svc[0]["value"] == "Apache/2.4.49 (Unix)"
+
+
+# --------------------------------------------------------------------------- #
+# cracked credentials — john / hashcat
+# --------------------------------------------------------------------------- #
+def test_john_records_cracked_credential():
+    out = "Password123      (admin)\n"
+    db = run("john --show hashes.txt", out)
+    creds = [f for f in db.findings if f["finding_type"] == "credential"]
+    assert len(creds) == 1
+    assert creds[0]["value"] == "admin:Password123"
+
+
+def test_john_skips_status_lines():
+    out = "Warning: only      (foo)\n"
+    db = run("john", out)
+    assert [f for f in db.findings if f["finding_type"] == "credential"] == []
+
+
+def test_hashcat_records_cracked_when_cracked_present():
+    out = "Status...........: Cracked\n5f4dcc3b5aa765d61d8327deb882cf99:password\n"
+    db = run("hashcat -m 0 hash.txt list.txt", out)
+    creds = [f for f in db.findings if f["finding_type"] == "credential"]
+    assert len(creds) == 1
+    assert creds[0]["value"] == "5f4dcc3b5aa765d61d8327deb882cf99:password"
+
+
+def test_hashcat_noop_without_cracked_or_show():
+    out = "5f4dcc3b5aa765d61d8327deb882cf99:password\n"
+    db = run("hashcat -m 0 hash.txt list.txt", out)
+    assert [f for f in db.findings if f["finding_type"] == "credential"] == []
