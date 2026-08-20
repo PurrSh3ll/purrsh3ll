@@ -2,6 +2,8 @@
 
 **AI-powered terminal environment for penetration testers, CTF players, and security learners.**
 
+[![tests](https://github.com/PurrSh3ll/purrsh3ll/actions/workflows/tests.yml/badge.svg)](https://github.com/PurrSh3ll/purrsh3ll/actions/workflows/tests.yml)
+
 PurrSh3ll is a desktop application built on Kali Linux that brings together a multi-tab terminal, a local AI assistant, a RAG knowledge base, a voice interface, and a suite of AI-powered CLI tools — in one window, and fully offline if you want it to be. It talks to 18 AI providers (local and cloud), knows your terminal history and your notes, and gives you one-click control over every piece of data it stores.
 
 <img src="docs/images/app_image1.png" width="900"/>
