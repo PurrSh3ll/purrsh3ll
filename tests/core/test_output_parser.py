@@ -23,10 +23,12 @@ class FakeDB:
     def add_finding(self, **kw):
         self.findings.append(kw)
 
-    def upsert_target(self, ip, hostname=None, os_guess=None):
+    def upsert_target(self, ip, hostname=None, os_guess=None, **extra):
         if ip not in self._ids:
             self._ids[ip] = len(self._ids) + 1
-            self.targets.append({"ip": ip, "hostname": hostname, "os_guess": os_guess})
+            row = {"ip": ip, "hostname": hostname, "os_guess": os_guess}
+            row.update(extra)          # e.g. arp-scan passes notes=
+            self.targets.append(row)
         return self._ids[ip]
 
     def upsert_port(self, **kw):
@@ -273,3 +275,108 @@ def test_hashcat_noop_without_cracked_or_show():
     out = "5f4dcc3b5aa765d61d8327deb882cf99:password\n"
     db = run("hashcat -m 0 hash.txt list.txt", out)
     assert [f for f in db.findings if f["finding_type"] == "credential"] == []
+
+
+# --------------------------------------------------------------------------- #
+# netexec / nxc — hosts, auth, Pwn3d
+# --------------------------------------------------------------------------- #
+def test_nxc_host_line_records_target_and_port():
+    out = ("SMB   10.10.10.5   445   DC01   [*] Windows Server 2016 Standard "
+           "14393 (name:DC01) (domain:corp.local)\n")
+    db = run("nxc smb 10.10.10.5", out)
+    assert db.targets[0]["ip"] == "10.10.10.5"
+    assert db.targets[0]["hostname"] == "DC01"
+    assert db.targets[0]["os_guess"].startswith("Windows Server 2016")
+    assert any(p["port"] == 445 for p in db.ports)
+
+
+def test_nxc_auth_success_records_credential():
+    out = ("SMB   10.10.10.5   445   DC01   [+] "
+           "corp.local\\administrator:Password123 (Pwn3d!)\n")
+    db = run("nxc smb 10.10.10.5 -u administrator -p Password123", out)
+    creds = [f for f in db.findings if f["finding_type"] == "credential"]
+    assert len(creds) == 1
+    assert "administrator" in creds[0]["value"]
+    assert "Password123" in creds[0]["value"]
+    assert creds[0]["target"] == "10.10.10.5"
+    # NOTE (documents current behaviour): the "(Pwn3d!)" marker is NOT reflected
+    # here — _RE_NXC_AUTH stops matching at the password, so the trailing
+    # " (Pwn3d!)" falls outside m.group(0) that the Pwn3d check scans. The
+    # local-admin flag is therefore silently dropped for this line format.
+    assert "Pwn3d" not in creds[0]["value"]
+
+
+# --------------------------------------------------------------------------- #
+# enum4linux / smbmap — shares
+# --------------------------------------------------------------------------- #
+def test_enum4linux_records_share():
+    out = "\n  ADMIN$        Disk      Remote Admin\n"
+    db = run("enum4linux -a 10.10.10.5", out)
+    svc = [f for f in db.findings if f["finding_type"] == "service"]
+    assert len(svc) == 1
+    assert "ADMIN$" in svc[0]["value"]
+
+
+def test_smbmap_records_share_with_host():
+    out = ("[+] IP: 10.10.10.5:445\tName: target.htb\n"
+           "\tADMIN$           READ ONLY\tRemote Admin\n")
+    db = run("smbmap -H 10.10.10.5", out)
+    svc = [f for f in db.findings if f["finding_type"] == "service"]
+    assert len(svc) == 1
+    assert "10.10.10.5" in svc[0]["value"]
+    assert "ADMIN$" in svc[0]["value"]
+
+
+# --------------------------------------------------------------------------- #
+# sqlmap / evil-winrm
+# --------------------------------------------------------------------------- #
+def test_sqlmap_records_injectable_param_with_dbms():
+    out = "back-end DBMS is MySQL\nParameter 'id' is vulnerable.\n"
+    db = run("sqlmap -u http://target/?id=1", out)
+    svc = [f for f in db.findings if f["finding_type"] == "service"]
+    assert len(svc) == 1
+    assert "param=id" in svc[0]["value"]
+    assert "MySQL" in svc[0]["value"]
+
+
+def test_evilwinrm_records_shell_credential():
+    out = "*Evil-WinRM* PS C:\\Users\\admin\\Documents> \n"
+    db = run("evil-winrm -i 10.10.10.5 -u admin -p pass", out)
+    creds = [f for f in db.findings if f["finding_type"] == "credential"]
+    assert len(creds) == 1
+    assert creds[0]["service"] == "winrm"
+    assert creds[0]["target"] == "10.10.10.5"
+    assert "admin" in creds[0]["value"]
+
+
+# --------------------------------------------------------------------------- #
+# wpscan — version, plugin vuln (with/without CVE)
+# --------------------------------------------------------------------------- #
+def test_wpscan_records_insecure_version():
+    out = "[+] WordPress version 5.7.1 identified (Insecure, released 2021-04-06).\n"
+    db = run("wpscan --url http://target", out)
+    svc = [f for f in db.findings if f["finding_type"] == "service"]
+    assert any("WordPress 5.7.1" in f["value"] for f in svc)
+
+
+def test_wpscan_plugin_vuln_without_cve_is_service():
+    out = "[!] Title: Contact Form 7 <= 5.3.1 - Unrestricted File Upload\n"
+    db = run("wpscan --url http://target", out)
+    svc = [f for f in db.findings if f["finding_type"] == "service"]
+    assert any("WP vuln" in f["value"] for f in svc)
+
+
+def test_wpscan_plugin_vuln_with_cve_is_cve():
+    out = "[!] Title: Some Plugin - RCE (CVE-2021-24145)\n"
+    db = run("wpscan --url http://target", out)
+    cves = [f for f in db.findings if f["finding_type"] == "cve"]
+    assert any(f["value"] == "CVE-2021-24145" for f in cves)
+
+
+# --------------------------------------------------------------------------- #
+# arp-scan — local target discovery
+# --------------------------------------------------------------------------- #
+def test_arpscan_records_target():
+    out = "10.10.10.5\t00:11:22:33:44:55\tVendor Inc\n"
+    db = run("arp-scan -l", out)
+    assert db.targets[0]["ip"] == "10.10.10.5"
