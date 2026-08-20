@@ -787,7 +787,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                 )
                 GLOBAL_PKGS_JSON = json.loads(out.decode("utf-8"))
             except Exception:
-                logger.warning("Failed to list global Python packages for %s", GLOBAL_PY, exc_info=True)
+                # Read-only scan of a foreign interpreter — a broken/absent pip
+                # there is an environmental condition, not our error. Keep it at
+                # debug so it never spams the console with a scary traceback.
+                logger.debug("Failed to list global Python packages for %s", GLOBAL_PY, exc_info=True)
                 GLOBAL_PKGS_JSON = []
 
         result = [{"path": GLOBAL_PY, "packages": GLOBAL_PKGS_JSON}]
@@ -806,7 +809,10 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
                     )
                     pkgs = json.loads(out.decode("utf-8"))
                 except Exception:
-                    logger.warning("Failed to list packages for venv %s", venv_python, exc_info=True)
+                    # We walk every venv under $HOME; some belong to other
+                    # projects and may have a broken/incomplete pip. That's
+                    # expected, not our failure — debug, not a warning + traceback.
+                    logger.debug("Failed to list packages for venv %s", venv_python, exc_info=True)
                     pkgs = []
 
             result.append({"path": str(venv_python), "packages": pkgs})
