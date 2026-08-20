@@ -329,7 +329,7 @@ purrsh3ll/
 
 PurrSh3ll is under active development — this is not its final form.
 
-It's a solo project built after hours alongside a full-time job. Right now the focus is manual testing, writing the unit-test suite, and filling out the documentation.
+It's a solo project built after hours alongside a full-time job. The app is still being actively tested and improved.
 
 ---
 
