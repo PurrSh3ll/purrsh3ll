@@ -8,7 +8,7 @@
 #
 #   run_command  — run a shell command, capture stdout/stderr/exit code
 #   read_file    — read a text file (optionally a line range)
-#   write_file   — create / overwrite / append a file
+#   write_file   — create a file (auto-renames on clash) or append to one
 #   edit_file    — replace a string inside a file (search/replace)
 #   list_dir     — list a directory (name, type, size)
 #   grep         — regex-search file contents under a path
@@ -127,6 +127,23 @@ def _tool_read_file(args):
     return _truncate(header + body)
 
 
+def _unique_path(path):
+    """Return ``path`` if free, else the same name with a ``(1)``, ``(2)`` … suffix.
+
+    Mirrors the desktop "keep both" behaviour so a create never silently clobbers
+    an existing file — the model gets back the name that was actually used.
+    """
+    if not os.path.exists(path):
+        return path
+    root, ext = os.path.splitext(path)
+    n = 1
+    while True:
+        candidate = f"{root} ({n}){ext}"
+        if not os.path.exists(candidate):
+            return candidate
+        n += 1
+
+
 def _tool_write_file(args):
     path = _arg_path(args)
     content = args.get("content", "")
@@ -138,6 +155,10 @@ def _tool_write_file(args):
     append = bool(args.get("append", False))
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
+    # Append targets the given file as-is; a fresh write never overwrites an
+    # existing file — it picks a "(1)"-style name instead so nothing is lost.
+    if not append:
+        path = _unique_path(path)
     mode = "a" if append else "w"
     with open(path, mode, encoding="utf-8") as f:
         f.write(content)
@@ -399,14 +420,18 @@ TOOLS = {
     "write_file": (
         _tool_write_file,
         # short
-        "Create, overwrite, or append to a file.",
+        "Create or append to a file (never overwrites; auto-renames on clash).",
         # normal
-        "Create or overwrite a file with the given content (set append=true to "
-        "append). Parent directories are created as needed.",
+        "Create a file with the given content (set append=true to append). Parent "
+        "directories are created as needed. If the path already exists, a numbered "
+        "suffix like ' (1)' is added — check the returned path for the real name.",
         # long
         "Writes text content to a file, creating any missing parent directories "
-        "along the way. By default it creates a new file or overwrites an existing "
-        "one; set append=true to add to the end instead of replacing it. Use it "
+        "along the way. By default it creates a new file; if a file with that name "
+        "already exists it does NOT overwrite it but writes to a numbered variant "
+        "instead (e.g. 'report (1).txt'), so always read the returned path for the "
+        "actual filename used. Set append=true to add to the end of the exact path "
+        "given instead. Use it "
         "whenever the task is to create, save, generate, output, store, dump or "
         "append content to a file — writing a report or notes, saving scan results "
         "or a payload to disk, creating a script or configuration file, generating "
@@ -429,7 +454,10 @@ TOOLS = {
                 "path": {"type": "string", "description": "File path to write."},
                 "content": {"type": "string", "description": "Content to write."},
                 "append": {"type": "boolean",
-                           "description": "Append instead of overwrite (default false)."},
+                           "description": "Append to the exact path instead of "
+                                          "creating a new file (default false). When "
+                                          "false and the file exists, a '(1)'-style "
+                                          "suffix is added rather than overwriting."},
             },
             "required": ["path", "content"],
         },
