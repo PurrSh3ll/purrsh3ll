@@ -2742,6 +2742,17 @@ _FINDING_GUIDE = (
     "save_memory.")
 
 
+_SEQUENCING_GUIDE = (
+    "SAVING TOOL OUTPUT TO A FILE: when the task is to run something AND save or "
+    "report its output (e.g. 'scan X and save the results to a file'), do it IN "
+    "ORDER — first call the tool that produces the data and WAIT for its result, "
+    "then, on a LATER turn once you actually have that output, call write_file with "
+    "the REAL content. Never write a placeholder like '[results will appear here]', "
+    "and never call write_file for the output in the SAME turn as the tool that "
+    "generates it: at that point you do not have the data yet, so the file would be "
+    "saved empty.")
+
+
 _DISCOVERY_GUIDE = (
     "TOOLS: you can act on the system through tools. The catalog below has two "
     "sections. The 'built-in' tools are listed with their exact name and "
@@ -7258,6 +7269,8 @@ def query_model_with_tools(profile: dict, base_dir: str, history: list,
     offer_finding = not planning           # record concrete discoveries about the target
     if offer_finding:
         sys_parts.append(_FINDING_GUIDE)
+    if discovery:                          # tools are on → keep run-then-save ordered
+        sys_parts.append(_SEQUENCING_GUIDE)   # stop weak models writing empty placeholder files
     # Local working copy of the transcript: the raw assistant tool-call messages
     # and tool results live only here, not in the caller's plain history.
     msgs = [{"role": "system", "content": "\n\n".join(sys_parts)}] + list(history)
