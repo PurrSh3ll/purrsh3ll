@@ -8,7 +8,7 @@
 #
 #   run_command  — run a shell command, capture stdout/stderr/exit code
 #   read_file    — read a text file (optionally a line range)
-#   write_file   — create a file (auto-renames on clash) or append to one
+#   write_file   — create/replace a file (won't clobber pre-existing) or append
 #   edit_file    — replace a string inside a file (search/replace)
 #   list_dir     — list a directory (name, type, size)
 #   grep         — regex-search file contents under a path
@@ -127,6 +127,13 @@ def _tool_read_file(args):
     return _truncate(header + body)
 
 
+# Absolute paths this server process has written this session. A file we created
+# THIS run is the agent's own output — writing to it again (e.g. replacing a
+# just-written placeholder with the real scan result) should REPLACE it, not spawn
+# a "(1)" variant. Pre-existing user files (never in this set) are still protected.
+_SESSION_CREATED: set = set()
+
+
 def _unique_path(path):
     """Return ``path`` if free, else the same name with a ``(1)``, ``(2)`` … suffix.
 
@@ -155,13 +162,17 @@ def _tool_write_file(args):
     append = bool(args.get("append", False))
     parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
-    # Append targets the given file as-is; a fresh write never overwrites an
-    # existing file — it picks a "(1)"-style name instead so nothing is lost.
-    if not append:
+    # Append targets the given file as-is. A fresh write never clobbers a
+    # PRE-EXISTING file — it picks a "(1)"-style name so nothing is lost — but a
+    # file we already created this session is the agent's own output, so writing
+    # to it again replaces it (weak models often write a placeholder first, then
+    # the real content; both should land in the same file).
+    if not append and os.path.abspath(path) not in _SESSION_CREATED:
         path = _unique_path(path)
     mode = "a" if append else "w"
     with open(path, mode, encoding="utf-8") as f:
         f.write(content)
+    _SESSION_CREATED.add(os.path.abspath(path))
     verb = "appended to" if append else "wrote"
     return f"{verb} {path} ({len(content)} chars)"
 
@@ -420,18 +431,22 @@ TOOLS = {
     "write_file": (
         _tool_write_file,
         # short
-        "Create or append to a file (never overwrites; auto-renames on clash).",
+        "Create or append to a file (won't clobber pre-existing files).",
         # normal
         "Create a file with the given content (set append=true to append). Parent "
-        "directories are created as needed. If the path already exists, a numbered "
-        "suffix like ' (1)' is added — check the returned path for the real name.",
+        "directories are created as needed. Writing again to a file you created "
+        "earlier in this session replaces it; if the path already belongs to a "
+        "PRE-EXISTING file, a numbered suffix like ' (1)' is added instead — check "
+        "the returned path for the real name.",
         # long
         "Writes text content to a file, creating any missing parent directories "
-        "along the way. By default it creates a new file; if a file with that name "
-        "already exists it does NOT overwrite it but writes to a numbered variant "
-        "instead (e.g. 'report (1).txt'), so always read the returned path for the "
-        "actual filename used. Set append=true to add to the end of the exact path "
-        "given instead. Use it "
+        "along the way. Writing again to a path you already created this session "
+        "replaces that file (so if you saved a placeholder first and now have the "
+        "real content, write it to the SAME path and it is updated in place). If the "
+        "path instead belongs to a file that existed before this session, it is NOT "
+        "overwritten — a numbered variant is written (e.g. 'report (1).txt'), so "
+        "read the returned path for the actual filename used. Set append=true to add "
+        "to the end of the exact path given instead. Use it "
         "whenever the task is to create, save, generate, output, store, dump or "
         "append content to a file — writing a report or notes, saving scan results "
         "or a payload to disk, creating a script or configuration file, generating "

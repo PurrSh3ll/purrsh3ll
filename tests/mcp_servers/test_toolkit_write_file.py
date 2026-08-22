@@ -1,14 +1,26 @@
 """Tests for the toolkit MCP server's write_file tool.
 
-Focus: the "never overwrite" guarantee. A fresh write to an existing path must
-pick a numbered variant (``report (1).txt``) instead of clobbering the file, and
-the tool must report back the name it actually used. ``append=true`` keeps
-targeting the exact path.
+Two guarantees: a fresh write never clobbers a PRE-EXISTING file (it picks a
+numbered variant like ``report (1).txt`` and reports the real name), but writing
+again to a file created EARLIER THIS SESSION replaces it in place — so a weak
+model that writes a placeholder first and the real content second ends up with
+one correct file, not a split. ``append=true`` always targets the exact path.
 """
 
 import os
 
+import pytest
+
 import toolkit_server as tk
+
+
+@pytest.fixture(autouse=True)
+def _fresh_session():
+    # write_file tracks the paths it created this session (module-level state);
+    # reset it around every test so cases don't leak into one another.
+    tk._SESSION_CREATED.clear()
+    yield
+    tk._SESSION_CREATED.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -49,27 +61,39 @@ def test_write_creates_file_and_reports_path(tmp_path):
     assert "wrote" in msg
 
 
-def test_write_never_overwrites_existing(tmp_path):
+def test_write_does_not_clobber_preexisting_file(tmp_path):
+    # A file that existed BEFORE this session (written directly, not via the tool)
+    # must never be overwritten — the write lands on a "(1)" variant.
     target = tmp_path / "out.txt"
-    tk._tool_write_file({"path": str(target), "content": "first"})
-    msg = tk._tool_write_file({"path": str(target), "content": "second"})
+    target.write_text("user's original data")
+    msg = tk._tool_write_file({"path": str(target), "content": "agent output"})
 
-    # Original untouched, second write landed on the "(1)" variant.
-    assert target.read_text() == "first"
+    assert target.read_text() == "user's original data"    # untouched
     variant = tmp_path / "out (1).txt"
-    assert variant.read_text() == "second"
-    # The returned message carries the real filename the model should use.
-    assert str(variant) in msg
+    assert variant.read_text() == "agent output"
+    assert str(variant) in msg                             # real name reported
 
 
-def test_repeated_writes_produce_numbered_series(tmp_path):
+def test_rewriting_a_session_file_replaces_it(tmp_path):
+    # The placeholder-then-real pattern: both writes target the same path, and the
+    # file was created THIS session, so the second write replaces the first.
+    target = tmp_path / "results.txt"
+    tk._tool_write_file({"path": str(target), "content": "[results will appear here]"})
+    msg = tk._tool_write_file({"path": str(target), "content": "real scan output"})
+
+    assert target.read_text() == "real scan output"        # replaced in place
+    assert not (tmp_path / "results (1).txt").exists()      # no split
+    assert str(target) in msg
+
+
+def test_repeated_session_writes_keep_one_file(tmp_path):
     target = tmp_path / "scan.txt"
     for content in ("a", "b", "c"):
         tk._tool_write_file({"path": str(target), "content": content})
 
-    assert (tmp_path / "scan.txt").read_text() == "a"
-    assert (tmp_path / "scan (1).txt").read_text() == "b"
-    assert (tmp_path / "scan (2).txt").read_text() == "c"
+    assert (tmp_path / "scan.txt").read_text() == "c"       # last write wins
+    assert not (tmp_path / "scan (1).txt").exists()
+    assert not (tmp_path / "scan (2).txt").exists()
 
 
 def test_append_targets_exact_path_not_a_variant(tmp_path):
