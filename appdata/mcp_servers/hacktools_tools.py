@@ -202,13 +202,26 @@ def _run(argv, binary):
 _NSE_DENY = ("brute", "dos", "exploit")               # never run these NSE categories
 
 
+def _norm_timing(a):
+    """Normalize the `timing` arg to a canonical T0-T5 string.
+
+    Small models routinely send this as a bare number (3) or digit string ('3')
+    rather than 'T3'. Coerce to str FIRST so a non-string value can never raise
+    AttributeError (previously `3 .upper()` crashed the whole tool call), and
+    accept a bare 0-5 by prefixing the 'T'."""
+    raw = a.get("timing")
+    t = str("T4" if raw in (None, "") else raw).strip().upper()
+    if re.fullmatch(r"[0-5]", t):          # bare digit → add the leading T
+        t = "T" + t
+    if not re.fullmatch(r"T[0-5]", t):
+        raise ValueError("`timing` must be T0-T5")
+    return t
+
+
 def _nmap_tuning(a):
     """Shared nmap knobs for every scan tool: timing (T0-T5) and whether to ping
     first (host_discovery=false → -Pn). Returns the flag list to splice into argv."""
-    timing = (a.get("timing") or "T4").upper()
-    if not re.match(r"^T[0-5]$", timing):
-        raise ValueError("`timing` must be T0-T5")
-    flags = ["-" + timing]
+    flags = ["-" + _norm_timing(a)]
     if not bool(a.get("host_discovery")):
         flags.append("-Pn")                            # assume the host is up
     return flags
@@ -225,16 +238,22 @@ _RANGE_PORTS = {"fast": ["--top-ports", "1000"], "top100": ["--top-ports", "100"
 def _b_port_discovery(a):
     host = _req_host(a)
     ports = _ports(a)
-    rng = (a.get("range") or "fast").lower()
+    rng = str(a.get("range") or "fast").strip().lower()
     proto = (a.get("protocol") or "tcp").lower()
-    timing = (a.get("timing") or "T4").upper()
+    timing = _norm_timing(a)
     host_disc = bool(a.get("host_discovery"))
+    # Small models often put an explicit port list like "1-1024" in `range`, which
+    # actually belongs in `ports`. Route it there instead of failing, so the scan
+    # still runs on the first try (explicit ports win over the range keyword below).
+    if rng not in _RANGE_PORTS and _PORTS_RE.match(rng.replace(" ", "")):
+        if not ports:
+            ports = rng.replace(" ", "")
+        rng = "fast"
     if rng not in _RANGE_PORTS:
-        raise ValueError("`range` must be fast/top100/low/high/full")
+        raise ValueError("`range` must be fast/top100/low/high/full "
+                         "(for an explicit port list like 1-1024 use `ports`)")
     if proto not in ("tcp", "udp", "both"):
         raise ValueError("`protocol` must be tcp/udp/both")
-    if not re.match(r"^T[0-5]$", timing):
-        raise ValueError("`timing` must be T0-T5")
     root = _is_root()
     if proto in ("udp", "both") and not root:
         raise ValueError("udp/both scans need root — run as root or use "
