@@ -36,8 +36,14 @@ def _load_meta(meta_path: str) -> dict:
 
 def _save_meta(meta_path: str, meta: dict) -> None:
     os.makedirs(os.path.dirname(meta_path), exist_ok=True)
-    with open(meta_path, "w", encoding="utf-8") as f:
+    # Write atomically (temp + replace) so a concurrent reader — e.g. the AI
+    # Settings file list — never sees a truncated/half-written JSON.
+    tmp_path = meta_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, meta_path)
 
 
 def _collect_files(kb_path: str, allowed_ext: set, excluded_rel: set | None = None) -> list[str]:

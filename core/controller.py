@@ -310,9 +310,9 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             self.flash_status(f"⟳ {current}/{total}  {short}")
 
         def _done(_result):
-            self._rag_index_worker = None
             if _result == "OK":
                 self.flash_status("✔ RAG indexing complete")
+                self._refresh_rag_files_list()
             else:
                 self.flash_status(f"✖ {_result[:40]}")
 
@@ -326,7 +326,12 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
             )
         )
         worker.progress.connect(_show_rag_label)
-        worker.finished.connect(_done)
+        worker.done.connect(_done)
+        # Release the worker only once the thread has *actually* stopped (native
+        # QThread.finished), never from inside `done` (fires while run() is still
+        # unwinding → GC would destroy a running QThread → hard crash).
+        worker.finished.connect(lambda: setattr(self, "_rag_index_worker", None))
+        worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def register_widget(self, name: str, widget):
@@ -953,8 +958,23 @@ class Controller(PanelManagerMixin, ModuleTreeMixin, TabManagerMixin, TerminalMa
     def open_settings(self):
         Controller.widgets["settings_dialog"].exec()
 
+    def _refresh_rag_files_list(self):
+        """Repopulate the RAG file list in AI Settings, if the dialog is built.
+        Safe to call from the GUI thread at any time (no-op if unavailable)."""
+        refresh = getattr(self, "_rag_files_list_refresh", None)
+        if refresh is None:
+            return
+        try:
+            refresh()
+        except RuntimeError:
+            # underlying widget was destroyed — drop the stale callback
+            self._rag_files_list_refresh = None
+        except Exception:
+            logger.debug("RAG file-list refresh failed", exc_info=True)
+
     def open_ai_settings(self):
         self._refresh_settings_agent_combos()
+        self._refresh_rag_files_list()
         dlg  = Controller.widgets["ai_settings_dialog"]
         tabs = Controller.widgets.get("ai_settings_tabs")
         try:

@@ -1173,6 +1173,10 @@ def create_ai_settings_dialog(main_window):
             files_list.addItem(item)
 
     _populate_files_list()
+    # The dialog is built once at startup and reused (open_ai_settings just re-execs
+    # it), so the list would otherwise stay frozen at its startup state. Expose the
+    # refresh so the controller can repopulate it on open and after auto-indexing.
+    c._rag_files_list_refresh = _populate_files_list
 
     def _on_file_item_changed(item: QListWidgetItem):
         data = item.data(Qt.ItemDataRole.UserRole)
@@ -1408,7 +1412,6 @@ def create_ai_settings_dialog(main_window):
             else:
                 rag_status_label.setText(f"✖ {result}")
                 rag_status_label.setStyleSheet("color: red; font-size: 11px;")
-            c._rag_index_worker = None
             if result == "OK":
                 c.flash_status("✔ RAG indexing complete")
             else:
@@ -1424,7 +1427,12 @@ def create_ai_settings_dialog(main_window):
             )
         )
         worker.progress.connect(_on_progress)
-        worker.finished.connect(_on_finished)
+        worker.done.connect(_on_finished)
+        # Release the worker only once the thread has *actually* stopped (native
+        # QThread.finished), never from inside `done` (fires while run() is still
+        # unwinding → GC would destroy a running QThread → hard crash).
+        worker.finished.connect(lambda: setattr(c, "_rag_index_worker", None))
+        worker.finished.connect(worker.deleteLater)
         worker.start()
 
     def _on_rag_delete_db():

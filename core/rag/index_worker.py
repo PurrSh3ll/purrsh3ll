@@ -5,7 +5,7 @@ from core.rag.indexer import Indexer
 
 class IndexWorker(QThread):
     progress      = pyqtSignal(int, int, str)   # current, total, filename
-    finished      = pyqtSignal(str)             # "OK" or "Error: <msg>"
+    done          = pyqtSignal(str)             # "OK" or "Error: <msg>" — NOT named `finished` (would shadow QThread.finished)
     model_loading = pyqtSignal(bool)            # emitted just before the model loads (True = downloading)
 
     def __init__(self, kb_path: str, base_path: str, model_name: str,
@@ -26,6 +26,6 @@ class IndexWorker(QThread):
                 progress_callback=lambda c, t, f: self.progress.emit(c, t, f),
                 loading_callback=lambda downloading: self.model_loading.emit(downloading),
             )
-            self.finished.emit("OK")
+            self.done.emit("OK")
         except Exception as e:
-            self.finished.emit(f"Error: {e}")
+            self.done.emit(f"Error: {e}")
