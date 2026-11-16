@@ -53,15 +53,22 @@ def exec_tools_node(state: dict, config=None) -> dict:
         "seen": dict(state.get("seen") or {}),
         "discovery_rounds": state.get("discovery_rounds", 0),
         "plan": list(state.get("plan") or []),
+        "halt": False,
     }
     results = [tool_runner(tc, work) for tc in (last.get("tool_calls") or [])]
-    return {
+    out = {
         "messages": results,
         "active": work["active"],
         "seen": work["seen"],
         "discovery_rounds": work["discovery_rounds"],
         "plan": work["plan"],
     }
+    if work["halt"]:
+        # a tool ended the turn (e.g. enable_hacking) — the triggering assistant
+        # message's content stands as the final answer, matching the legacy loop.
+        out["halt"] = True
+        out["final"] = (last.get("content") or "").strip()
+    return out
 
 
 def route_after_model(state: dict) -> str:
@@ -76,3 +83,10 @@ def route_after_model(state: dict) -> str:
     if guards.should_continue(state):
         return "tools"
     return END
+
+
+def route_after_tools(state: dict) -> str:
+    """After running tools: end the turn if a tool halted it, else loop back."""
+    if state.get("halt"):
+        return END
+    return "call_model"

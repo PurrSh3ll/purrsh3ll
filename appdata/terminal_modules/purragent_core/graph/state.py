@@ -45,3 +45,4 @@ class AgentState(TypedDict, total=False):
     active: dict                                  # tool name -> schema (grows via discovery)
     seen: dict                                    # dedup: call key -> prior result text
     discovery_rounds: int                        # request_tool calls used this turn
+    halt: bool                                    # a tool asked to end the turn (e.g. enable_hacking)

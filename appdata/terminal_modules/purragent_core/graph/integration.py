@@ -33,14 +33,14 @@ from purragent_core._shared import (
     DISCOVERY_MAX_ROUNDS, ENABLE_HACK_TOOL_NAME, MAX_ACTIVE_TOOLS, META_TOOL_NAME,
     PLAN_MAX_STEPS, PLAN_MODE_NOTE, PLANNED_MAX_ROUNDS, PURRAGENT_SYSTEM,
     RETRIEVE_TOP_N, SAVE_FINDING_TOOL_NAME, SAVE_MEMORY_TOOL_NAME,
-    UPDATE_PLAN_TOOL_NAME, AGENT_TEMPERATURE, _DISCOVERY_GUIDE, _FINDING_GUIDE,
-    _MEMORY_GUIDE, _META_TOOL, _PLAN_GUIDE, _SAVE_FINDING_TOOL, _SAVE_MEMORY_TOOL,
-    _SEQUENCING_GUIDE, _UPDATE_PLAN_TOOL, _msgs_budget_chars, _needs_confirm,
-    _trim_agent_msgs, console)
+    UPDATE_PLAN_TOOL_NAME, AGENT_TEMPERATURE, _DISCOVERY_GUIDE, _ENABLE_HACK_TOOL,
+    _FINDING_GUIDE, _HACK_TRIGGER_GUIDE, _MEMORY_GUIDE, _META_TOOL, _PLAN_GUIDE,
+    _SAVE_FINDING_TOOL, _SAVE_MEMORY_TOOL, _SEQUENCING_GUIDE, _UPDATE_PLAN_TOOL,
+    _msgs_budget_chars, _needs_confirm, _trim_agent_msgs, console)
 from purragent_core.models import _env_block, _model_context
 from purragent_core.providers import _chat_stream, _openai_endpoint
 from purragent_core.state import _add_finding, _add_memory, _delete_memory, _findings_block, _memory_block
-from purragent_core.tools import _get_retriever, _resolve_tool_name, _tool_available
+from purragent_core.tools import _catalog_block, _get_retriever, _resolve_tool_name, _tool_available
 from purragent_core.ui import _StreamTrimmer, _render_plan
 
 from purragent_core.graph.build import build_agent_graph
@@ -58,7 +58,7 @@ def graph_enabled() -> bool:
 
 def _make_model_caller(*, endpoint, api_key, model, temperature, custom_params,
                        hide_thinking, maxc, planning, offer_save, offer_plan,
-                       offer_finding, discovery, trimmer, base_system,
+                       offer_finding, offer_hack, discovery, trimmer, base_system,
                        plan_in_system, preamble_count, on_first_token):
     """Build the model_caller node callable (one streamed model turn).
 
@@ -100,6 +100,7 @@ def _make_model_caller(*, endpoint, api_key, model, temperature, custom_params,
                       and discovery_rounds < DISCOVERY_MAX_ROUNDS)
         tools_field = ([] if planning
                        else ([_META_TOOL] if offer_meta else [])
+                       + ([_ENABLE_HACK_TOOL] if offer_hack else [])
                        + ([_SAVE_MEMORY_TOOL] if offer_save else [])
                        + ([_UPDATE_PLAN_TOOL] if offer_plan else [])
                        + ([_SAVE_FINDING_TOOL] if offer_finding else [])
@@ -131,7 +132,7 @@ def _make_model_caller(*, endpoint, api_key, model, temperature, custom_params,
 
 
 def _make_tool_runner(*, base_dir, mcp, all_tools, retriever, run_cmd,
-                      on_event, on_confirm, mode):
+                      on_event, on_confirm, mode, on_hack):
     """Build the tool_runner node callable (execute one tool call).
 
     ``work`` is the node's mutable copy of the turn's tool scaffolding
@@ -242,7 +243,13 @@ def _make_tool_runner(*, base_dir, mcp, all_tools, retriever, run_cmd,
             return _msg(call_id, ack)
 
         if name == ENABLE_HACK_TOOL_NAME:
-            # The graph flag path runs with offer_hack off; /hack stays on legacy.
+            # Model proposes hacking mode: hand control to the /hack flow and end
+            # the turn (route_after_tools sees halt -> END). The triggering
+            # assistant message's content becomes the final answer, as in legacy.
+            if bool(args.get("enable")) and on_hack is not None:
+                on_hack()
+                work["halt"] = True
+                return _msg(call_id, "")
             return _msg(call_id, "Hacking mode was not enabled.")
 
         # ── resolve a fabricated / undiscovered tool name ─────────────────────
@@ -322,7 +329,9 @@ def run_agent_graph(profile: dict, base_dir: str, history: list,
     if planning:
         sys_parts.append(PLAN_MODE_NOTE)
     elif discovery:
-        sys_parts += [_DISCOVERY_GUIDE]
+        sys_parts += [_DISCOVERY_GUIDE, _catalog_block(all_tools)]
+    if offer_hack and not planning:
+        sys_parts.append(_HACK_TRIGGER_GUIDE)
     mem_block = _memory_block(base_dir)
     if mem_block:
         sys_parts.append(mem_block)
@@ -362,13 +371,14 @@ def run_agent_graph(profile: dict, base_dir: str, history: list,
         endpoint=endpoint, api_key=api_key, model=model, temperature=temperature,
         custom_params=custom_params, hide_thinking=hide_thinking, maxc=maxc,
         planning=planning, offer_save=offer_save, offer_plan=offer_plan,
-        offer_finding=offer_finding, discovery=discovery,
+        offer_finding=offer_finding, offer_hack=offer_hack, discovery=discovery,
         trimmer=_StreamTrimmer(on_text), base_system=base_system,
         plan_in_system=plan_in_system, preamble_count=preamble_count,
         on_first_token=on_first_token)
     tool_runner = _make_tool_runner(
         base_dir=base_dir, mcp=mcp, all_tools=all_tools, retriever=retriever,
-        run_cmd=run_cmd, on_event=on_event, on_confirm=on_confirm, mode=mode)
+        run_cmd=run_cmd, on_event=on_event, on_confirm=on_confirm, mode=mode,
+        on_hack=on_hack)
 
     app = build_agent_graph()
     out = app.invoke(

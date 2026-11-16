@@ -9,7 +9,8 @@ support human-in-the-loop pauses; omit it for a stateless one-shot run.
 
 from langgraph.graph import END, START, StateGraph
 
-from purragent_core.graph.nodes import call_model_node, exec_tools_node, route_after_model
+from purragent_core.graph.nodes import (call_model_node, exec_tools_node,
+                                         route_after_model, route_after_tools)
 from purragent_core.graph.state import AgentState
 
 
@@ -38,6 +39,10 @@ def build_agent_graph(checkpointer=None):
         route_after_model,
         {"tools": "tools", END: END},
     )
-    graph.add_edge("tools", "call_model")
+    graph.add_conditional_edges(
+        "tools",
+        route_after_tools,
+        {"call_model": "call_model", END: END},
+    )
 
     return graph.compile(checkpointer=checkpointer)
