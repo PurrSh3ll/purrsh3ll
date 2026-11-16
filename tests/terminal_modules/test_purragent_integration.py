@@ -1,11 +1,11 @@
-"""Integration tests for the Phase-B bridge (purragent_core.graph.bridge).
+"""Integration tests for the Phase-B integration layer (purragent_core.graph.integration).
 
 These drive ``run_agent_graph`` end to end — the real LangGraph loop + the real
 tool-dispatch logic — with ``_chat_stream`` monkeypatched to scripted responses
 and a fake MCP manager. No network, no model, no real tools.
 """
 
-import purragent_core.graph.bridge as bridge
+import purragent_core.graph.integration as integ
 
 
 class FakeMCP:
@@ -36,7 +36,7 @@ def _tc(cid, name, arguments):
 
 
 def _patch_env(monkeypatch, responses):
-    """Patch the bridge's injected helpers for a hermetic run."""
+    """Patch the integration module's injected helpers for a hermetic run."""
     it = iter(responses)
 
     def fake_chat_stream(endpoint, api_key, body, on_text, hide_thinking, on_activity=None):
@@ -44,12 +44,12 @@ def _patch_env(monkeypatch, responses):
             on_activity()
         return next(it)
 
-    monkeypatch.setattr(bridge, "_chat_stream", fake_chat_stream)
-    monkeypatch.setattr(bridge, "_openai_endpoint",
+    monkeypatch.setattr(integ, "_chat_stream", fake_chat_stream)
+    monkeypatch.setattr(integ, "_openai_endpoint",
                         lambda profile, base_dir: ("http://x/v1/chat/completions", "k"))
-    monkeypatch.setattr(bridge, "_get_retriever", lambda base_dir, all_tools: None)
-    monkeypatch.setattr(bridge, "_model_context", lambda profile, base_dir: 8000)
-    monkeypatch.setattr(bridge, "_tool_available", lambda t: True)
+    monkeypatch.setattr(integ, "_get_retriever", lambda base_dir, all_tools: None)
+    monkeypatch.setattr(integ, "_model_context", lambda profile, base_dir: 8000)
+    monkeypatch.setattr(integ, "_tool_available", lambda t: True)
 
 
 def test_run_agent_graph_tool_then_final(monkeypatch, tmp_path):
@@ -61,7 +61,7 @@ def test_run_agent_graph_tool_then_final(monkeypatch, tmp_path):
     ])
     mcp = FakeMCP()
     events = []
-    out = bridge.run_agent_graph(
+    out = integ.run_agent_graph(
         {"provider": "ollama", "model": "m"}, str(tmp_path), [],
         mcp, lambda *a: events.append(a), lambda *a: None, mode="auto")
     assert out == "the answer"
@@ -76,9 +76,9 @@ def test_run_agent_graph_confirm_declined_skips_call(monkeypatch, tmp_path):
         {"role": "assistant", "content": "ok, skipped", "tool_calls": []},
     ])
     # force the confirm gate on, then decline
-    monkeypatch.setattr(bridge, "_needs_confirm", lambda mode, name, args: (True, "risky"))
+    monkeypatch.setattr(integ, "_needs_confirm", lambda mode, name, args: (True, "risky"))
     mcp = FakeMCP()
-    out = bridge.run_agent_graph(
+    out = integ.run_agent_graph(
         {"provider": "ollama", "model": "m"}, str(tmp_path), [],
         mcp, lambda *a: None, lambda *a: None, mode="confirm",
         on_confirm=lambda name, args, reason: False)
@@ -97,7 +97,7 @@ def test_run_agent_graph_dedup_repeated_call(monkeypatch, tmp_path):
         {"role": "assistant", "content": "done", "tool_calls": []},
     ])
     mcp = FakeMCP()
-    out = bridge.run_agent_graph(
+    out = integ.run_agent_graph(
         {"provider": "ollama", "model": "m"}, str(tmp_path), [],
         mcp, lambda *a: None, lambda *a: None, mode="auto")
     assert out == "done"
@@ -111,7 +111,7 @@ def test_run_agent_graph_direct_answer_no_tools(monkeypatch, tmp_path):
         {"role": "assistant", "content": "just an answer", "tool_calls": []},
     ])
     mcp = FakeMCP()
-    out = bridge.run_agent_graph(
+    out = integ.run_agent_graph(
         {"provider": "ollama", "model": "m"}, str(tmp_path), [],
         mcp, lambda *a: None, lambda *a: None, mode="auto")
     assert out == "just an answer"

@@ -29,9 +29,19 @@ def append_messages(existing: Optional[list], new: Optional[list]) -> list:
 
 
 class AgentState(TypedDict, total=False):
-    """State carried through the agent graph (JSON-serializable only)."""
+    """State carried through the agent graph (JSON-serializable only).
+
+    Everything the agent reasons over lives here — including the per-turn tool
+    scaffolding (``active`` discovered schemas, the ``seen`` dedup map, the
+    discovery-round counter) — so the whole turn is checkpointable and the nodes
+    are transforms of state rather than mutators of hidden context. Only external
+    resources (the model client, MCP, callbacks) are passed via config.
+    """
 
     messages: Annotated[list, append_messages]  # full OpenAI-style transcript
     round: int                                   # completed call_model rounds this turn
     plan: list                                   # model's active update_plan steps
     final: Optional[str]                         # set once the model answers w/o tools
+    active: dict                                  # tool name -> schema (grows via discovery)
+    seen: dict                                    # dedup: call key -> prior result text
+    discovery_rounds: int                        # request_tool calls used this turn

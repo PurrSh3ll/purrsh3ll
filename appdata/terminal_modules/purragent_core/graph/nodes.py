@@ -1,17 +1,19 @@
 """purragent_core.graph.nodes — the graph's node functions and router.
 
-Nodes pull their runtime dependencies from ``config["configurable"]`` (never
-from the checkpointed state):
+Nodes are transforms of ``AgentState``. The two leaf operations that touch the
+outside world are injected via ``config["configurable"]`` (never stored in the
+checkpointed state):
 
-* ``model_caller(messages, state) -> assistant_msg`` — one streamed model call;
-  returns an OpenAI-style assistant dict, with ``tool_calls`` when the model
-  wants to act.
-* ``tool_runner(tool_call, state) -> tool_result_msg`` — execute one tool call;
-  returns an OpenAI-style ``{"role": "tool", ...}`` result.
+* ``model_caller(state) -> assistant_msg`` — one streamed model call; returns an
+  OpenAI-style assistant dict, with ``tool_calls`` when the model wants to act.
+* ``tool_runner(tool_call, work) -> tool_result_msg`` — execute one tool call;
+  ``work`` is the node's mutable copy of the turn's tool scaffolding
+  (``active`` / ``seen`` / ``discovery_rounds`` / ``plan``), seeded from state
+  and written back as the node's state update.
 
-This keeps the control flow (what the graph *does*) separate from the
-integration (how a model/tool actually runs), so the flow is testable with
-fakes and the real providers/tools are bridged in without touching this file.
+Keeping those two as injected callables keeps the control flow (what the graph
+*does*) testable with fakes, while the real providers/tools are supplied by the
+integration layer.
 """
 
 from langgraph.graph import END
@@ -30,9 +32,9 @@ def call_model_node(state: dict, config=None) -> dict:
     is the turn's terminal condition.
     """
     model_caller = _deps(config)["model_caller"]
-    msg = model_caller(state.get("messages", []), state)
+    msg = model_caller(state)
     out = {"messages": [msg], "round": state.get("round", 0) + 1}
-    if not (msg.get("tool_calls")):
+    if not msg.get("tool_calls"):
         out["final"] = (msg.get("content") or "").strip()
     return out
 
@@ -40,25 +42,26 @@ def call_model_node(state: dict, config=None) -> dict:
 def exec_tools_node(state: dict, config=None) -> dict:
     """Execute every tool call in the latest assistant message.
 
-    ``tool_runner`` may return either a tool-result message dict, or a
-    ``(message, state_patch)`` tuple — the patch lets a tool fold extra state
-    back in (e.g. ``update_plan`` writing ``plan``, which raises the round
-    ceiling guard). Patches merge last-write-wins.
+    The tool scaffolding is pulled out of state into a mutable ``work`` copy,
+    handed to ``tool_runner`` for each call (so discovery/dedup see within-round
+    updates), then written back as the node's state update.
     """
     tool_runner = _deps(config)["tool_runner"]
     last = state["messages"][-1]
-    results = []
-    patch: dict = {}
-    for tc in (last.get("tool_calls") or []):
-        out = tool_runner(tc, state)
-        if isinstance(out, tuple):
-            msg, extra = out
-            if extra:
-                patch.update(extra)
-        else:
-            msg = out
-        results.append(msg)
-    return {"messages": results, **patch}
+    work = {
+        "active": dict(state.get("active") or {}),
+        "seen": dict(state.get("seen") or {}),
+        "discovery_rounds": state.get("discovery_rounds", 0),
+        "plan": list(state.get("plan") or []),
+    }
+    results = [tool_runner(tc, work) for tc in (last.get("tool_calls") or [])]
+    return {
+        "messages": results,
+        "active": work["active"],
+        "seen": work["seen"],
+        "discovery_rounds": work["discovery_rounds"],
+        "plan": work["plan"],
+    }
 
 
 def route_after_model(state: dict) -> str:

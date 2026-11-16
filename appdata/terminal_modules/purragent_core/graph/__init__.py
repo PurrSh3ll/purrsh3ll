@@ -17,11 +17,12 @@ Design notes
 * **Nodes delegate.** ``call_model`` and ``tools`` call injected callables
   (``model_caller`` / ``tool_runner``) pulled from the config, so the graph's
   control flow is unit-testable with fakes and the real providers/tools code is
-  wired in by a thin bridge (later Phase-B step).
+  wired in by the integration layer (integration.py).
 * **Guards** (``guards.py``) bound the loop: round ceiling and repeat/loop
   detection, mirroring the legacy loop's limits.
 
-Phase-B status: this is step 1 — the graph skeleton and guards, fully tested.
-The legacy ``query_model_with_tools`` remains the default execution path; the
-production bridge and the default-flip land in subsequent commits.
+Phase-B status: the graph skeleton, guards and the real providers/tools
+integration (integration.py) are in place and tested. The legacy
+``query_model_with_tools`` remains the default; the graph runs behind
+PURRAGENT_GRAPH=1, and the default-flip lands once equivalence is proven.
 """

@@ -1,30 +1,26 @@
-"""purragent_core.graph.bridge — wire the real providers/tools into the graph.
+"""purragent_core.graph.integration — adapter: real providers/tools <-> the graph.
 
-This is the Phase-B step-2 integration layer. It turns purragent's existing
-streaming chat (``_chat_stream``) and tool dispatch (resolve + ``mcp.call`` +
-meta tools) into the two callables the graph's nodes expect
-(``model_caller`` / ``tool_runner``), and exposes ``run_agent_graph`` — a
-drop-in replacement for ``agent.query_model_with_tools`` with the same
-signature, so the REPL can switch to the graph behind a flag.
+The clean seam between the LangGraph core and purragent's domain. It turns the
+existing streaming chat (``_chat_stream``) and tool dispatch (resolve +
+``mcp.call`` + meta tools) into the two node callables the graph injects, and
+exposes ``run_agent_graph`` — a drop-in for ``agent.query_model_with_tools`` with
+the same signature — so the REPL can run the graph behind a flag.
 
-What maps cleanly onto the graph (and is handled here):
-  * the model turn (``_chat_stream``), with the live plan re-injected and the
-    transcript trimmed to the window — done on a *local copy* each round, so the
-    checkpointed state stays append-only;
-  * tool dispatch: RAG discovery (``request_tool``), ``save_memory`` /
-    ``update_plan`` / ``save_finding``, name resolution, per-turn dedup, the
-    run-mode confirm gate, and ``mcp.call``.
+Design (Phase-B step A — idiomatic state):
+  * All turn state the agent reasons over — the growing ``active`` schema set,
+    the ``seen`` dedup map, ``discovery_rounds`` and ``plan`` — lives in
+    ``AgentState`` and flows through the nodes, so the turn is checkpointable and
+    the nodes are transforms, not mutators of hidden context.
+  * Only genuinely external resources are captured in these closures: the model
+    endpoint/key, the MCP manager, the retriever, the stream callbacks, and two
+    per-turn stream latches (first-token fired, trim-note shown). Nothing here
+    holds agent state.
+  * The live plan re-injection and transcript trimming are done on a LOCAL copy
+    of the messages each round, so the checkpointed transcript stays append-only.
 
-Per-turn mutable scaffolding that is *not* JSON-serializable (the growing
-``active`` tool-schema set, the ``seen`` dedup map, the discovery-round counter,
-the stream trimmer) lives in a ``_TurnCtx`` passed through
-``config["configurable"]`` — never in the checkpointed state.
-
-Not yet ported (tracked for a later step; the legacy loop still owns these):
-  * ``enable_hacking_mode`` hand-off — the flag path runs with ``offer_hack``
-    off, so /hack stays on the legacy loop;
-  * resuming a half-finished tool turn from a checkpoint (the ``_TurnCtx`` is
-    rebuilt per invocation).
+Not yet ported (the legacy loop still owns these; tracked for step B / later):
+  * ``enable_hacking_mode`` hand-off — the flag path runs with ``offer_hack`` off;
+  * resuming a half-finished tool turn from a checkpoint.
 """
 
 import json
@@ -60,68 +56,58 @@ def graph_enabled() -> bool:
     return os.environ.get("PURRAGENT_GRAPH", "").strip().lower() in ("1", "true", "yes", "on")
 
 
-class _TurnCtx:
-    """Non-serializable, per-turn scaffolding shared by the two node callables."""
-
-    def __init__(self, *, active, discovery, retriever, run_cmd, trimmer,
-                 preamble_count, base_system, plan_in_system):
-        self.active = active                 # name -> schema (grows via discovery)
-        self.discovery = discovery           # RAG discovery available?
-        self.discovery_rounds = 0
-        self.retriever = retriever
-        self.run_cmd = run_cmd               # run_command fallback tool (or None)
-        self.seen = {}                       # dedup: call key -> prior result text
-        self.plan = []                       # active update_plan steps
-        self.trimmer = trimmer
-        self.preamble_count = preamble_count
-        self.base_system = base_system
-        self.plan_in_system = plan_in_system
-        self.trim_noted = False
-        self.first_fired = False
-
-
-def _make_model_caller(*, ctx, endpoint, api_key, model, temperature, custom_params,
+def _make_model_caller(*, endpoint, api_key, model, temperature, custom_params,
                        hide_thinking, maxc, planning, offer_save, offer_plan,
-                       offer_finding, on_first_token):
-    """Build the model_caller node callable (one streamed model turn)."""
+                       offer_finding, discovery, trimmer, base_system,
+                       plan_in_system, preamble_count, on_first_token):
+    """Build the model_caller node callable (one streamed model turn).
+
+    Reads the turn's tool scaffolding (``active`` / ``plan`` / ``discovery_rounds``)
+    from state; captures only external resources and stream latches.
+    """
+    latch = {"first": False, "trim_noted": False}
 
     def _fire_first():
-        if not ctx.first_fired:
-            ctx.first_fired = True
+        if not latch["first"]:
+            latch["first"] = True
             if on_first_token is not None:
                 try:
                     on_first_token()
                 except Exception:               # noqa: BLE001
                     pass
 
-    def model_caller(messages, state):
+    def model_caller(state):
+        messages = state.get("messages", [])
+        active = state.get("active") or {}
+        plan = state.get("plan") or []
+        discovery_rounds = state.get("discovery_rounds", 0)
+
         # Work on a local copy so the checkpointed transcript stays append-only.
         send = list(messages)
 
         # Re-inject the live plan (sandwich): system slot on Anthropic, trailing
         # user message on OpenAI-compat.
-        if ctx.plan:
-            block = _render_plan(ctx.plan)
-            if ctx.plan_in_system and send:
-                send = [{**send[0], "content": ctx.base_system + "\n\n" + block}] + send[1:]
+        if plan:
+            block = _render_plan(plan)
+            if plan_in_system and send:
+                send = [{**send[0], "content": base_system + "\n\n" + block}] + send[1:]
             else:
                 send = send + [{"role": "user", "content": block}]
-        elif ctx.plan_in_system and send and send[0].get("content") != ctx.base_system:
-            send = [{**send[0], "content": ctx.base_system}] + send[1:]
+        elif plan_in_system and send and send[0].get("content") != base_system:
+            send = [{**send[0], "content": base_system}] + send[1:]
 
-        offer_meta = (not planning and ctx.discovery
-                      and ctx.discovery_rounds < DISCOVERY_MAX_ROUNDS)
+        offer_meta = (not planning and discovery
+                      and discovery_rounds < DISCOVERY_MAX_ROUNDS)
         tools_field = ([] if planning
                        else ([_META_TOOL] if offer_meta else [])
                        + ([_SAVE_MEMORY_TOOL] if offer_save else [])
                        + ([_UPDATE_PLAN_TOOL] if offer_plan else [])
                        + ([_SAVE_FINDING_TOOL] if offer_finding else [])
-                       + list(ctx.active.values()))
+                       + list(active.values()))
 
-        # Trim this turn's growing tool transcript to fit the window (local copy).
         if _trim_agent_msgs(send, _msgs_budget_chars(maxc, tools_field),
-                            ctx.preamble_count) and not ctx.trim_noted:
-            ctx.trim_noted = True
+                            preamble_count) and not latch["trim_noted"]:
+            latch["trim_noted"] = True
             if Text is not None:
                 console.print(Text("  ▸ trimmed earlier tool output to fit the "
                                    "context window", style="bright_black"))
@@ -135,23 +121,28 @@ def _make_model_caller(*, ctx, endpoint, api_key, model, temperature, custom_par
         if custom_params:
             body.update(custom_params)
 
-        message = _chat_stream(endpoint, api_key, body, ctx.trimmer.feed,
+        message = _chat_stream(endpoint, api_key, body, trimmer.feed,
                                hide_thinking, on_activity=_fire_first)
         if message.get("tool_calls"):
-            ctx.trimmer.end_turn()
+            trimmer.end_turn()
         return message
 
     return model_caller
 
 
-def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mode):
-    """Build the tool_runner node callable (execute one tool call)."""
+def _make_tool_runner(*, base_dir, mcp, all_tools, retriever, run_cmd,
+                      on_event, on_confirm, mode):
+    """Build the tool_runner node callable (execute one tool call).
 
-    def _result(call_id, content, patch=None):
-        msg = {"role": "tool", "tool_call_id": call_id, "content": content}
-        return (msg, patch or {})
+    ``work`` is the node's mutable copy of the turn's tool scaffolding
+    (``active`` / ``seen`` / ``discovery_rounds`` / ``plan``); branches mutate it
+    and the node writes it back to state. Returns the tool-result message.
+    """
 
-    def tool_runner(tc, state):
+    def _msg(call_id, content):
+        return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+    def tool_runner(tc, work):
         fn = tc.get("function", {})
         name = fn.get("name", "")
         call_id = tc.get("id")
@@ -160,23 +151,25 @@ def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mo
         except json.JSONDecodeError:
             args = {}
 
+        active = work["active"]
+
         # ── request_tool: RAG discovery, grows the active schema set ───────────
         if name == META_TOOL_NAME:
             need = (args.get("need") or args.get("description") or "").strip()
-            hits = ctx.retriever.retrieve(need, RETRIEVE_TOP_N) if ctx.retriever else []
+            hits = retriever.retrieve(need, RETRIEVE_TOP_N) if retriever else []
             surfaced = []
             for hname, _score in hits:
-                if hname not in ctx.active:
+                if hname not in active:
                     schema = mcp.schema_for(hname)
                     if schema is not None:
-                        ctx.active[hname] = schema
+                        active[hname] = schema
                 surfaced.append(mcp_client.split_namespaced(hname)[1])
-            if not surfaced and ctx.run_cmd is not None:
-                ctx.active.setdefault(ctx.run_cmd["name"], ctx.run_cmd["schema"])
+            if not surfaced and run_cmd is not None:
+                active.setdefault(run_cmd["name"], run_cmd["schema"])
                 surfaced.append("run_command")
-            while len(ctx.active) > MAX_ACTIVE_TOOLS:
-                ctx.active.pop(next(iter(ctx.active)))
-            ctx.discovery_rounds += 1
+            while len(active) > MAX_ACTIVE_TOOLS:
+                active.pop(next(iter(active)))
+            work["discovery_rounds"] += 1
             on_event("search", need, {"hits": surfaced})
             if surfaced:
                 ack = ("Matching tools now available to call: " + ", ".join(surfaced)
@@ -184,7 +177,7 @@ def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mo
             else:
                 ack = ("No matching tools were found. Try describing the need "
                        "differently, or answer without a tool.")
-            return _result(call_id, ack)
+            return _msg(call_id, ack)
 
         # ── save_memory ───────────────────────────────────────────────────────
         if name == SAVE_MEMORY_TOOL_NAME:
@@ -204,9 +197,9 @@ def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mo
                        "Already stored — nothing to do. Do NOT save or delete it; "
                        "just continue answering.")
             on_event("result", name, {"text": ack})
-            return _result(call_id, ack)
+            return _msg(call_id, ack)
 
-        # ── update_plan (also raises the round ceiling via state["plan"]) ──────
+        # ── update_plan (also raises the round ceiling via work["plan"]) ───────
         if name == UPDATE_PLAN_TOOL_NAME:
             raw = args.get("steps")
             steps = []
@@ -216,12 +209,12 @@ def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mo
                         st = str(s.get("status") or "todo").strip().lower()
                         steps.append({"text": str(s["text"]).strip(),
                                       "status": st if st in ("todo", "doing", "done") else "todo"})
-            ctx.plan = steps
+            work["plan"] = steps
             on_event("call", name,
-                     {"steps": "; ".join(s["text"] for s in ctx.plan) or "(empty)"})
-            if ctx.plan:
-                done = sum(1 for s in ctx.plan if s["status"] == "done")
-                ack = (f"Plan recorded ({done}/{len(ctx.plan)} done). It is shown to you "
+                     {"steps": "; ".join(s["text"] for s in steps) or "(empty)"})
+            if steps:
+                done = sum(1 for s in steps if s["status"] == "done")
+                ack = (f"Plan recorded ({done}/{len(steps)} done). It is shown to you "
                        "each turn — now DO the next step (call its tool). Call "
                        "update_plan again only to change a step's status, not to "
                        "restate the same plan.")
@@ -229,7 +222,7 @@ def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mo
                 ack = ("Empty plan ignored. Either answer directly or call update_plan "
                        "with real steps.")
             on_event("result", name, {"text": ack})
-            return _result(call_id, ack, {"plan": ctx.plan})
+            return _msg(call_id, ack)
 
         # ── save_finding ───────────────────────────────────────────────────────
         if name == SAVE_FINDING_TOOL_NAME:
@@ -246,57 +239,57 @@ def _make_tool_runner(*, ctx, base_dir, mcp, all_tools, on_event, on_confirm, mo
             else:
                 ack = "Empty finding ignored — nothing saved."
             on_event("result", name, {"text": ack})
-            return _result(call_id, ack)
+            return _msg(call_id, ack)
 
         if name == ENABLE_HACK_TOOL_NAME:
             # The graph flag path runs with offer_hack off; /hack stays on legacy.
-            return _result(call_id, "Hacking mode was not enabled.")
+            return _msg(call_id, "Hacking mode was not enabled.")
 
         # ── resolve a fabricated / undiscovered tool name ─────────────────────
-        if name not in ctx.active:
+        if name not in active:
             resolved = _resolve_tool_name(name, all_tools)
             if resolved is None:
                 on_event("result", name, {"text": f"unknown tool: {name}", "is_error": True})
-                return _result(call_id,
-                               f"No tool named '{name}' exists. Tools are not called by "
-                               "their description. Call request_tool with what you need, "
-                               "then call the tool by the exact name provided.")
-            if resolved not in ctx.active:
-                ctx.active[resolved] = mcp.schema_for(resolved)
-                while len(ctx.active) > MAX_ACTIVE_TOOLS:
-                    ctx.active.pop(next(iter(ctx.active)))
+                return _msg(call_id,
+                            f"No tool named '{name}' exists. Tools are not called by "
+                            "their description. Call request_tool with what you need, "
+                            "then call the tool by the exact name provided.")
+            if resolved not in active:
+                active[resolved] = mcp.schema_for(resolved)
+                while len(active) > MAX_ACTIVE_TOOLS:
+                    active.pop(next(iter(active)))
             bare = mcp_client.split_namespaced(resolved)[1]
             if name in (resolved, bare):
                 name = resolved
             else:
                 on_event("search", name, {"hits": [bare]})
-                return _result(call_id,
-                               f"'{name}' is not a callable tool name. The tool you want "
-                               f"is now available as '{resolved}'. Call it using that exact "
-                               "name and only its declared parameters (do not invent "
-                               "argument names).")
+                return _msg(call_id,
+                            f"'{name}' is not a callable tool name. The tool you want "
+                            f"is now available as '{resolved}'. Call it using that exact "
+                            "name and only its declared parameters (do not invent "
+                            "argument names).")
 
         # ── per-turn dedup ─────────────────────────────────────────────────────
         key = name + ":" + json.dumps(args, sort_keys=True, default=str)
-        if key in ctx.seen:
-            return _result(call_id,
-                           "You already ran this exact call; its result was:\n"
-                           + ctx.seen[key] + "\nDo not repeat it — try different "
-                           "arguments or another tool, or give your final answer.")
+        if key in work["seen"]:
+            return _msg(call_id,
+                        "You already ran this exact call; its result was:\n"
+                        + work["seen"][key] + "\nDo not repeat it — try different "
+                        "arguments or another tool, or give your final answer.")
 
         # ── run-mode confirm gate ──────────────────────────────────────────────
         need, reason = _needs_confirm(mode, name, args)
         if need and on_confirm is not None and not on_confirm(name, args, reason):
-            return _result(call_id,
-                           "The user declined to run this action. Do not retry it as-is; "
-                           "propose an alternative or ask the user how to proceed.")
+            return _msg(call_id,
+                        "The user declined to run this action. Do not retry it as-is; "
+                        "propose an alternative or ask the user how to proceed.")
 
         on_event("call", name, args)
         result = mcp.call(name, args)
         on_event("result", name, result)
         text = result.get("text") or "(no output)"
-        ctx.seen[key] = text
-        return _result(call_id, text)
+        work["seen"][key] = text
+        return _msg(call_id, text)
 
     return tool_runner
 
@@ -310,7 +303,7 @@ def run_agent_graph(profile: dict, base_dir: str, history: list,
     """Drop-in replacement for query_model_with_tools, backed by the LangGraph core.
 
     Same signature and return contract: streams the answer via ``on_text`` and
-    returns the final text. ``offer_hack``/``on_hack`` are accepted for
+    returns the final text. ``offer_hack`` / ``on_hack`` are accepted for
     signature parity but not acted on here (the flag path keeps /hack on legacy).
     """
     planning = (mode == "plan")
@@ -365,24 +358,22 @@ def run_agent_graph(profile: dict, base_dir: str, history: list,
     run_cmd = next((t for t in all_tools
                     if mcp_client.split_namespaced(t["name"])[1] == "run_command"), None)
 
-    ctx = _TurnCtx(active=active, discovery=discovery, retriever=retriever,
-                   run_cmd=run_cmd, trimmer=_StreamTrimmer(on_text),
-                   preamble_count=preamble_count, base_system=base_system,
-                   plan_in_system=plan_in_system)
-
     model_caller = _make_model_caller(
-        ctx=ctx, endpoint=endpoint, api_key=api_key, model=model,
-        temperature=temperature, custom_params=custom_params,
-        hide_thinking=hide_thinking, maxc=maxc, planning=planning,
-        offer_save=offer_save, offer_plan=offer_plan, offer_finding=offer_finding,
+        endpoint=endpoint, api_key=api_key, model=model, temperature=temperature,
+        custom_params=custom_params, hide_thinking=hide_thinking, maxc=maxc,
+        planning=planning, offer_save=offer_save, offer_plan=offer_plan,
+        offer_finding=offer_finding, discovery=discovery,
+        trimmer=_StreamTrimmer(on_text), base_system=base_system,
+        plan_in_system=plan_in_system, preamble_count=preamble_count,
         on_first_token=on_first_token)
     tool_runner = _make_tool_runner(
-        ctx=ctx, base_dir=base_dir, mcp=mcp, all_tools=all_tools,
-        on_event=on_event, on_confirm=on_confirm, mode=mode)
+        base_dir=base_dir, mcp=mcp, all_tools=all_tools, retriever=retriever,
+        run_cmd=run_cmd, on_event=on_event, on_confirm=on_confirm, mode=mode)
 
     app = build_agent_graph()
     out = app.invoke(
-        {"messages": messages, "round": 0, "plan": []},
+        {"messages": messages, "round": 0, "plan": [],
+         "active": active, "seen": {}, "discovery_rounds": 0},
         config={
             "recursion_limit": 2 * PLANNED_MAX_ROUNDS + 5,
             "configurable": {"model_caller": model_caller, "tool_runner": tool_runner},

@@ -3,7 +3,7 @@
 These exercise the graph's control flow and guards with fake model/tool
 callables — no LLM, no MCP, no network — plus real ``SqliteSaver``
 checkpointing. The fakes stand in for the injected ``model_caller`` /
-``tool_runner`` the production bridge will supply.
+``tool_runner`` the integration layer supplies.
 """
 
 import sqlite3
@@ -25,13 +25,13 @@ def _scripted_model(responses):
     """model_caller that returns each scripted response in turn."""
     it = iter(responses)
 
-    def model_caller(messages, state):
+    def model_caller(state):
         return next(it)
 
     return model_caller
 
 
-def _echo_tool(tc, state):
+def _echo_tool(tc, work):
     return {"role": "tool", "tool_call_id": tc.get("id"), "content": "ok"}
 
 
@@ -86,7 +86,7 @@ def test_multiple_tool_calls_in_one_round_all_execute():
 
 def test_round_ceiling_stops_runaway():
     """A model that always wants a (distinct) tool is stopped at the ceiling."""
-    def model(messages, state):
+    def model(state):
         # distinct args each round -> loop-detector won't fire, so the round
         # ceiling is what must stop it
         return _assistant(tool_calls=[_tool_call("x", args={"i": state.get("round", 0)})])
@@ -101,7 +101,7 @@ def test_round_ceiling_stops_runaway():
 
 def test_loop_detection_stops_repeats():
     """Identical tool calls every round -> stop after the repeat threshold."""
-    def model(messages, state):
+    def model(state):
         return _assistant(tool_calls=[_tool_call("x", args={})])  # identical each time
 
     app = build_agent_graph()

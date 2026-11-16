@@ -43,11 +43,11 @@ def _run_agent_turn(*args, **kwargs):
     """Run one agent turn via the legacy loop, or the LangGraph core when opted in.
 
     Set PURRAGENT_GRAPH=1 to route turns through purragent_core.graph (Phase B).
-    The bridge (and langgraph) is imported lazily so the default path never loads
+    The integration module (and langgraph) is imported lazily so the default path never loads
     it. Both entry points share the exact same signature and return contract.
     """
     if os.environ.get("PURRAGENT_GRAPH", "").strip().lower() in ("1", "true", "yes", "on"):
-        from purragent_core.graph.bridge import run_agent_graph
+        from purragent_core.graph.integration import run_agent_graph
         return run_agent_graph(*args, **kwargs)
     return query_model_with_tools(*args, **kwargs)
 
