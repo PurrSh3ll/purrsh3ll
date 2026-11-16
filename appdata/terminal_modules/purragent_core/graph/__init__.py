@@ -21,8 +21,7 @@ Design notes
 * **Guards** (``guards.py``) bound the loop: round ceiling and repeat/loop
   detection, mirroring the legacy loop's limits.
 
-Phase-B status: the graph skeleton, guards and the real providers/tools
-integration (integration.py) are in place and tested. The legacy
-``query_model_with_tools`` remains the default; the graph runs behind
-PURRAGENT_GRAPH=1, and the default-flip lands once equivalence is proven.
+Status: this graph is now the agent's only execution path — the REPL calls
+``integration.run_agent_graph`` for every turn. The former hand-rolled loop was
+removed after legacy<->graph equivalence was proven (see git history: Phase B).
 """

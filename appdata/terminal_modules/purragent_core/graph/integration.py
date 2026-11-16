@@ -3,10 +3,10 @@
 The clean seam between the LangGraph core and purragent's domain. It turns the
 existing streaming chat (``_chat_stream``) and tool dispatch (resolve +
 ``mcp.call`` + meta tools) into the two node callables the graph injects, and
-exposes ``run_agent_graph`` — a drop-in for ``agent.query_model_with_tools`` with
-the same signature — so the REPL can run the graph behind a flag.
+exposes ``run_agent_graph`` — the single entry point the REPL calls to run an
+agent turn.
 
-Design (Phase-B step A — idiomatic state):
+Design (idiomatic state):
   * All turn state the agent reasons over — the growing ``active`` schema set,
     the ``seen`` dedup map, ``discovery_rounds`` and ``plan`` — lives in
     ``AgentState`` and flows through the nodes, so the turn is checkpointable and
@@ -18,13 +18,11 @@ Design (Phase-B step A — idiomatic state):
   * The live plan re-injection and transcript trimming are done on a LOCAL copy
     of the messages each round, so the checkpointed transcript stays append-only.
 
-Not yet ported (the legacy loop still owns these; tracked for step B / later):
-  * ``enable_hacking_mode`` hand-off — the flag path runs with ``offer_hack`` off;
-  * resuming a half-finished tool turn from a checkpoint.
+Not yet supported (tracked for later): resuming a half-finished tool turn from a
+checkpoint (``run_agent_graph`` runs one turn to completion per call).
 """
 
 import json
-import os
 
 import mcp_client
 import psai
@@ -49,11 +47,6 @@ try:                                            # Text is only used for a status
     from rich.text import Text
 except Exception:                               # pragma: no cover
     Text = None
-
-
-def graph_enabled() -> bool:
-    """True when the LangGraph agent path is opted in via PURRAGENT_GRAPH."""
-    return os.environ.get("PURRAGENT_GRAPH", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _make_model_caller(*, endpoint, api_key, model, temperature, custom_params,
@@ -307,11 +300,12 @@ def run_agent_graph(profile: dict, base_dir: str, history: list,
                     offer_hack: bool = False, on_hack=None,
                     summary: str = "", recall: str = "",
                     max_context=None, on_first_token=None) -> str:
-    """Drop-in replacement for query_model_with_tools, backed by the LangGraph core.
+    """Run one agent turn on the LangGraph core and return the final text.
 
-    Same signature and return contract: streams the answer via ``on_text`` and
-    returns the final text. ``offer_hack`` / ``on_hack`` are accepted for
-    signature parity but not acted on here (the flag path keeps /hack on legacy).
+    Streams the answer via ``on_text`` as it arrives (so the caller should not
+    print the return value). When ``offer_hack`` is set and the model calls
+    ``enable_hacking_mode``, ``on_hack`` fires and the turn ends so the REPL can
+    run the /hack flow.
     """
     planning = (mode == "plan")
     model = profile.get("model", "")

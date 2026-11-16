@@ -27,7 +27,8 @@ import threading
 import time
 
 from purragent_core._shared import (AGENT_MODES, BLINK_CYCLE, BLINK_LEN, BLINK_REFRESH, DEFAULT_GREETING, DEFAULT_MODE, HACK_SLASH, SLASH, SLASH_SUBCOMMANDS, SQUINT_CYCLE, SQUINT_LEN, VIOLET, _MCP_NAME_SUBS, _NO_MODEL, console)
-from purragent_core.agent import (_maybe_recall, _maybe_summarize, _remember_exchange, query_model_with_tools)
+from purragent_core.agent import (_maybe_recall, _maybe_summarize, _remember_exchange)
+from purragent_core.graph.integration import run_agent_graph
 from purragent_core.chrome import (_banner_panel, _confirm_action, _context_view, _memory_view, pick_model)
 from purragent_core.dbview import (_btw_chat, _db_view)
 from purragent_core.hack import (_brute_running, _cancel_engagement, _flush_pending, _record_target, _run_hack, _start_hacking, _status_view)
@@ -37,19 +38,6 @@ from purragent_core.providers import (query_model)
 from purragent_core.state import (_clear_findings, _clear_memories, _delete_memory_index, _load_state, _save_state)
 from purragent_core.tools import (_tool_arg_preview, _tool_status)
 from purragent_core.ui import (_ToolSpinner, _cli_help_epilog, _erase_prompt_line, _logo_text, _pause_after_command, _render_ansi, pick_mode, print_help)
-
-
-def _run_agent_turn(*args, **kwargs):
-    """Run one agent turn via the legacy loop, or the LangGraph core when opted in.
-
-    Set PURRAGENT_GRAPH=1 to route turns through purragent_core.graph (Phase B).
-    The integration module (and langgraph) is imported lazily so the default path never loads
-    it. Both entry points share the exact same signature and return contract.
-    """
-    if os.environ.get("PURRAGENT_GRAPH", "").strip().lower() in ("1", "true", "yes", "on"):
-        from purragent_core.graph.integration import run_agent_graph
-        return run_agent_graph(*args, **kwargs)
-    return query_model_with_tools(*args, **kwargs)
 
 
 class PromptHistory(InMemoryHistory):
@@ -900,7 +888,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
 
                 # The answer is streamed live via _on_text (defined above).
                 warmup["obj"] = _ToolSpinner("working").start()   # until first output
-                reply = _run_agent_turn(ctx["profile"], base_dir, history,
+                reply = run_agent_graph(ctx["profile"], base_dir, history,
                                                mcp, _on_tool, _on_text,
                                                mode=mode, on_confirm=_confirm,
                                                offer_hack=not hack_mode,
@@ -933,7 +921,7 @@ def run_repl(base_dir: str, config: dict, profile: dict | None) -> None:
                         console.print(Text("  ↻ answering without hacking mode",
                                            style="bright_black"))
                         warmup["obj"] = _ToolSpinner("working").start()
-                        reply = _run_agent_turn(
+                        reply = run_agent_graph(
                             ctx["profile"], base_dir, history, mcp, _on_tool,
                             _on_text, mode=mode, on_confirm=_confirm,
                             offer_hack=False, summary=ctx.get("summary", ""),
