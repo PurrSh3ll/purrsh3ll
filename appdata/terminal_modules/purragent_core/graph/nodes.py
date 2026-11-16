@@ -38,11 +38,27 @@ def call_model_node(state: dict, config=None) -> dict:
 
 
 def exec_tools_node(state: dict, config=None) -> dict:
-    """Execute every tool call in the latest assistant message."""
+    """Execute every tool call in the latest assistant message.
+
+    ``tool_runner`` may return either a tool-result message dict, or a
+    ``(message, state_patch)`` tuple — the patch lets a tool fold extra state
+    back in (e.g. ``update_plan`` writing ``plan``, which raises the round
+    ceiling guard). Patches merge last-write-wins.
+    """
     tool_runner = _deps(config)["tool_runner"]
     last = state["messages"][-1]
-    results = [tool_runner(tc, state) for tc in (last.get("tool_calls") or [])]
-    return {"messages": results}
+    results = []
+    patch: dict = {}
+    for tc in (last.get("tool_calls") or []):
+        out = tool_runner(tc, state)
+        if isinstance(out, tuple):
+            msg, extra = out
+            if extra:
+                patch.update(extra)
+        else:
+            msg = out
+        results.append(msg)
+    return {"messages": results, **patch}
 
 
 def route_after_model(state: dict) -> str:
